@@ -1,0 +1,3 @@
+// Application icon. The lowest-numbered ICON resource in an EXE is what
+// Explorer, the taskbar, and Alt-Tab pick up, so this stays as id 1.
+1 ICON "..\\installer\\wbsh.ico"

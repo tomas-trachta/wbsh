@@ -27,6 +27,7 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName=wbsh
 UninstallDisplayIcon={app}\wbsh.exe
+SetupIconFile=wbsh.ico
 ; Tells Inno to broadcast WM_SETTINGCHANGE after install so already-running
 ; processes (Explorer, taskbar) pick up the new PATH without a logout.
 ChangesEnvironment=yes
