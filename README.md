@@ -5,6 +5,8 @@ from scratch in C++17 with a POSIX shell grammar, ANSI-aware line editing,
 and a curated set of bundled coreutils so a fresh install is useful out of
 the box.
 
+![wbsh running the test suite in Windows Terminal](./preview.png)
+
 > Status: **alpha** — most of the surface area below is implemented, but
 > wbsh has not yet had a tagged 1.0 release, the test suite is light, and
 > behavior may change. Use at your own risk for non-critical workflows.
