@@ -53,9 +53,18 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s: %s\n", cmd.c_str(), msg.c_str());
 		}
 
-		// Translate an arg-style path to native Win32 form for filesystem APIs.
-		std::string toNative(Executor& exec, const std::string& p) {
-			return exec.pathConv().toWin32(p);
+		// Translate an arg-style path (POSIX-or-Win32, UTF-8) to a native
+		// filesystem::path. On Windows we route through wide strings so the
+		// UTF-8 bytes don't get mojibake'd through the active codepage by
+		// the default `path(string)` constructor (`Tomáš` -> `TomÃ¡Å¡`).
+		fs::path toNative(Executor& exec, const std::string& p) {
+			return utf8ToPath(exec.pathConv().toWin32(p));
+		}
+
+		// fopen on a UTF-8, POSIX-or-Win32 path. Routes through `_wfopen`
+		// on Windows so non-ASCII filenames survive intact.
+		std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode) {
+			return openUtf8(exec.pathConv().toWin32(p), mode);
 		}
 
 		// ---- ls --------------------------------------------------------------
@@ -119,7 +128,8 @@ namespace wbsh {
 		LsEntry collect(const fs::path& parent, const std::string& name) {
 			LsEntry e;
 			e.name = name;
-			e.full = parent.empty() ? fs::path(name) : (parent / name);
+			fs::path npath = utf8ToPath(name);
+			e.full = parent.empty() ? npath : (parent / npath);
 			std::error_code ec;
 			e.status = fs::symlink_status(e.full, ec);
 			e.is_symlink = !ec && fs::is_symlink(e.status);
@@ -137,7 +147,7 @@ namespace wbsh {
 			if (!name.empty() && name[0] == '.') e.is_hidden = true;
 			if (windowsHidden(e.full)) e.is_hidden = true;
 			// Executable heuristic on Windows: extension.
-			std::string ext = e.full.extension().string();
+			std::string ext = pathToUtf8(e.full.extension());
 			std::transform(ext.begin(), ext.end(), ext.begin(),
 				[](char c) { return static_cast<char>(std::tolower((unsigned char)c)); });
 			if (ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".com" || ext == ".ps1") {
@@ -363,9 +373,8 @@ namespace wbsh {
 			bool show_headers = paths.size() > 1;
 			for (std::size_t pi = 0; pi < paths.size(); ++pi) {
 				const std::string& p = paths[pi];
-				std::string native = toNative(exec, p);
+				fs::path target = toNative(exec, p);
 				std::error_code ec;
-				fs::path target(native);
 				fs::file_status st = fs::symlink_status(target, ec);
 				if (ec) {
 					perr("ls", p, ec);
@@ -382,14 +391,14 @@ namespace wbsh {
 					if (ec) { perr("ls", p, ec); rc = 1; continue; }
 					for (const auto& de : it) {
 						std::string name;
-						try { name = de.path().filename().string(); }
+						try { name = pathToUtf8(de.path().filename()); }
 						catch (...) { continue; }
 						LsEntry e = collect(target, name);
 						if (!opts.all && e.is_hidden) continue;
 						items.push_back(std::move(e));
 					}
 				} else {
-					LsEntry e = collect(fs::path(), native);
+					LsEntry e = collect(fs::path(), p);
 					e.name = p;   // preserve user-supplied spelling
 					items.push_back(std::move(e));
 				}
@@ -472,7 +481,7 @@ namespace wbsh {
 					}
 					continue;
 				}
-				std::string native = toNative(exec, f);
+				fs::path native = toNative(exec, f);
 				std::ifstream in(native, std::ios::binary);
 				if (!in) {
 					std::fprintf(stderr, "wbsh: cat: %s: %s\n",
@@ -528,17 +537,17 @@ namespace wbsh {
 				if (!cur.empty()) dirs.push_back(cur);
 				for (const auto& d : dirs) {
 					if (d.empty()) continue;
-					fs::path base(exec.pathConv().toWin32(d));
+					fs::path base = utf8ToPath(exec.pathConv().toWin32(d));
 #ifdef _WIN32
 					static const char* exts[] = { "", ".exe", ".cmd", ".bat", nullptr };
 #else
 					static const char* exts[] = { "", nullptr };
 #endif
 					for (int e = 0; exts[e]; ++e) {
-						fs::path q = base / (name + exts[e]);
+						fs::path q = base / utf8ToPath(name + exts[e]);
 						std::error_code ec;
 						if (fs::exists(q, ec) && !fs::is_directory(q, ec)) {
-							std::printf("%s\n", exec.pathConv().toPosix(q.string()).c_str());
+							std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(q)).c_str());
 							found = true;
 							break;
 						}
@@ -702,7 +711,7 @@ namespace wbsh {
 			int rc = 0;
 			for (const auto& p : args) {
 				if (!p.empty() && p[0] == '-' && p != "-") continue;   // skip flags
-				std::string nat = toNative(exec, p);
+				fs::path nat = toNative(exec, p);
 				std::error_code ec;
 				if (!fs::exists(nat, ec)) {
 					std::ofstream f(nat, std::ios::binary | std::ios::app);
@@ -753,7 +762,7 @@ namespace wbsh {
 			if (files.empty()) files.push_back("-");
 			int rc = 0;
 			for (const auto& f : files) {
-				FILE* fp = (f == "-") ? stdin : std::fopen(toNative(exec, f).c_str(), "rb");
+				FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
 				if (!fp) { perr("head", f + ": " + std::strerror(errno)); rc = 1; continue; }
 				long printed = 0;
 				int c;
@@ -790,7 +799,7 @@ namespace wbsh {
 			int rc = 0;
 			for (const auto& f : files) {
 				std::vector<std::string> lines;
-				FILE* fp = (f == "-") ? stdin : std::fopen(toNative(exec, f).c_str(), "rb");
+				FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
 				if (!fp) { perr("tail", f + ": " + std::strerror(errno)); rc = 1; continue; }
 				std::string cur;
 				int c;
@@ -840,7 +849,7 @@ namespace wbsh {
 			std::uintmax_t total_l = 0, total_w = 0, total_c = 0, total_m = 0;
 			int rc = 0;
 			for (const auto& f : files) {
-				FILE* fp = (f == "-") ? stdin : std::fopen(toNative(exec, f).c_str(), "rb");
+				FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
 				if (!fp) { perr("wc", f + ": " + std::strerror(errno)); rc = 1; continue; }
 				std::uintmax_t l = 0, w = 0, c = 0, m = 0;
 				bool in_word = false;
@@ -997,7 +1006,7 @@ namespace wbsh {
 		// emitted as-is.
 		bool readAllLines(Executor& exec, const std::string& path,
 		                  std::vector<std::string>& out) {
-			FILE* fp = (path == "-") ? stdin : std::fopen(toNative(exec, path).c_str(), "rb");
+			FILE* fp = (path == "-") ? stdin : fopenNative(exec, path, "rb");
 			if (!fp) return false;
 			std::string cur;
 			int c;
@@ -1351,7 +1360,7 @@ namespace wbsh {
 			}
 			std::vector<FILE*> outs;
 			for (const auto& f : files) {
-				FILE* fp = std::fopen(toNative(exec, f).c_str(), append ? "ab" : "wb");
+				FILE* fp = fopenNative(exec, f, append ? "ab" : "wb");
 				if (!fp) {
 					perr("tee", f + ": " + std::strerror(errno));
 				} else {
@@ -1639,7 +1648,7 @@ namespace wbsh {
 				std::error_code ec;
 				fs::path nat = fs::weakly_canonical(toNative(exec, p), ec);
 				if (ec) { perr("realpath", p, ec); rc = 1; continue; }
-				std::printf("%s\n", exec.pathConv().toPosix(nat.string()).c_str());
+				std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(nat)).c_str());
 			}
 			return rc;
 		}
@@ -1658,11 +1667,11 @@ namespace wbsh {
 				if (canonical) {
 					fs::path q = fs::weakly_canonical(toNative(exec, p), ec);
 					if (ec) { rc = 1; continue; }
-					std::printf("%s\n", exec.pathConv().toPosix(q.string()).c_str());
+					std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(q)).c_str());
 				} else {
 					fs::path q = fs::read_symlink(toNative(exec, p), ec);
 					if (ec) { rc = 1; continue; }
-					std::printf("%s\n", exec.pathConv().toPosix(q.string()).c_str());
+					std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(q)).c_str());
 				}
 			}
 			return rc;
@@ -1772,7 +1781,7 @@ namespace wbsh {
 				std::vector<std::string> expanded;
 				for (const auto& f : files) {
 					if (f == "-") { expanded.push_back(f); continue; }
-					std::string nat = toNative(exec, f);
+					fs::path nat = toNative(exec, f);
 					std::error_code ec;
 					if (!fs::is_directory(nat, ec)) {
 						expanded.push_back(f);
@@ -1785,7 +1794,7 @@ namespace wbsh {
 						if (ec) break;
 						std::error_code fec;
 						if (cur->is_regular_file(fec)) {
-							std::string p = cur->path().string();
+							std::string p = pathToUtf8(cur->path());
 							std::replace(p.begin(), p.end(), '\\', '/');
 							expanded.push_back(p);
 						}
@@ -1926,8 +1935,8 @@ namespace wbsh {
 					continue;
 				}
 				// Print root itself if it matches.
-				if (pass_type(nat) && match_name(nat.filename().string().empty() ? r : nat.filename().string())) {
-					std::printf("%s\n", exec.pathConv().toPosix(nat.string()).c_str());
+				if (pass_type(nat) && match_name(pathToUtf8(nat.filename()).empty() ? r : pathToUtf8(nat.filename()))) {
+					std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(nat)).c_str());
 				}
 				if (!fs::is_directory(nat, ec)) continue;
 				fs::recursive_directory_iterator it(nat,
@@ -1938,8 +1947,8 @@ namespace wbsh {
 					if (max_depth >= 0 && cur.depth() >= max_depth) cur.disable_recursion_pending();
 					fs::path p = cur->path();
 					if (!pass_type(p)) continue;
-					if (!match_name(p.filename().string())) continue;
-					std::printf("%s\n", exec.pathConv().toPosix(p.string()).c_str());
+					if (!match_name(pathToUtf8(p.filename()))) continue;
+					std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(p)).c_str());
 				}
 			}
 			std::fflush(stdout);
@@ -2039,7 +2048,7 @@ namespace wbsh {
 			std::fwrite(&h, 1, sizeof(h), out);
 			if (verbose) std::fprintf(stderr, "%s\n", name.c_str());
 			if (h.typeflag != '5' && size > 0) {
-				FILE* in = std::fopen(src.string().c_str(), "rb");
+				FILE* in = openUtf8(pathToUtf8(src), "rb");
 				if (!in) return false;
 				char buf[512];
 				std::uintmax_t left = size;
@@ -2061,7 +2070,7 @@ namespace wbsh {
 
 		int tarCreate(Executor& exec, const std::string& archive,
 		              const std::vector<std::string>& items, bool verbose) {
-			FILE* out = std::fopen(toNative(exec, archive).c_str(), "wb");
+			FILE* out = fopenNative(exec, archive, "wb");
 			if (!out) { perr("tar", archive + ": " + std::strerror(errno)); return 1; }
 			int rc = 0;
 			for (const auto& item : items) {
@@ -2080,7 +2089,7 @@ namespace wbsh {
 					for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
 						if (ec) break;
 						std::error_code rec;
-						std::string rel = item + "/" + fs::relative(cur->path(), nat, rec).string();
+						std::string rel = item + "/" + pathToUtf8(fs::relative(cur->path(), nat, rec));
 						tarWriteEntry(out, cur->path(), rel, verbose);
 					}
 				} else {
@@ -2094,7 +2103,7 @@ namespace wbsh {
 		}
 
 		int tarExtract(Executor& exec, const std::string& archive, bool verbose, bool list_only) {
-			FILE* in = std::fopen(toNative(exec, archive).c_str(), "rb");
+			FILE* in = fopenNative(exec, archive, "rb");
 			if (!in) { perr("tar", archive + ": " + std::strerror(errno)); return 1; }
 			int rc = 0;
 			while (true) {
@@ -2130,7 +2139,7 @@ namespace wbsh {
 					std::error_code ec;
 					fs::create_directories(p.parent_path(), ec);
 				}
-				FILE* out = std::fopen(toNative(exec, name).c_str(), "wb");
+				FILE* out = fopenNative(exec, name, "wb");
 				if (!out) {
 					perr("tar", name + ": " + std::strerror(errno));
 					rc = 1;
@@ -2369,7 +2378,7 @@ namespace wbsh {
 				output_file = name;
 			}
 			if (!output_file.empty()) {
-				out = std::fopen(toNative(exec, output_file).c_str(), "wb");
+				out = fopenNative(exec, output_file, "wb");
 				if (!out) {
 					WinHttpCloseHandle(hRequest);
 					WinHttpCloseHandle(hConnect);
@@ -2466,7 +2475,7 @@ namespace wbsh {
 			if (files.empty()) files.push_back("-");
 			int rc = 0;
 			for (const auto& f : files) {
-				FILE* fp = (f == "-") ? stdin : std::fopen(toNative(exec, f).c_str(), "rb");
+				FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
 				if (!fp) {
 					std::fprintf(stderr, "wbsh: %s: %s: %s\n",
 						cmd, f.c_str(), std::strerror(errno));
@@ -2561,7 +2570,7 @@ namespace wbsh {
 				if (!a.empty() && a[0] == '-' && a != "-") continue;
 				file = a;
 			}
-			FILE* fp = (file == "-") ? stdin : std::fopen(toNative(exec, file).c_str(), "rb");
+			FILE* fp = (file == "-") ? stdin : fopenNative(exec, file, "rb");
 			if (!fp) {
 				std::fprintf(stderr, "wbsh: base64: %s: %s\n",
 					file.c_str(), std::strerror(errno));
@@ -2608,9 +2617,9 @@ namespace wbsh {
 				perr("cmp", "usage: cmp [-s] FILE1 FILE2");
 				return 2;
 			}
-			FILE* f1 = std::fopen(toNative(exec, files[0]).c_str(), "rb");
+			FILE* f1 = fopenNative(exec, files[0], "rb");
 			if (!f1) { if (!quiet) perr("cmp", files[0] + ": " + std::strerror(errno)); return 2; }
-			FILE* f2 = std::fopen(toNative(exec, files[1]).c_str(), "rb");
+			FILE* f2 = fopenNative(exec, files[1], "rb");
 			if (!f2) { std::fclose(f1); if (!quiet) perr("cmp", files[1] + ": " + std::strerror(errno)); return 2; }
 			long long byte = 0, line = 1;
 			int rc = 0;
@@ -2858,7 +2867,7 @@ namespace wbsh {
 			};
 			int rc = 0;
 			for (const auto& p : paths) {
-				std::string nat = toNative(exec, p);
+				fs::path nat = toNative(exec, p);
 				std::error_code ec;
 				if (!fs::exists(nat, ec)) {
 					std::fprintf(stderr, "wbsh: du: %s: %s\n",
@@ -2889,7 +2898,7 @@ namespace wbsh {
 						if (!fec) grand += s;
 						if (all) {
 							std::printf("%s\t%s\n",
-								fmt(s).c_str(), cur->path().string().c_str());
+								fmt(s).c_str(), pathToUtf8(cur->path()).c_str());
 						}
 					}
 				}
@@ -2920,7 +2929,7 @@ namespace wbsh {
 				}
 #endif
 			} else {
-				for (const auto& p : paths) drives.push_back(toNative(exec, p));
+				for (const auto& p : paths) drives.push_back(pathToUtf8(toNative(exec, p)));
 			}
 			auto fmt = [&](std::uintmax_t b) -> std::string {
 				if (human) return humanSize(b);
@@ -3077,7 +3086,7 @@ namespace wbsh {
 
 			int rc = 0;
 			for (const auto& f : files) {
-				FILE* fp = (f == "-") ? stdin : std::fopen(toNative(exec, f).c_str(), "rb");
+				FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
 				if (!fp) { perr("sed", f + ": " + std::strerror(errno)); rc = 1; continue; }
 				std::string line;
 				int c;
@@ -3241,7 +3250,7 @@ namespace wbsh {
 			std::error_code ec;
 			auto cwd = fs::current_path(ec);
 			if (ec) return exec.env().get("PWD");
-			return exec.pathConv().toPosix(cwd.string());
+			return exec.pathConv().toPosix(pathToUtf8(cwd));
 		}
 
 		void printDirStack(Executor& exec, bool numbered) {
@@ -3276,16 +3285,16 @@ namespace wbsh {
 				std::swap(stack[0], stack[1]);
 			} else {
 				const std::string& target = args[0];
-				std::string nat = exec.pathConv().toWin32(target);
+				fs::path nat = toNative(exec, target);
 				std::error_code ec;
 				fs::current_path(nat, ec);
 				if (ec) { perr("pushd", target, ec); return 1; }
 				stack.insert(stack.begin(), exec.pathConv().toPosix(
-					fs::current_path(ec).string()));
+					pathToUtf8(fs::current_path(ec))));
 			}
 			// After pushd, the front of the stack must reflect new cwd.
 			std::error_code ec;
-			fs::current_path(exec.pathConv().toWin32(stack[0]), ec);
+			fs::current_path(toNative(exec, stack[0]), ec);
 			if (!ec) {
 				exec.env().set("OLDPWD", cur);
 				exec.env().set("PWD", stack[0]);
@@ -3459,7 +3468,7 @@ namespace wbsh {
 				if (fname == "-" || fname.empty()) {
 					input = readAllBytesFromFile(stdin);
 				} else {
-					FILE* f = std::fopen(toNative(exec, fname).c_str(), "rb");
+					FILE* f = fopenNative(exec, fname, "rb");
 					if (!f) {
 						perr(decompress ? "gunzip" : "gzip", fname,
 						     std::error_code(errno, std::system_category()));
@@ -3495,7 +3504,7 @@ namespace wbsh {
 					} else {
 						out_path = fname + ".gz";
 					}
-					of = std::fopen(toNative(exec, out_path).c_str(), "wb");
+					of = fopenNative(exec, out_path, "wb");
 					if (!of) {
 						perr(decompress ? "gunzip" : "gzip", out_path,
 						     std::error_code(errno, std::system_category()));
@@ -3595,7 +3604,7 @@ namespace wbsh {
 				perr("unzip", "missing archive name"); return 1;
 			}
 			(void)overwrite;
-			FILE* f = std::fopen(toNative(exec, archive).c_str(), "rb");
+			FILE* f = fopenNative(exec, archive, "rb");
 			if (!f) {
 				perr("unzip", archive,
 				    std::error_code(errno, std::system_category()));
@@ -3680,7 +3689,7 @@ namespace wbsh {
 				if (pp.has_parent_path()) {
 					std::filesystem::create_directories(pp.parent_path(), ec);
 				}
-				FILE* of = std::fopen(pp.string().c_str(), "wb");
+				FILE* of = openUtf8(pathToUtf8(pp), "wb");
 				if (!of) {
 					perr("unzip", out_path,
 					    std::error_code(errno, std::system_category()));
@@ -3713,7 +3722,7 @@ namespace wbsh {
 			namespace fs = std::filesystem;
 			std::vector<std::string> paths;
 			for (const auto& in : inputs) {
-				std::string win = toNative(exec, in);
+				fs::path win = toNative(exec, in);
 				std::error_code ec;
 				if (fs::is_directory(win, ec) && recurse) {
 					for (auto it = fs::recursive_directory_iterator(win, ec);
@@ -3721,7 +3730,7 @@ namespace wbsh {
 					{
 						if (ec) break;
 						if (it->is_regular_file(ec)) {
-							std::string rel = fs::relative(it->path(), fs::current_path(ec)).string();
+							std::string rel = pathToUtf8(fs::relative(it->path(), fs::current_path(ec)));
 							std::replace(rel.begin(), rel.end(), '\\', '/');
 							paths.push_back(rel);
 						}
@@ -3739,7 +3748,7 @@ namespace wbsh {
 			};
 			std::vector<CDEntry> cd;
 			for (const auto& path : paths) {
-				FILE* f = std::fopen(toNative(exec, path).c_str(), "rb");
+				FILE* f = fopenNative(exec, path, "rb");
 				if (!f) {
 					perr("zip", path,
 					    std::error_code(errno, std::system_category()));
@@ -3796,7 +3805,7 @@ namespace wbsh {
 			zipW32(out, cd_size);
 			zipW32(out, cd_off);
 			zipW16(out, 0);
-			FILE* of = std::fopen(toNative(exec, archive).c_str(), "wb");
+			FILE* of = fopenNative(exec, archive, "wb");
 			if (!of) {
 				perr("zip", archive,
 				    std::error_code(errno, std::system_category()));
@@ -4171,7 +4180,7 @@ namespace wbsh {
 			if (files.empty()) runStream(stdin);
 			else {
 				for (const auto& fn : files) {
-					FILE* f = std::fopen(toNative(exec, fn).c_str(), "rb");
+					FILE* f = fopenNative(exec, fn, "rb");
 					if (!f) { perr("bc", fn, std::error_code(errno, std::system_category())); continue; }
 					runStream(f);
 					std::fclose(f);
@@ -4204,7 +4213,7 @@ namespace wbsh {
 			};
 			if (path.empty() || path == "-") readAllBytes(stdin);
 			else {
-				FILE* f = std::fopen(toNative(exec, path).c_str(), "rb");
+				FILE* f = fopenNative(exec, path, "rb");
 				if (!f) { perr("xxd", path, std::error_code(errno, std::system_category())); return 1; }
 				readAllBytes(f);
 				std::fclose(f);
@@ -4307,7 +4316,7 @@ namespace wbsh {
 			if (path.empty() || path == "-") {
 				int c; while ((c = std::fgetc(stdin)) != EOF) bytes.push_back((unsigned char)c);
 			} else {
-				FILE* f = std::fopen(toNative(exec, path).c_str(), "rb");
+				FILE* f = fopenNative(exec, path, "rb");
 				if (!f) { perr("od", path, std::error_code(errno, std::system_category())); return 1; }
 				int c; while ((c = std::fgetc(f)) != EOF) bytes.push_back((unsigned char)c);
 				std::fclose(f);
@@ -4414,7 +4423,7 @@ namespace wbsh {
 			if (files.empty() || files[0] == "-") runOn(stdin);
 			else {
 				for (const auto& p : files) {
-					FILE* f = std::fopen(toNative(exec, p).c_str(), "rb");
+					FILE* f = fopenNative(exec, p, "rb");
 					if (!f) { perr("fold", p, std::error_code(errno, std::system_category())); return 1; }
 					runOn(f);
 					std::fclose(f);
@@ -4469,7 +4478,7 @@ namespace wbsh {
 			if (files.empty() || files[0] == "-") runOn(stdin);
 			else {
 				for (const auto& p : files) {
-					FILE* f = std::fopen(toNative(exec, p).c_str(), "rb");
+					FILE* f = fopenNative(exec, p, "rb");
 					if (!f) { perr("column", p, std::error_code(errno, std::system_category())); return 1; }
 					runOn(f);
 					std::fclose(f);
@@ -4544,7 +4553,7 @@ namespace wbsh {
 			if (files.empty() || files[0] == "-") runOn(stdin);
 			else {
 				for (const auto& p : files) {
-					FILE* f = std::fopen(toNative(exec, p).c_str(), "rb");
+					FILE* f = fopenNative(exec, p, "rb");
 					if (!f) { perr("expand", p, std::error_code(errno, std::system_category())); return 1; }
 					runOn(f);
 					std::fclose(f);
@@ -4616,7 +4625,7 @@ namespace wbsh {
 			if (files.empty() || files[0] == "-") runOn(stdin);
 			else {
 				for (const auto& p : files) {
-					FILE* f = std::fopen(toNative(exec, p).c_str(), "rb");
+					FILE* f = fopenNative(exec, p, "rb");
 					if (!f) { perr("unexpand", p, std::error_code(errno, std::system_category())); return 1; }
 					runOn(f);
 					std::fclose(f);
@@ -4647,7 +4656,7 @@ namespace wbsh {
 			auto loadLines = [&](const std::string& p) -> std::vector<std::string> {
 				std::vector<std::string> out;
 				FILE* f = (p == "-") ? stdin
-				    : std::fopen(toNative(exec, p).c_str(), "rb");
+				    : fopenNative(exec, p, "rb");
 				if (!f) { perr("comm", p, std::error_code(errno, std::system_category())); return out; }
 				std::string buf; int c;
 				while ((c = std::fgetc(f)) != EOF) {
@@ -4827,7 +4836,7 @@ namespace wbsh {
 			} else {
 				full = fs::path(toNative(exec, base)) / template_arg;
 			}
-			std::string s = full.string();
+			std::string s = pathToUtf8(full);
 			// Find trailing run of X (must be at least 3).
 			std::size_t end = s.size();
 			std::size_t start = end;

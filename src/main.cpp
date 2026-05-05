@@ -13,8 +13,10 @@
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#  include <shellapi.h>
 #  include <dwmapi.h>
 #  include <io.h>
+#  pragma comment(lib, "shell32.lib")
 #  pragma comment(lib, "dwmapi.lib")
 // 20 since Win10 1903; defined in newer SDKs but we don't rely on the SDK version.
 #  ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -283,6 +285,42 @@ namespace {
 		return hits;
 	}
 
+	// Same idea as findGitDirs, for Docker. Docker Desktop installs its CLI
+	// under `Program Files\Docker\Docker\resources\bin`, which isn't on the
+	// PATH a non-shell parent (Explorer, VS debugger) inherits.
+	std::vector<std::string> findDockerDirs() {
+		namespace fs = std::filesystem;
+		std::vector<std::string> candidates;
+		auto add = [&](const char* var, const char* suffix) {
+			if (const char* v = std::getenv(var)) {
+				candidates.push_back(std::string(v) + suffix);
+			}
+		};
+		add("ProgramFiles",      "\\Docker\\Docker\\resources\\bin");
+		add("ProgramFiles(x86)", "\\Docker\\Docker\\resources\\bin");
+		add("ProgramW6432",      "\\Docker\\Docker\\resources\\bin");
+		if (const char* up = std::getenv("USERPROFILE")) {
+			candidates.push_back(std::string(up)
+				+ "\\scoop\\apps\\docker\\current");
+			candidates.push_back(std::string(up)
+				+ "\\scoop\\shims");
+		}
+		if (const char* pd = std::getenv("ProgramData")) {
+			candidates.push_back(std::string(pd)
+				+ "\\chocolatey\\bin");
+		}
+
+		std::vector<std::string> hits;
+		for (const auto& d : candidates) {
+			std::error_code ec;
+			fs::path exe = fs::path(d) / "docker.exe";
+			if (fs::exists(exe, ec) && !fs::is_directory(exe, ec)) {
+				hits.push_back(d);
+			}
+		}
+		return hits;
+	}
+
 	void prependDirsToPath(Environment& env, const PathConv& pc,
 	                       const std::vector<std::string>& dirs) {
 		if (dirs.empty()) return;
@@ -304,10 +342,11 @@ namespace {
 		PathConv pc;
 		std::string p = env.get("PATH");
 		if (!p.empty()) env.set("PATH", pc.pathListWin32ToPosix(p));
-		// Make `git` discoverable when launched standalone (from Explorer or
-		// via a non-shell parent). Doesn't affect users whose system PATH
-		// already includes git — the dedup check is a no-op there.
+		// Make `git` and `docker` discoverable when launched standalone (from
+		// Explorer or via a non-shell parent). Doesn't affect users whose
+		// system PATH already includes them — the dedup check is a no-op there.
 		prependDirsToPath(env, pc, findGitDirs());
+		prependDirsToPath(env, pc, findDockerDirs());
 		std::string home = env.get("HOME");
 		if (home.empty()) home = env.get("USERPROFILE");
 		if (!home.empty()) {
@@ -317,7 +356,7 @@ namespace {
 		std::error_code ec;
 		auto cwd = std::filesystem::current_path(ec);
 		if (!ec) {
-			env.set("PWD", pc.toPosix(cwd.string()));
+			env.set("PWD", pc.toPosix(pathToUtf8(cwd)));
 			env.exportVar("PWD");
 		}
 	}
@@ -410,7 +449,7 @@ namespace {
 		auto cwdStr = []() -> std::string {
 			std::error_code ec;
 			auto p = std::filesystem::current_path(ec);
-			return ec ? std::string(".") : p.string();
+			return ec ? std::string(".") : pathToUtf8(p);
 		};
 		std::string out;
 		for (std::size_t i = 0; i < ps.size(); ++i) {
@@ -780,7 +819,7 @@ namespace {
 		// Source ~/.wbshrc for user customisation (aliases, env, prompt).
 		if (!home_dir.empty()) {
 			std::string rcfile = home_dir + "/.wbshrc";
-			std::string native = exec.pathConv().toWin32(rcfile);
+			std::filesystem::path native = utf8ToPath(exec.pathConv().toWin32(rcfile));
 			std::error_code ec;
 			if (std::filesystem::exists(native, ec)) {
 				std::ifstream f(native, std::ios::binary);
@@ -1000,6 +1039,31 @@ namespace {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+	// Replace the CRT-decoded argv with the wide command line decoded
+	// via UTF-16 -> UTF-8. Without this, MSVC's narrow `argv` is decoded
+	// through the C locale (default "C") and any non-ASCII argument like
+	// "/c/Users/Tomáš" arrives as "Tom�" — every multi-byte sequence
+	// collapses to a replacement char, breaking everything downstream.
+	std::vector<std::string> argv_utf8_storage;
+	std::vector<char*> argv_ptrs;
+	{
+		int wargc = 0;
+		LPWSTR* wargv = ::CommandLineToArgvW(::GetCommandLineW(), &wargc);
+		if (wargv) {
+			argv_utf8_storage.reserve(static_cast<std::size_t>(wargc));
+			for (int i = 0; i < wargc; ++i) {
+				argv_utf8_storage.push_back(wbsh::wideToUtf8(wargv[i]));
+			}
+			::LocalFree(wargv);
+			argv_ptrs.reserve(argv_utf8_storage.size() + 1);
+			for (auto& s : argv_utf8_storage) argv_ptrs.push_back(s.data());
+			argv_ptrs.push_back(nullptr);
+			argc = static_cast<int>(argv_utf8_storage.size());
+			argv = argv_ptrs.data();
+		}
+	}
+#endif
 	bool show_tokens = false;
 	bool show_ast = true;
 	bool do_expand = false;

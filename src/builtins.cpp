@@ -242,7 +242,7 @@ namespace wbsh {
 			}
 			std::error_code ec;
 			auto p = fs::current_path(ec);
-			std::string s = ec ? exec.env().get("PWD") : p.string();
+			std::string s = ec ? exec.env().get("PWD") : pathToUtf8(p);
 			if (!win) s = exec.pathConv().toPosix(s);
 			std::fwrite(s.data(), 1, s.size(), stdout);
 			std::fputc('\n', stdout);
@@ -259,7 +259,7 @@ namespace wbsh {
 				if (target.empty()) { printerr("cd: OLDPWD not set"); return 1; }
 				std::printf("%s\n", exec.pathConv().toPosix(target).c_str());
 			} else target = args[0];
-			std::string win_target = exec.pathConv().toWin32(target);
+			fs::path win_target = utf8ToPath(exec.pathConv().toWin32(target));
 			std::error_code ec;
 			fs::current_path(win_target, ec);
 			if (ec) {
@@ -271,7 +271,7 @@ namespace wbsh {
 			if (!ec) {
 				if (!old_pwd.empty()) exec.env().set("OLDPWD", old_pwd);
 				// Store PWD in POSIX form so $PWD looks bash-like.
-				exec.env().set("PWD", exec.pathConv().toPosix(cwd.string()));
+				exec.env().set("PWD", exec.pathConv().toPosix(pathToUtf8(cwd)));
 			}
 			return 0;
 		}
@@ -459,7 +459,7 @@ namespace wbsh {
 				printerr("source: filename required");
 				return 2;
 			}
-			std::string p = exec.pathConv().toWin32(args[0]);
+			std::filesystem::path p = utf8ToPath(exec.pathConv().toWin32(args[0]));
 			std::ifstream f(p, std::ios::binary);
 			if (!f) {
 				std::fprintf(stderr, "wbsh: source: %s: %s\n",
@@ -505,13 +505,13 @@ namespace wbsh {
 					std::string found;
 					for (const auto& d : dirs) {
 						if (d.empty()) continue;
-						fs::path p(d); p /= a;
+						fs::path p = utf8ToPath(d); p /= utf8ToPath(a);
 						std::error_code ec;
-						if (fs::exists(p, ec) && !fs::is_directory(p, ec)) { found = p.string(); break; }
+						if (fs::exists(p, ec) && !fs::is_directory(p, ec)) { found = pathToUtf8(p); break; }
 #ifdef _WIN32
 						for (const char* e : { ".exe", ".cmd", ".bat" }) {
 							fs::path q = p; q += e;
-							if (fs::exists(q, ec) && !fs::is_directory(q, ec)) { found = q.string(); break; }
+							if (fs::exists(q, ec) && !fs::is_directory(q, ec)) { found = pathToUtf8(q); break; }
 						}
 						if (!found.empty()) break;
 #endif
@@ -1325,13 +1325,13 @@ namespace wbsh {
 					? std::string::npos : sep - i);
 				i = (sep == std::string::npos) ? path.size() + 1 : sep + 1;
 				if (dir.empty()) continue;
-				std::string win = exec.pathConv().toWin32(dir);
+				std::filesystem::path win = utf8ToPath(exec.pathConv().toWin32(dir));
 				std::error_code ec;
 				std::filesystem::directory_iterator it(win, ec);
 				if (ec) continue;
 				for (auto& e : it) {
 					std::string n;
-					try { n = e.path().filename().string(); }
+					try { n = pathToUtf8(e.path().filename()); }
 					catch (...) { continue; }
 					// Strip .exe / .cmd / .bat for nicer suggestions.
 					auto ends_with = [&](const std::string& suf) {
@@ -1478,12 +1478,12 @@ namespace wbsh {
 					if (dir.empty()) dir = "/";
 				}
 				std::error_code ec;
-				std::string list_dir = exec.pathConv().toWin32(dir);
+				fs::path list_dir = utf8ToPath(exec.pathConv().toWin32(dir));
 				fs::directory_iterator it(list_dir, ec);
 				if (!ec) {
 					for (auto& e : it) {
 						std::string n;
-						try { n = e.path().filename().string(); }
+						try { n = pathToUtf8(e.path().filename()); }
 						catch (...) { continue; }
 						if (n.empty() || n[0] == '.') continue;
 						if (n.compare(0, leaf.size(), leaf) != 0) continue;

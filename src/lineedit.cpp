@@ -239,12 +239,12 @@ namespace wbsh {
 		for (const auto& d : dirs) {
 			if (d.empty()) continue;
 			std::error_code ec;
-			fs::path base(exec_.pathConv().toWin32(d));
+			fs::path base = utf8ToPath(exec_.pathConv().toWin32(d));
 			fs::directory_iterator it(base, ec);
 			if (ec) continue;
 			for (const auto& de : it) {
 				std::string name;
-				try { name = de.path().filename().string(); }
+				try { name = pathToUtf8(de.path().filename()); }
 				catch (...) { continue; }
 				std::string nice = stripExt(name);
 				if (nice.compare(0, prefix.size(), prefix) == 0) {
@@ -267,14 +267,28 @@ namespace wbsh {
 			if (dir.empty()) dir = "/";
 			base = prefix.substr(slash + 1);
 		}
-		std::string native = exec_.pathConv().toWin32(dir);
+		// Expand a leading `~` / `~/...` to $HOME for the directory lookup.
+		// The output we emit is built from the original `prefix`, so the
+		// user-visible `~` stays intact.
+		std::string lookup_dir = dir;
+		if (lookup_dir == "~"
+		    || (lookup_dir.size() >= 2 && lookup_dir[0] == '~'
+		        && (lookup_dir[1] == '/' || lookup_dir[1] == '\\'))) {
+			std::string home = exec_.env().get("HOME");
+			if (!home.empty()) {
+				lookup_dir = (lookup_dir.size() == 1)
+					? home
+					: home + lookup_dir.substr(1);
+			}
+		}
+		fs::path native = utf8ToPath(exec_.pathConv().toWin32(lookup_dir));
 		std::vector<std::string> matches;
 		std::error_code ec;
 		fs::directory_iterator it(native, ec);
 		if (ec) return matches;
 		for (const auto& de : it) {
 			std::string name;
-			try { name = de.path().filename().string(); }
+			try { name = pathToUtf8(de.path().filename()); }
 			catch (...) { continue; }
 			if (name.empty()) continue;
 			if (name.compare(0, base.size(), base) != 0) continue;
@@ -413,7 +427,7 @@ namespace wbsh {
 					if (ec) break;
 					std::error_code fec;
 					if (p->is_regular_file(fec)) {
-						auto rel = fs::relative(p->path(), heads, fec).string();
+						auto rel = pathToUtf8(fs::relative(p->path(), heads, fec));
 						std::replace(rel.begin(), rel.end(), '\\', '/');
 						branches.push_back(std::move(rel));
 					}
@@ -783,11 +797,41 @@ namespace wbsh {
 			}
 			if (rec.EventType != KEY_EVENT) continue;
 			KEY_EVENT_RECORD& k = rec.Event.KeyEvent;
-			if (!k.bKeyDown) continue;
+			if (!k.bKeyDown) {
+				// Alt-code sequences (Alt + numpad digits) are delivered
+				// to the console as a key-UP event for VK_MENU, with the
+				// resolved Unicode char in UnicodeChar. Without this branch
+				// we'd drop them along with every other key-up.
+				if (k.wVirtualKeyCode == VK_MENU
+				    && k.uChar.UnicodeChar >= 0x20) {
+					WCHAR ach = k.uChar.UnicodeChar;
+					char buf[8] = {};
+					int n = WideCharToMultiByte(CP_UTF8, 0, &ach, 1,
+						buf, sizeof(buf), nullptr, nullptr);
+					if (n > 0) {
+						insertChars(std::string(buf, n));
+						redraw();
+					}
+				}
+				continue;
+			}
 
 			DWORD ctrl = k.dwControlKeyState;
-			bool is_ctrl  = (ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
-			bool is_alt   = (ctrl & (LEFT_ALT_PRESSED  | RIGHT_ALT_PRESSED))  != 0;
+			// AltGr (the right-Alt key on Czech / German / many EU layouts)
+			// arrives as LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED. Hardware
+			// sends it as the Ctrl+Alt combo for legacy reasons, but the
+			// layout engine has already produced the layout-translated char
+			// in UnicodeChar (e.g. AltGr+W -> `|` on Czech). If we let
+			// is_ctrl pick up the LEFT_CTRL bit, AltGr+W gets treated as
+			// Ctrl+W and triggers kill-word instead of inserting `|`.
+			const bool altgr_active =
+				(ctrl & (LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED))
+					== (LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED)
+				&& k.uChar.UnicodeChar != 0;
+			bool is_ctrl  = !altgr_active &&
+				(ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+			bool is_alt   = !altgr_active &&
+				(ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
 			(void)is_alt;
 			WCHAR ch = k.uChar.UnicodeChar;
 			bool was_tab = false;
@@ -854,6 +898,42 @@ namespace wbsh {
 				if (is_ctrl && (k.wVirtualKeyCode == 'F')) { if (cursor_<buffer_.size()) { ++cursor_; redraw(); } break; }
 				if (is_ctrl && (k.wVirtualKeyCode == 'P')) { handleHistoryUp(); redraw(); break; }
 				if (is_ctrl && (k.wVirtualKeyCode == 'N')) { handleHistoryDown(); redraw(); break; }
+				if (is_ctrl && (k.wVirtualKeyCode == 'V')) {
+					// Read CF_UNICODETEXT and insert at the cursor. Newlines
+					// would corrupt our single-line redraw, so strip them —
+					// the user can press Enter themselves once it's pasted.
+					if (OpenClipboard(nullptr)) {
+						HANDLE h_clip = GetClipboardData(CF_UNICODETEXT);
+						if (h_clip) {
+							auto* wptr = static_cast<const WCHAR*>(GlobalLock(h_clip));
+							if (wptr) {
+								std::wstring w(wptr);
+								GlobalUnlock(h_clip);
+								std::wstring filtered;
+								filtered.reserve(w.size());
+								for (WCHAR c : w) {
+									if (c == L'\r' || c == L'\n') continue;
+									filtered.push_back(c);
+								}
+								if (!filtered.empty()) {
+									int n = WideCharToMultiByte(CP_UTF8, 0,
+										filtered.data(), (int)filtered.size(),
+										nullptr, 0, nullptr, nullptr);
+									if (n > 0) {
+										std::string utf8(static_cast<std::size_t>(n), '\0');
+										WideCharToMultiByte(CP_UTF8, 0,
+											filtered.data(), (int)filtered.size(),
+											utf8.data(), n, nullptr, nullptr);
+										insertChars(utf8);
+										redraw();
+									}
+								}
+							}
+						}
+						CloseClipboard();
+					}
+					break;
+				}
 
 				if (ch == 0) break;   // pure modifier press
 				if (ch >= 0x20 && ch < 0x7F) {

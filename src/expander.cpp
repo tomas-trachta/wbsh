@@ -1474,7 +1474,7 @@ namespace wbsh {
 				for (auto& d : current) {
 					acc.insert(d);
 					std::string posix_dir = (d.empty() ? "." : d);
-					std::string list_dir = path_conv_.toWin32(posix_dir);
+					fs::path list_dir = utf8ToPath(path_conv_.toWin32(posix_dir));
 					std::error_code ec;
 					fs::recursive_directory_iterator rit(list_dir,
 						fs::directory_options::skip_permission_denied, ec);
@@ -1482,14 +1482,14 @@ namespace wbsh {
 					for (auto cur = rit; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
 						if (ec) break;
 						std::string name;
-						try { name = cur->path().filename().string(); }
+						try { name = pathToUtf8(cur->path().filename()); }
 						catch (...) { continue; }
 						if (!name.empty() && name[0] == '.') {
 							cur.disable_recursion_pending();
 							continue;
 						}
 						std::error_code dec;
-						std::string rel = fs::relative(cur->path(), list_dir, dec).string();
+						std::string rel = pathToUtf8(fs::relative(cur->path(), list_dir, dec));
 						std::replace(rel.begin(), rel.end(), '\\', '/');
 						if (last) {
 							acc.insert(join(d, rel));
@@ -1510,14 +1510,14 @@ namespace wbsh {
 				bool pat_starts_dot = !pat.empty() && pat[0] == '.';
 				for (auto& d : current) {
 					std::string posix_dir = (d.empty() ? "." : d);
-					std::string list_dir = path_conv_.toWin32(posix_dir);
+					fs::path list_dir = utf8ToPath(path_conv_.toWin32(posix_dir));
 					std::error_code ec;
 					fs::directory_iterator it(list_dir, ec);
 					if (ec) continue;
 					std::vector<std::string> matches;
 					for (auto& entry : it) {
 						std::string name;
-						try { name = entry.path().filename().string(); }
+						try { name = pathToUtf8(entry.path().filename()); }
 						catch (...) { continue; }
 						if (name.empty()) continue;
 						if (name[0] == '.' && !pat_starts_dot && !dotglob_on) continue;

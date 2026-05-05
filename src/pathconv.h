@@ -1,9 +1,39 @@
 #pragma once
 
+#include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace wbsh {
+
+	// ---- UTF-8 <-> native (wide / fs::path) conversion utilities ----
+	//
+	// wbsh stores all paths and strings internally as UTF-8. The MSVC
+	// implementation of `std::filesystem::path(const std::string&)` and
+	// `path::string()` interprets / produces narrow strings using the
+	// **active narrow codepage** (CP_ACP), not UTF-8 — so a UTF-8 byte
+	// sequence like the one for "Tomáš" round-trips through the active
+	// codepage and lands on disk as mojibake (`TomÃ¡Å¡`). These helpers
+	// route through a wide string so the bytes survive intact on Windows.
+
+	std::wstring utf8ToWide(const std::string& s);
+	std::string  wideToUtf8(const std::wstring& w);
+
+	// Build a `std::filesystem::path` from a UTF-8 string. On Windows
+	// converts UTF-8 -> wide and constructs the path from the wide string,
+	// avoiding the active-codepage interpretation of `path(string)`.
+	std::filesystem::path utf8ToPath(const std::string& s);
+
+	// Encode a `std::filesystem::path` as UTF-8. On Windows reads the
+	// path's native (wide) representation and converts to UTF-8, avoiding
+	// the codepage downgrade that `path::string()` does on MSVC.
+	std::string pathToUtf8(const std::filesystem::path& p);
+
+	// fopen wrapper that takes a UTF-8 path. On Windows uses `_wfopen` on
+	// the wide form so non-ASCII filenames don't get downgraded through
+	// the active codepage. `mode` is ASCII (e.g. "rb", "wb", "ab").
+	std::FILE* openUtf8(const std::string& utf8_path, const char* mode);
 
 	// Bidirectional POSIX <-> Win32 path translation, modelled on the
 	// MSYS / Cygwin "mount table" approach. Default mounts:
@@ -25,6 +55,18 @@ namespace wbsh {
 
 		// Translate a Windows path to POSIX form. Idempotent.
 		std::string toPosix(const std::string& p) const;
+
+		// Translate to Win32 form, then collapse to the 8.3 short-path form
+		// (e.g., "C:\Users\Tomáš" -> "C:\Users\TOMA~1") when possible. Used
+		// for HOME and similar env vars passed to MinGW-built children
+		// (Git-for-Windows et al.) whose ANSI `getenv` reads the env block
+		// through the active codepage (CP_ACP) and silently mangles
+		// non-ASCII characters that the codepage can't represent. Short
+		// paths are pure ASCII, so they survive any transcoding.
+		// Falls back to the long Win32 form when the path is already ASCII,
+		// the path doesn't exist, or short-name generation is disabled on
+		// the volume (`fsutil 8dot3name`).
+		std::string toWin32Short(const std::string& p) const;
 
 		// Quick classification helpers.
 		static bool isWin32Absolute(const std::string& p);

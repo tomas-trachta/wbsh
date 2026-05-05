@@ -7,9 +7,69 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <string>
 
 namespace wbsh {
+
+	std::wstring utf8ToWide(const std::string& s) {
+#ifdef _WIN32
+		if (s.empty()) return {};
+		int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(),
+									   nullptr, 0);
+		if (n <= 0) return {};
+		std::wstring out(static_cast<std::size_t>(n), L'\0');
+		::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(),
+							  out.data(), n);
+		return out;
+#else
+		return std::wstring(s.begin(), s.end());
+#endif
+	}
+
+	std::string wideToUtf8(const std::wstring& w) {
+#ifdef _WIN32
+		if (w.empty()) return {};
+		int n = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(),
+									   nullptr, 0, nullptr, nullptr);
+		if (n <= 0) return {};
+		std::string out(static_cast<std::size_t>(n), '\0');
+		::WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(),
+							  out.data(), n, nullptr, nullptr);
+		return out;
+#else
+		return std::string(w.begin(), w.end());
+#endif
+	}
+
+	std::filesystem::path utf8ToPath(const std::string& s) {
+#ifdef _WIN32
+		return std::filesystem::path(utf8ToWide(s));
+#else
+		return std::filesystem::path(s);
+#endif
+	}
+
+	std::string pathToUtf8(const std::filesystem::path& p) {
+#ifdef _WIN32
+		return wideToUtf8(p.wstring());
+#else
+		return p.string();
+#endif
+	}
+
+	std::FILE* openUtf8(const std::string& utf8_path, const char* mode) {
+#ifdef _WIN32
+		std::wstring wpath = utf8ToWide(utf8_path);
+		std::wstring wmode;
+		for (const char* m = mode; *m; ++m) {
+			wmode.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*m)));
+		}
+		return ::_wfopen(wpath.c_str(), wmode.c_str());
+#else
+		return std::fopen(utf8_path.c_str(), mode);
+#endif
+	}
 
 	namespace {
 
@@ -184,6 +244,53 @@ namespace wbsh {
 		// Otherwise convert backslashes only.
 		backslashesToSlashes(s);
 		return s;
+	}
+
+	std::string PathConv::toWin32Short(const std::string& p) const {
+		std::string longw = toWin32(p);
+#ifdef _WIN32
+		if (longw.empty()) return longw;
+		// Pure-ASCII paths can't be mangled by codepage conversion, so
+		// don't bother hitting the file system.
+		bool has_non_ascii = false;
+		for (unsigned char c : longw) {
+			if (c >= 0x80) { has_non_ascii = true; break; }
+		}
+		if (!has_non_ascii) return longw;
+
+		// UTF-8 -> wide.
+		int wn = ::MultiByteToWideChar(CP_UTF8, 0, longw.data(), (int)longw.size(),
+									   nullptr, 0);
+		if (wn <= 0) return longw;
+		std::wstring wlong(static_cast<std::size_t>(wn), L'\0');
+		::MultiByteToWideChar(CP_UTF8, 0, longw.data(), (int)longw.size(),
+							  wlong.data(), wn);
+
+		DWORD need = ::GetShortPathNameW(wlong.c_str(), nullptr, 0);
+		if (need == 0) return longw;  // path missing or short names disabled
+		std::wstring wshort(need, L'\0');
+		DWORD got = ::GetShortPathNameW(wlong.c_str(), wshort.data(), need);
+		if (got == 0 || got >= need) return longw;
+		wshort.resize(got);
+
+		// Wide -> UTF-8.
+		int n = ::WideCharToMultiByte(CP_UTF8, 0, wshort.data(), (int)wshort.size(),
+									  nullptr, 0, nullptr, nullptr);
+		if (n <= 0) return longw;
+		std::string out(static_cast<std::size_t>(n), '\0');
+		::WideCharToMultiByte(CP_UTF8, 0, wshort.data(), (int)wshort.size(),
+							  out.data(), n, nullptr, nullptr);
+
+		// If 8.3 generation is off on this volume, GetShortPathName returns
+		// the long form unchanged — still non-ASCII, still mangleable.
+		// Fall back to the long form (caller is no worse off than before).
+		for (unsigned char c : out) {
+			if (c >= 0x80) return longw;
+		}
+		return out;
+#else
+		return longw;
+#endif
 	}
 
 	std::string PathConv::pathListWin32ToPosix(const std::string& list) const {

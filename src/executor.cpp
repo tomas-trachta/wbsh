@@ -97,12 +97,12 @@ namespace wbsh {
 
 		std::string makeTempFile() {
 #ifdef _WIN32
-			char dir[MAX_PATH];
-			DWORD n = GetTempPathA(MAX_PATH, dir);
+			wchar_t dir[MAX_PATH];
+			DWORD n = GetTempPathW(MAX_PATH, dir);
 			if (n == 0 || n > MAX_PATH) return {};
-			char path[MAX_PATH];
-			if (GetTempFileNameA(dir, "wbsh", 0, path) == 0) return {};
-			return std::string(path);
+			wchar_t path[MAX_PATH];
+			if (GetTempFileNameW(dir, L"wbsh", 0, path) == 0) return {};
+			return wideToUtf8(path);
 #else
 			char tmpl[] = "/tmp/wbshXXXXXX";
 			int fd = mkstemp(tmpl);
@@ -113,21 +113,13 @@ namespace wbsh {
 		}
 
 		std::string readAllText(const std::string& path) {
-			std::ifstream f(path, std::ios::binary);
+			std::ifstream f(utf8ToPath(path), std::ios::binary);
 			std::stringstream ss;
 			ss << f.rdbuf();
 			return ss.str();
 		}
 
 #ifdef _WIN32
-		std::wstring utf8ToWide(const std::string& s) {
-			if (s.empty()) return {};
-			int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
-			std::wstring r(n, L'\0');
-			MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), r.data(), n);
-			return r;
-		}
-
 		std::wstring quoteArg(const std::wstring& arg) {
 			if (arg.empty()) return L"\"\"";
 			bool needs = false;
@@ -693,10 +685,14 @@ namespace wbsh {
 		// translates either form, so a Win32 HOME is safe across the board.
 		// Without this, `git config --global` reads `/c/Users/...` as a
 		// literal path and fails with "Author identity unknown".
+		// `toWin32Short` collapses to the 8.3 form for users with diacritics
+		// in their profile path (`C:\Users\Tomáš` -> `C:\Users\TOMA~1`):
+		// MinGW's ANSI getenv reads the env block via CP_ACP and would
+		// otherwise hand git a path with `?` where the diacritics were.
 		if (!home_set) {
 			std::string h = env_.get("HOME");
 			if (!h.empty()) overrides.emplace_back("HOME",
-				path_conv_.toWin32(h));
+				path_conv_.toWin32Short(h));
 		}
 
 		std::wstring exe_w     = utf8ToWide(exec_path);
@@ -798,8 +794,8 @@ namespace wbsh {
 			auto open_path = [&](const std::string& path, int flags) -> int {
 				int fd = special_fd(path);
 				if (fd >= 0) return fd;
-				std::string p = path_conv_.toWin32(path);
-				return _open(p.c_str(), flags | _O_BINARY, _S_IREAD | _S_IWRITE);
+				std::wstring wp = utf8ToWide(path_conv_.toWin32(path));
+				return _wopen(wp.c_str(), flags | _O_BINARY, _S_IREAD | _S_IWRITE);
 			};
 
 			switch (r.op) {
@@ -900,11 +896,11 @@ namespace wbsh {
 				std::string tmp = makeTempFile();
 				if (tmp.empty()) return false;
 				{
-					std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+					std::ofstream f(utf8ToPath(tmp), std::ios::binary | std::ios::trunc);
 					f.write(body.data(), body.size());
 				}
 				int fd = open_path(tmp, _O_RDONLY);
-				if (fd < 0) { std::remove(tmp.c_str()); return false; }
+				if (fd < 0) { _wremove(utf8ToWide(tmp).c_str()); return false; }
 				save(target);
 				_dup2(fd, target);
 				_close(fd);
@@ -917,11 +913,11 @@ namespace wbsh {
 				std::string tmp = makeTempFile();
 				if (tmp.empty()) return false;
 				{
-					std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+					std::ofstream f(utf8ToPath(tmp), std::ios::binary | std::ios::trunc);
 					f.write(body.data(), body.size());
 				}
 				int fd = open_path(tmp, _O_RDONLY);
-				if (fd < 0) { std::remove(tmp.c_str()); return false; }
+				if (fd < 0) { _wremove(utf8ToWide(tmp).c_str()); return false; }
 				save(target);
 				_dup2(fd, target);
 				_close(fd);
@@ -941,7 +937,7 @@ namespace wbsh {
 			_close(it->second);
 		}
 		s.saved.clear();
-		for (const auto& tmp : s.temps) std::remove(tmp.c_str());
+		for (const auto& tmp : s.temps) _wremove(utf8ToWide(tmp).c_str());
 		s.temps.clear();
 	}
 
@@ -1363,11 +1359,11 @@ namespace wbsh {
 		// Translate HOME to Win32 form for every external child -- including
 		// MinGW-built tools like Git-for-Windows, which want a Windows-style
 		// HOME even though they accept POSIX argv. See launchExternalDirect
-		// for the full reasoning.
+		// for the full reasoning, including why we fold to the 8.3 short form.
 		if (!have_home_override) {
 			std::string h = env_.get("HOME");
 			if (!h.empty()) temp_env_for_child.emplace_back("HOME",
-				path_conv_.toWin32(h));
+				path_conv_.toWin32Short(h));
 		}
 		std::wstring cmdline = buildCommandLine(a);
 		std::wstring exe = utf8ToWide(exec_path);
@@ -1438,7 +1434,7 @@ namespace wbsh {
 			    || ext == "bat" || ext == "cmd" || ext == "ps1") return false;
 		}
 		// Read shebang line (if any).
-		std::ifstream f(path, std::ios::binary);
+		std::ifstream f(utf8ToPath(path), std::ios::binary);
 		if (!f) return false;
 		char buf[256];
 		f.read(buf, sizeof(buf));
@@ -1487,7 +1483,7 @@ namespace wbsh {
 	int Executor::runShellScript(const std::string& path,
 	                             const std::vector<std::string>& argv,
 	                             const std::vector<std::pair<std::string, std::string>>& temp_env) {
-		std::ifstream f(path, std::ios::binary);
+		std::ifstream f(utf8ToPath(path), std::ios::binary);
 		if (!f) {
 			std::fprintf(stderr, "wbsh: %s: %s\n", path.c_str(), std::strerror(errno));
 			return 127;
@@ -2068,7 +2064,7 @@ namespace wbsh {
 	}
 
 	bool Executor::loadHistoryFromFile(const std::string& path) {
-		std::ifstream f(path);
+		std::ifstream f(utf8ToPath(path));
 		if (!f) return false;
 		std::string line;
 		while (std::getline(f, line)) {
@@ -2085,7 +2081,7 @@ namespace wbsh {
 	}
 
 	bool Executor::saveHistoryToFile(const std::string& path) const {
-		std::ofstream f(path, std::ios::trunc);
+		std::ofstream f(utf8ToPath(path), std::ios::trunc);
 		if (!f) return false;
 		for (const auto& line : history_) f << line << '\n';
 		return true;
@@ -2188,7 +2184,7 @@ namespace wbsh {
 		int fd = _open(tmp.c_str(),
 			_O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY,
 			_S_IREAD | _S_IWRITE);
-		if (fd < 0) { std::remove(tmp.c_str()); return {}; }
+		if (fd < 0) { _wremove(utf8ToWide(tmp).c_str()); return {}; }
 		std::fflush(stdout);
 		int saved = _dup(1);
 		_dup2(fd, 1);
@@ -2201,14 +2197,14 @@ namespace wbsh {
 			std::fflush(stdout);
 			_dup2(saved, 1);
 			_close(saved);
-			std::remove(tmp.c_str());
+			_wremove(utf8ToWide(tmp).c_str());
 			throw;
 		}
 		std::fflush(stdout);
 		_dup2(saved, 1);
 		_close(saved);
 		std::string out = readAllText(tmp);
-		std::remove(tmp.c_str());
+		_wremove(utf8ToWide(tmp).c_str());
 		return out;
 	}
 
