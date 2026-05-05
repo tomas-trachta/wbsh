@@ -273,6 +273,21 @@ one are welcome.
 
 ---
 
+## Documentation
+
+API reference is generated with [Doxygen](https://www.doxygen.nl/) from the
+source comments. The config lives at [`docs/Doxyfile`](./docs/Doxyfile);
+a checked-in build sits at [`docs/html/index.html`](./docs/html/index.html).
+The README you are reading is also rendered as the docs main page.
+
+To regenerate after editing the source:
+
+```powershell
+doxygen docs/Doxyfile      # writes docs/html/
+```
+
+---
+
 ## Comparison
 
 |                          | wbsh         | Git Bash      | MSYS2          | Cygwin       | WSL              |

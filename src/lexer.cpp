@@ -1,3 +1,8 @@
+/**
+ * @file lexer.cpp
+ * @brief POSIX shell tokenizer implementation.
+ */
+
 #include "lexer.h"
 
 #include <cctype>
@@ -62,57 +67,53 @@ namespace wbsh {
 	// Helpers
 	// ---------------------------------------------------------------------------
 
-	namespace {
+	static bool isBlank(char c) { return c == ' ' || c == '\t'; }
 
-		bool isBlank(char c) { return c == ' ' || c == '\t'; }
-
-		bool isOperatorStart(char c) {
-			switch (c) {
-			case '&': case '|': case ';':
-			case '<': case '>':
-			case '(': case ')':
-				return true;
-			default:
-				return false;
-			}
-		}
-
-		bool isNameStart(char c) { return c == '_' || std::isalpha(static_cast<unsigned char>(c)); }
-		bool isNameCont(char c) { return c == '_' || std::isalnum(static_cast<unsigned char>(c)); }
-
-		// Concatenate a heredoc delimiter into a plain string. Delimiter quoting is
-		// preserved by the caller; this just produces the comparison text.
-		std::string flattenDelim(const Token& delim) {
-			std::string out;
-			for (const auto& seg : delim.segments) {
-				switch (seg.kind) {
-				case WordSegment::Kind::DoubleQuoted:
-					for (const auto& n : seg.nested) out += n.text;
-					break;
-				default:
-					out += seg.text;
-					break;
-				}
-			}
-			return out;
-		}
-
-		bool delimQuoted(const Token& delim) {
-			for (const auto& seg : delim.segments) {
-				switch (seg.kind) {
-				case WordSegment::Kind::SingleQuoted:
-				case WordSegment::Kind::DoubleQuoted:
-				case WordSegment::Kind::Escaped:
-				case WordSegment::Kind::DollarSingle:
-					return true;
-				default:
-					break;
-				}
-			}
+	static bool isOperatorStart(char c) {
+		switch (c) {
+		case '&': case '|': case ';':
+		case '<': case '>':
+		case '(': case ')':
+			return true;
+		default:
 			return false;
 		}
+	}
 
-	}  // namespace
+	static bool isNameStart(char c) { return c == '_' || std::isalpha(static_cast<unsigned char>(c)); }
+	static bool isNameCont(char c) { return c == '_' || std::isalnum(static_cast<unsigned char>(c)); }
+
+	// Concatenate a heredoc delimiter into a plain string. Delimiter quoting is
+	// preserved by the caller; this just produces the comparison text.
+	static std::string flattenDelim(const Token& delim) {
+		std::string out;
+		for (const auto& seg : delim.segments) {
+			switch (seg.kind) {
+			case WordSegment::Kind::DoubleQuoted:
+				for (const auto& n : seg.nested) out += n.text;
+				break;
+			default:
+				out += seg.text;
+				break;
+			}
+		}
+		return out;
+	}
+
+	static bool delimQuoted(const Token& delim) {
+		for (const auto& seg : delim.segments) {
+			switch (seg.kind) {
+			case WordSegment::Kind::SingleQuoted:
+			case WordSegment::Kind::DoubleQuoted:
+			case WordSegment::Kind::Escaped:
+			case WordSegment::Kind::DollarSingle:
+				return true;
+			default:
+				break;
+			}
+		}
+		return false;
+	}
 
 	// ---------------------------------------------------------------------------
 	// Construction & top-level

@@ -1,0 +1,18 @@
+=== substitution (single)
+hello wbsh
+Baaa
+=== substitution (global)
+BBBB
+one two three
+=== multi expr (-e)
+AbCdef
+Xbcdef
+=== regex metachars
+one
+Two
+Three
+abc###
+abc-def
+=== empty replacement
+abcdef
+=== done

@@ -1,0 +1,34 @@
+=== mkdir / rmdir
+b/
+c/
+=== touch / size tests
+exists empty
+non-empty hello
+=== cp
+hello
+b/
+=== mv
+copy gone
+renamed exists
+=== rm
+removed
+tree removed
+=== ls -1 / ls -a
+another.txt
+visible.txt
+
+.hidden
+another.txt
+visible.txt
+=== test -e / -f / -d / -r
+dir exists
+is dir
+is file
+readable
+missing ok
+=== find
+_fs_tmp/empty.txt
+_fs_tmp/hello.txt
+_fs_tmp/ls/another.txt
+_fs_tmp/ls/visible.txt
+=== done

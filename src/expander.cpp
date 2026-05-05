@@ -1,13 +1,17 @@
+/**
+ * @file expander.cpp
+ * @brief Word-expansion pipeline implementation: brace, tilde,
+ *        parameter, command, arithmetic, ANSI-C, splitting, globbing,
+ *        quote removal.
+ */
+
 #include "expander.h"
-#include "lexer.h"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <windows.h>
-#endif
-
-#include <fstream>
+#endif /* _WIN32 */
 
 #include <algorithm>
 #include <cctype>
@@ -15,460 +19,459 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "lexer.h"
+
 namespace wbsh {
 
-	namespace {
+	// ---------------------------------------------------------------------
+	// fnmatch-like glob pattern matcher. Supports * ? [...].
+	// ---------------------------------------------------------------------
 
-		// ---------------------------------------------------------------------
-		// fnmatch-like glob pattern matcher. Supports * ? [...].
-		// ---------------------------------------------------------------------
+	static bool matchHere(const std::string& p, std::size_t pi,
+	               const std::string& s, std::size_t si);
 
-		bool matchHere(const std::string& p, std::size_t pi,
-		               const std::string& s, std::size_t si);
-
-		bool matchBracket(const std::string& p, std::size_t& pi, char c) {
-			std::size_t k = pi + 1;
-			bool negate = false;
-			if (k < p.size() && (p[k] == '!' || p[k] == '^')) { negate = true; ++k; }
-			bool match = false;
-			bool first = true;
-			while (k < p.size() && (first || p[k] != ']')) {
-				char a = p[k++];
-				if (a == '\\' && k < p.size()) a = p[k++];
-				if (k < p.size() && p[k] == '-' && k + 1 < p.size() && p[k + 1] != ']') {
-					++k;                        // consume '-'
-					char b = p[k++];
-					if (b == '\\' && k < p.size()) b = p[k++];
-					if (c >= a && c <= b) match = true;
-				} else {
-					if (c == a) match = true;
-				}
-				first = false;
+	static bool matchBracket(const std::string& p, std::size_t& pi, char c) {
+		std::size_t k = pi + 1;
+		bool negate = false;
+		if (k < p.size() && (p[k] == '!' || p[k] == '^')) { negate = true; ++k; }
+		bool match = false;
+		bool first = true;
+		while (k < p.size() && (first || p[k] != ']')) {
+			char a = p[k++];
+			if (a == '\\' && k < p.size()) a = p[k++];
+			if (k < p.size() && p[k] == '-' && k + 1 < p.size() && p[k + 1] != ']') {
+				++k;                        // consume '-'
+				char b = p[k++];
+				if (b == '\\' && k < p.size()) b = p[k++];
+				if (c >= a && c <= b) match = true;
+			} else {
+				if (c == a) match = true;
 			}
-			if (k < p.size() && p[k] == ']') ++k;
-			pi = k;
-			return match != negate;
+			first = false;
+		}
+		if (k < p.size() && p[k] == ']') ++k;
+		pi = k;
+		return match != negate;
+	}
+
+	static bool matchHere(const std::string& p, std::size_t pi,
+	               const std::string& s, std::size_t si) {
+		while (pi < p.size()) {
+			char pc = p[pi];
+			if (pc == '*') {
+				while (pi < p.size() && p[pi] == '*') ++pi;
+				if (pi >= p.size()) return true;
+				for (std::size_t k = si; k <= s.size(); ++k) {
+					if (matchHere(p, pi, s, k)) return true;
+				}
+				return false;
+			}
+			if (si >= s.size()) return false;
+			if (pc == '?') { ++pi; ++si; continue; }
+			if (pc == '[') {
+				std::size_t newpi = pi;
+				if (!matchBracket(p, newpi, s[si])) return false;
+				pi = newpi; ++si; continue;
+			}
+			if (pc == '\\' && pi + 1 < p.size()) {
+				++pi;
+				if (p[pi] != s[si]) return false;
+				++pi; ++si; continue;
+			}
+			if (pc != s[si]) return false;
+			++pi; ++si;
+		}
+		return si == s.size();
+	}
+
+	static bool fnmatchFull(const std::string& p, const std::string& s) {
+		return matchHere(p, 0, s, 0);
+	}
+
+	// ---------------------------------------------------------------------
+	// Inline $-expansion for heredoc bodies and ${param-default} defaults.
+	// Performs $name, ${...}, $(...), $((...)), `...`, and backslash
+	// escapes (\$ \\ \` \"). Tilde, splitting, globbing are NOT applied.
+	// ---------------------------------------------------------------------
+
+	static bool isNameStart(char c) {
+		return c == '_' || std::isalpha(static_cast<unsigned char>(c));
+	}
+	static bool isNameCont(char c) {
+		return c == '_' || std::isalnum(static_cast<unsigned char>(c));
+	}
+
+	// ---------------------------------------------------------------------
+	// Arithmetic evaluator (recursive descent).
+	// ---------------------------------------------------------------------
+
+	class ArithEval {
+	public:
+		ArithEval(const std::string& src, Environment& env, Expander* outer, int depth)
+			: src_(src), env_(env), outer_(outer), depth_(depth) {}
+
+		long long run() {
+			skipWs();
+			if (eof()) return 0;
+			return parseComma();
 		}
 
-		bool matchHere(const std::string& p, std::size_t pi,
-		               const std::string& s, std::size_t si) {
-			while (pi < p.size()) {
-				char pc = p[pi];
-				if (pc == '*') {
-					while (pi < p.size() && p[pi] == '*') ++pi;
-					if (pi >= p.size()) return true;
-					for (std::size_t k = si; k <= s.size(); ++k) {
-						if (matchHere(p, pi, s, k)) return true;
+	private:
+		long long parseComma() {
+			long long r = parseAssign();
+			while (consume(',')) r = parseAssign();
+			return r;
+		}
+		long long parseAssign() {
+			std::size_t save = pos_;
+			skipWs();
+			if (!eof() && (isNameStart(peek()))) {
+				std::size_t saved2 = pos_;
+				std::string name = readIdent();
+				skipWs();
+				struct Op { const char* s; int len; };
+				static const Op ops[] = {
+					{"<<=", 3}, {">>=", 3},
+					{"+=", 2}, {"-=", 2}, {"*=", 2}, {"/=", 2}, {"%=", 2},
+					{"&=", 2}, {"^=", 2}, {"|=", 2},
+					{"=", 1},
+				};
+				for (auto& o : ops) {
+					if (pos_ + o.len > src_.size()) continue;
+					if (src_.compare(pos_, o.len, o.s) != 0) continue;
+					// Don't grab '==' or '<=' etc. when looking for '='.
+					if (o.len == 1 && pos_ + 1 < src_.size() && src_[pos_ + 1] == '=') continue;
+					pos_ += o.len;
+					long long rhs = parseAssign();
+					long long lhs = (o.len == 1) ? 0 : env_get(name);
+					long long val = rhs;
+					switch (o.s[0]) {
+					case '=': val = rhs; break;
+					case '+': val = lhs + rhs; break;
+					case '-': val = lhs - rhs; break;
+					case '*': val = lhs * rhs; break;
+					case '/': val = rhs ? lhs / rhs : 0; break;
+					case '%': val = rhs ? lhs % rhs : 0; break;
+					case '&': val = lhs & rhs; break;
+					case '^': val = lhs ^ rhs; break;
+					case '|': val = lhs | rhs; break;
+					case '<': val = lhs << rhs; break;
+					case '>': val = lhs >> rhs; break;
 					}
-					return false;
+					env_.set(name, std::to_string(val));
+					return val;
 				}
-				if (si >= s.size()) return false;
-				if (pc == '?') { ++pi; ++si; continue; }
-				if (pc == '[') {
-					std::size_t newpi = pi;
-					if (!matchBracket(p, newpi, s[si])) return false;
-					pi = newpi; ++si; continue;
-				}
-				if (pc == '\\' && pi + 1 < p.size()) {
-					++pi;
-					if (p[pi] != s[si]) return false;
-					++pi; ++si; continue;
-				}
-				if (pc != s[si]) return false;
-				++pi; ++si;
+				pos_ = saved2;
 			}
-			return si == s.size();
+			pos_ = save;
+			return parseTernary();
 		}
-
-		bool fnmatchFull(const std::string& p, const std::string& s) {
-			return matchHere(p, 0, s, 0);
+		long long parseTernary() {
+			long long c = parseLogOr();
+			if (consume('?')) {
+				long long a = parseAssign();
+				consume(':');
+				long long b = parseAssign();
+				return c ? a : b;
+			}
+			return c;
 		}
-
-		// ---------------------------------------------------------------------
-		// Inline $-expansion for heredoc bodies and ${param-default} defaults.
-		// Performs $name, ${...}, $(...), $((...)), `...`, and backslash
-		// escapes (\$ \\ \` \"). Tilde, splitting, globbing are NOT applied.
-		// ---------------------------------------------------------------------
-
-		bool isNameStart(char c) {
-			return c == '_' || std::isalpha(static_cast<unsigned char>(c));
+		long long parseLogOr() {
+			long long l = parseLogAnd();
+			while (consume("||")) {
+				long long r = parseLogAnd();
+				l = (l || r) ? 1 : 0;
+			}
+			return l;
 		}
-		bool isNameCont(char c) {
-			return c == '_' || std::isalnum(static_cast<unsigned char>(c));
+		long long parseLogAnd() {
+			long long l = parseBitOr();
+			while (consume("&&")) {
+				long long r = parseBitOr();
+				l = (l && r) ? 1 : 0;
+			}
+			return l;
 		}
-
-		// ---------------------------------------------------------------------
-		// Arithmetic evaluator (recursive descent).
-		// ---------------------------------------------------------------------
-
-		class ArithEval {
-		public:
-			ArithEval(const std::string& src, Environment& env, Expander* outer, int depth)
-				: src_(src), env_(env), outer_(outer), depth_(depth) {}
-
-			long long run() {
+		long long parseBitOr() {
+			long long l = parseBitXor();
+			while (true) {
 				skipWs();
-				if (eof()) return 0;
-				return parseComma();
+				if (peek() == '|' && peek(1) != '|' && peek(1) != '=') {
+					++pos_;
+					long long r = parseBitXor();
+					l |= r;
+				} else break;
 			}
-
-		private:
-			long long parseComma() {
-				long long r = parseAssign();
-				while (consume(',')) r = parseAssign();
-				return r;
-			}
-			long long parseAssign() {
-				std::size_t save = pos_;
+			return l;
+		}
+		long long parseBitXor() {
+			long long l = parseBitAnd();
+			while (true) {
 				skipWs();
-				if (!eof() && (isNameStart(peek()))) {
-					std::size_t saved2 = pos_;
-					std::string name = readIdent();
-					skipWs();
-					struct Op { const char* s; int len; };
-					static const Op ops[] = {
-						{"<<=", 3}, {">>=", 3},
-						{"+=", 2}, {"-=", 2}, {"*=", 2}, {"/=", 2}, {"%=", 2},
-						{"&=", 2}, {"^=", 2}, {"|=", 2},
-						{"=", 1},
-					};
-					for (auto& o : ops) {
-						if (pos_ + o.len > src_.size()) continue;
-						if (src_.compare(pos_, o.len, o.s) != 0) continue;
-						// Don't grab '==' or '<=' etc. when looking for '='.
-						if (o.len == 1 && pos_ + 1 < src_.size() && src_[pos_ + 1] == '=') continue;
-						pos_ += o.len;
-						long long rhs = parseAssign();
-						long long lhs = (o.len == 1) ? 0 : env_get(name);
-						long long val = rhs;
-						switch (o.s[0]) {
-						case '=': val = rhs; break;
-						case '+': val = lhs + rhs; break;
-						case '-': val = lhs - rhs; break;
-						case '*': val = lhs * rhs; break;
-						case '/': val = rhs ? lhs / rhs : 0; break;
-						case '%': val = rhs ? lhs % rhs : 0; break;
-						case '&': val = lhs & rhs; break;
-						case '^': val = lhs ^ rhs; break;
-						case '|': val = lhs | rhs; break;
-						case '<': val = lhs << rhs; break;
-						case '>': val = lhs >> rhs; break;
-						}
-						env_.set(name, std::to_string(val));
-						return val;
-					}
-					pos_ = saved2;
-				}
-				pos_ = save;
-				return parseTernary();
+				if (peek() == '^' && peek(1) != '=') {
+					++pos_;
+					long long r = parseBitAnd();
+					l ^= r;
+				} else break;
 			}
-			long long parseTernary() {
-				long long c = parseLogOr();
-				if (consume('?')) {
-					long long a = parseAssign();
-					consume(':');
-					long long b = parseAssign();
-					return c ? a : b;
-				}
-				return c;
-			}
-			long long parseLogOr() {
-				long long l = parseLogAnd();
-				while (consume("||")) {
-					long long r = parseLogAnd();
-					l = (l || r) ? 1 : 0;
-				}
-				return l;
-			}
-			long long parseLogAnd() {
-				long long l = parseBitOr();
-				while (consume("&&")) {
-					long long r = parseBitOr();
-					l = (l && r) ? 1 : 0;
-				}
-				return l;
-			}
-			long long parseBitOr() {
-				long long l = parseBitXor();
-				while (true) {
-					skipWs();
-					if (peek() == '|' && peek(1) != '|' && peek(1) != '=') {
-						++pos_;
-						long long r = parseBitXor();
-						l |= r;
-					} else break;
-				}
-				return l;
-			}
-			long long parseBitXor() {
-				long long l = parseBitAnd();
-				while (true) {
-					skipWs();
-					if (peek() == '^' && peek(1) != '=') {
-						++pos_;
-						long long r = parseBitAnd();
-						l ^= r;
-					} else break;
-				}
-				return l;
-			}
-			long long parseBitAnd() {
-				long long l = parseEq();
-				while (true) {
-					skipWs();
-					if (peek() == '&' && peek(1) != '&' && peek(1) != '=') {
-						++pos_;
-						long long r = parseEq();
-						l &= r;
-					} else break;
-				}
-				return l;
-			}
-			long long parseEq() {
-				long long l = parseRel();
-				while (true) {
-					skipWs();
-					if (consume("==")) { long long r = parseRel(); l = (l == r) ? 1 : 0; }
-					else if (consume("!=")) { long long r = parseRel(); l = (l != r) ? 1 : 0; }
-					else break;
-				}
-				return l;
-			}
-			long long parseRel() {
-				long long l = parseShift();
-				while (true) {
-					skipWs();
-					if (consume("<=")) { long long r = parseShift(); l = (l <= r) ? 1 : 0; }
-					else if (consume(">=")) { long long r = parseShift(); l = (l >= r) ? 1 : 0; }
-					else if (peek() == '<' && peek(1) != '<' && peek(1) != '=') {
-						++pos_; long long r = parseShift(); l = (l < r) ? 1 : 0;
-					} else if (peek() == '>' && peek(1) != '>' && peek(1) != '=') {
-						++pos_; long long r = parseShift(); l = (l > r) ? 1 : 0;
-					} else break;
-				}
-				return l;
-			}
-			long long parseShift() {
-				long long l = parseAdd();
-				while (true) {
-					skipWs();
-					if (peek() == '<' && peek(1) == '<' && peek(2) != '=') {
-						pos_ += 2;
-						long long r = parseAdd(); l = l << r;
-					} else if (peek() == '>' && peek(1) == '>' && peek(2) != '=') {
-						pos_ += 2;
-						long long r = parseAdd(); l = l >> r;
-					} else break;
-				}
-				return l;
-			}
-			long long parseAdd() {
-				long long l = parseMul();
-				while (true) {
-					skipWs();
-					if (peek() == '+' && peek(1) != '+' && peek(1) != '=') {
-						++pos_; long long r = parseMul(); l = l + r;
-					} else if (peek() == '-' && peek(1) != '-' && peek(1) != '=') {
-						++pos_; long long r = parseMul(); l = l - r;
-					} else break;
-				}
-				return l;
-			}
-			long long parseMul() {
-				long long l = parsePow();
-				while (true) {
-					skipWs();
-					if (peek() == '*' && peek(1) != '*' && peek(1) != '=') {
-						++pos_; long long r = parsePow(); l = l * r;
-					} else if (peek() == '/' && peek(1) != '=') {
-						++pos_; long long r = parsePow(); l = r ? l / r : 0;
-					} else if (peek() == '%' && peek(1) != '=') {
-						++pos_; long long r = parsePow(); l = r ? l % r : 0;
-					} else break;
-				}
-				return l;
-			}
-			long long parsePow() {
-				long long l = parseUnary();
+			return l;
+		}
+		long long parseBitAnd() {
+			long long l = parseEq();
+			while (true) {
 				skipWs();
-				if (consume("**")) {
-					long long r = parsePow();   // right-assoc
-					long long res = 1;
-					if (r < 0) return 0;
-					for (long long k = 0; k < r; ++k) res *= l;
-					return res;
-				}
-				return l;
+				if (peek() == '&' && peek(1) != '&' && peek(1) != '=') {
+					++pos_;
+					long long r = parseEq();
+					l &= r;
+				} else break;
 			}
-			long long parseUnary() {
+			return l;
+		}
+		long long parseEq() {
+			long long l = parseRel();
+			while (true) {
+				skipWs();
+				if (consume("==")) { long long r = parseRel(); l = (l == r) ? 1 : 0; }
+				else if (consume("!=")) { long long r = parseRel(); l = (l != r) ? 1 : 0; }
+				else break;
+			}
+			return l;
+		}
+		long long parseRel() {
+			long long l = parseShift();
+			while (true) {
+				skipWs();
+				if (consume("<=")) { long long r = parseShift(); l = (l <= r) ? 1 : 0; }
+				else if (consume(">=")) { long long r = parseShift(); l = (l >= r) ? 1 : 0; }
+				else if (peek() == '<' && peek(1) != '<' && peek(1) != '=') {
+					++pos_; long long r = parseShift(); l = (l < r) ? 1 : 0;
+				} else if (peek() == '>' && peek(1) != '>' && peek(1) != '=') {
+					++pos_; long long r = parseShift(); l = (l > r) ? 1 : 0;
+				} else break;
+			}
+			return l;
+		}
+		long long parseShift() {
+			long long l = parseAdd();
+			while (true) {
+				skipWs();
+				if (peek() == '<' && peek(1) == '<' && peek(2) != '=') {
+					pos_ += 2;
+					long long r = parseAdd(); l = l << r;
+				} else if (peek() == '>' && peek(1) == '>' && peek(2) != '=') {
+					pos_ += 2;
+					long long r = parseAdd(); l = l >> r;
+				} else break;
+			}
+			return l;
+		}
+		long long parseAdd() {
+			long long l = parseMul();
+			while (true) {
+				skipWs();
+				if (peek() == '+' && peek(1) != '+' && peek(1) != '=') {
+					++pos_; long long r = parseMul(); l = l + r;
+				} else if (peek() == '-' && peek(1) != '-' && peek(1) != '=') {
+					++pos_; long long r = parseMul(); l = l - r;
+				} else break;
+			}
+			return l;
+		}
+		long long parseMul() {
+			long long l = parsePow();
+			while (true) {
+				skipWs();
+				if (peek() == '*' && peek(1) != '*' && peek(1) != '=') {
+					++pos_; long long r = parsePow(); l = l * r;
+				} else if (peek() == '/' && peek(1) != '=') {
+					++pos_; long long r = parsePow(); l = r ? l / r : 0;
+				} else if (peek() == '%' && peek(1) != '=') {
+					++pos_; long long r = parsePow(); l = r ? l % r : 0;
+				} else break;
+			}
+			return l;
+		}
+		long long parsePow() {
+			long long l = parseUnary();
+			skipWs();
+			if (consume("**")) {
+				long long r = parsePow();   // right-assoc
+				long long res = 1;
+				if (r < 0) return 0;
+				for (long long k = 0; k < r; ++k) res *= l;
+				return res;
+			}
+			return l;
+		}
+		long long parseUnary() {
+			skipWs();
+			if (consume("++")) {
+				std::string n = readIdent();
+				long long v = env_get(n) + 1;
+				env_.set(n, std::to_string(v));
+				return v;
+			}
+			if (consume("--")) {
+				std::string n = readIdent();
+				long long v = env_get(n) - 1;
+				env_.set(n, std::to_string(v));
+				return v;
+			}
+			if (consume('+')) return parseUnary();
+			if (consume('-')) return -parseUnary();
+			if (consume('!')) return parseUnary() ? 0 : 1;
+			if (consume('~')) return ~parseUnary();
+			return parsePrimary();
+		}
+		long long parsePrimary() {
+			skipWs();
+			if (eof()) return 0;
+			if (consume('(')) {
+				long long v = parseComma();
+				consume(')');
+				return v;
+			}
+			if (std::isdigit(static_cast<unsigned char>(peek()))) {
+				return readNumber();
+			}
+			if (isNameStart(peek())) {
+				std::string n = readIdent();
 				skipWs();
 				if (consume("++")) {
-					std::string n = readIdent();
-					long long v = env_get(n) + 1;
-					env_.set(n, std::to_string(v));
+					long long v = env_get(n);
+					env_.set(n, std::to_string(v + 1));
 					return v;
 				}
 				if (consume("--")) {
-					std::string n = readIdent();
-					long long v = env_get(n) - 1;
-					env_.set(n, std::to_string(v));
+					long long v = env_get(n);
+					env_.set(n, std::to_string(v - 1));
 					return v;
 				}
-				if (consume('+')) return parseUnary();
-				if (consume('-')) return -parseUnary();
-				if (consume('!')) return parseUnary() ? 0 : 1;
-				if (consume('~')) return ~parseUnary();
-				return parsePrimary();
+				return env_get(n);
 			}
-			long long parsePrimary() {
-				skipWs();
-				if (eof()) return 0;
-				if (consume('(')) {
-					long long v = parseComma();
-					consume(')');
-					return v;
-				}
-				if (std::isdigit(static_cast<unsigned char>(peek()))) {
-					return readNumber();
-				}
+			if (consume('$')) {
 				if (isNameStart(peek())) {
 					std::string n = readIdent();
-					skipWs();
-					if (consume("++")) {
-						long long v = env_get(n);
-						env_.set(n, std::to_string(v + 1));
-						return v;
-					}
-					if (consume("--")) {
-						long long v = env_get(n);
-						env_.set(n, std::to_string(v - 1));
-						return v;
-					}
 					return env_get(n);
 				}
-				if (consume('$')) {
-					if (isNameStart(peek())) {
-						std::string n = readIdent();
-						return env_get(n);
-					}
-					if (std::isdigit(static_cast<unsigned char>(peek()))) {
-						std::string num;
-						while (std::isdigit(static_cast<unsigned char>(peek()))) num.push_back(advance());
-						return env_get(num);
-					}
-					return 0;
+				if (std::isdigit(static_cast<unsigned char>(peek()))) {
+					std::string num;
+					while (std::isdigit(static_cast<unsigned char>(peek()))) num.push_back(advance());
+					return env_get(num);
 				}
-				++pos_;   // skip unrecognized char
 				return 0;
 			}
+			++pos_;   // skip unrecognized char
+			return 0;
+		}
 
-			long long env_get(const std::string& name) {
-				if (name.empty()) return 0;
-				std::string v = env_.get(name);
-				if (v.empty()) return 0;
-				try {
-					std::size_t idx = 0;
-					long long iv = std::stoll(v, &idx, 0);
-					if (idx == v.size()) return iv;
-				} catch (...) {}
-				if (depth_ > 16) return 0;   // recursion guard
-				ArithEval inner(v, env_, outer_, depth_ + 1);
-				return inner.run();
-			}
+		long long env_get(const std::string& name) {
+			if (name.empty()) return 0;
+			std::string v = env_.get(name);
+			if (v.empty()) return 0;
+			try {
+				std::size_t idx = 0;
+				long long iv = std::stoll(v, &idx, 0);
+				if (idx == v.size()) return iv;
+			} catch (...) {}
+			if (depth_ > 16) return 0;   // recursion guard
+			ArithEval inner(v, env_, outer_, depth_ + 1);
+			return inner.run();
+		}
 
-			long long readNumber() {
-				if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'X')) {
-					pos_ += 2;
-					long long v = 0;
-					while (std::isxdigit(static_cast<unsigned char>(peek()))) {
-						char c = advance();
-						int d = std::isdigit(static_cast<unsigned char>(c))
-						        ? c - '0'
-						        : std::tolower(static_cast<unsigned char>(c)) - 'a' + 10;
-						v = v * 16 + d;
-					}
-					return v;
-				}
-				if (peek() == '0' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
-					++pos_;   // leading 0 → octal
-					long long v = 0;
-					while (peek() >= '0' && peek() <= '7') {
-						v = v * 8 + (advance() - '0');
-					}
-					return v;
-				}
+		long long readNumber() {
+			if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'X')) {
+				pos_ += 2;
 				long long v = 0;
-				while (std::isdigit(static_cast<unsigned char>(peek()))) {
-					v = v * 10 + (advance() - '0');
-				}
-				if (peek() == '#') {
-					++pos_;
-					int base = static_cast<int>(v);
-					if (base < 2) base = 10;
-					v = 0;
-					while (true) {
-						char c = peek();
-						int d;
-						if (c >= '0' && c <= '9') d = c - '0';
-						else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
-						else if (c >= 'A' && c <= 'Z') d = c - 'A' + (base > 36 ? 36 : 10);
-						else if (c == '@') d = 62;
-						else if (c == '_') d = 63;
-						else break;
-						if (d >= base) break;
-						v = v * base + d;
-						advance();
-					}
+				while (std::isxdigit(static_cast<unsigned char>(peek()))) {
+					char c = advance();
+					int d = std::isdigit(static_cast<unsigned char>(c))
+					        ? c - '0'
+					        : std::tolower(static_cast<unsigned char>(c)) - 'a' + 10;
+					v = v * 16 + d;
 				}
 				return v;
 			}
-
-			std::string readIdent() {
-				skipWs();
-				std::size_t start = pos_;
-				if (!eof() && isNameStart(peek())) {
-					advance();
-					while (!eof() && isNameCont(peek())) advance();
+			if (peek() == '0' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
+				++pos_;   // leading 0 → octal
+				long long v = 0;
+				while (peek() >= '0' && peek() <= '7') {
+					v = v * 8 + (advance() - '0');
 				}
-				return src_.substr(start, pos_ - start);
+				return v;
 			}
+			long long v = 0;
+			while (std::isdigit(static_cast<unsigned char>(peek()))) {
+				v = v * 10 + (advance() - '0');
+			}
+			if (peek() == '#') {
+				++pos_;
+				int base = static_cast<int>(v);
+				if (base < 2) base = 10;
+				v = 0;
+				while (true) {
+					char c = peek();
+					int d;
+					if (c >= '0' && c <= '9') d = c - '0';
+					else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+					else if (c >= 'A' && c <= 'Z') d = c - 'A' + (base > 36 ? 36 : 10);
+					else if (c == '@') d = 62;
+					else if (c == '_') d = 63;
+					else break;
+					if (d >= base) break;
+					v = v * base + d;
+					advance();
+				}
+			}
+			return v;
+		}
 
-			void skipWs() {
-				while (!eof() && std::isspace(static_cast<unsigned char>(peek()))) ++pos_;
+		std::string readIdent() {
+			skipWs();
+			std::size_t start = pos_;
+			if (!eof() && isNameStart(peek())) {
+				advance();
+				while (!eof() && isNameCont(peek())) advance();
 			}
-			bool eof() const { return pos_ >= src_.size(); }
-			char peek(std::size_t n = 0) const {
-				return pos_ + n < src_.size() ? src_[pos_ + n] : '\0';
-			}
-			char advance() { return src_[pos_++]; }
-			bool consume(char c) {
-				skipWs();
-				if (peek() == c) { ++pos_; return true; }
-				return false;
-			}
-			bool consume(const char* s) {
-				skipWs();
-				std::size_t L = std::strlen(s);
-				if (pos_ + L > src_.size()) return false;
-				if (src_.compare(pos_, L, s) != 0) return false;
-				pos_ += L;
-				return true;
-			}
+			return src_.substr(start, pos_ - start);
+		}
 
-			const std::string& src_;
-			std::size_t pos_ = 0;
-			Environment& env_;
-			Expander* outer_;
-			int depth_;
-		};
+		void skipWs() {
+			while (!eof() && std::isspace(static_cast<unsigned char>(peek()))) ++pos_;
+		}
+		bool eof() const { return pos_ >= src_.size(); }
+		char peek(std::size_t n = 0) const {
+			return pos_ + n < src_.size() ? src_[pos_ + n] : '\0';
+		}
+		char advance() { return src_[pos_++]; }
+		bool consume(char c) {
+			skipWs();
+			if (peek() == c) { ++pos_; return true; }
+			return false;
+		}
+		bool consume(const char* s) {
+			skipWs();
+			std::size_t L = std::strlen(s);
+			if (pos_ + L > src_.size()) return false;
+			if (src_.compare(pos_, L, s) != 0) return false;
+			pos_ += L;
+			return true;
+		}
 
-	}  // namespace
+		const std::string& src_;
+		std::size_t pos_ = 0;
+		Environment& env_;
+		Expander* outer_;
+		int depth_;
+	};
 
 	// ---------------------------------------------------------------------------
 	// Expander construction & arithmetic facade
@@ -1312,7 +1315,7 @@ namespace wbsh {
 			std::string posix = path_conv_.toPosix(tpath);
 			for (char c : posix) out.push(c, F_QUOTED);
 			out.had_quote = true;
-#endif
+#endif /* _WIN32 */
 			break;
 		}
 		}
@@ -1547,161 +1550,157 @@ namespace wbsh {
 	// Brace expansion
 	// ---------------------------------------------------------------------------
 
-	namespace {
-
-		bool _isInteger(const std::string& v) {
+	static bool isInteger(const std::string& v) {
 			if (v.empty()) return false;
 			std::size_t i = (v[0] == '-' || v[0] == '+') ? 1 : 0;
-			if (i == v.size()) return false;
-			for (; i < v.size(); ++i)
-				if (!std::isdigit(static_cast<unsigned char>(v[i]))) return false;
-			return true;
-		}
+		if (i == v.size()) return false;
+		for (; i < v.size(); ++i)
+			if (!std::isdigit(static_cast<unsigned char>(v[i]))) return false;
+		return true;
+	}
 
-		// Returns the alternatives generated by the leftmost UNQUOTED brace
-		// pattern in `s`. Empty result means "no expandable brace found here";
-		// caller treats `s` as a single unchanged result.
-		std::vector<std::string> braceExpandOnce(const std::string& s) {
-			std::size_t i = 0;
-			std::size_t open = std::string::npos;
-			// Quote-aware scan for the leftmost '{'.
-			while (i < s.size()) {
-				char c = s[i];
-				if (c == '\\' && i + 1 < s.size()) { i += 2; continue; }
-				if (c == '\'') {
-					++i;
-					while (i < s.size() && s[i] != '\'') ++i;
-					if (i < s.size()) ++i;
-					continue;
-				}
-				if (c == '"') {
-					++i;
-					while (i < s.size() && s[i] != '"') {
-						if (s[i] == '\\' && i + 1 < s.size()) i += 2;
-						else ++i;
-					}
-					if (i < s.size()) ++i;
-					continue;
-				}
-				if (c == '{') { open = i; break; }
+	// Returns the alternatives generated by the leftmost UNQUOTED brace
+	// pattern in `s`. Empty result means "no expandable brace found here";
+	// caller treats `s` as a single unchanged result.
+	static std::vector<std::string> braceExpandOnce(const std::string& s) {
+		std::size_t i = 0;
+		std::size_t open = std::string::npos;
+		// Quote-aware scan for the leftmost '{'.
+		while (i < s.size()) {
+			char c = s[i];
+			if (c == '\\' && i + 1 < s.size()) { i += 2; continue; }
+			if (c == '\'') {
 				++i;
+				while (i < s.size() && s[i] != '\'') ++i;
+				if (i < s.size()) ++i;
+				continue;
 			}
-			if (open == std::string::npos) return {};
+			if (c == '"') {
+				++i;
+				while (i < s.size() && s[i] != '"') {
+					if (s[i] == '\\' && i + 1 < s.size()) i += 2;
+					else ++i;
+				}
+				if (i < s.size()) ++i;
+				continue;
+			}
+			if (c == '{') { open = i; break; }
+			++i;
+		}
+		if (open == std::string::npos) return {};
 
-			// Find matching '}', tracking nesting and quoted regions, while
-			// remembering top-level commas.
-			int depth = 1;
-			std::size_t j = open + 1;
-			std::vector<std::size_t> commas;
-			while (j < s.size() && depth > 0) {
-				char c = s[j];
-				if (c == '\\' && j + 1 < s.size()) { j += 2; continue; }
-				if (c == '\'') {
-					++j;
-					while (j < s.size() && s[j] != '\'') ++j;
-					if (j < s.size()) ++j;
-					continue;
-				}
-				if (c == '"') {
-					++j;
-					while (j < s.size() && s[j] != '"') {
-						if (s[j] == '\\' && j + 1 < s.size()) j += 2;
-						else ++j;
-					}
-					if (j < s.size()) ++j;
-					continue;
-				}
-				if (c == '{') { ++depth; ++j; continue; }
-				if (c == '}') { --depth; if (depth == 0) break; ++j; continue; }
-				if (c == ',' && depth == 1) commas.push_back(j);
+		// Find matching '}', tracking nesting and quoted regions, while
+		// remembering top-level commas.
+		int depth = 1;
+		std::size_t j = open + 1;
+		std::vector<std::size_t> commas;
+		while (j < s.size() && depth > 0) {
+			char c = s[j];
+			if (c == '\\' && j + 1 < s.size()) { j += 2; continue; }
+			if (c == '\'') {
 				++j;
+				while (j < s.size() && s[j] != '\'') ++j;
+				if (j < s.size()) ++j;
+				continue;
 			}
-			if (depth != 0) return {};
-			std::size_t close = j;
-
-			std::string body   = s.substr(open + 1, close - open - 1);
-			std::string prefix = s.substr(0, open);
-			std::string suffix = s.substr(close + 1);
-
-			std::vector<std::string> alts;
-			if (!commas.empty()) {
-				std::vector<std::size_t> body_commas;
-				for (auto p : commas) body_commas.push_back(p - (open + 1));
-				std::size_t start = 0;
-				for (auto p : body_commas) {
-					alts.push_back(body.substr(start, p - start));
-					start = p + 1;
+			if (c == '"') {
+				++j;
+				while (j < s.size() && s[j] != '"') {
+					if (s[j] == '\\' && j + 1 < s.size()) j += 2;
+					else ++j;
 				}
-				alts.push_back(body.substr(start));
+				if (j < s.size()) ++j;
+				continue;
+			}
+			if (c == '{') { ++depth; ++j; continue; }
+			if (c == '}') { --depth; if (depth == 0) break; ++j; continue; }
+			if (c == ',' && depth == 1) commas.push_back(j);
+			++j;
+		}
+		if (depth != 0) return {};
+		std::size_t close = j;
+
+		std::string body   = s.substr(open + 1, close - open - 1);
+		std::string prefix = s.substr(0, open);
+		std::string suffix = s.substr(close + 1);
+
+		std::vector<std::string> alts;
+		if (!commas.empty()) {
+			std::vector<std::size_t> body_commas;
+			for (auto p : commas) body_commas.push_back(p - (open + 1));
+			std::size_t start = 0;
+			for (auto p : body_commas) {
+				alts.push_back(body.substr(start, p - start));
+				start = p + 1;
+			}
+			alts.push_back(body.substr(start));
+		} else {
+			// Sequence form: {X..Y[..Z]}.
+			auto dd = body.find("..");
+			if (dd == std::string::npos) return {};
+			std::string from = body.substr(0, dd);
+			std::string rest = body.substr(dd + 2);
+			auto dd2 = rest.find("..");
+			std::string to    = (dd2 == std::string::npos) ? rest : rest.substr(0, dd2);
+			std::string stepS = (dd2 == std::string::npos) ? std::string() : rest.substr(dd2 + 2);
+			if (isInteger(from) && isInteger(to)) {
+				long long a = std::stoll(from);
+				long long b = std::stoll(to);
+				long long step = stepS.empty() ? 1 : std::stoll(stepS);
+				if (step == 0) step = 1;
+				if ((a < b && step < 0) || (a > b && step > 0)) step = -step;
+				int width = 0;
+				auto needsPad = [](const std::string& v) {
+					if (v.size() < 2) return false;
+					std::size_t k = (v[0] == '-' || v[0] == '+') ? 1 : 0;
+					return k < v.size() && v[k] == '0';
+				};
+				if (needsPad(from) || needsPad(to)) {
+					width = static_cast<int>((std::max)(from.size(), to.size()));
+				}
+				for (long long v = a; (step > 0) ? (v <= b) : (v >= b); v += step) {
+					if (width > 0) {
+						char buf[32];
+						std::snprintf(buf, sizeof(buf), "%0*lld", width, v);
+						alts.push_back(buf);
+					} else {
+						alts.push_back(std::to_string(v));
+					}
+				}
+			} else if (from.size() == 1 && to.size() == 1
+			    && std::isalpha(static_cast<unsigned char>(from[0]))
+			    && std::isalpha(static_cast<unsigned char>(to[0]))) {
+				int a = static_cast<unsigned char>(from[0]);
+				int b = static_cast<unsigned char>(to[0]);
+				int step = stepS.empty() ? 1 : std::stoi(stepS);
+				if (step == 0) step = 1;
+				if ((a < b && step < 0) || (a > b && step > 0)) step = -step;
+				for (int v = a; (step > 0) ? (v <= b) : (v >= b); v += step) {
+					alts.emplace_back(1, static_cast<char>(v));
+				}
 			} else {
-				// Sequence form: {X..Y[..Z]}.
-				auto dd = body.find("..");
-				if (dd == std::string::npos) return {};
-				std::string from = body.substr(0, dd);
-				std::string rest = body.substr(dd + 2);
-				auto dd2 = rest.find("..");
-				std::string to    = (dd2 == std::string::npos) ? rest : rest.substr(0, dd2);
-				std::string stepS = (dd2 == std::string::npos) ? std::string() : rest.substr(dd2 + 2);
-				if (_isInteger(from) && _isInteger(to)) {
-					long long a = std::stoll(from);
-					long long b = std::stoll(to);
-					long long step = stepS.empty() ? 1 : std::stoll(stepS);
-					if (step == 0) step = 1;
-					if ((a < b && step < 0) || (a > b && step > 0)) step = -step;
-					int width = 0;
-					auto needsPad = [](const std::string& v) {
-						if (v.size() < 2) return false;
-						std::size_t k = (v[0] == '-' || v[0] == '+') ? 1 : 0;
-						return k < v.size() && v[k] == '0';
-					};
-					if (needsPad(from) || needsPad(to)) {
-						width = static_cast<int>((std::max)(from.size(), to.size()));
-					}
-					for (long long v = a; (step > 0) ? (v <= b) : (v >= b); v += step) {
-						if (width > 0) {
-							char buf[32];
-							std::snprintf(buf, sizeof(buf), "%0*lld", width, v);
-							alts.push_back(buf);
-						} else {
-							alts.push_back(std::to_string(v));
-						}
-					}
-				} else if (from.size() == 1 && to.size() == 1
-				    && std::isalpha(static_cast<unsigned char>(from[0]))
-				    && std::isalpha(static_cast<unsigned char>(to[0]))) {
-					int a = static_cast<unsigned char>(from[0]);
-					int b = static_cast<unsigned char>(to[0]);
-					int step = stepS.empty() ? 1 : std::stoi(stepS);
-					if (step == 0) step = 1;
-					if ((a < b && step < 0) || (a > b && step > 0)) step = -step;
-					for (int v = a; (step > 0) ? (v <= b) : (v >= b); v += step) {
-						alts.emplace_back(1, static_cast<char>(v));
-					}
-				} else {
-					return {};
-				}
+				return {};
 			}
-
-			std::vector<std::string> out;
-			out.reserve(alts.size());
-			for (const auto& alt : alts) {
-				out.push_back(prefix + alt + suffix);
-			}
-			return out;
 		}
 
-		std::vector<std::string> braceExpandAll(const std::string& s) {
-			auto first = braceExpandOnce(s);
-			if (first.empty()) return { s };
-			std::vector<std::string> out;
-			for (const auto& alt : first) {
-				auto sub = braceExpandAll(alt);
-				for (auto& r : sub) out.push_back(std::move(r));
-			}
-			return out;
+		std::vector<std::string> out;
+		out.reserve(alts.size());
+		for (const auto& alt : alts) {
+			out.push_back(prefix + alt + suffix);
 		}
+		return out;
+	}
 
-	}  // namespace
+	static std::vector<std::string> braceExpandAll(const std::string& s) {
+		auto first = braceExpandOnce(s);
+		if (first.empty()) return { s };
+		std::vector<std::string> out;
+		for (const auto& alt : first) {
+			auto sub = braceExpandAll(alt);
+			for (auto& r : sub) out.push_back(std::move(r));
+		}
+		return out;
+	}
 
 	// ---------------------------------------------------------------------------
 	// Public expansion entry points

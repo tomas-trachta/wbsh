@@ -435,3 +435,11 @@ FodyWeavers.xsd
 # Additional files built by Visual Studio
 
 # End of https://www.toptal.com/developers/gitignore/api/c++,visualstudio
+
+# wbsh test runner scratch dirs (created by tests/run-all.sh).
+tests/_run_tmp/
+
+# wbsh golden test outputs. The default `*.out` rule above would hide
+# these, but they're checked in so the runner can diff against them.
+!tests/expected/
+!tests/expected/*.out

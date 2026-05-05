@@ -1,5 +1,21 @@
 #pragma once
 
+/**
+ * @file lexer.h
+ * @brief POSIX shell tokenizer.
+ *
+ * Scans raw program text into a vector of Token values, capturing the
+ * structural boundaries of quoting and `$`-expansion as a sequence of
+ * WordSegment values. The bodies of expansions (`$(...)`, `${...}`,
+ * `$((...))`, etc.) are stored as raw text and re-parsed by later
+ * stages — the lexer's job is to find their extents, not to interpret
+ * them.
+ *
+ * Heredoc bodies are also captured here: when a `<<` operator and its
+ * delimiter word are seen, the lexer remembers the delimiter and, on
+ * the next newline, slurps lines until the delimiter is matched.
+ */
+
 #include "source.h"
 
 #include <string>
@@ -9,6 +25,14 @@ namespace wbsh {
 
 	// ----- Tokens ---------------------------------------------------------------
 
+	/**
+	 * @brief Lexical token kind.
+	 *
+	 * Includes the shell's word/operator/punctuation tokens plus the
+	 * synthetic terminators `Newline` and `EndOfInput`. Reserved
+	 * words (`if`, `for`, …) are not separate token kinds; they're
+	 * detected at parse time from the raw text of a `Word` token.
+	 */
 	enum class TokKind {
 		Word,            // generic word; reserved words detected at parse time
 		IoNumber,        // digits immediately followed by '<' or '>' (no space)
@@ -43,65 +67,97 @@ namespace wbsh {
 		AmpDGreat,       // &>>
 	};
 
+	/// Human-readable name for a TokKind (for diagnostics / debug dumps).
 	const char* tokKindName(TokKind k);
 
-	// A WORD is a sequence of segments. The lexer captures the structural
-	// boundaries of quotes / expansions; the *contents* of expansion bodies
-	// are stored as raw text and re-parsed by the expander stage later.
+	/**
+	 * @brief One segment of a Word token.
+	 *
+	 * A WORD is a sequence of segments. The lexer captures the
+	 * structural boundaries of quotes and `$`-expansion; the contents
+	 * of expansion bodies are kept as raw text and re-parsed by the
+	 * expander stage later.
+	 */
 	struct WordSegment {
+		/// Segment kind — describes what produced this slice of the word.
 		enum class Kind {
-			Literal,         // raw literal characters
-			Escaped,         // single character escaped with backslash; text holds the char
-			SingleQuoted,    // text is the body between '...'
-			DoubleQuoted,    // nested holds the inner segments; text is empty
-			DollarSingle,    // $'...'  text is the raw body (interpreted later)
-			SimpleVar,       // $name   text is the name
-			ParamExp,        // ${...}  text is the body, no outer braces
-			CmdSubst,        // $(...) or `...`   text is the body
-			ArithExp,        // $((...))   text is the body
-			ProcSubst,       // <(...) or >(...) — text is the body, proc_dir holds < or >
+			Literal,         ///< Raw literal characters.
+			Escaped,         ///< Single backslash-escaped char; text holds the char.
+			SingleQuoted,    ///< Body between `'...'`.
+			DoubleQuoted,    ///< `"..."` — `nested` holds the inner segments; text empty.
+			DollarSingle,    ///< `$'...'` — text is the raw body (interpreted later).
+			SimpleVar,       ///< `$name` — text is the name.
+			ParamExp,        ///< `${...}` — text is the body, no outer braces.
+			CmdSubst,        ///< `$(...)` or backquotes — text is the body.
+			ArithExp,        ///< `$((...))` — text is the body.
+			ProcSubst,       ///< `<(...)` or `>(...)` — text is body, `proc_dir` is `<`/`>`.
 		};
-		// Process substitution: text is the inner command body, proc_dir
-		// holds '<' (read-end) or '>' (write-end).
-		Kind kind = Kind::Literal;
-		std::string text;
-		std::vector<WordSegment> nested;   // used by DoubleQuoted
-		char proc_dir = 0;                 // '<' or '>' for ProcSubst
+		Kind kind = Kind::Literal;          ///< What this segment is.
+		std::string text;                   ///< Raw text payload (see Kind for meaning).
+		std::vector<WordSegment> nested;    ///< Used by DoubleQuoted to hold inner segments.
+		char proc_dir = 0;                  ///< `'<'` or `'>'` for ProcSubst, 0 otherwise.
 	};
 
+	/// Human-readable name for a WordSegment::Kind.
 	const char* segKindName(WordSegment::Kind k);
 
+	/**
+	 * @brief A single lexical token.
+	 *
+	 * Word tokens carry a structured `segments` vector; operator and
+	 * punctuation tokens use only `kind`, `text`, and `loc`. Heredoc
+	 * delimiter tokens additionally carry the slurped body and its
+	 * quoting/strip flags.
+	 */
 	struct Token {
-		TokKind kind = TokKind::EndOfInput;
-		std::string text;                   // raw spelling
-		std::vector<WordSegment> segments;  // populated for TokKind::Word
-		bool first_on_line = false;         // useful for assignment / reserved-word detection
-		SourceLoc loc;
+		TokKind kind = TokKind::EndOfInput; ///< Token kind.
+		std::string text;                   ///< Raw spelling from the source.
+		std::vector<WordSegment> segments;  ///< Populated for TokKind::Word.
+		bool first_on_line = false;         ///< First non-whitespace token on its line.
+		SourceLoc loc;                      ///< Position of the token's first character.
 
-		// Heredoc state. When this token is the delimiter WORD that immediately
-		// follows a DLess or DLessDash operator token, the body collected after
-		// the next newline is stored here.
-		bool is_heredoc_delim = false;
-		bool heredoc_strip_tabs = false;
-		bool heredoc_quoted = false;        // delimiter contained quoting -> body verbatim
-		std::string heredoc_body;
+		// ---- Heredoc state ----
+		// Filled in when this token is the delimiter WORD that
+		// immediately follows a DLess / DLessDash operator. The body
+		// is collected after the next newline.
+		bool is_heredoc_delim = false;      ///< This token is a heredoc delimiter.
+		bool heredoc_strip_tabs = false;    ///< `<<-` form: strip leading tabs.
+		bool heredoc_quoted = false;        ///< Delimiter quoted -> body kept verbatim.
+		std::string heredoc_body;           ///< Slurped body (excludes terminator line).
 	};
 
 	// ----- Lexer ----------------------------------------------------------------
 
+	/// Lexer diagnostic.
 	struct LexError {
-		SourceLoc loc;
-		std::string message;
+		SourceLoc loc;          ///< Where in the source the problem was detected.
+		std::string message;    ///< Human-readable description.
 	};
 
+	/**
+	 * @brief POSIX shell tokenizer.
+	 *
+	 * Constructed with a source string; call tokenize() to get the
+	 * full token vector. Errors are accumulated rather than thrown so
+	 * the parser can still try to make progress.
+	 */
 	class Lexer {
 	public:
+		/// Construct a Lexer over @p input (takes ownership of the buffer).
 		explicit Lexer(std::string input);
 
-		// Lex the entire input into a vector of tokens. Always terminates with
-		// EndOfInput. Errors are accumulated and returned via errors().
+		/**
+		 * @brief Tokenize the entire input.
+		 *
+		 * @return Vector of tokens. The vector is always terminated
+		 *         with a TokKind::EndOfInput token.
+		 *
+		 * @note Errors are accumulated, not thrown. Inspect errors()
+		 *       afterwards.
+		 */
 		std::vector<Token> tokenize();
 
+		/// Diagnostics accumulated during the last tokenize() call.
 		const std::vector<LexError>& errors() const { return errors_; }
 
 	private:

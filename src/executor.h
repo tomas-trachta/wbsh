@@ -1,5 +1,22 @@
 #pragma once
 
+/**
+ * @file executor.h
+ * @brief AST executor: pipelines, redirection, control flow, builtins,
+ *        and the registries the rest of the shell hangs off of.
+ *
+ * The Executor owns the runtime tables for builtins, functions,
+ * aliases, history, the directory stack, traps, jobs, and
+ * programmable completion specs. It implements CommandSubstitutor so
+ * the Expander can call back into it to evaluate `$(...)` and
+ * `<(...)` bodies in the current shell context.
+ *
+ * Control flow (`break`, `continue`, `return`, `exit`) is propagated
+ * by throwing the LoopBreak / LoopContinue / FunctionReturn /
+ * ShellExit tag types, which are caught at the appropriate enclosing
+ * frame.
+ */
+
 #include "ast.h"
 #include "environment.h"
 #include "expander.h"
@@ -17,36 +34,59 @@
 
 namespace wbsh {
 
-	// Control-flow signals propagated by throwing.
+	/// Thrown by `break N;` to unwind out of N enclosing loops.
 	struct LoopBreak       { int count = 1; };
+	/// Thrown by `continue N;` to skip to the next iteration of an outer loop.
 	struct LoopContinue    { int count = 1; };
+	/// Thrown by `return [N]` from inside a function body.
 	struct FunctionReturn  { int status = 0; };
+	/// Thrown by the `exit` builtin to unwind to the top-level driver.
 	struct ShellExit       { int status = 0; };
 
 	class Executor;
+	/// Signature of a registered shell builtin / coreutil.
 	using BuiltinFn = std::function<int(Executor&, const std::vector<std::string>&)>;
 
+	/**
+	 * @brief AST executor and runtime registry.
+	 *
+	 * Constructed with a borrowed Environment. Owns the live tables
+	 * for builtins, functions, aliases, history, traps, jobs,
+	 * directory stack, and completion specs. Implements
+	 * CommandSubstitutor so the Expander can recursively evaluate
+	 * command-substitution bodies.
+	 */
 	class Executor : public CommandSubstitutor {
 	public:
+		/// Construct over @p env (borrowed; must outlive the Executor).
 		explicit Executor(Environment& env);
 
-		// Top-level entry. Executes a parsed program and returns the exit
-		// status of the last command (or whatever `exit` set, if invoked).
+		/**
+		 * @brief Top-level entry — execute a parsed program.
+		 *
+		 * @return Exit status of the last command, or whatever
+		 *         `exit` set if it was invoked.
+		 */
 		int execute(const Node& root);
 
-		// CommandSubstitutor: run a script body and capture stdout.
+		/// CommandSubstitutor: run a script body and capture stdout.
 		std::string run(const std::string& body) override;
+		/// CommandSubstitutor: like run(), but preserves trailing bytes.
 		std::string runRaw(const std::string& body) override;
 
-		// Allow builtins / driver to access state.
+		/// Borrowed reference to the Environment.
 		Environment& env()        { return env_; }
+		/// Borrowed reference to the Expander used by execution.
 		Expander&    expander()   { return expander_; }
+		/// Read-only POSIX↔Windows path translator.
 		const PathConv& pathConv() const { return path_conv_; }
+		/// `$?` — exit status of the last command.
 		int          lastStatus() const { return last_status_; }
+		/// Update `$?`.
 		void         setLastStatus(int s) { last_status_ = s; env_.setLastStatus(s); }
 
-		// Builtin / function registration & lookup.
 		// ---- Aliases ----
+		/// Define / replace an alias. Used by the `alias` builtin.
 		void setAlias(const std::string& name, std::string value) { aliases_[name] = std::move(value); }
 		void unsetAlias(const std::string& name)                  { aliases_.erase(name); }
 		bool isAlias(const std::string& name) const               { return aliases_.count(name) != 0; }
@@ -70,32 +110,35 @@ namespace wbsh {
 		const std::vector<std::string>& dirStack() const { return dir_stack_; }
 
 		// ---- Job control ----
+		/// Tracked background job entry.
 		struct Job {
-			int  id = 0;
+			int  id = 0;                ///< Job ID (`%N`).
 #ifdef _WIN32
-			HANDLE handle = nullptr;
+			HANDLE handle = nullptr;    ///< Win32 process handle.
 #else
-			void* handle = nullptr;
+			void* handle = nullptr;     ///< Opaque process handle (POSIX placeholder).
 #endif
-			long long pid = 0;
-			std::string cmd_text;
-			bool running = true;
-			int  exit_code = 0;
+			long long pid = 0;          ///< OS process id.
+			std::string cmd_text;       ///< Original command text for `jobs` output.
+			bool running = true;        ///< False once the process has exited.
+			int  exit_code = 0;         ///< Exit code (valid once `running == false`).
 		};
-		// Add a launched background process. Returns the assigned job id.
+		/// Add a launched background process.  @return the assigned job id.
 		int  registerJob(void* handle, long long pid, std::string cmd_text);
-		// Update statuses of finished jobs. Returns true if any newly finished.
+		/// Update statuses of finished jobs.  @return true if any newly finished.
 		bool reapJobs();
+		/// Live job table.
 		std::vector<Job>& jobsTable() { return jobs_; }
-		// Wait for a single job by id; returns its exit status, or -1 if id unknown.
+		/// Wait for one job; returns its exit status, or -1 if id unknown.
 		int  waitForJob(int id);
-		// Wait for all running jobs.
+		/// Block until every running job has exited.
 		void waitForAllJobs();
 
 		// ---- Trap handlers ----
-		// Map signal name (EXIT, INT, TERM, ...) -> command string. Only
-		// EXIT is currently fired by the REPL; signal-driven traps need
-		// real signal plumbing on Windows (deferred).
+		/// Install the trap action for @p sig. Replaces any prior action.
+		///
+		/// Only `EXIT` is currently fired by the REPL; signal-driven
+		/// traps need real signal plumbing on Windows (deferred).
 		void setTrap(const std::string& sig, std::string cmd) { trap_handlers_[sig] = std::move(cmd); }
 		void clearTrap(const std::string& sig)                { trap_handlers_.erase(sig); }
 		bool hasTrap(const std::string& sig) const            { return trap_handlers_.count(sig) != 0; }
@@ -112,15 +155,16 @@ namespace wbsh {
 		void resetGetopts() { getopts_subindex_ = 1; }
 
 		// ---- Programmable completion (`complete` / `compgen`) ----
+		/// Per-command completion spec registered via the `complete` builtin.
 		struct CompletionSpec {
-			std::vector<std::string> words;     // -W word list
-			std::string function;               // -F func name
-			std::string command;                // -C cmd to run for candidates
-			bool include_files = false;         // -f
-			bool include_dirs = false;          // -d
-			bool default_fallback = false;      // -o default
-			bool plusdirs = false;              // -o plusdirs
-			bool nospace = false;               // -o nospace
+			std::vector<std::string> words;     ///< `-W` word list.
+			std::string function;               ///< `-F` function name.
+			std::string command;                ///< `-C` command to run for candidates.
+			bool include_files = false;         ///< `-f`.
+			bool include_dirs = false;          ///< `-d`.
+			bool default_fallback = false;      ///< `-o default`.
+			bool plusdirs = false;              ///< `-o plusdirs`.
+			bool nospace = false;               ///< `-o nospace`.
 		};
 		void setCompletionSpec(const std::string& cmd, CompletionSpec spec) {
 			completion_specs_[cmd] = std::move(spec);
@@ -286,9 +330,9 @@ namespace wbsh {
 		int  errexit_suppress_ = 0;
 	};
 
-	// Defined in builtins.cpp.
+	/// Register every shell builtin (defined in builtins.cpp).
 	void registerCoreBuiltins(Executor& exec);
-	// Defined in coreutils.cpp.
+	/// Register every bundled coreutil (defined in coreutils.cpp).
 	void registerCoreutils(Executor& exec);
 
 }  // namespace wbsh

@@ -1,10 +1,17 @@
+/**
+ * @file lineedit.cpp
+ * @brief Interactive line editor implementation (raw-TTY + cooked
+ *        fallback paths, history, completion, kill ring, paste).
+ */
+
 #include "lineedit.h"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+
 #  include <io.h>
-#endif
+#endif /* _WIN32 */
 
 #include <algorithm>
 #include <cctype>
@@ -18,44 +25,40 @@
 
 namespace wbsh {
 
-	namespace {
-
-		namespace fs = std::filesystem;
+	namespace fs = std::filesystem;
 
 #ifdef _WIN32
-		bool stdinIsTty() {
-			return _isatty(_fileno(stdin)) != 0;
-		}
+	static bool stdinIsTty() {
+		return _isatty(_fileno(stdin)) != 0;
+	}
 
-		// Compute "visible length" of a prompt — strips ANSI CSI sequences
-		// and the bash \[...\] non-printing markers (which our expandPrompt
-		// already removes, but be paranoid).
-		std::size_t visibleLen(const std::string& s) {
-			std::size_t n = 0;
-			std::size_t i = 0;
-			while (i < s.size()) {
-				if (s[i] == '\x1b' && i + 1 < s.size() && s[i + 1] == '[') {
-					i += 2;
-					while (i < s.size()
-					       && !((s[i] >= '@' && s[i] <= '~'))) ++i;
-					if (i < s.size()) ++i;
-					continue;
-				}
-				++n;
-				++i;
+	// Compute "visible length" of a prompt — strips ANSI CSI sequences
+	// and the bash \[...\] non-printing markers (which our expandPrompt
+	// already removes, but be paranoid).
+	static std::size_t visibleLen(const std::string& s) {
+		std::size_t n = 0;
+		std::size_t i = 0;
+		while (i < s.size()) {
+			if (s[i] == '\x1b' && i + 1 < s.size() && s[i + 1] == '[') {
+				i += 2;
+				while (i < s.size()
+				       && !((s[i] >= '@' && s[i] <= '~'))) ++i;
+				if (i < s.size()) ++i;
+				continue;
 			}
-			return n;
+			++n;
+			++i;
 		}
-#endif
+		return n;
+	}
+#endif /* _WIN32 */
 
-		bool isWordBreak(char c) {
-			return std::isspace(static_cast<unsigned char>(c))
-			    || c == '|' || c == '&' || c == ';'
-			    || c == '<' || c == '>'
-			    || c == '(' || c == ')';
-		}
-
-	}  // namespace
+	static bool isWordBreak(char c) {
+		return std::isspace(static_cast<unsigned char>(c))
+		    || c == '|' || c == '&' || c == ';'
+		    || c == '<' || c == '>'
+		    || c == '(' || c == ')';
+	}
 
 	LineEditor::LineEditor(Environment& env, Executor& exec)
 		: env_(env), exec_(exec) {}
@@ -73,7 +76,7 @@ namespace wbsh {
 		if (stdinIsTty()) {
 			return readLineRaw(prompt, out);
 		}
-#endif
+#endif /* _WIN32 */
 		// Cooked / piped fallback: emit the prompt and read a line via fgetc.
 		std::fputs(prompt.c_str(), stdout);
 		std::fflush(stdout);
@@ -454,16 +457,14 @@ namespace wbsh {
 		return branches;
 	}
 
-	namespace {
-		std::vector<std::string> filterPrefix(const char* const* table,
-		                                      const std::string& prefix) {
-			std::vector<std::string> out;
-			for (int i = 0; table[i]; ++i) {
-				std::string s = table[i];
-				if (s.compare(0, prefix.size(), prefix) == 0) out.push_back(std::move(s));
-			}
-			return out;
+	static std::vector<std::string> filterPrefix(const char* const* table,
+	                                             const std::string& prefix) {
+		std::vector<std::string> out;
+		for (int i = 0; table[i]; ++i) {
+			std::string s = table[i];
+			if (s.compare(0, prefix.size(), prefix) == 0) out.push_back(std::move(s));
 		}
+		return out;
 	}
 
 	std::vector<std::string> LineEditor::gitCompletions(const std::string& prefix,
@@ -762,6 +763,68 @@ namespace wbsh {
 		applyCompletion(tok, matches);
 	}
 
+	void LineEditor::pasteFromClipboard() {
+		if (!OpenClipboard(nullptr)) return;
+		HANDLE h_clip = GetClipboardData(CF_UNICODETEXT);
+		if (!h_clip) {
+			CloseClipboard();
+			return;
+		}
+		auto* wptr = static_cast<const WCHAR*>(GlobalLock(h_clip));
+		if (!wptr) {
+			CloseClipboard();
+			return;
+		}
+		std::wstring w(wptr);
+		GlobalUnlock(h_clip);
+		CloseClipboard();
+
+		// Strip CR/LF: a multi-line paste would corrupt our single-line
+		// redraw. The user can press Enter themselves between lines.
+		std::wstring filtered;
+		filtered.reserve(w.size());
+		for (WCHAR c : w) {
+			if (c == L'\r' || c == L'\n') continue;
+			filtered.push_back(c);
+		}
+		if (filtered.empty()) return;
+
+		int n = WideCharToMultiByte(CP_UTF8, 0,
+			filtered.data(), (int)filtered.size(),
+			nullptr, 0, nullptr, nullptr);
+		if (n <= 0) return;
+		std::string utf8(static_cast<std::size_t>(n), '\0');
+		WideCharToMultiByte(CP_UTF8, 0,
+			filtered.data(), (int)filtered.size(),
+			utf8.data(), n, nullptr, nullptr);
+		insertChars(utf8);
+		redraw();
+	}
+
+	void LineEditor::insertWideCharFromConsole(wchar_t ch) {
+		WCHAR pair[2] = { static_cast<WCHAR>(ch), 0 };
+		int len = 1;
+		if (ch >= 0xD800 && ch <= 0xDBFF) {
+			// High surrogate: pull the low surrogate off the input queue.
+			HANDLE h_in = GetStdHandle(STD_INPUT_HANDLE);
+			INPUT_RECORD r2;
+			DWORD nr = 0;
+			if (h_in != INVALID_HANDLE_VALUE
+			    && ReadConsoleInputW(h_in, &r2, 1, &nr) && nr == 1
+			    && r2.EventType == KEY_EVENT
+			    && r2.Event.KeyEvent.bKeyDown) {
+				pair[1] = r2.Event.KeyEvent.uChar.UnicodeChar;
+				len = 2;
+			}
+		}
+		char buf[8] = {};
+		int n = WideCharToMultiByte(CP_UTF8, 0, pair, len, buf, sizeof(buf), nullptr, nullptr);
+		if (n > 0) {
+			insertChars(std::string(buf, n));
+			redraw();
+		}
+	}
+
 	bool LineEditor::readLineRaw(const std::string& prompt, std::string& out) {
 		HANDLE h_in  = GetStdHandle(STD_INPUT_HANDLE);
 		HANDLE h_out = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -876,63 +939,33 @@ namespace wbsh {
 				redraw();
 				break;
 			default:
-				if (is_ctrl && (k.wVirtualKeyCode == 'C')) {
-					emit("^C\r\n");
-					buffer_.clear();
-					cursor_ = 0;
-					emit(prompt_raw_);
-					break;
-				}
-				if (is_ctrl && (k.wVirtualKeyCode == 'D')) {
-					if (buffer_.empty()) { eof = true; done = true; }
-					else { handleDelete(); redraw(); }
-					break;
-				}
-				if (is_ctrl && (k.wVirtualKeyCode == 'A')) { cursor_ = 0; redraw(); break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'E')) { cursor_ = buffer_.size(); redraw(); break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'K')) { handleKillToEnd(); redraw(); break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'U')) { handleKillToStart(); redraw(); break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'W')) { handleKillWordBack(); redraw(); break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'L')) { handleClearScreen(); break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'B')) { if (cursor_>0) { --cursor_; redraw(); } break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'F')) { if (cursor_<buffer_.size()) { ++cursor_; redraw(); } break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'P')) { handleHistoryUp(); redraw(); break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'N')) { handleHistoryDown(); redraw(); break; }
-				if (is_ctrl && (k.wVirtualKeyCode == 'V')) {
-					// Read CF_UNICODETEXT and insert at the cursor. Newlines
-					// would corrupt our single-line redraw, so strip them —
-					// the user can press Enter themselves once it's pasted.
-					if (OpenClipboard(nullptr)) {
-						HANDLE h_clip = GetClipboardData(CF_UNICODETEXT);
-						if (h_clip) {
-							auto* wptr = static_cast<const WCHAR*>(GlobalLock(h_clip));
-							if (wptr) {
-								std::wstring w(wptr);
-								GlobalUnlock(h_clip);
-								std::wstring filtered;
-								filtered.reserve(w.size());
-								for (WCHAR c : w) {
-									if (c == L'\r' || c == L'\n') continue;
-									filtered.push_back(c);
-								}
-								if (!filtered.empty()) {
-									int n = WideCharToMultiByte(CP_UTF8, 0,
-										filtered.data(), (int)filtered.size(),
-										nullptr, 0, nullptr, nullptr);
-									if (n > 0) {
-										std::string utf8(static_cast<std::size_t>(n), '\0');
-										WideCharToMultiByte(CP_UTF8, 0,
-											filtered.data(), (int)filtered.size(),
-											utf8.data(), n, nullptr, nullptr);
-										insertChars(utf8);
-										redraw();
-									}
-								}
-							}
-						}
-						CloseClipboard();
+				if (is_ctrl) {
+					bool handled = true;
+					switch (k.wVirtualKeyCode) {
+					case 'C':
+						emit("^C\r\n");
+						buffer_.clear();
+						cursor_ = 0;
+						emit(prompt_raw_);
+						break;
+					case 'D':
+						if (buffer_.empty()) { eof = true; done = true; }
+						else { handleDelete(); redraw(); }
+						break;
+					case 'A': cursor_ = 0;               redraw(); break;
+					case 'E': cursor_ = buffer_.size();  redraw(); break;
+					case 'K': handleKillToEnd();         redraw(); break;
+					case 'U': handleKillToStart();       redraw(); break;
+					case 'W': handleKillWordBack();      redraw(); break;
+					case 'L': handleClearScreen();                 break;
+					case 'B': if (cursor_ > 0)             { --cursor_; redraw(); } break;
+					case 'F': if (cursor_ < buffer_.size()) { ++cursor_; redraw(); } break;
+					case 'P': handleHistoryUp();         redraw(); break;
+					case 'N': handleHistoryDown();       redraw(); break;
+					case 'V': pasteFromClipboard();                break;
+					default:  handled = false;                     break;
 					}
-					break;
+					if (handled) break;
 				}
 
 				if (ch == 0) break;   // pure modifier press
@@ -941,27 +974,7 @@ namespace wbsh {
 					insertChars(std::string(1, c));
 					redraw();
 				} else if (ch >= 0x80) {
-					// Convert UTF-16 to UTF-8 (handle surrogate pairs).
-					WCHAR pair[2] = { ch, 0 };
-					int len = 1;
-					if (ch >= 0xD800 && ch <= 0xDBFF) {
-						// high surrogate — read next event for the low
-						// surrogate.
-						INPUT_RECORD r2;
-						DWORD nr = 0;
-						if (ReadConsoleInputW(h_in, &r2, 1, &nr) && nr == 1
-						    && r2.EventType == KEY_EVENT
-						    && r2.Event.KeyEvent.bKeyDown) {
-							pair[1] = r2.Event.KeyEvent.uChar.UnicodeChar;
-							len = 2;
-						}
-					}
-					char buf[8] = {};
-					int n = WideCharToMultiByte(CP_UTF8, 0, pair, len, buf, sizeof(buf), nullptr, nullptr);
-					if (n > 0) {
-						insertChars(std::string(buf, n));
-						redraw();
-					}
+					insertWideCharFromConsole(ch);
 				}
 				break;
 			}
@@ -1001,7 +1014,9 @@ namespace wbsh {
 	std::string LineEditor::longestCommonPrefix(const std::vector<std::string>&) { return {}; }
 	void LineEditor::printMatches(const std::vector<std::string>&) {}
 	void LineEditor::applyCompletion(const Tok&, const std::vector<std::string>&) {}
+	void LineEditor::pasteFromClipboard() {}
+	void LineEditor::insertWideCharFromConsole(wchar_t) {}
 
-#endif  // _WIN32
+#endif /* _WIN32 */
 
 }  // namespace wbsh

@@ -1,0 +1,13 @@
+=== posix forms
+PWD is POSIX form
+HOME is POSIX form
+PATH uses : separator
+=== realpath posix
+realpath . is posix
+=== /tmp resolves
+/tmp is a directory
+=== /c/Windows is reachable
+/c/Windows ok
+=== posix arg flows to native exe
+cmd.exe on PATH
+=== done

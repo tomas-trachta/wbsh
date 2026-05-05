@@ -1,0 +1,14 @@
+plain double /c/Users/trach single $HOME $lit
+a-bXcXd a-b-c-d XbXcXd d aXbXcX a bXcXd bXc 7
+fallback  aXbXcXd set
+7 256 255 8 100 1
+5 8 8 10
+tab	here
+newline\backslashAA
+/c/Users/trach /c/Users/trach/bin
+hello /c/Users/trach
+no expansion: $HOME
+*.md
+no-such-pattern*
+before  after
+before after

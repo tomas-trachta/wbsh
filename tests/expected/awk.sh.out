@@ -1,0 +1,48 @@
+=== field selection
+one
+four
+
+two three
+five six
+
+3
+3
+
+1 one two three
+2 four five six
+=== field separator
+b
+e
+
+a c
+=== BEGIN / END
+start
+row 1 a
+row 2 b
+row 3 c
+lines: 3
+=== arithmetic
+15
+
+20
+=== conditionals
+3
+4
+5
+
+even: 2
+even: 4
+=== printf
+a   01
+b   02
+=== string functions
+11
+HELLO WORLD
+hello
+bcd
+=== split
+1 a
+2 b
+3 c
+4 d
+=== done

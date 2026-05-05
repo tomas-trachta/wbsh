@@ -1,7 +1,12 @@
-// Minimal pure-C++ DEFLATE decoder. Implements RFC 1951 — three block
-// types: stored (00), fixed Huffman (01), dynamic Huffman (10). Pattern
-// follows Mark Adler's "puff" reference implementation but adapted for
-// std::vector output.
+/**
+ * @file inflate.cpp
+ * @brief Minimal pure-C++ DEFLATE decoder.
+ *
+ * Implements RFC 1951 — three block types: stored (00), fixed
+ * Huffman (01), dynamic Huffman (10). Pattern follows Mark Adler's
+ * "puff" reference implementation but adapted for `std::vector`
+ * output.
+ */
 
 #include "inflate.h"
 
@@ -9,15 +14,13 @@
 
 namespace wbsh {
 
-namespace {
-
 constexpr int MAXBITS  = 15;     // max code length
 constexpr int MAXLCODES = 286;   // max literal/length codes
 constexpr int MAXDCODES = 30;    // max distance codes
 constexpr int MAXCODES = MAXLCODES + MAXDCODES;
 constexpr int FIXLCODES = 288;
 
-struct State {
+struct InflateState {
 	const std::uint8_t* in;
 	std::size_t in_len;
 	std::size_t in_pos = 0;
@@ -26,7 +29,7 @@ struct State {
 	std::vector<std::uint8_t>& out;
 	bool err = false;
 
-	State(const std::uint8_t* p, std::size_t n, std::vector<std::uint8_t>& o)
+	InflateState(const std::uint8_t* p, std::size_t n, std::vector<std::uint8_t>& o)
 	    : in(p), in_len(n), out(o) {}
 
 	int bits(int need) {
@@ -42,12 +45,12 @@ struct State {
 	}
 };
 
-struct Huffman {
+struct InflateHuffman {
 	short count[MAXBITS + 1] {};
 	short symbol[MAXCODES] {};
 };
 
-int decode(State& s, const Huffman& h) {
+static int decode(InflateState& s, const InflateHuffman& h) {
 	int code = 0, first = 0, index = 0;
 	for (int len = 1; len <= MAXBITS; ++len) {
 		code |= s.bits(1);
@@ -62,7 +65,7 @@ int decode(State& s, const Huffman& h) {
 	return -1;
 }
 
-int construct(Huffman& h, const short* length, int n) {
+static int construct(InflateHuffman& h, const short* length, int n) {
 	short offs[MAXBITS + 1];
 	for (int len = 0; len <= MAXBITS; ++len) h.count[len] = 0;
 	for (int sym = 0; sym < n; ++sym) h.count[length[sym]]++;
@@ -81,7 +84,7 @@ int construct(Huffman& h, const short* length, int n) {
 	return left;
 }
 
-int codes(State& s, const Huffman& lencode, const Huffman& distcode) {
+static int codes(InflateState& s, const InflateHuffman& lencode, const InflateHuffman& distcode) {
 	static const short lens[29] = {
 		3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258 };
 	static const short lext[29] = {
@@ -115,7 +118,7 @@ int codes(State& s, const Huffman& lencode, const Huffman& distcode) {
 	return 0;
 }
 
-int stored(State& s) {
+static int stored(InflateState& s) {
 	s.bitbuf = 0;
 	s.bitcnt = 0;
 	if (s.in_pos + 4 > s.in_len) return -1;
@@ -129,8 +132,8 @@ int stored(State& s) {
 	return 0;
 }
 
-int fixedBlock(State& s) {
-	static Huffman lencode, distcode;
+static int fixedBlock(InflateState& s) {
+	static InflateHuffman lencode, distcode;
 	static bool built = false;
 	if (!built) {
 		short lens[FIXLCODES];
@@ -147,7 +150,7 @@ int fixedBlock(State& s) {
 	return codes(s, lencode, distcode);
 }
 
-int dynamicBlock(State& s) {
+static int dynamicBlock(InflateState& s) {
 	static const short order[19] = {
 		16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15 };
 	int nlen = s.bits(5) + 257;
@@ -156,7 +159,7 @@ int dynamicBlock(State& s) {
 	if (nlen > MAXLCODES || ndist > MAXDCODES) return -1;
 	short lengths[MAXCODES] = { 0 };
 	for (int i = 0; i < ncode; ++i) lengths[order[i]] = (short)s.bits(3);
-	Huffman lencode;
+	InflateHuffman lencode;
 	if (construct(lencode, lengths, 19) != 0) return -1;
 	int idx = 0;
 	while (idx < nlen + ndist) {
@@ -178,19 +181,17 @@ int dynamicBlock(State& s) {
 		}
 	}
 	if (lengths[256] == 0) return -1;
-	Huffman ll;
+	InflateHuffman ll;
 	if (construct(ll, lengths, nlen) != 0 && (nlen != 1 || lengths[0] != 0)) return -1;
-	Huffman dc;
+	InflateHuffman dc;
 	if (construct(dc, lengths + nlen, ndist) != 0
 	    && (ndist != 1 || lengths[nlen] != 0)) return -1;
 	return codes(s, ll, dc);
 }
 
-}  // namespace
-
 bool inflateRaw(const std::uint8_t* in, std::size_t in_len,
                 std::vector<std::uint8_t>& out) {
-	State s(in, in_len, out);
+	InflateState s(in, in_len, out);
 	int last;
 	do {
 		last = s.bits(1);

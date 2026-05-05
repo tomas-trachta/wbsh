@@ -1,0 +1,17 @@
+=== gzip / gunzip
+gz file created
+original removed
+round-trip ok
+=== zcat
+compress me, please. compress me, please. compress me, please. 
+=== tar
+f1 ok
+f3 ok
+=== zip / unzip
+  adding: src/f1.txt (stored)
+  adding: src/f2.txt (stored)
+zip created
+  inflating: src/f1.txt
+  inflating: src/f2.txt
+unzip ok
+=== done

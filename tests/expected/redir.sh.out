@@ -1,0 +1,30 @@
+=== > / >>
+first
+second
+=== <
+3
+l1
+l2
+l3
+=== 2> / 2>&1
+after err
+captured
+wbsh: cat: _no_such_file: <errmsg>
+=== &> (combined)
+stderr
+stdout
+=== heredoc
+line a
+line b with 2
+no expansion: $((1+1))
+stripped
+tabs
+=== here-string
+hi from here-string
+1
+=== fd dup
+via fd 3
+=== pipe & redir interplay
+abc
+3
+=== done

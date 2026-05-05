@@ -1,0 +1,46 @@
+=== if / elif / else
+medium
+true-branch
+else-branch
+=== for in
+alpha
+beta
+gamma
+
+n1
+n2
+n3
+=== while / until
+while 0
+while 1
+while 2
+until 5
+until 4
+until 3
+until 2
+until 1
+=== break / continue
+iter 1
+iter 2
+iter 4
+=== break N
+1a
+1b
+1c
+2a
+=== case (with ;& fallthrough not assumed)
+F
+B
+B*
+?
+=== nested funcs / recursion
+5! = 120
+7! = 5040
+=== exit-status flow
+and-after-true
+or-after-false
+chain
+=== subshell isolation
+in: inner
+out: outer
+=== done

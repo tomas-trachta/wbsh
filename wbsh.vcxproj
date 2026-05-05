@@ -144,6 +144,9 @@
     <ClInclude Include="src\lineedit.h" />
     <ClInclude Include="src\awk.h" />
     <ClInclude Include="src\inflate.h" />
+    <ClInclude Include="src\setup.h" />
+    <ClInclude Include="src\repl.h" />
+    <ClInclude Include="src\script.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp" />
@@ -158,6 +161,9 @@
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\awk.cpp" />
     <ClCompile Include="src\inflate.cpp" />
+    <ClCompile Include="src\setup.cpp" />
+    <ClCompile Include="src\repl.cpp" />
+    <ClCompile Include="src\script.cpp" />
     <ClCompile Include="src\main.cpp" />
   </ItemGroup>
   <ItemGroup>

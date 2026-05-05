@@ -1,5 +1,20 @@
 #pragma once
 
+/**
+ * @file parser.h
+ * @brief Recursive-descent parser from tokens to AST.
+ *
+ * Consumes a token vector produced by Lexer::tokenize() and builds a
+ * top-level List node tree (see ast.h). Best-effort: errors are
+ * accumulated and parsing continues so that a single bad command in a
+ * script doesn't suppress diagnostics for everything after it.
+ *
+ * Each Node carries a byte-range `[src_start, src_end)` into the
+ * shared source string so the executor can re-extract a node's
+ * original text — needed for spawning child wbsh processes and for
+ * faithful `declare -f` output.
+ */
+
 #include "ast.h"
 #include "lexer.h"
 
@@ -8,23 +23,35 @@
 
 namespace wbsh {
 
+	/// Parser diagnostic.
 	struct ParseError {
-		SourceLoc loc;
-		std::string message;
+		SourceLoc loc;          ///< Where in the source the problem was detected.
+		std::string message;    ///< Human-readable description.
 	};
 
-	// Parses a sequence of tokens (terminated by an EndOfInput token, as produced
-	// by Lexer::tokenize) into a single top-level List node. Errors are
-	// accumulated; parsing continues best-effort.
+	/**
+	 * @brief Parses a token stream into the wbsh AST.
+	 *
+	 * Construct with a token vector (terminated by an EndOfInput
+	 * token, as produced by Lexer::tokenize). Optionally pass the
+	 * original source string so AST nodes can later be sliced out of
+	 * it. Errors are accumulated; parsing continues best-effort.
+	 */
 	class Parser {
 	public:
+		/// Parse without a source-text reference (no node slicing).
 		explicit Parser(std::vector<Token> tokens);
+		/// Parse with an owned source-text copy.
 		Parser(std::vector<Token> tokens, std::string source_text);
+		/// Parse with a shared, pre-existing source-text buffer.
 		Parser(std::vector<Token> tokens, std::shared_ptr<const std::string> source);
 
+		/// Parse a complete program; returns the top-level List node.
 		NodePtr parseProgram();
 
+		/// Diagnostics accumulated during parsing.
 		const std::vector<ParseError>& errors() const { return errors_; }
+		/// True iff parsing completed with no errors.
 		bool ok() const { return errors_.empty(); }
 
 	private:

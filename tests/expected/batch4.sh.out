@@ -1,0 +1,31 @@
+=== sed
+one orange
+two oranges
+
+one orange
+an orange a day
+
+(quiet ok)
+
+foo123bar
+=== stat
+wbsh: stat: tests/batch4.sh: No such file or directory
+=== chmod / readonly attribute
+wbsh: /tmp/wbsh-cmod.t: Permission denied
+(write blocked as expected)
+OK
+=== ln (hard link)
+content
+=== readonly / declare
+wbsh: RX: readonly variable
+RX=42
+declare - RX="42"
+=== getopts
+got a
+got b with arg=VALUE
+got c
+=== trap (EXIT)
+before exit
+(exit trap fired)
+after subshell
+=== done

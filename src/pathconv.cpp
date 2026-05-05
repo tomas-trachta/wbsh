@@ -1,9 +1,14 @@
+/**
+ * @file pathconv.cpp
+ * @brief UTF-8/native and POSIX/Win32 path conversion implementation.
+ */
+
 #include "pathconv.h"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
-#endif
+#endif /* _WIN32 */
 
 #include <algorithm>
 #include <cctype>
@@ -71,34 +76,30 @@ namespace wbsh {
 #endif
 	}
 
-	namespace {
-
-		std::string getTempDir() {
+	static std::string getTempDir() {
 #ifdef _WIN32
-			char buf[MAX_PATH];
-			DWORD n = GetTempPathA(MAX_PATH, buf);
-			if (n == 0 || n > MAX_PATH) return {};
-			std::string s(buf, n);
-			while (!s.empty() && (s.back() == '\\' || s.back() == '/')) s.pop_back();
-			return s;
+		char buf[MAX_PATH];
+		DWORD n = GetTempPathA(MAX_PATH, buf);
+		if (n == 0 || n > MAX_PATH) return {};
+		std::string s(buf, n);
+		while (!s.empty() && (s.back() == '\\' || s.back() == '/')) s.pop_back();
+		return s;
 #else
-			return "/tmp";
+		return "/tmp";
 #endif
-		}
+	}
 
-		void slashesToBackslashes(std::string& s) {
-			for (char& c : s) {
-				if (c == '/') c = '\\';
-			}
+	static void slashesToBackslashes(std::string& s) {
+		for (char& c : s) {
+			if (c == '/') c = '\\';
 		}
+	}
 
-		void backslashesToSlashes(std::string& s) {
-			for (char& c : s) {
-				if (c == '\\') c = '/';
-			}
+	static void backslashesToSlashes(std::string& s) {
+		for (char& c : s) {
+			if (c == '\\') c = '/';
 		}
-
-	}  // namespace
+	}
 
 	PathConv::PathConv() {
 		// Drive-letter mounts: /a..z -> A:\ ..Z:\ (one entry per drive letter).
@@ -290,7 +291,7 @@ namespace wbsh {
 		return out;
 #else
 		return longw;
-#endif
+#endif /* _WIN32 */
 	}
 
 	std::string PathConv::pathListWin32ToPosix(const std::string& list) const {

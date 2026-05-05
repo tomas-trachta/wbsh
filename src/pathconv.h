@@ -1,5 +1,24 @@
 #pragma once
 
+/**
+ * @file pathconv.h
+ * @brief UTF-8 ↔ native path conversion and POSIX ↔ Win32 path translation.
+ *
+ * Two distinct concerns live in this file:
+ *
+ * 1. **Encoding helpers.** wbsh keeps all paths internally as UTF-8.
+ *    The MSVC implementation of `std::filesystem::path(const std::string&)`
+ *    and `path::string()` interprets / produces narrow strings using
+ *    the active narrow codepage (CP_ACP), not UTF-8 — so a UTF-8 byte
+ *    sequence like the one for "Tomáš" round-trips through CP_ACP
+ *    and lands on disk as mojibake (`TomÃ¡Å¡`). The helpers below
+ *    route through a wide string so the bytes survive intact.
+ *
+ * 2. **PathConv** — a Cygwin/MSYS-style mount table that maps
+ *    `/c/Users/...` ↔ `C:\Users\...` and friends, used everywhere
+ *    POSIX paths cross into native Windows APIs and back.
+ */
+
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -8,97 +27,132 @@
 namespace wbsh {
 
 	// ---- UTF-8 <-> native (wide / fs::path) conversion utilities ----
-	//
-	// wbsh stores all paths and strings internally as UTF-8. The MSVC
-	// implementation of `std::filesystem::path(const std::string&)` and
-	// `path::string()` interprets / produces narrow strings using the
-	// **active narrow codepage** (CP_ACP), not UTF-8 — so a UTF-8 byte
-	// sequence like the one for "Tomáš" round-trips through the active
-	// codepage and lands on disk as mojibake (`TomÃ¡Å¡`). These helpers
-	// route through a wide string so the bytes survive intact on Windows.
 
+	/// Convert a UTF-8 string to a UTF-16 wide string.
 	std::wstring utf8ToWide(const std::string& s);
+	/// Convert a UTF-16 wide string to a UTF-8 string.
 	std::string  wideToUtf8(const std::wstring& w);
 
-	// Build a `std::filesystem::path` from a UTF-8 string. On Windows
-	// converts UTF-8 -> wide and constructs the path from the wide string,
-	// avoiding the active-codepage interpretation of `path(string)`.
+	/**
+	 * @brief Build a `std::filesystem::path` from a UTF-8 string.
+	 *
+	 * On Windows, converts UTF-8 → wide first and constructs the path
+	 * from the wide string, avoiding the active-codepage
+	 * interpretation that `path(string)` would otherwise apply.
+	 */
 	std::filesystem::path utf8ToPath(const std::string& s);
 
-	// Encode a `std::filesystem::path` as UTF-8. On Windows reads the
-	// path's native (wide) representation and converts to UTF-8, avoiding
-	// the codepage downgrade that `path::string()` does on MSVC.
+	/**
+	 * @brief Encode a `std::filesystem::path` as UTF-8.
+	 *
+	 * On Windows reads the path's native (wide) representation and
+	 * converts to UTF-8, avoiding the codepage downgrade that
+	 * `path::string()` does on MSVC.
+	 */
 	std::string pathToUtf8(const std::filesystem::path& p);
 
-	// fopen wrapper that takes a UTF-8 path. On Windows uses `_wfopen` on
-	// the wide form so non-ASCII filenames don't get downgraded through
-	// the active codepage. `mode` is ASCII (e.g. "rb", "wb", "ab").
+	/**
+	 * @brief `fopen` wrapper that takes a UTF-8 path.
+	 *
+	 * On Windows uses `_wfopen` on the wide form so non-ASCII
+	 * filenames don't get downgraded through the active codepage.
+	 *
+	 * @param utf8_path UTF-8 encoded file path.
+	 * @param mode      ASCII fopen mode string (e.g. "rb", "wb", "ab").
+	 */
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode);
 
-	// Bidirectional POSIX <-> Win32 path translation, modelled on the
-	// MSYS / Cygwin "mount table" approach. Default mounts:
-	//
-	//   /a, /b, ..., /z              -> A:\, B:\, ..., Z:\         (drive letters)
-	//   /tmp                         -> %TEMP%
-	//   /dev/null                    -> NUL
-	//   /dev/stdin / stdout / stderr -> CONIN$ / CONOUT$ / CONOUT$ (best-effort)
-	//
-	// The class is cheap to copy; it stores a small table of mount entries.
+	/**
+	 * @brief Bidirectional POSIX ↔ Win32 path translation.
+	 *
+	 * Modelled on the MSYS / Cygwin "mount table" approach. Default
+	 * mounts:
+	 *
+	 *   /a, /b, ..., /z              -> A:\, B:\, ..., Z:\         (drive letters)
+	 *   /tmp                         -> %TEMP%
+	 *   /dev/null                    -> NUL
+	 *   /dev/stdin / stdout / stderr -> CONIN$ / CONOUT$ / CONOUT$ (best-effort)
+	 *
+	 * The class is cheap to copy; it stores a small table of mount
+	 * entries.
+	 */
 	class PathConv {
 	public:
 		PathConv();
 
-		// Translate a POSIX-style path to a Windows path. Idempotent:
-		// already-Windows paths (drive letter, UNC, or backslashes) are
-		// returned unchanged.
+		/**
+		 * @brief Translate a POSIX-style path to a Windows path.
+		 *
+		 * Idempotent: already-Windows paths (drive letter, UNC, or
+		 * backslashes) are returned unchanged.
+		 */
 		std::string toWin32(const std::string& p) const;
 
-		// Translate a Windows path to POSIX form. Idempotent.
+		/// Translate a Windows path to POSIX form. Idempotent.
 		std::string toPosix(const std::string& p) const;
 
-		// Translate to Win32 form, then collapse to the 8.3 short-path form
-		// (e.g., "C:\Users\Tomáš" -> "C:\Users\TOMA~1") when possible. Used
-		// for HOME and similar env vars passed to MinGW-built children
-		// (Git-for-Windows et al.) whose ANSI `getenv` reads the env block
-		// through the active codepage (CP_ACP) and silently mangles
-		// non-ASCII characters that the codepage can't represent. Short
-		// paths are pure ASCII, so they survive any transcoding.
-		// Falls back to the long Win32 form when the path is already ASCII,
-		// the path doesn't exist, or short-name generation is disabled on
-		// the volume (`fsutil 8dot3name`).
+		/**
+		 * @brief Translate to Win32 form, then collapse to 8.3 short
+		 *        path when possible.
+		 *
+		 * Example: `C:\Users\Tomáš` → `C:\Users\TOMA~1`. Used for
+		 * `HOME` and similar env vars passed to MinGW-built children
+		 * (Git-for-Windows et al.) whose ANSI `getenv` reads the env
+		 * block through CP_ACP and silently mangles non-ASCII
+		 * characters that the codepage can't represent. Short paths
+		 * are pure ASCII, so they survive any transcoding.
+		 *
+		 * Falls back to the long Win32 form when the path is already
+		 * ASCII, the path doesn't exist, or short-name generation is
+		 * disabled on the volume (`fsutil 8dot3name`).
+		 */
 		std::string toWin32Short(const std::string& p) const;
 
-		// Quick classification helpers.
+		/// True iff @p p starts with a drive letter (`X:`) or `\\` UNC prefix.
 		static bool isWin32Absolute(const std::string& p);
+		/// True iff @p p starts with `/`.
 		static bool isPosixAbsolute(const std::string& p);
-		static bool looksLikeWin32(const std::string& s);  // contains backslash or X:
+		/// True iff @p s contains a backslash or looks like `X:`.
+		static bool looksLikeWin32(const std::string& s);
 
-		// PATH-list conversion (entries separated by ':' for POSIX, ';' for
-		// Windows). Each entry is independently translated.
+		/**
+		 * @brief Translate every entry of a Windows-style PATH list to POSIX.
+		 *
+		 * Entries are separated by `;` on input and `:` on output;
+		 * each is independently translated.
+		 */
 		std::string pathListWin32ToPosix(const std::string& list) const;
+		/// Reverse of pathListWin32ToPosix(): POSIX `:` list → Windows `;` list.
 		std::string pathListPosixToWin32(const std::string& list) const;
 
-		// Heuristic: should this argument be translated when passed to a
-		// native Win32 executable? Yes when it looks like a POSIX absolute
-		// path (starts with `/`) and not a flag (doesn't start with `-`),
-		// not a URL (no `://`), and not a single-char arg like `/`.
+		/**
+		 * @brief Heuristic: should @p arg be translated for a native callee?
+		 *
+		 * Yes when it looks like a POSIX absolute path (starts with
+		 * `/`), is not a flag (`-...`), is not a URL (no `://`),
+		 * and is not a single-char arg like `/`.
+		 */
 		bool argLooksTranslatable(const std::string& arg) const;
 
-		// Translate a single argument for a native Win32 callee. If the
-		// argument looks translatable, returns the Win32 form; otherwise
-		// returns the input unchanged. Arguments of the form `--opt=PATH`
-		// or `-X=PATH` get only their value side translated.
+		/**
+		 * @brief Translate a single argument for a native Win32 callee.
+		 *
+		 * Returns the Win32 form when the argument looks
+		 * translatable, otherwise the input unchanged. Arguments of
+		 * the form `--opt=PATH` or `-X=PATH` get only their value
+		 * side translated.
+		 */
 		std::string translateArg(const std::string& arg) const;
 
 	private:
+		/// One row of the mount table.
 		struct Mount {
-			std::string posix;   // exact (e.g. "/dev/null") or prefix (e.g. "/c")
-			std::string win32;
-			bool exact;
+			std::string posix;      ///< Exact (e.g. `/dev/null`) or prefix (e.g. `/c`).
+			std::string win32;      ///< Native counterpart.
+			bool exact;             ///< True for exact match, false for prefix match.
 		};
 
-		// Try to match `p` against any mount. On success, fills `out` and
-		// returns true.
+		/// Try @p p against every mount; on success fills @p out, returns true.
 		bool applyMount(const std::string& p, std::string& out) const;
 
 		std::vector<Mount> mounts_;

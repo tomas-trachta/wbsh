@@ -1,0 +1,30 @@
+=== 1. Basic external chain
+gamma
+delta
+alpha
+=== 2. Builtin head + external tail
+FROM-BUILTIN
+=== 3. Producer fast, consumer slow (streaming)
+1
+2
+3
+=== 4. Head-of-pipe is a builtin
+d
+e
+=== 5. Compound (for) at head of pipeline
+row 2 4
+row 4 16
+=== 6. Triple pipe with mixed builtin / external
+13
+=== 7. |& (stderr-to-stdout)
+to-err
+to-out
+=== 8. Pipeline exit status
+after false: $?=1
+after true:  $?=0
+=== 9. Pipefail-ish with !
+! false -> $?=0
+! true  -> $?=1
+=== 10. Bigger throughput
+1000
+=== done

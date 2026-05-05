@@ -1,5 +1,18 @@
 #pragma once
 
+/**
+ * @file expander.h
+ * @brief Word-expansion pipeline.
+ *
+ * Implements the POSIX expansion sequence — brace, tilde, parameter,
+ * command, arithmetic, and ANSI-C expansion, then word splitting,
+ * pathname expansion, and quote removal — used by the executor every
+ * time a Word is materialised into one or more argv strings.
+ *
+ * Command and process substitution are dispatched through the
+ * pluggable CommandSubstitutor callback so tests can stub them.
+ */
+
 #include "ast.h"
 #include "environment.h"
 #include "pathconv.h"
@@ -11,55 +24,99 @@
 
 namespace wbsh {
 
-	// Pluggable command-substitution callback. The executor implements this;
-	// tests can stub it to return canned strings. When null, $(...) and
-	// `...` expand to empty.
+	/**
+	 * @brief Pluggable command-substitution callback.
+	 *
+	 * The executor implements this; tests can stub it to return
+	 * canned strings. When the Expander is constructed with a null
+	 * substitutor, `$(...)` and backquotes expand to the empty string.
+	 */
 	struct CommandSubstitutor {
 		virtual ~CommandSubstitutor() = default;
-		// Default `run` is for $(...) — trailing newlines stripped.
+		/**
+		 * @brief Run @p body and return its captured stdout.
+		 *
+		 * Used for `$(...)` — implementations strip trailing newlines.
+		 */
 		virtual std::string run(const std::string& body) = 0;
-		// `runRaw` is for <(...) — preserves the inner command's stdout
-		// byte-for-byte. Defaults to `run` for substitutors that don't
-		// distinguish.
+		/**
+		 * @brief Like run() but preserves stdout byte-for-byte.
+		 *
+		 * Used for `<(...)`. Defaults to run() for substitutors that
+		 * don't distinguish raw and trimmed output.
+		 */
 		virtual std::string runRaw(const std::string& body) { return run(body); }
 	};
 
+	/// Thrown by the Expander on unrecoverable expansion errors.
 	struct ExpandError : std::runtime_error {
 		using std::runtime_error::runtime_error;
 	};
 
+	/**
+	 * @brief Word-expansion engine.
+	 *
+	 * Constructed with the active Environment (variables, options) and
+	 * an optional CommandSubstitutor. Methods correspond to the
+	 * different contexts in which a Word can be expanded.
+	 */
 	class Expander {
 	public:
+		/// Construct over @p env, dispatching `$(...)` through @p sub.
 		Expander(Environment& env, CommandSubstitutor* sub = nullptr);
 
-		// For command words. Performs brace, tilde, parameter, command,
-		// arithmetic, ANSI-C, word splitting, pathname expansion, and
-		// quote removal.
+		/**
+		 * @brief Full expansion of a command-position word.
+		 *
+		 * Performs brace, tilde, parameter, command, arithmetic,
+		 * ANSI-C, word splitting, pathname expansion, and quote
+		 * removal.
+		 */
 		std::vector<std::string> expandWord(const Word& w);
 
-		// Same pipeline minus brace expansion — used internally by the
-		// brace-expansion driver for each generated alternative.
+		/**
+		 * @brief Same pipeline as expandWord() minus brace expansion.
+		 *
+		 * Used internally by the brace-expansion driver for each
+		 * generated alternative.
+		 */
 		std::vector<std::string> expandWordPostBrace(const Word& w);
 
-		// For assignment values, redirection targets, case subjects, etc.
-		// Same pipeline minus word splitting and pathname expansion.
+		/**
+		 * @brief Expansion for non-splitting contexts.
+		 *
+		 * Used for assignment values, redirection targets, case
+		 * subjects, etc. Same pipeline minus word splitting and
+		 * pathname expansion.
+		 */
 		std::string expandStringValue(const Word& w);
 
-		// Heredoc body expansion. If quoted, returned verbatim. Otherwise
-		// $-substitutions and backquotes are processed inline.
+		/**
+		 * @brief Expand a heredoc body.
+		 *
+		 * @param body   The captured heredoc text.
+		 * @param quoted If true, the delimiter was quoted, so the
+		 *               body is returned verbatim. Otherwise
+		 *               `$`-substitutions and backquotes are
+		 *               processed inline.
+		 */
 		std::string expandHeredoc(const std::string& body, bool quoted);
 
-		// Arithmetic expression evaluation.
+		/// Evaluate a `$((…))` arithmetic expression.
 		long long evalArith(const std::string& body);
 
-		// Pending temp files created by `<(...)` substitutions. We hand out
-		// scoped views so that nested SimpleCommands (driven by command
-		// substitution / process substitution) only see files they
-		// themselves produced — without this they'd delete the outer
-		// caller's files on the way out.
+		/**
+		 * @brief Watermark of pending `<(...)` temp files.
+		 *
+		 * Used by the executor to scope temp-file cleanup so nested
+		 * SimpleCommands only delete the files they themselves
+		 * produced — without this they'd clobber outer files on the
+		 * way out.
+		 */
 		std::size_t pendingTempFileWatermark() const {
 			return pending_temp_files_.size();
 		}
+		/// Drain temp files produced after @p watermark; caller now owns them.
 		std::vector<std::string> drainTempFilesSince(std::size_t watermark) {
 			std::vector<std::string> out;
 			if (watermark < pending_temp_files_.size()) {

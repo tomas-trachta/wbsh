@@ -1,5 +1,18 @@
 #pragma once
 
+/**
+ * @file lineedit.h
+ * @brief Interactive line editor with history, kill ring, and completion.
+ *
+ * Reads one line of input at a time. On a real TTY console it runs
+ * the raw editor loop with cursor movement, backspace, persistent
+ * history (up/down), Tab completion (filename, command, and
+ * per-tool), kill-to-end / kill-to-start, clipboard paste, and
+ * Unicode-aware redraw. On a non-TTY stdin (piped scripts, tests) it
+ * falls back to a line-buffered `fgetc` loop so existing scripted
+ * usage works unchanged.
+ */
+
 #include "environment.h"
 #include "executor.h"
 
@@ -8,19 +21,30 @@
 
 namespace wbsh {
 
-	// Interactive line editor. Reads a single line of input from a real TTY
-	// console with editing (arrow keys, backspace, etc.), persistent history
-	// (up/down), and Tab completion. Falls back to a line-buffered fgetc
-	// loop when stdin isn't a TTY (so piped scripts and the existing tests
-	// still work).
+	/**
+	 * @brief Interactive line editor.
+	 *
+	 * Stateful object — one instance per REPL session. Keeps the
+	 * current edit buffer, cursor position, history scroll position,
+	 * and Tab-state across readLine() calls.
+	 */
 	class LineEditor {
 	public:
+		/// Construct over a borrowed Environment and Executor.
 		LineEditor(Environment& env, Executor& exec);
 
-		// Read one line from the user. On Enter, fills `out` and returns
-		// true (the line is also appended to the executor's history if
-		// non-empty and distinct from the previous entry). On EOF (Ctrl-D
-		// on an empty line, or stdin closed), returns false.
+		/**
+		 * @brief Read one line from the user.
+		 *
+		 * @param prompt  Prompt string to display (already expanded).
+		 * @param[out] out On success, the typed line (without the
+		 *                 terminating newline).
+		 *
+		 * @return true on Enter (the line is also appended to the
+		 *         executor's history if non-empty and distinct from
+		 *         the previous entry). false on EOF (Ctrl-D on an
+		 *         empty line, or stdin closed).
+		 */
 		bool readLine(const std::string& prompt, std::string& out);
 
 	private:
@@ -43,6 +67,14 @@ namespace wbsh {
 		void handleKillWordBack();
 		void handleClearScreen();
 		void insertChars(const std::string& s);
+
+		// Ctrl-V: pull CF_UNICODETEXT off the clipboard, strip newlines,
+		// insert at cursor. Windows-only; a no-op stub on other platforms.
+		void pasteFromClipboard();
+		// Wide-char input >= 0x80: emit as UTF-8, fetching the low
+		// surrogate from the console input queue when `ch` is a high
+		// surrogate. Windows-only; a no-op stub on other platforms.
+		void insertWideCharFromConsole(wchar_t ch);
 
 		// ---- Completion ----
 		struct Tok {

@@ -1,0 +1,19 @@
+=== 1. Non-exported var visible in piped function
+>> hi from func
+>> HI FROM FUNC
+=== 2. Layered self-spawn: nested functions still see locals
+(inner) prefix=>> greet=hi
+(outer) prefix=>> greet=hi
+2
+=== 3. Externals do NOT see shell-local vars
+in-shell: visible-in-shell
+cmd-sees=%shell_only%
+=== 4. Externals DO see exported vars
+cmd-shared=in-env
+=== 5. Export status survives a self-spawn round-trip
+  report: shared=in-env (visible yes)
+  report: shell_only=visible-in-shell (visible yes)
+=== 6. Var unset in pipeline subshell does not affect parent
+  in child: 99
+after pipeline: 42
+=== done

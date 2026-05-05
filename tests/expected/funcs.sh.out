@@ -1,0 +1,26 @@
+=== 1. Function at the head of a pipeline
+hello alice from func
+HELLO ALICE FROM FUNC
+=== 2. Function as the consumer (tail of pipeline)
+LOWERCASE LINE
+1
+2
+3
+=== 3. Both ends are functions
+got=x1
+got=x2
+got=x3
+=== 4. Function uses an external inside its body
+alpha
+beta
+delta
+gamma
+4
+beta
+=== 5. Function calling another function in a pipeline
+4
+9
+16
+=== 6. Self-referencing helper across two pipeline stages
+sum=12
+=== done

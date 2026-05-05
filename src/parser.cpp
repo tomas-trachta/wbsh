@@ -1,3 +1,8 @@
+/**
+ * @file parser.cpp
+ * @brief Recursive-descent parser implementation.
+ */
+
 #include "parser.h"
 
 #include <cctype>

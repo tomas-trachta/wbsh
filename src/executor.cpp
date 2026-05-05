@@ -1,323 +1,359 @@
-#include "executor.h"
-#include "lexer.h"
-#include "parser.h"
+/**
+ * @file executor.cpp
+ * @brief AST executor implementation: pipelines, redirection, control
+ *        flow, builtin / function dispatch, and process spawning.
+ */
 
-#include <unordered_set>
+#include "executor.h"
 
 #ifdef _WIN32
+// winsock2.h must precede windows.h or the legacy winsock symbols leak in.
 #  define WIN32_LEAN_AND_MEAN
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
 #  include <windows.h>
-#  include <io.h>
+
 #  include <fcntl.h>
-#  include <sys/stat.h>
+#  include <io.h>
 #  pragma comment(lib, "ws2_32.lib")
-#endif
+#endif /* _WIN32 */
 
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
-#include <regex>
-#include <sys/stat.h>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/stat.h>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "lexer.h"
+#include "parser.h"
+
 namespace wbsh {
 
-	namespace {
+	// ---- fnmatch (subset, used for case patterns) ----
+	static bool matchHere(const std::string& p, std::size_t pi,
+	                      const std::string& s, std::size_t si);
 
-		// ---- fnmatch (subset, used for case patterns) ----
-		bool matchHere(const std::string& p, std::size_t pi,
-		               const std::string& s, std::size_t si);
-
-		bool matchBracket(const std::string& p, std::size_t& pi, char c) {
-			std::size_t k = pi + 1;
-			bool negate = false;
-			if (k < p.size() && (p[k] == '!' || p[k] == '^')) { negate = true; ++k; }
-			bool match = false;
-			bool first = true;
-			while (k < p.size() && (first || p[k] != ']')) {
-				char a = p[k++];
-				if (a == '\\' && k < p.size()) a = p[k++];
-				if (k < p.size() && p[k] == '-' && k + 1 < p.size() && p[k + 1] != ']') {
-					++k;
-					char b = p[k++];
-					if (b == '\\' && k < p.size()) b = p[k++];
-					if (c >= a && c <= b) match = true;
-				} else {
-					if (c == a) match = true;
-				}
-				first = false;
+	static bool matchBracket(const std::string& p, std::size_t& pi, char c) {
+		std::size_t k = pi + 1;
+		bool negate = false;
+		if (k < p.size() && (p[k] == '!' || p[k] == '^')) { negate = true; ++k; }
+		bool match = false;
+		bool first = true;
+		while (k < p.size() && (first || p[k] != ']')) {
+			char a = p[k++];
+			if (a == '\\' && k < p.size()) a = p[k++];
+			if (k < p.size() && p[k] == '-' && k + 1 < p.size() && p[k + 1] != ']') {
+				++k;
+				char b = p[k++];
+				if (b == '\\' && k < p.size()) b = p[k++];
+				if (c >= a && c <= b) match = true;
+			} else {
+				if (c == a) match = true;
 			}
-			if (k < p.size() && p[k] == ']') ++k;
-			pi = k;
-			return match != negate;
+			first = false;
 		}
+		if (k < p.size() && p[k] == ']') ++k;
+		pi = k;
+		return match != negate;
+	}
 
-		bool matchHere(const std::string& p, std::size_t pi,
-		               const std::string& s, std::size_t si) {
-			while (pi < p.size()) {
-				char pc = p[pi];
-				if (pc == '*') {
-					while (pi < p.size() && p[pi] == '*') ++pi;
-					if (pi >= p.size()) return true;
-					for (std::size_t k = si; k <= s.size(); ++k)
-						if (matchHere(p, pi, s, k)) return true;
-					return false;
-				}
-				if (si >= s.size()) return false;
-				if (pc == '?') { ++pi; ++si; continue; }
-				if (pc == '[') {
-					std::size_t newpi = pi;
-					if (!matchBracket(p, newpi, s[si])) return false;
-					pi = newpi; ++si; continue;
-				}
-				if (pc == '\\' && pi + 1 < p.size()) {
-					++pi;
-					if (p[pi] != s[si]) return false;
-					++pi; ++si; continue;
-				}
-				if (pc != s[si]) return false;
-				++pi; ++si;
+	static bool matchHere(const std::string& p, std::size_t pi,
+	               const std::string& s, std::size_t si) {
+		while (pi < p.size()) {
+			char pc = p[pi];
+			if (pc == '*') {
+				while (pi < p.size() && p[pi] == '*') ++pi;
+				if (pi >= p.size()) return true;
+				for (std::size_t k = si; k <= s.size(); ++k)
+					if (matchHere(p, pi, s, k)) return true;
+				return false;
 			}
-			return si == s.size();
+			if (si >= s.size()) return false;
+			if (pc == '?') { ++pi; ++si; continue; }
+			if (pc == '[') {
+				std::size_t newpi = pi;
+				if (!matchBracket(p, newpi, s[si])) return false;
+				pi = newpi; ++si; continue;
+			}
+			if (pc == '\\' && pi + 1 < p.size()) {
+				++pi;
+				if (p[pi] != s[si]) return false;
+				++pi; ++si; continue;
+			}
+			if (pc != s[si]) return false;
+			++pi; ++si;
 		}
+		return si == s.size();
+	}
 
-		// ---- Temp-file helpers ----
+	// ---- Temp-file helpers ----
 
-		std::string makeTempFile() {
+	static std::string makeTempFile() {
 #ifdef _WIN32
-			wchar_t dir[MAX_PATH];
-			DWORD n = GetTempPathW(MAX_PATH, dir);
-			if (n == 0 || n > MAX_PATH) return {};
-			wchar_t path[MAX_PATH];
-			if (GetTempFileNameW(dir, L"wbsh", 0, path) == 0) return {};
-			return wideToUtf8(path);
+		wchar_t dir[MAX_PATH];
+		DWORD n = GetTempPathW(MAX_PATH, dir);
+		if (n == 0 || n > MAX_PATH) return {};
+		wchar_t path[MAX_PATH];
+		if (GetTempFileNameW(dir, L"wbsh", 0, path) == 0) return {};
+		return wideToUtf8(path);
 #else
-			char tmpl[] = "/tmp/wbshXXXXXX";
-			int fd = mkstemp(tmpl);
-			if (fd < 0) return {};
-			::close(fd);
-			return std::string(tmpl);
+		char tmpl[] = "/tmp/wbshXXXXXX";
+		int fd = mkstemp(tmpl);
+		if (fd < 0) return {};
+		::close(fd);
+		return std::string(tmpl);
 #endif
-		}
+	}
 
-		std::string readAllText(const std::string& path) {
-			std::ifstream f(utf8ToPath(path), std::ios::binary);
-			std::stringstream ss;
-			ss << f.rdbuf();
-			return ss.str();
-		}
+	static std::string readAllText(const std::string& path) {
+		std::ifstream f(utf8ToPath(path), std::ios::binary);
+		std::stringstream ss;
+		ss << f.rdbuf();
+		return ss.str();
+	}
 
 #ifdef _WIN32
-		std::wstring quoteArg(const std::wstring& arg) {
-			if (arg.empty()) return L"\"\"";
-			bool needs = false;
-			for (wchar_t c : arg) {
-				if (c == L' ' || c == L'\t' || c == L'\n' || c == L'\v' || c == L'"') {
-					needs = true; break;
-				}
+	std::wstring quoteArg(const std::wstring& arg) {
+		if (arg.empty()) return L"\"\"";
+		bool needs = false;
+		for (wchar_t c : arg) {
+			if (c == L' ' || c == L'\t' || c == L'\n' || c == L'\v' || c == L'"') {
+				needs = true; break;
 			}
-			if (!needs) return arg;
-			std::wstring out = L"\"";
-			int backslashes = 0;
-			for (wchar_t c : arg) {
-				if (c == L'\\') {
-					++backslashes;
-				} else if (c == L'"') {
-					out.append(static_cast<std::size_t>(backslashes) * 2 + 1, L'\\');
-					out.push_back(L'"');
-					backslashes = 0;
-				} else {
-					out.append(static_cast<std::size_t>(backslashes), L'\\');
-					out.push_back(c);
-					backslashes = 0;
-				}
-			}
-			out.append(static_cast<std::size_t>(backslashes) * 2, L'\\');
-			out.push_back(L'"');
-			return out;
 		}
-
-		std::wstring buildCommandLine(const std::vector<std::string>& argv) {
-			std::wstring cmd;
-			for (std::size_t i = 0; i < argv.size(); ++i) {
-				if (i) cmd.push_back(L' ');
-				cmd += quoteArg(utf8ToWide(argv[i]));
+		if (!needs) return arg;
+		std::wstring out = L"\"";
+		int backslashes = 0;
+		for (wchar_t c : arg) {
+			if (c == L'\\') {
+				++backslashes;
+			} else if (c == L'"') {
+				out.append(static_cast<std::size_t>(backslashes) * 2 + 1, L'\\');
+				out.push_back(L'"');
+				backslashes = 0;
+			} else {
+				out.append(static_cast<std::size_t>(backslashes), L'\\');
+				out.push_back(c);
+				backslashes = 0;
 			}
-			return cmd;
 		}
+		out.append(static_cast<std::size_t>(backslashes) * 2, L'\\');
+		out.push_back(L'"');
+		return out;
+	}
 
-		std::wstring buildEnvBlock(const Environment& env,
-		                           const std::vector<std::pair<std::string, std::string>>& overrides,
-		                           bool include_unexported = false) {
-			std::vector<std::wstring> entries;
-			for (const auto& kv : env.vars()) {
-				if (!env.isExported(kv.first) && !include_unexported) continue;
-				std::string entry = kv.first + "=" + kv.second;
-				entries.push_back(utf8ToWide(entry));
-			}
-			// Apply overrides (replace existing entries with the same name).
-			for (const auto& ov : overrides) {
-				std::wstring prefix = utf8ToWide(ov.first) + L"=";
-				auto it = std::find_if(entries.begin(), entries.end(),
-					[&](const std::wstring& e) {
-						return e.size() >= prefix.size()
-							&& std::equal(prefix.begin(), prefix.end(), e.begin());
-					});
-				std::wstring entry = prefix + utf8ToWide(ov.second);
-				if (it != entries.end()) *it = std::move(entry);
-				else entries.push_back(std::move(entry));
-			}
-			std::sort(entries.begin(), entries.end(),
-				[](const std::wstring& a, const std::wstring& b) {
-					// Case-insensitive compare per Windows env conventions.
-					std::wstring la(a.size(), L'\0'), lb(b.size(), L'\0');
-					std::transform(a.begin(), a.end(), la.begin(), ::towlower);
-					std::transform(b.begin(), b.end(), lb.begin(), ::towlower);
-					return la < lb;
+	std::wstring buildCommandLine(const std::vector<std::string>& argv) {
+		std::wstring cmd;
+		for (std::size_t i = 0; i < argv.size(); ++i) {
+			if (i) cmd.push_back(L' ');
+			cmd += quoteArg(utf8ToWide(argv[i]));
+		}
+		return cmd;
+	}
+
+	static bool isBatchFile(const std::string& path) {
+		auto dot = path.find_last_of('.');
+		if (dot == std::string::npos) return false;
+		std::string ext = path.substr(dot + 1);
+		std::transform(ext.begin(), ext.end(), ext.begin(),
+			[](char c) { return static_cast<char>(std::tolower((unsigned char)c)); });
+		return ext == "cmd" || ext == "bat";
+	}
+
+	std::wstring cmdExePath() {
+		wchar_t buf[MAX_PATH];
+		UINT n = GetSystemDirectoryW(buf, MAX_PATH);
+		if (n && n < MAX_PATH) {
+			std::wstring p(buf, n);
+			p += L"\\cmd.exe";
+			return p;
+		}
+		return L"cmd.exe";
+	}
+
+	// Wrap a built command line so it runs through cmd.exe. Required for
+	// .cmd/.bat scripts (e.g. VS Code's `code.cmd`): CreateProcessW can't
+	// launch them directly. /d skips registry AutoRun, /s with outer
+	// quotes lets cmd treat the entire inner string as one command and
+	// preserves quoting around paths/args with spaces.
+	std::wstring wrapWithCmdExe(const std::wstring& cmdline) {
+		std::wstring cmd = cmdExePath();
+		std::wstring quoted = (cmd.find(L' ') != std::wstring::npos)
+			? L"\"" + cmd + L"\""
+			: cmd;
+		return quoted + L" /d /s /c \"" + cmdline + L"\"";
+	}
+
+	std::wstring buildEnvBlock(const Environment& env,
+	                           const std::vector<std::pair<std::string, std::string>>& overrides,
+	                           bool include_unexported = false) {
+		std::vector<std::wstring> entries;
+		for (const auto& kv : env.vars()) {
+			if (!env.isExported(kv.first) && !include_unexported) continue;
+			std::string entry = kv.first + "=" + kv.second;
+			entries.push_back(utf8ToWide(entry));
+		}
+		// Apply overrides (replace existing entries with the same name).
+		for (const auto& ov : overrides) {
+			std::wstring prefix = utf8ToWide(ov.first) + L"=";
+			auto it = std::find_if(entries.begin(), entries.end(),
+				[&](const std::wstring& e) {
+					return e.size() >= prefix.size()
+						&& std::equal(prefix.begin(), prefix.end(), e.begin());
 				});
-			std::wstring block;
-			for (const auto& e : entries) {
-				block += e;
-				block.push_back(L'\0');
-			}
+			std::wstring entry = prefix + utf8ToWide(ov.second);
+			if (it != entries.end()) *it = std::move(entry);
+			else entries.push_back(std::move(entry));
+		}
+		std::sort(entries.begin(), entries.end(),
+			[](const std::wstring& a, const std::wstring& b) {
+				// Case-insensitive compare per Windows env conventions.
+				std::wstring la(a.size(), L'\0'), lb(b.size(), L'\0');
+				std::transform(a.begin(), a.end(), la.begin(), ::towlower);
+				std::transform(b.begin(), b.end(), lb.begin(), ::towlower);
+				return la < lb;
+			});
+		std::wstring block;
+		for (const auto& e : entries) {
+			block += e;
 			block.push_back(L'\0');
-			return block;
+		}
+		block.push_back(L'\0');
+		return block;
+	}
+
+	static std::string lastErrorString() {
+		DWORD err = GetLastError();
+		if (err == 0) return {};
+		LPSTR buf = nullptr;
+		DWORD n = FormatMessageA(
+			FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
+			| FORMAT_MESSAGE_IGNORE_INSERTS,
+			nullptr, err, 0, (LPSTR)&buf, 0, nullptr);
+		std::string s = (buf && n) ? std::string(buf, n) : std::string();
+		if (buf) LocalFree(buf);
+		while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
+			s.pop_back();
+		return s;
+	}
+
+	static std::string getSelfExecutablePath() {
+		wchar_t buf[MAX_PATH];
+		DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+		if (n == 0 || n >= MAX_PATH) return "wbsh.exe";
+		int u = WideCharToMultiByte(CP_UTF8, 0, buf, (int)n,
+			nullptr, 0, nullptr, nullptr);
+		std::string out(u, '\0');
+		WideCharToMultiByte(CP_UTF8, 0, buf, (int)n,
+			out.data(), u, nullptr, nullptr);
+		return out;
+	}
+
+	static bool isMsysBinary(const std::string& p) {
+		std::string lower(p.size(), '\0');
+		std::transform(p.begin(), p.end(), lower.begin(),
+			[](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+		static const char* markers[] = {
+			"\\git\\usr\\bin\\",
+			"\\git\\mingw32\\bin\\",
+			"\\git\\mingw64\\bin\\",
+			"\\msys64\\",
+			"\\msys2\\",
+			"\\cygwin\\",
+			"\\cygwin64\\",
+			nullptr,
+		};
+		for (int i = 0; markers[i]; ++i) {
+			if (lower.find(markers[i]) != std::string::npos) return true;
+		}
+		return false;
+	}
+
+	// Spawn a process with explicit stdin / stdout / stderr handles via
+	// STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Each of h_in,
+	// h_out, h_err must already be inheritable (HANDLE_FLAG_INHERIT).
+	// Returns the process handle on success, INVALID_HANDLE_VALUE on failure.
+	static HANDLE spawnWithHandles(const std::wstring& exe,
+	                        std::wstring& cmdline,
+	                        std::wstring& envblock,
+	                        HANDLE h_in, HANDLE h_out, HANDLE h_err) {
+		SIZE_T attr_size = 0;
+		InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
+		auto attr_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+			HeapAlloc(GetProcessHeap(), 0, attr_size));
+		if (!attr_list) return INVALID_HANDLE_VALUE;
+		if (!InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size)) {
+			HeapFree(GetProcessHeap(), 0, attr_list);
+			return INVALID_HANDLE_VALUE;
 		}
 
-		std::string lastErrorString() {
-			DWORD err = GetLastError();
-			if (err == 0) return {};
-			LPSTR buf = nullptr;
-			DWORD n = FormatMessageA(
-				FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
-				| FORMAT_MESSAGE_IGNORE_INSERTS,
-				nullptr, err, 0, (LPSTR)&buf, 0, nullptr);
-			std::string s = (buf && n) ? std::string(buf, n) : std::string();
-			if (buf) LocalFree(buf);
-			while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
-				s.pop_back();
-			return s;
-		}
-
-		std::string getSelfExecutablePath() {
-			wchar_t buf[MAX_PATH];
-			DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-			if (n == 0 || n >= MAX_PATH) return "wbsh.exe";
-			int u = WideCharToMultiByte(CP_UTF8, 0, buf, (int)n,
-				nullptr, 0, nullptr, nullptr);
-			std::string out(u, '\0');
-			WideCharToMultiByte(CP_UTF8, 0, buf, (int)n,
-				out.data(), u, nullptr, nullptr);
-			return out;
-		}
-
-		bool isMsysBinary(const std::string& p) {
-			std::string lower(p.size(), '\0');
-			std::transform(p.begin(), p.end(), lower.begin(),
-				[](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
-			static const char* markers[] = {
-				"\\git\\usr\\bin\\",
-				"\\git\\mingw32\\bin\\",
-				"\\git\\mingw64\\bin\\",
-				"\\msys64\\",
-				"\\msys2\\",
-				"\\cygwin\\",
-				"\\cygwin64\\",
-				nullptr,
-			};
-			for (int i = 0; markers[i]; ++i) {
-				if (lower.find(markers[i]) != std::string::npos) return true;
+		HANDLE inherits[3];
+		DWORD inherit_count = 0;
+		auto add_h = [&](HANDLE h) {
+			if (h == nullptr || h == INVALID_HANDLE_VALUE) return;
+			for (DWORD i = 0; i < inherit_count; ++i) {
+				if (inherits[i] == h) return;
 			}
-			return false;
-		}
+			inherits[inherit_count++] = h;
+			SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+		};
+		add_h(h_in);
+		add_h(h_out);
+		add_h(h_err);
 
-		// Spawn a process with explicit stdin / stdout / stderr handles via
-		// STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Each of h_in,
-		// h_out, h_err must already be inheritable (HANDLE_FLAG_INHERIT).
-		// Returns the process handle on success, INVALID_HANDLE_VALUE on failure.
-		HANDLE spawnWithHandles(const std::wstring& exe,
-		                        std::wstring& cmdline,
-		                        std::wstring& envblock,
-		                        HANDLE h_in, HANDLE h_out, HANDLE h_err) {
-			SIZE_T attr_size = 0;
-			InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
-			auto attr_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
-				HeapAlloc(GetProcessHeap(), 0, attr_size));
-			if (!attr_list) return INVALID_HANDLE_VALUE;
-			if (!InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size)) {
-				HeapFree(GetProcessHeap(), 0, attr_list);
-				return INVALID_HANDLE_VALUE;
-			}
-
-			HANDLE inherits[3];
-			DWORD inherit_count = 0;
-			auto add_h = [&](HANDLE h) {
-				if (h == nullptr || h == INVALID_HANDLE_VALUE) return;
-				for (DWORD i = 0; i < inherit_count; ++i) {
-					if (inherits[i] == h) return;
-				}
-				inherits[inherit_count++] = h;
-				SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-			};
-			add_h(h_in);
-			add_h(h_out);
-			add_h(h_err);
-
-			if (!UpdateProcThreadAttribute(attr_list, 0,
-				PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-				inherits, inherit_count * sizeof(HANDLE),
-				nullptr, nullptr)) {
-				DeleteProcThreadAttributeList(attr_list);
-				HeapFree(GetProcessHeap(), 0, attr_list);
-				return INVALID_HANDLE_VALUE;
-			}
-
-			STARTUPINFOEXW siex{};
-			siex.StartupInfo.cb = sizeof(STARTUPINFOEXW);
-			siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-			siex.StartupInfo.hStdInput  = h_in;
-			siex.StartupInfo.hStdOutput = h_out;
-			siex.StartupInfo.hStdError  = h_err;
-			siex.lpAttributeList = attr_list;
-
-			PROCESS_INFORMATION pi{};
-			BOOL ok = CreateProcessW(
-				exe.c_str(),
-				cmdline.data(),
-				nullptr, nullptr,
-				TRUE,
-				EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-				envblock.data(),
-				nullptr,
-				&siex.StartupInfo,
-				&pi);
-
+		if (!UpdateProcThreadAttribute(attr_list, 0,
+			PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+			inherits, inherit_count * sizeof(HANDLE),
+			nullptr, nullptr)) {
 			DeleteProcThreadAttributeList(attr_list);
 			HeapFree(GetProcessHeap(), 0, attr_list);
-
-			if (!ok) {
-				std::fprintf(stderr, "wbsh: CreateProcess failed: %s\n",
-					lastErrorString().c_str());
-				return INVALID_HANDLE_VALUE;
-			}
-			CloseHandle(pi.hThread);
-			return pi.hProcess;
+			return INVALID_HANDLE_VALUE;
 		}
-#endif  // _WIN32
 
-	}  // namespace
+		STARTUPINFOEXW siex{};
+		siex.StartupInfo.cb = sizeof(STARTUPINFOEXW);
+		siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+		siex.StartupInfo.hStdInput  = h_in;
+		siex.StartupInfo.hStdOutput = h_out;
+		siex.StartupInfo.hStdError  = h_err;
+		siex.lpAttributeList = attr_list;
+
+		PROCESS_INFORMATION pi{};
+		BOOL ok = CreateProcessW(
+			exe.c_str(),
+			cmdline.data(),
+			nullptr, nullptr,
+			TRUE,
+			EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+			envblock.data(),
+			nullptr,
+			&siex.StartupInfo,
+			&pi);
+
+		DeleteProcThreadAttributeList(attr_list);
+		HeapFree(GetProcessHeap(), 0, attr_list);
+
+		if (!ok) {
+			std::fprintf(stderr, "wbsh: CreateProcess failed: %s\n",
+				lastErrorString().c_str());
+			return INVALID_HANDLE_VALUE;
+		}
+		CloseHandle(pi.hThread);
+		return pi.hProcess;
+	}
+#endif  // _WIN32
 
 	// ---------------------------------------------------------------------------
 	// Construction & dispatch
@@ -698,6 +734,10 @@ namespace wbsh {
 		std::wstring exe_w     = utf8ToWide(exec_path);
 		std::wstring cmdline_w = buildCommandLine(a);
 		std::wstring env_w     = buildEnvBlock(env_, overrides);
+		if (isBatchFile(exec_path)) {
+			cmdline_w = wrapWithCmdExe(cmdline_w);
+			exe_w     = cmdExePath();
+		}
 
 		return spawnWithHandles(exe_w, cmdline_w, env_w, h_in, h_out, h_err);
 	}
@@ -1227,7 +1267,14 @@ namespace wbsh {
 		namespace fs = std::filesystem;
 		auto try_with_exts = [&](const fs::path& base) -> std::string {
 #ifdef _WIN32
-			static const char* exts[] = { "", ".exe", ".cmd", ".bat", nullptr };
+			// Try Windows-native extensions first, then fall back to the
+			// bare name. cmd.exe's PATHEXT lookup never tries a no-extension
+			// file, but we keep it as a fallback so extensionless scripts
+			// (e.g. installed by Git/MSYS) still resolve. Putting it last
+			// avoids picking up Linux-only sibling scripts that ship with
+			// Windows apps -- VS Code's `bin\` has both `code` (a sh script
+			// for WSL) and `code.cmd`; we want the latter.
+			static const char* exts[] = { ".exe", ".cmd", ".bat", "", nullptr };
 			for (int i = 0; exts[i]; ++i) {
 				fs::path q = base;
 				if (exts[i][0]) q += exts[i];
@@ -1368,6 +1415,10 @@ namespace wbsh {
 		std::wstring cmdline = buildCommandLine(a);
 		std::wstring exe = utf8ToWide(exec_path);
 		std::wstring envblock = buildEnvBlock(env_, temp_env_for_child);
+		if (isBatchFile(exec_path)) {
+			cmdline = wrapWithCmdExe(cmdline);
+			exe     = cmdExePath();
+		}
 
 		std::fflush(stdout);
 		std::fflush(stderr);
@@ -1811,100 +1862,98 @@ namespace wbsh {
 	// [[ ... ]] conditional expressions
 	// ---------------------------------------------------------------------------
 
-	namespace {
-		bool evalDBracketExpr(const DBracketCond::Expr& e,
-		                      Expander& exp,
-		                      const PathConv& pc,
-		                      bool nocasematch);
-		bool evalDBracketExpr(const DBracketCond::Expr& e,
-		                      Expander& exp,
-		                      const PathConv& pc,
-		                      bool nocasematch) {
-			using K = DBracketCond::Expr::K;
-			switch (e.k) {
-			case K::And: return evalDBracketExpr(*e.a, exp, pc, nocasematch)
-			                 && evalDBracketExpr(*e.b, exp, pc, nocasematch);
-			case K::Or:  return evalDBracketExpr(*e.a, exp, pc, nocasematch)
-			                 || evalDBracketExpr(*e.b, exp, pc, nocasematch);
-			case K::Not: return !evalDBracketExpr(*e.a, exp, pc, nocasematch);
-			case K::Prim: break;
-			}
-			std::string lhs = exp.expandStringValue(e.lhs);
-			if (e.op.empty()) {
-				// Single operand: true iff non-empty.
-				return !lhs.empty();
-			}
-			// Unary -X tests.
-			if (e.op.size() == 2 && e.op[0] == '-') {
-				char op = e.op[1];
-				if (op == 'z') return lhs.empty();
-				if (op == 'n') return !lhs.empty();
-				std::string path = pc.toWin32(lhs);
-				struct stat st {};
-				bool ok = ::stat(path.c_str(), &st) == 0;
-				switch (op) {
-				case 'e': return ok;
-				case 'f': return ok && (st.st_mode & S_IFMT) == S_IFREG;
-				case 'd': return ok && (st.st_mode & S_IFMT) == S_IFDIR;
-				case 's': return ok && st.st_size > 0;
-				case 'r': return ok && (st.st_mode & 0444);
-				case 'w': return ok && (st.st_mode & 0222);
-				case 'x': return ok && (st.st_mode & 0111);
-				default:  return false;
-				}
-			}
-			std::string rhs = exp.expandStringValue(e.rhs);
-			auto lower = [](std::string s) {
-				for (auto& c : s) c = (char)std::tolower((unsigned char)c);
-				return s;
-			};
-			std::string clhs = nocasematch ? lower(lhs) : lhs;
-			std::string crhs = nocasematch ? lower(rhs) : rhs;
-			// String compares (glob match for == != = isn't done yet).
-			if (e.op == "==" || e.op == "=" || e.op == "!=") {
-				bool eq = (clhs == crhs);
-				return (e.op == "!=") ? !eq : eq;
-			}
-			if (e.op == "<")  return clhs <  crhs;
-			if (e.op == ">")  return clhs >  crhs;
-			if (e.op == "=~") {
-				try {
-					auto flags = std::regex::ECMAScript;
-					if (nocasematch) flags = flags | std::regex::icase;
-					std::regex re(rhs, flags);
-					return std::regex_search(lhs, re);
-				} catch (const std::regex_error&) {
-					return false;
-				}
-			}
-			// Arithmetic comparisons.
-			if (e.op == "-eq" || e.op == "-ne" || e.op == "-lt"
-			    || e.op == "-le" || e.op == "-gt" || e.op == "-ge")
-			{
-				long long li = 0, ri = 0;
-				try { li = std::stoll(lhs); ri = std::stoll(rhs); }
-				catch (...) { return false; }
-				if (e.op == "-eq") return li == ri;
-				if (e.op == "-ne") return li != ri;
-				if (e.op == "-lt") return li <  ri;
-				if (e.op == "-le") return li <= ri;
-				if (e.op == "-gt") return li >  ri;
-				if (e.op == "-ge") return li >= ri;
-			}
-			// File comparisons.
-			if (e.op == "-ef" || e.op == "-nt" || e.op == "-ot") {
-				std::string a = pc.toWin32(lhs);
-				std::string b = pc.toWin32(rhs);
-				struct stat sa{}, sb{};
-				bool oa = ::stat(a.c_str(), &sa) == 0;
-				bool ob = ::stat(b.c_str(), &sb) == 0;
-				if (e.op == "-nt") return oa && (!ob || sa.st_mtime > sb.st_mtime);
-				if (e.op == "-ot") return ob && (!oa || sa.st_mtime < sb.st_mtime);
-				if (e.op == "-ef") return oa && ob
-				    && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
-			}
-			return false;
+	static bool evalDBracketExpr(const DBracketCond::Expr& e,
+	                             Expander& exp,
+	                             const PathConv& pc,
+	                             bool nocasematch);
+	static bool evalDBracketExpr(const DBracketCond::Expr& e,
+	                             Expander& exp,
+	                             const PathConv& pc,
+	                             bool nocasematch) {
+		using K = DBracketCond::Expr::K;
+		switch (e.k) {
+		case K::And: return evalDBracketExpr(*e.a, exp, pc, nocasematch)
+		                 && evalDBracketExpr(*e.b, exp, pc, nocasematch);
+		case K::Or:  return evalDBracketExpr(*e.a, exp, pc, nocasematch)
+		                 || evalDBracketExpr(*e.b, exp, pc, nocasematch);
+		case K::Not: return !evalDBracketExpr(*e.a, exp, pc, nocasematch);
+		case K::Prim: break;
 		}
+		std::string lhs = exp.expandStringValue(e.lhs);
+		if (e.op.empty()) {
+			// Single operand: true iff non-empty.
+			return !lhs.empty();
+		}
+		// Unary -X tests.
+		if (e.op.size() == 2 && e.op[0] == '-') {
+			char op = e.op[1];
+			if (op == 'z') return lhs.empty();
+			if (op == 'n') return !lhs.empty();
+			std::string path = pc.toWin32(lhs);
+			struct stat st {};
+			bool ok = ::stat(path.c_str(), &st) == 0;
+			switch (op) {
+			case 'e': return ok;
+			case 'f': return ok && (st.st_mode & S_IFMT) == S_IFREG;
+			case 'd': return ok && (st.st_mode & S_IFMT) == S_IFDIR;
+			case 's': return ok && st.st_size > 0;
+			case 'r': return ok && (st.st_mode & 0444);
+			case 'w': return ok && (st.st_mode & 0222);
+			case 'x': return ok && (st.st_mode & 0111);
+			default:  return false;
+			}
+		}
+		std::string rhs = exp.expandStringValue(e.rhs);
+		auto lower = [](std::string s) {
+			for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+			return s;
+		};
+		std::string clhs = nocasematch ? lower(lhs) : lhs;
+		std::string crhs = nocasematch ? lower(rhs) : rhs;
+		// String compares (glob match for == != = isn't done yet).
+		if (e.op == "==" || e.op == "=" || e.op == "!=") {
+			bool eq = (clhs == crhs);
+			return (e.op == "!=") ? !eq : eq;
+		}
+		if (e.op == "<")  return clhs <  crhs;
+		if (e.op == ">")  return clhs >  crhs;
+		if (e.op == "=~") {
+			try {
+				auto flags = std::regex::ECMAScript;
+				if (nocasematch) flags = flags | std::regex::icase;
+				std::regex re(rhs, flags);
+				return std::regex_search(lhs, re);
+			} catch (const std::regex_error&) {
+				return false;
+			}
+		}
+		// Arithmetic comparisons.
+		if (e.op == "-eq" || e.op == "-ne" || e.op == "-lt"
+		    || e.op == "-le" || e.op == "-gt" || e.op == "-ge")
+		{
+			long long li = 0, ri = 0;
+			try { li = std::stoll(lhs); ri = std::stoll(rhs); }
+			catch (...) { return false; }
+			if (e.op == "-eq") return li == ri;
+			if (e.op == "-ne") return li != ri;
+			if (e.op == "-lt") return li <  ri;
+			if (e.op == "-le") return li <= ri;
+			if (e.op == "-gt") return li >  ri;
+			if (e.op == "-ge") return li >= ri;
+		}
+		// File comparisons.
+		if (e.op == "-ef" || e.op == "-nt" || e.op == "-ot") {
+			std::string a = pc.toWin32(lhs);
+			std::string b = pc.toWin32(rhs);
+			struct stat sa{}, sb{};
+			bool oa = ::stat(a.c_str(), &sa) == 0;
+			bool ob = ::stat(b.c_str(), &sb) == 0;
+			if (e.op == "-nt") return oa && (!ob || sa.st_mtime > sb.st_mtime);
+			if (e.op == "-ot") return ob && (!oa || sa.st_mtime < sb.st_mtime);
+			if (e.op == "-ef") return oa && ob
+			    && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+		}
+		return false;
 	}
 
 	int Executor::execDBracket(const DBracketCond& dc) {

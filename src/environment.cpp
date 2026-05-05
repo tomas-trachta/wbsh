@@ -1,13 +1,19 @@
+/**
+ * @file environment.cpp
+ * @brief Environment / variable / array store implementation.
+ */
+
 #include "environment.h"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+
 #  include <process.h>
 #else
 #  include <unistd.h>
 extern char** environ;
-#endif
+#endif /* _WIN32 */
 
 #include <cstdio>
 #include <cstdlib>
@@ -247,7 +253,7 @@ namespace wbsh {
 			vars_[name] = std::move(val);
 			exported_.insert(std::move(name));
 		}
-#endif
+#endif /* _WIN32 */
 	}
 
 }  // namespace wbsh

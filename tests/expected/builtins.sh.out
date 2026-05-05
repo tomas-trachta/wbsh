@@ -1,0 +1,55 @@
+=== printf
+plain
+hello world
+6 * 7 = 42
+a    |    b
+00042
+ff FF 10
+esc: 	\n
+a
+b
+c
+=== echo flags
+no-newline
+tab	here
+newline
+literal\there
+=== test / [ ]
+1<2
+2<=2
+3!=2
+str eq
+str ne
+empty
+nonempty
+lex
+test eq
+=== type / command -v
+echo is a shell builtin
+cd is a shell builtin
+pwd is a shell builtin
+ls is a shell builtin
+=== eval
+evaluated: echo from eval
+hello
+=== shift / set --
+args: 4
+1=a 2=b 3=c 4=d
+after shift: 1=b 2=c 3=d
+after shift 2: 1=d
+=== getopts
+v=1 f=hello
+v=0 f=only
+v=1 f=
+=== local / declare
+in func: n=1
+outer: n=outer
+=== alias
+hi there
+=== source
+from-source
+sourced fn: ok
+=== let
+a=5
+b=10
+=== done

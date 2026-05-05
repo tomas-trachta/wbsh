@@ -1,0 +1,57 @@
+=== parameter expansion
+hello-world
+hello-world-extra
+hi-world
+hello_world
+world
+hello
+hello
+world
+11
+=== default / alt
+default
+assigned
+M after :=:  assigned
+
+only-if-set
+set
+=== array-ish (indexed)
+one
+three
+one two three four
+4
+=== command substitution
+x=nested
+today: today
+y=backtick
+=== arithmetic
+7
+9
+3
+1
+1024
+16
+15
+7
+100
+1
+0
+10
+n after post-inc: 11
+12
+n after pre-inc:  12
+=== brace expansion
+a b c
+1 2 3 4 5
+01 02 03
+a b c
+preXpost preYpost
+1a 1b 2a 2b 3a 3b
+=== globbing
+_g/a.txt _g/b.txt
+_g/a.txt _g/b.txt _g/c.log
+=== quoting
+double hello-world single $V
+a"b
+$literal \$literal
+=== done
