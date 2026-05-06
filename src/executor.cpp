@@ -1279,7 +1279,7 @@ namespace wbsh {
 				fs::path q = base;
 				if (exts[i][0]) q += exts[i];
 				std::error_code ec;
-				if (fs::exists(q, ec) && !fs::is_directory(q, ec)) return q.string();
+				if (fs::exists(q, ec) && !fs::is_directory(q, ec)) return pathToUtf8(q);
 			}
 			return {};
 #else
@@ -1290,7 +1290,7 @@ namespace wbsh {
 		};
 
 		if (isAbsoluteOrRelativePath(name)) {
-			fs::path p(path_conv_.toWin32(name));
+			fs::path p = utf8ToPath(path_conv_.toWin32(name));
 			return try_with_exts(p);
 		}
 
@@ -1322,8 +1322,8 @@ namespace wbsh {
 
 		for (const auto& d : dirs) {
 			if (d.empty()) continue;
-			fs::path base(path_conv_.toWin32(d));
-			base /= name;
+			fs::path base = utf8ToPath(path_conv_.toWin32(d));
+			base /= utf8ToPath(name);
 			std::string r = try_with_exts(base);
 			if (!r.empty()) return r;
 		}
@@ -1542,6 +1542,7 @@ namespace wbsh {
 		std::stringstream ss;
 		ss << f.rdbuf();
 		std::string body = ss.str();
+		normalizeCrlf(body);
 
 		// Subshell-style isolation: snapshot env / positional / $0 / functions
 		// / CWD / option flags; restore after the script finishes.

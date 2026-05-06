@@ -240,6 +240,11 @@ namespace wbsh {
 		// function scope is popped, then assigns `value`.
 		void declareLocal(const std::string& name, const std::string& value);
 
+		// Walk PATH for an executable named `name`. Returns the resolved
+		// path (UTF-8) or empty if not found. Honours Windows PATHEXT-style
+		// .exe/.cmd/.bat resolution. Used by `type`, `command -v`, etc.
+		std::string findExecutable(const std::string& name);
+
 	private:
 		// AST execution.
 		int execNode(const Node& n);
@@ -270,7 +275,6 @@ namespace wbsh {
 
 		int  runExternal(const std::vector<std::string>& argv,
 		                 const std::vector<std::pair<std::string, std::string>>& temp_env);
-		std::string findExecutable(const std::string& name);
 
 		// Heuristic: does the file at `path` look like a shell script we
 		// should interpret in-process rather than handing to CreateProcess?

@@ -1794,6 +1794,7 @@ namespace wbsh {
 	static int builtin_grep(Executor& exec, const std::vector<std::string>& args) {
 		bool icase = false, invert = false, line_no = false, count_only = false;
 		bool fixed = false, list_only = false, quiet = false, recursive = false;
+		bool whole_line = false;
 		std::string pattern;
 		std::vector<std::string> files;
 		for (std::size_t i = 0; i < args.size(); ++i) {
@@ -1814,6 +1815,7 @@ namespace wbsh {
 			if (a == "-l") { list_only = true; continue; }
 			if (a == "-q" || a == "--quiet" || a == "--silent") { quiet = true; continue; }
 			if (a == "-r" || a == "-R" || a == "--recursive") { recursive = true; continue; }
+			if (a == "-x" || a == "--line-regexp") { whole_line = true; continue; }
 			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 				for (std::size_t k = 1; k < a.size(); ++k) {
 					switch (a[k]) {
@@ -1826,6 +1828,7 @@ namespace wbsh {
 					case 'l': list_only = true; break;
 					case 'q': quiet = true; break;
 					case 'r': case 'R': recursive = true; break;
+					case 'x': whole_line = true; break;
 					default:
 						std::fprintf(stderr, "wbsh: grep: unknown option -%c\n", a[k]);
 						return 2;
@@ -1884,11 +1887,21 @@ namespace wbsh {
 
 		auto match_line = [&](const std::string& line) {
 			if (fixed) {
+				if (whole_line) {
+					if (line.size() != pattern.size()) return false;
+					if (!icase) return line == pattern;
+					for (std::size_t k = 0; k < line.size(); ++k) {
+						if (std::tolower((unsigned char)line[k]) !=
+						    std::tolower((unsigned char)pattern[k])) return false;
+					}
+					return true;
+				}
 				if (!icase) return line.find(pattern) != std::string::npos;
 				std::string lo = line;
 				for (char& c : lo) c = static_cast<char>(std::tolower((unsigned char)c));
 				return lo.find(lower_pat) != std::string::npos;
 			}
+			if (whole_line) return std::regex_match(line, re);
 			return std::regex_search(line, re);
 			};
 

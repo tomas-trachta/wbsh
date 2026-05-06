@@ -359,6 +359,12 @@ namespace wbsh {
 		if (arg.size() < 3) return false;
 		// `/x/...` shape is a clear translatable path.
 		if (arg.size() >= 4 && arg[2] == '/') return true;
+		// /dev/std{in,out,err} and /dev/tty: pass through verbatim. Mapping
+		// to CONIN$/CONOUT$/CON breaks cross-process uses like
+		// `docker exec ... -i /dev/stdin`, where the path is meant to be
+		// interpreted by the callee (here: sqlcmd inside a Linux container).
+		if (arg == "/dev/stdin" || arg == "/dev/stdout"
+		    || arg == "/dev/stderr" || arg == "/dev/tty") return false;
 		// `/tmp`, `/dev/null`, etc. — exact prefix matches against the
 		// mount table count as translatable.
 		std::string out;

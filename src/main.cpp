@@ -27,6 +27,7 @@
 #include "pathconv.h"
 #include "repl.h"
 #include "script.h"
+#include "source.h"
 
 using namespace wbsh;
 
@@ -51,7 +52,9 @@ static void printHelp() {
 static std::string readAll(std::istream& in) {
 	std::stringstream ss;
 	ss << in.rdbuf();
-	return ss.str();
+	std::string s = ss.str();
+	normalizeCrlf(s);
+	return s;
 }
 
 static bool isInteractiveStdin() {

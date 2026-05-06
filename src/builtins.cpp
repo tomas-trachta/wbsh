@@ -479,13 +479,15 @@ namespace wbsh {
 		}
 		std::stringstream ss;
 		ss << f.rdbuf();
+		std::string body = ss.str();
+		normalizeCrlf(body);
 		// If extra args provided, set them as positional during the source.
 		auto saved = exec.env().positional();
 		if (args.size() > 1) {
 			exec.env().setPositional({ args.begin() + 1, args.end() });
 		}
 		int r = 0;
-		try { r = exec.executeText(ss.str(), args[0]); }
+		try { r = exec.executeText(body, args[0]); }
 		catch (FunctionReturn& fr) { r = fr.status; }   // `return' from sourced top-level
 		exec.env().setPositional(std::move(saved));
 		return r;
@@ -501,32 +503,7 @@ namespace wbsh {
 			} else if (exec.isBuiltin(a)) {
 				std::printf("%s is a shell builtin\n", a.c_str());
 			} else {
-				// path lookup — duplicate the executor's logic loosely
-				std::string path = exec.env().get("PATH");
-				namespace fs = std::filesystem;
-				std::vector<std::string> dirs;
-				std::string cur;
-#ifdef _WIN32
-				const char sep = ';';
-#else
-				const char sep = ':';
-#endif
-				for (char c : path) { if (c == sep) { dirs.push_back(cur); cur.clear(); } else cur.push_back(c); }
-				if (!cur.empty()) dirs.push_back(cur);
-				std::string found;
-				for (const auto& d : dirs) {
-					if (d.empty()) continue;
-					fs::path p = utf8ToPath(d); p /= utf8ToPath(a);
-					std::error_code ec;
-					if (fs::exists(p, ec) && !fs::is_directory(p, ec)) { found = pathToUtf8(p); break; }
-#ifdef _WIN32
-					for (const char* e : { ".exe", ".cmd", ".bat" }) {
-						fs::path q = p; q += e;
-						if (fs::exists(q, ec) && !fs::is_directory(q, ec)) { found = pathToUtf8(q); break; }
-					}
-					if (!found.empty()) break;
-#endif
-				}
+				std::string found = exec.findExecutable(a);
 				if (!found.empty()) {
 					std::printf("%s is %s\n", a.c_str(), found.c_str());
 				} else {
