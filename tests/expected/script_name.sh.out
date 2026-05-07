@@ -1,0 +1,7 @@
+=== $0 in main script
+0=script_name.sh
+=== $0 inside a function
+fn: script_name.sh
+=== $0 inside a sourced script
+sourced: script_name.sh
+=== done

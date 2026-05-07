@@ -236,7 +236,8 @@ namespace wbsh {
 	}
 
 	int runOnSource(const std::string& src, bool show_tokens, bool show_ast,
-	                bool do_expand, bool do_run) {
+	                bool do_expand, bool do_run,
+	                const std::string& script_name) {
 		Lexer lex(src);
 		auto tokens = lex.tokenize();
 
@@ -284,6 +285,7 @@ namespace wbsh {
 		if (do_run && root) {
 			Environment env;
 			prepareEnv(env);
+			if (!script_name.empty()) env.setShellName(script_name);
 			Executor exec(env);
 			exec.setSourceText(src);
 			absorbInheritedState(env, exec);

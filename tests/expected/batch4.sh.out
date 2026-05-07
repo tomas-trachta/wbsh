@@ -7,7 +7,7 @@ an orange a day
 
 (quiet ok)
 
-foo123bar
+bar-123-foo
 === stat
 wbsh: stat: tests/batch4.sh: No such file or directory
 === chmod / readonly attribute

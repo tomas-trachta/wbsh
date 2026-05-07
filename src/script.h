@@ -22,6 +22,9 @@ namespace wbsh {
 	 * @param do_expand   Walk the AST and dump fully expanded words.
 	 * @param do_run      If true, execute the AST; otherwise stop after
 	 *                    the requested dumps.
+	 * @param script_name Path used to invoke the script. Surfaced as
+	 *                    `$0` inside the program. Empty for `-c`/stdin
+	 *                    invocations, which keep the default `wbsh`.
 	 *
 	 * @return Executor's exit status when @p do_run is true, otherwise
 	 *         0 on success or 1 if lex/parse reported errors.
@@ -30,6 +33,7 @@ namespace wbsh {
 	                bool show_tokens,
 	                bool show_ast,
 	                bool do_expand,
-	                bool do_run);
+	                bool do_run,
+	                const std::string& script_name = "");
 
 }  // namespace wbsh

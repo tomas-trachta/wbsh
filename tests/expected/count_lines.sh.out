@@ -1,0 +1,8 @@
+script: count_lines.sh
+files: 3
+total: 6
+  [0] _run_tmp/count_lines/a.txt -> 3
+  [1] _run_tmp/count_lines/b.txt -> 2
+  [2] _run_tmp/count_lines/c.txt -> 1
+oob: '' ''
+=== done

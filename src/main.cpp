@@ -13,6 +13,7 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 
+#  include <fcntl.h>
 #  include <io.h>
 #  include <shellapi.h>
 #  pragma comment(lib, "shell32.lib")
@@ -98,6 +99,9 @@ struct CliOptions {
 	bool from_stdin   = false;
 	bool have_src     = false;
 	std::string src;
+	// Path used to invoke a script file, surfaced as `$0`. Empty for
+	// `-c <cmd>` and stdin runs, which keep the default `wbsh`.
+	std::string script_name;
 };
 
 // Result of one of the early phases of main. `exit_now == true` means the
@@ -143,6 +147,7 @@ static ParseResult parseArgs(int argc, char** argv, CliOptions& opts) {
 		}
 		opts.src = readAll(f);
 		opts.have_src = true;
+		opts.script_name = a;
 	}
 	return { false, 0 };
 }
@@ -174,6 +179,15 @@ int main(int argc, char** argv) {
 	std::vector<std::string> argv_utf8_storage;
 	std::vector<char*>       argv_ptrs;
 	rewriteArgvAsUtf8(argc, argv, argv_utf8_storage, argv_ptrs);
+
+	// Force LF-only on stdout so command substitutions and pipelines round-
+	// trip the way bash does on POSIX. The MSVC CRT defaults to text mode
+	// on stdout/stderr, which silently translates `\n` to `\r\n` whenever
+	// the destination is a pipe or file. That extra `\r` then sticks to
+	// every word read back through `$(...)` or `read` and makes
+	// `arr[$key]` and `arr[X]` index different buckets.
+	_setmode(_fileno(stdout), _O_BINARY);
+	_setmode(_fileno(stderr), _O_BINARY);
 #endif /* _WIN32 */
 
 	CliOptions opts;
@@ -183,5 +197,5 @@ int main(int argc, char** argv) {
 	// In run mode, default to suppressing the AST dump so output is clean.
 	if (opts.do_run && !opts.ast_explicit) opts.show_ast = false;
 	return runOnSource(opts.src, opts.show_tokens, opts.show_ast,
-	                   opts.do_expand, opts.do_run);
+	                   opts.do_expand, opts.do_run, opts.script_name);
 }

@@ -81,6 +81,10 @@ namespace wbsh {
 	struct Assignment {
 		std::string name;               ///< Variable name.
 		Word value;                     ///< Scalar value; may be empty (`foo=`).
+		// True when the assignment used `+=` instead of `=`. Append-mode
+		// scalars concatenate onto the existing value; append-mode array
+		// literals add elements rather than replacing the array.
+		bool append = false;
 		// Indexed-element form: foo[2]=val. has_subscript false means scalar.
 		bool has_subscript = false;     ///< True when written as `name[expr]=value`.
 		Word subscript;                 ///< Subscript text; expanded at exec time.

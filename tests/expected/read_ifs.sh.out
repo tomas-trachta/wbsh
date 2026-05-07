@@ -1,0 +1,18 @@
+=== 1. read into multiple vars (default IFS)
+a=alpha b=beta c=gamma
+=== 2. last var soaks up the rest
+a=x b=y rest=z w v
+=== 3. IFS=: for colon-separated fields
+u=alice uid=1000 home=/home/alice shell=/bin/bash
+=== 4. read -r preserves backslashes; without -r they're consumed
+no-r: [atbnc]
+yes-r: [a\tb\nc]
+=== 5. read -a array
+len=4 0=one 3=four
+=== 6. read with leading/trailing whitespace
+a=[spaced] b=[out trailing]
+=== 7. while read line < file (no subshell, vars survive)
+count=3 last=three (bash expects 3 / three)
+=== 8. IFS= read -r preserves leading/trailing whitespace
+raw=[preserved]
+=== done

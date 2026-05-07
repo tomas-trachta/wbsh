@@ -696,6 +696,8 @@ namespace wbsh {
 		if (!fns.empty()) overrides.emplace_back("WBSH_FUNCTIONS", fns);
 		const std::string als = serializeAliases();
 		if (!als.empty()) overrides.emplace_back("WBSH_ALIASES", als);
+		const std::string arrs = serializeArrays();
+		if (!arrs.empty()) overrides.emplace_back("WBSH_ARRAYS", arrs);
 
 		// WBSH_LOCAL_NAMES: marker telling the child shell which inherited
 		// names should remain non-exported in its env table. Ordered so
@@ -716,6 +718,25 @@ namespace wbsh {
 		return overrides;
 	}
 
+	// Append `body` and a closing `delim\n` line for each heredoc redir on
+	// `sc` to `slice`, so the child shell can re-lex the heredoc properly.
+	// Without this, the source slice for a SimpleCommand at the head of a
+	// pipeline ends at the heredoc's `<<DELIM` — the body, which lives on
+	// later lines of the original source, never makes it to the child.
+	void Executor::appendHeredocBodiesToSlice(const SimpleCommand& sc,
+	                                          std::string& slice) {
+		for (const auto& r : sc.redirs) {
+			if (r.op != RedirOp::DLess && r.op != RedirOp::DLessDash) continue;
+			if (!slice.empty() && slice.back() != '\n') slice.push_back('\n');
+			slice += r.heredoc_body;   // body lines already terminated with '\n'
+			std::string delim;
+			try { delim = expander_.expandStringValue(r.target); }
+			catch (...) { delim.clear(); }
+			slice += delim;
+			slice.push_back('\n');
+		}
+	}
+
 	HANDLE Executor::selfSpawnPipelineElement(const Node& elem,
 	                                          HANDLE h_in, HANDLE h_out, HANDLE h_err)
 	{
@@ -723,6 +744,10 @@ namespace wbsh {
 		if (slice.empty()) {
 			std::fprintf(stderr, "wbsh: cannot extract pipeline element source\n");
 			return INVALID_HANDLE_VALUE;
+		}
+		if (elem.kind == Node::Kind::SimpleCommand) {
+			appendHeredocBodiesToSlice(static_cast<const SimpleCommand&>(elem),
+			                           slice);
 		}
 		const std::string self = getSelfExecutablePath();
 		std::vector<std::string> argv = { self, "-r", "-c", slice };
@@ -1087,6 +1112,7 @@ namespace wbsh {
 				if (a.is_array) {
 					ArrayAssign aa;
 					aa.name = a.name;
+					aa.append = a.append;
 					for (const auto& k : a.keyed_items) {
 						std::string val = expander_.expandStringValue(k.value);
 						if (k.has_key) {
@@ -1107,11 +1133,13 @@ namespace wbsh {
 					ea.name = a.name;
 					ea.subscript = a.subscript;
 					ea.value = expander_.expandStringValue(a.value);
+					ea.append = a.append;
 					out.elem.push_back(std::move(ea));
 				} else {
 					ScalarAssign sa;
 					sa.name = a.name;
 					sa.value = expander_.expandStringValue(a.value);
+					sa.append = a.append;
 					out.scalar.push_back(std::move(sa));
 				}
 			} catch (const ExpandError& e) {
@@ -1180,15 +1208,64 @@ namespace wbsh {
 	}
 
 	// Apply a single sparse / keyed / dense array assignment to the live env.
+	// One past the largest existing index in `name`'s indexed array, or 0
+	// when `name` is unset / scalar / empty. Used as the next index for
+	// unkeyed elements of `arr+=(items)`.
+	static long long nextIndexedAppendSlot(const Environment& env,
+	                                       const std::string& name) {
+		const auto* ia = env.getIndexedArray(name);
+		if (!ia || ia->empty()) return 0;
+		return ia->rbegin()->first + 1;
+	}
+
+	// Read the current value of `name[idx]` (indexed) or `name[key]` (assoc).
+	// Returns empty string when no element / array exists.
+	static std::string readElementValue(const Environment& env,
+	                                    const std::string& name,
+	                                    long long idx,
+	                                    const std::string& key,
+	                                    bool is_assoc) {
+		if (is_assoc) {
+			if (const auto* aa = env.getAssocArray(name)) {
+				auto it = aa->find(key);
+				if (it != aa->end()) return it->second;
+			}
+			return {};
+		}
+		if (const auto* ia = env.getIndexedArray(name)) {
+			auto it = ia->find(idx);
+			if (it != ia->end()) return it->second;
+		}
+		return {};
+	}
+
 	static void applyArrayAssignToEnv(Environment& env, Expander& exp,
 	                                  const Executor::ArrayAssign& aa) {
 		if (env.isAssocArray(aa.name)) {
-			// Assoc context: reset the array and repopulate from keyed pairs.
+			// Assoc context: replace the whole array unless we're appending,
+			// in which case merge the new keyed pairs onto whatever is there.
 			// Bash treats unkeyed items in assoc context as an error; we
 			// silently drop them.
-			env.declareAssocArray(aa.name);
+			if (!aa.append) env.declareAssocArray(aa.name);
 			for (const auto& kv : aa.keyed)
 				env.setAssocElement(aa.name, kv.first, kv.second);
+			return;
+		}
+		if (aa.append) {
+			// Indexed append: keep existing elements, then place keyed items
+			// at their resolved indices and unkeyed items at the next free
+			// slot after the largest existing index.
+			long long next_idx = nextIndexedAppendSlot(env, aa.name);
+			for (const auto& k : aa.keyed) {
+				long long idx;
+				try { idx = exp.evalArith(k.first); }
+				catch (...) { idx = next_idx; }
+				env.setIndexedElement(aa.name, idx, k.second);
+				next_idx = idx + 1;
+			}
+			for (const auto& v : aa.items) {
+				env.setIndexedElement(aa.name, next_idx++, v);
+			}
 			return;
 		}
 		if (aa.sparse) {
@@ -1214,18 +1291,47 @@ namespace wbsh {
 		std::string sub_str;
 		try { sub_str = exp.expandStringValue(ea.subscript); }
 		catch (...) { sub_str = std::string(); }
-		if (env.isAssocArray(ea.name)) {
-			env.setAssocElement(ea.name, std::move(sub_str), ea.value);
+		const bool is_assoc = env.isAssocArray(ea.name);
+		long long idx = 0;
+		if (!is_assoc) {
+			try { idx = exp.evalArith(sub_str); }
+			catch (...) { idx = 0; }
+		}
+		std::string final_val = ea.value;
+		if (ea.append) {
+			final_val = readElementValue(env, ea.name, idx, sub_str, is_assoc)
+				+ final_val;
+		}
+		if (is_assoc) {
+			env.setAssocElement(ea.name, std::move(sub_str), std::move(final_val));
+		} else {
+			env.setIndexedElement(ea.name, idx, std::move(final_val));
+		}
+	}
+
+	// Apply a `name=value` (or `name+=value`) scalar assignment. Append
+	// mode on a plain scalar concatenates; on an indexed array it appends
+	// to element 0 (matching bash's `arr+="x"` semantics).
+	static void applyScalarAssignToEnv(Environment& env,
+	                                   const Executor::ScalarAssign& s) {
+		if (!s.append) {
+			env.set(s.name, s.value);
 			return;
 		}
-		long long idx = 0;
-		try { idx = exp.evalArith(sub_str); }
-		catch (...) { idx = 0; }
-		env.setIndexedElement(ea.name, idx, ea.value);
+		if (env.isIndexedArray(s.name)) {
+			std::string cur;
+			if (const auto* ia = env.getIndexedArray(s.name)) {
+				auto it = ia->find(0);
+				if (it != ia->end()) cur = it->second;
+			}
+			env.setIndexedElement(s.name, 0, cur + s.value);
+			return;
+		}
+		env.set(s.name, env.get(s.name) + s.value);
 	}
 
 	void Executor::applyBareAssignmentsToShell(const SimpleCmdAssigns& a) {
-		for (const auto& s : a.scalar) env_.set(s.name, s.value);
+		for (const auto& s : a.scalar) applyScalarAssignToEnv(env_, s);
 		for (const auto& e : a.elem)   applyElemAssignToEnv(env_, expander_, e);
 		for (const auto& aa : a.array) applyArrayAssignToEnv(env_, expander_, aa);
 	}
@@ -2352,6 +2458,72 @@ namespace wbsh {
 		return out;
 	}
 
+	// Serialize the parent's indexed and associative arrays as runnable
+	// shell that the child re-evaluates from WBSH_ARRAYS. Without this,
+	// pipeline self-spawn (`echo "${arr[@]}" | sort`) drops arrays into
+	// children — only scalars survive the env-block round-trip.
+	std::string Executor::serializeArrays() const {
+		auto quote_single = [](const std::string& s) {
+			std::string q = "'";
+			for (char c : s) {
+				if (c == '\'') q += "'\\''";
+				else q.push_back(c);
+			}
+			q += "'";
+			return q;
+		};
+		std::string out;
+
+		// Indexed arrays first — emit `name=([i]='v' [j]='w')` literals so
+		// sparse layouts round-trip exactly.
+		std::vector<std::string> ix_names;
+		ix_names.reserve(env_.indexedArrays().size());
+		for (const auto& kv : env_.indexedArrays()) ix_names.push_back(kv.first);
+		std::sort(ix_names.begin(), ix_names.end());
+		for (const auto& name : ix_names) {
+			const auto* arr = env_.getIndexedArray(name);
+			if (!arr) continue;
+			out += name;
+			out += "=(";
+			bool first = true;
+			for (const auto& kv : *arr) {
+				if (!first) out.push_back(' ');
+				out += "[";
+				out += std::to_string(kv.first);
+				out += "]=";
+				out += quote_single(kv.second);
+				first = false;
+			}
+			out += ")\n";
+		}
+
+		// Assoc arrays — `declare -A name` first (so the child knows the
+		// type), then per-element assignments. A single `name=(...)` literal
+		// would also work but only after `declare -A`, and emitting elements
+		// individually keeps the parser path simple.
+		std::vector<std::string> ax_names;
+		ax_names.reserve(env_.assocArrays().size());
+		for (const auto& kv : env_.assocArrays()) ax_names.push_back(kv.first);
+		std::sort(ax_names.begin(), ax_names.end());
+		for (const auto& name : ax_names) {
+			const auto* arr = env_.getAssocArray(name);
+			if (!arr) continue;
+			out += "declare -A ";
+			out += name;
+			out += "\n";
+			for (const auto& kv : *arr) {
+				out += name;
+				out += "[";
+				out += quote_single(kv.first);
+				out += "]=";
+				out += quote_single(kv.second);
+				out += "\n";
+			}
+		}
+
+		return out;
+	}
+
 	std::string Executor::serializeFunctions() const {
 		// Iterate in deterministic (sorted) order so the env var is stable
 		// across spawns. Uses each FunctionDef's pre-captured body_text.
@@ -2420,8 +2592,13 @@ namespace wbsh {
 
 	std::string Executor::run(const std::string& body) {
 		std::string out = runRaw(body);
-		// $(...) strips trailing newlines; <(...) does not.
-		while (!out.empty() && out.back() == '\n') out.pop_back();
+		// $(...) strips trailing newlines; <(...) does not. On Windows the
+		// child shell's C runtime defaults to text mode for stdout and
+		// translates `\n` to `\r\n` on the way out, so we strip `\r` too —
+		// otherwise `key=$(echo X | tr ...)` ends up with a stray CR and
+		// `arr[$key]` and `arr[X]` index different buckets.
+		while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+			out.pop_back();
 		return out;
 	}
 

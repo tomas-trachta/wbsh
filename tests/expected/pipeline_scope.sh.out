@@ -1,0 +1,16 @@
+=== 1. while-read pipeline (bash: counter stays 0)
+after pipe: counter=0 (bash expects 0)
+=== 2. command substitution captures the count fine
+via cmdsubst: counter=5 (bash expects 5)
+=== 3. explicit subshell isolates
+  inside: inner
+after subshell: x=outer (bash expects outer)
+=== 4. brace group does NOT isolate
+after brace: y=inner (bash expects inner)
+=== 5. exit code propagation through pipeline
+false|true rc=0  (bash expects 0)
+=== 6. set -o pipefail surfaces left-side failure
+false|true rc=1  (with pipefail, expects 1)
+=== 7. nested pipeline + cmd subst
+nested cmdsubst: 4 (bash expects 4)
+=== done

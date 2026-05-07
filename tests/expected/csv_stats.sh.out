@@ -1,0 +1,8 @@
+header: name,score,latency_ms
+rows: 6
+avg score: 80
+avg latency: 141 ms
+max score: 91 (carol)
+min latency: 98 ms
+avg via awk: score=80 latency=141
+=== done

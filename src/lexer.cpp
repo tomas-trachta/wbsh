@@ -521,6 +521,18 @@ namespace wbsh {
 			readDollarParen(out);
 			return;
 		}
+		if (n1 == '[') {
+			// Legacy bash arithmetic `$[expr]`. Equivalent to `$((expr))`
+			// for our purposes — re-use the same WordSegment kind so the
+			// expander evaluates it as arithmetic.
+			advance();              // consume "$"
+			advance();              // consume "["
+			WordSegment s;
+			s.kind = WordSegment::Kind::ArithExp;
+			s.text = readBalancedBrackets();
+			out.push_back(std::move(s));
+			return;
+		}
 		if (n1 == '\'') {
 			advance(); advance();   // consume "$'"
 			WordSegment s;
@@ -740,6 +752,33 @@ namespace wbsh {
 			out.push_back(advance());
 		}
 		error(loc_, "unterminated ${...} expansion");
+		return out;
+	}
+
+	// Read body of $[...]. We have already consumed the leading "[".
+	// Stops at the matching "]". Tracks bracket nesting so an array
+	// subscript inside the expression doesn't close the form early.
+	std::string Lexer::readBalancedBrackets() {
+		std::string out;
+		int depth = 1;
+		while (!eof() && depth > 0) {
+			const char c = peek();
+			if (c == '\\') { copyBackslashEscape(out); continue; }
+			if (c == '\'') { copySingleQuotedRun(out); continue; }
+			if (c == '"')  { copyDoubleQuotedRun(out); continue; }
+			if (c == '[')  { ++depth; out.push_back(advance()); continue; }
+			if (c == ']') {
+				--depth;
+				if (depth == 0) {
+					advance();   // consume final ]
+					return out;
+				}
+				out.push_back(advance());
+				continue;
+			}
+			out.push_back(advance());
+		}
+		error(loc_, "unterminated $[...] expansion");
 		return out;
 	}
 

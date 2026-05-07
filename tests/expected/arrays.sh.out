@@ -1,0 +1,32 @@
+=== 1. indexed: dense
+len=4 all=zero one two three second=one last=OOR
+=== 2. indexed: keys / values / star vs at
+keys: 0 1 2 3
+vals @: zero one two three
+vals *: zero one two three
+vals * (IFS=,): zero,one,two,three
+=== 3. slice
+slice 1:2 = one two
+slice 2:  = two three
+=== 4. append +=
+appended: x y z p q
+=== 5. sparse
+sparse keys: 0 5 10
+sparse vals: zero five ten
+sparse len:  3
+=== 6. for loop quoting
+  quoted:
+    [a a b b c c]
+  unquoted (gets word-split):
+    [a a b b c c]
+=== 7. unset element
+after unset u[1]: keys=0 1 2 3 vals=a b c d
+=== 8. assoc array
+  m[apple]=red
+  m[banana]=yellow
+  apple=red
+  banana=yellow
+  grape=purple
+=== 9. array length of unset
+len of unset: 0
+=== done

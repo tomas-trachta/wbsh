@@ -1,0 +1,5 @@
+# Test fixtures and expected outputs are byte-compared against wbsh stdout.
+# wbsh writes LF; pinning these files to LF prevents autocrlf from
+# re-introducing CRLF on checkout and breaking the diff.
+*.sh    text eol=lf
+*.out   text eol=lf

@@ -1,0 +1,61 @@
+// Windows Terminal fragment extension for wbsh.
+//
+// Install path (auto-merged on next WT launch — no settings.json edit):
+//   %LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wbsh\wbsh.json
+//
+// Or, for the Microsoft Store build of Windows Terminal:
+//   %LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\
+//       LocalState\Fragments\wbsh\wbsh.json
+//
+// Once placed, WT shows a "wbsh" entry in the new-tab dropdown that
+// launches `%LOCALAPPDATA%\Programs\wbsh\wbsh.exe` (the path the
+// installer uses) under the bundled `wbsh` colour scheme.
+{
+    "$schema": "https://aka.ms/terminal-profiles-schema",
+
+    "profiles": [
+        {
+            "name": "wbsh",
+            "guid": "{c4b9d2e1-7a3f-4d8c-b5e6-9f2a1c0d4e7b}",
+            "commandline": "%LOCALAPPDATA%\\Programs\\wbsh\\wbsh.exe -i",
+            "icon": "%LOCALAPPDATA%\\Programs\\wbsh\\wbsh.exe",
+            "startingDirectory": "%USERPROFILE%",
+            "hidden": false,
+            "tabTitle": "wbsh",
+            "font": {
+                "face": "Cascadia Code"
+            },
+            "colorScheme": "wbsh",
+            "cursorShape": "bar",
+            "antialiasingMode": "cleartype"
+        }
+    ],
+
+    "schemes": [
+        {
+            "name": "wbsh",
+            "background": "#1A1B26",
+            "foreground": "#C0CAF5",
+            "cursorColor": "#C0CAF5",
+            "selectionBackground": "#283457",
+
+            "black":         "#15161E",
+            "red":           "#F7768E",
+            "green":         "#9ECE6A",
+            "yellow":        "#E0AF68",
+            "blue":          "#7AA2F7",
+            "purple":        "#BB9AF7",
+            "cyan":          "#7DCFFF",
+            "white":         "#A9B1D6",
+
+            "brightBlack":   "#414868",
+            "brightRed":     "#F7768E",
+            "brightGreen":   "#9ECE6A",
+            "brightYellow":  "#E0AF68",
+            "brightBlue":    "#7AA2F7",
+            "brightPurple":  "#BB9AF7",
+            "brightCyan":    "#7DCFFF",
+            "brightWhite":   "#C0CAF5"
+        }
+    ]
+}

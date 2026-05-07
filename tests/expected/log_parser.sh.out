@@ -1,0 +1,13 @@
+=== totals
+total=11
+=== per level (sorted)
+  DEBUG  2
+  ERROR  3
+  INFO   4
+  WARN   2
+=== first error
+2026-05-07 09:02:20 ERROR db connection refused
+=== summary line
+11 events: 3 errors, 2 warnings, 6 other
+status=degraded
+=== done

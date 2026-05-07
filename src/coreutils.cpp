@@ -2952,7 +2952,77 @@ namespace wbsh {
 		bool global = false;
 	};
 
-	static bool sedParseSubst(const std::string& cmd, SedSubst& out, std::string& err) {
+	// Translate a POSIX BRE pattern to its ERE equivalent. MSVC's
+	// `std::regex::basic` engine has greediness bugs with back-to-back
+	// `[^X]*` runs; running everything through the ERE engine after a
+	// purely-syntactic toggle of metacharacter status sidesteps that.
+	//
+	// Toggles outside `[...]`:
+	//   `\(` `\)` `\{` `\}` `\|`  ->  `(` `)` `{` `}` `|`
+	//   `(`  `)`  `{`  `}`  `|`   ->  `\(` `\)` `\{` `\}` `\|`
+	//   `+` `?`                    ->  `\+` `\?`  (literal in BRE)
+	// Inside `[...]` everything is left verbatim.
+	static std::string translateBreToErePattern(const std::string& bre) {
+		std::string out;
+		out.reserve(bre.size());
+		bool in_class = false;
+		bool class_start = false;
+		for (std::size_t i = 0; i < bre.size(); ++i) {
+			const char c = bre[i];
+			if (in_class) {
+				out.push_back(c);
+				// `]` immediately after `[` (or `[^`) is a literal — only
+				// after that does `]` close the class.
+				if (c == ']' && !class_start) { in_class = false; }
+				class_start = false;
+				continue;
+			}
+			if (c == '[') {
+				in_class = true;
+				class_start = true;
+				out.push_back(c);
+				// Allow leading `^` to negate without ending the class.
+				if (i + 1 < bre.size() && bre[i + 1] == '^') {
+					out.push_back('^');
+					++i;
+				}
+				continue;
+			}
+			if (c == '\\' && i + 1 < bre.size()) {
+				const char nx = bre[i + 1];
+				// BRE meta-pairs become bare ERE metas.
+				if (nx == '(' || nx == ')' || nx == '{' || nx == '}'
+				    || nx == '|') {
+					out.push_back(nx);
+					++i;
+					continue;
+				}
+				// Other escapes (incl. `\1`..`\9` backrefs) pass through.
+				out.push_back(c);
+				out.push_back(nx);
+				++i;
+				continue;
+			}
+			// Bare `(`, `)`, `{`, `}`, `|` are literals in BRE.
+			if (c == '(' || c == ')' || c == '{' || c == '}' || c == '|') {
+				out.push_back('\\');
+				out.push_back(c);
+				continue;
+			}
+			// `?` and `+` are literals in BRE (their `\?` / `\+` forms are
+			// undefined; we don't accept them either way).
+			if (c == '?' || c == '+') {
+				out.push_back('\\');
+				out.push_back(c);
+				continue;
+			}
+			out.push_back(c);
+		}
+		return out;
+	}
+
+	static bool sedParseSubst(const std::string& cmd, bool extended,
+	                          SedSubst& out, std::string& err) {
 		if (cmd.size() < 4 || cmd[0] != 's') {
 			err = "only s/PAT/REPL/[g] is supported";
 			return false;
@@ -2995,7 +3065,17 @@ namespace wbsh {
 		if (i < cmd.size()) ++i;   // skip closing delim
 		std::string flags = (i < cmd.size()) ? cmd.substr(i) : std::string();
 		try {
-			out.re = std::regex(pat);
+			// POSIX sed defaults to BRE; -E / -r selects ERE. We always
+			// compile under std::regex::extended — MSVC's std::regex::basic
+			// implementation has greediness bugs with back-to-back negated
+			// classes (`[^X]* [^X]*`). For BRE inputs we translate the
+			// pattern to ERE syntax first; the resulting regex behaves
+			// the same per POSIX semantics but rides on the working
+			// engine.
+			const std::string compiled_pat = extended
+				? pat
+				: translateBreToErePattern(pat);
+			out.re = std::regex(compiled_pat, std::regex::extended);
 		}
 		catch (const std::regex_error& e) {
 			err = std::string("regex: ") + e.what();
@@ -3010,7 +3090,7 @@ namespace wbsh {
 	// positional fragments into a single `;`-separated script string.
 	// Anything left over goes into `files`.
 	static void parseSedArgs(const std::vector<std::string>& args,
-	                         bool& quiet, std::string& script,
+	                         bool& quiet, bool& extended, std::string& script,
 	                         std::vector<std::string>& files) {
 		auto append_script = [&](const std::string& s) {
 			if (!script.empty()) script.push_back(';');
@@ -3019,7 +3099,10 @@ namespace wbsh {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "-n" || a == "--quiet" || a == "--silent") { quiet = true; continue; }
-			if (a == "-E" || a == "-r" || a == "--regexp-extended") continue;
+			if (a == "-E" || a == "-r" || a == "--regexp-extended") {
+				extended = true;
+				continue;
+			}
 			if (a == "--") {
 				for (++i; i < args.size(); ++i) files.push_back(args[i]);
 				break;
@@ -3042,7 +3125,7 @@ namespace wbsh {
 
 	// Parse the `;`-separated `s/.../.../` commands inside a sed script.
 	// Returns false on parse error (already diagnosed).
-	static bool compileSedScript(const std::string& script,
+	static bool compileSedScript(const std::string& script, bool extended,
 	                             std::vector<SedSubst>& out_cmds) {
 		std::size_t s = 0;
 		while (s <= script.size()) {
@@ -3052,7 +3135,7 @@ namespace wbsh {
 			if (!sub.empty()) {
 				SedSubst c;
 				std::string err;
-				if (!sedParseSubst(sub, c, err)) {
+				if (!sedParseSubst(sub, extended, c, err)) {
 					std::fprintf(stderr, "wbsh: sed: %s\n", err.c_str());
 					return false;
 				}
@@ -3100,13 +3183,14 @@ namespace wbsh {
 
 	static int builtin_sed(Executor& exec, const std::vector<std::string>& args) {
 		bool quiet = false;
+		bool extended = false;
 		std::string script;
 		std::vector<std::string> files;
-		parseSedArgs(args, quiet, script, files);
+		parseSedArgs(args, quiet, extended, script, files);
 		if (script.empty()) { perr("sed", "no script provided"); return 2; }
 
 		std::vector<SedSubst> cmds;
-		if (!compileSedScript(script, cmds)) return 2;
+		if (!compileSedScript(script, extended, cmds)) return 2;
 		if (files.empty()) files.push_back("-");
 
 		int rc = 0;

@@ -1,0 +1,17 @@
+=== BRE: capture groups
+bar-123-foo
+=== BRE: leading-number capture
+42
+=== BRE: anchors
+MATCH
+xabc
+=== BRE: zero-or-more
+Xb
+=== ERE: -E enables extended
+bar-123-foo
+a-b
+=== ERE: -r is an alias
+a-b
+=== mixed -e: chain a BRE and an ERE call
+foo-bar
+=== done

@@ -1,0 +1,15 @@
+=== plain
+3
+30
+93
+=== with vars
+11
+20
+=== nested
+14
+20
+=== loop counter pattern
+i=5 sum=10
+=== mixed with $((..))
+a=5 b=5 match=yes
+=== done

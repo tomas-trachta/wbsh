@@ -866,19 +866,34 @@ namespace wbsh {
 		return false;
 	}
 
-	// After locating `]`, verify `]=` follows (either in the same literal
-	// segment or as the leading `=` of the next literal segment).
-	static bool subscriptIsFollowedByEquals(const Token& t,
+	// After locating `]`, check whether `]=` (op_len 1) or `]+=` (op_len 2)
+	// follows. Returns the operator length on match (1 for replace, 2 for
+	// append) or 0 if the token doesn't form a valid `name[k]=...` shape.
+	// The operator may live entirely in `close_seg` or span into the next
+	// literal segment.
+	static std::size_t subscriptAssignOpLen(const Token& t,
 	                                        std::size_t close_seg,
 	                                        std::size_t close_pos) {
 		const auto& close_text = t.segments[close_seg].text;
+		// Same segment: `]=...` or `]+=...`.
 		if (close_pos + 1 < close_text.size()) {
-			return close_text[close_pos + 1] == '=';
+			if (close_text[close_pos + 1] == '=') return 1;
+			if (close_text[close_pos + 1] == '+'
+			    && close_pos + 2 < close_text.size()
+			    && close_text[close_pos + 2] == '=') {
+				return 2;
+			}
+			return 0;
 		}
-		if (close_seg + 1 >= t.segments.size()) return false;
+		// `]` ends close_seg; the operator begins the next literal segment.
+		if (close_seg + 1 >= t.segments.size()) return 0;
 		const auto& nxt = t.segments[close_seg + 1];
-		if (nxt.kind != WordSegment::Kind::Literal) return false;
-		return !nxt.text.empty() && nxt.text[0] == '=';
+		if (nxt.kind != WordSegment::Kind::Literal || nxt.text.empty()) return 0;
+		if (nxt.text[0] == '=') return 1;
+		if (nxt.text.size() >= 2 && nxt.text[0] == '+' && nxt.text[1] == '=') {
+			return 2;
+		}
+		return 0;
 	}
 
 	// Append the subscript content (stripping the surrounding `[` and `]`)
@@ -909,11 +924,13 @@ namespace wbsh {
 		}
 	}
 
-	// Append the value portion (everything after the `=` that follows `]`)
-	// from `t` onto `out_value`.
+	// Append the value portion (everything after the `]<op>` where `<op>`
+	// is `=` or `+=`) from `t` onto `out_value`. `op_len` is 1 for `=` and
+	// 2 for `+=`.
 	static void buildValueWordAfterSubscript(const Token& t,
 	                                         std::size_t close_seg,
 	                                         std::size_t close_pos,
+	                                         std::size_t op_len,
 	                                         Word& out_value) {
 		auto push_literal = [&](std::string text) {
 			if (text.empty()) return;
@@ -924,15 +941,15 @@ namespace wbsh {
 		};
 		const auto& close_text = t.segments[close_seg].text;
 		if (close_pos + 1 < close_text.size()) {
-			// `]=` lives in close_seg; value starts at close_pos + 2.
-			push_literal(close_text.substr(close_pos + 2));
+			// `]<op>` lives in close_seg; value starts at close_pos+1+op_len.
+			push_literal(close_text.substr(close_pos + 1 + op_len));
 			for (std::size_t k = close_seg + 1; k < t.segments.size(); ++k)
 				out_value.segments.push_back(t.segments[k]);
 			return;
 		}
-		// `]` ends close_seg; the leading `=` lives in the next literal.
+		// `]` ends close_seg; `<op>` is the first op_len chars of nxt.
 		const auto& nxt = t.segments[close_seg + 1];
-		push_literal(nxt.text.substr(1));
+		push_literal(nxt.text.substr(op_len));
 		for (std::size_t k = close_seg + 2; k < t.segments.size(); ++k)
 			out_value.segments.push_back(t.segments[k]);
 	}
@@ -970,16 +987,26 @@ namespace wbsh {
 		out.loc = t.loc;
 		out.value.loc = t.loc;
 
+		// `name+=...` append form. Must be checked before `name=...` since
+		// `+=` is the longer operator.
+		if (name_end + 1 < s0.size()
+		    && s0[name_end] == '+' && s0[name_end + 1] == '=') {
+			out.append = true;
+			// Pretend `=` lives at name_end + 1 so the existing builder
+			// peels the value starting at name_end + 2.
+			buildSimpleAssignmentValue(t, name_end + 1, out);
+			return true;
+		}
+
 		// Plain `name=...` (the common case).
 		if (name_end < s0.size() && s0[name_end] == '=') {
 			buildSimpleAssignmentValue(t, name_end, out);
 			return true;
 		}
 
-		// Subscripted `name[...]=...`. The subscript may span multiple
-		// segments (`m[$key]=v` lexes as Lit("m["), SimpleVar("key"),
-		// Lit("]=v")). Caller has already verified the leading `name[`
-		// shape via the early returns above.
+		// Subscripted `name[...]=...` or `name[...]+=...`. Subscript may
+		// span multiple segments (`m[$key]=v` lexes as Lit("m["),
+		// SimpleVar("key"), Lit("]=v")).
 		if (name_end >= s0.size() || s0[name_end] != '[') return false;
 
 		const std::size_t cur_seg = 0;
@@ -988,18 +1015,20 @@ namespace wbsh {
 		std::size_t close_pos = 0;
 		if (!findSubscriptCloseBracket(t, cur_seg, cur_pos, &close_seg, &close_pos))
 			return false;
-		if (!subscriptIsFollowedByEquals(t, close_seg, close_pos))
-			return false;
+		const std::size_t op_len = subscriptAssignOpLen(t, close_seg, close_pos);
+		if (op_len == 0) return false;
 
 		out.has_subscript = true;
+		out.append = (op_len == 2);
 		out.subscript.loc = t.loc;
 		buildSubscriptWord(t, cur_seg, cur_pos, close_seg, close_pos, out.subscript);
-		buildValueWordAfterSubscript(t, close_seg, close_pos, out.value);
+		buildValueWordAfterSubscript(t, close_seg, close_pos, op_len, out.value);
 
-		const auto eqpos = t.text.find("]=");
+		const std::string marker = (op_len == 2) ? "]+=" : "]=";
+		const auto eqpos = t.text.find(marker);
 		out.value.raw = (eqpos == std::string::npos)
 			? std::string()
-			: t.text.substr(eqpos + 2);
+			: t.text.substr(eqpos + marker.size());
 		return true;
 	}
 

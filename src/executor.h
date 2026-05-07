@@ -226,6 +226,12 @@ namespace wbsh {
 		// WBSH_ALIASES so self-spawned children pick them up.
 		std::string serializeAliases() const;
 
+		// Indexed / associative array assignments rendered as runnable
+		// shell. Populates WBSH_ARRAYS so self-spawned children rebuild
+		// the parent's array state. Without this, pipeline self-spawn
+		// drops arrays — only scalars survive the env-block round-trip.
+		std::string serializeArrays() const;
+
 		// Loop / function bookkeeping (for builtins to use).
 		int  loopDepth() const  { return loop_depth_; }
 		int  funcDepth() const  { return func_depth_; }
@@ -251,11 +257,21 @@ namespace wbsh {
 		// the SimpleCommand AST's `assignments` list before the command runs.
 		// Public because the implementation file's small helper functions
 		// (applyArrayAssignToEnv etc.) need to consume them by name.
-		struct ScalarAssign { std::string name; std::string value; };
-		struct ElemAssign   { std::string name; Word subscript; std::string value; };
+		struct ScalarAssign {
+			std::string name;
+			std::string value;
+			bool append = false;    ///< true for `name+=value`
+		};
+		struct ElemAssign {
+			std::string name;
+			Word subscript;
+			std::string value;
+			bool append = false;    ///< true for `name[k]+=value`
+		};
 		struct ArrayAssign  {
 			std::string name;
 			bool sparse = false;   ///< true iff any keyed item is present
+			bool append = false;   ///< true for `name+=(...)`
 			std::vector<std::pair<std::string, std::string>> keyed;   // key,value
 			std::vector<std::string> items;                            // unkeyed
 		};
@@ -442,6 +458,11 @@ namespace wbsh {
 		// function, alias, or anything else that can't run as a separate exe.
 		HANDLE selfSpawnPipelineElement(const Node& elem,
 		                                HANDLE h_in, HANDLE h_out, HANDLE h_err);
+		// Append `<<DELIM` heredoc bodies onto a self-spawn slice. Required
+		// because the SimpleCommand's source span ends at the delimiter
+		// word — the body lives on later lines and would be lost otherwise.
+		void   appendHeredocBodiesToSlice(const SimpleCommand& sc,
+		                                  std::string& slice);
 		// Env-block overrides passed to a self-spawned child shell so it
 		// inherits our full state (translated PATH, serialised functions
 		// and aliases, non-exported var marker).

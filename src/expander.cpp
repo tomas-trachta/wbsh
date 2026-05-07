@@ -518,6 +518,20 @@ namespace wbsh {
 		return k;
 	}
 
+	// Find the index of the matching `]` for `$[...]` starting at `after_open`.
+	// Mirror of scanBalancedParens: nested `[` increments the depth.
+	static std::size_t scanBalancedBrackets(const std::string& body,
+	                                        std::size_t after_open) {
+		std::size_t k = after_open;
+		int depth = 1;
+		while (k < body.size() && depth > 0) {
+			if (body[k] == '[') ++depth;
+			else if (body[k] == ']') --depth;
+			if (depth > 0) ++k;
+		}
+		return k;
+	}
+
 	// Apply backslash-escape rules used in unquoted heredoc bodies (and the
 	// inside of double-quoted strings). Returns true if `body[i]` was a
 	// recognised escape; on true, `i` is advanced and characters may be
@@ -567,6 +581,19 @@ namespace wbsh {
 		// k is at the second ')'. The inner expression ends one before that.
 		const std::size_t inner_end = (k > 0) ? k - 1 : 0;
 		const std::string inner = body.substr(i + 3, inner_end - (i + 3));
+		const long long v = evalArith(inner);
+		out += std::to_string(v);
+		i = (k < end) ? k + 1 : end;
+	}
+
+	// `$[...]` legacy arithmetic expansion. Sibling of expandHeredocArith
+	// for the bracketed form. Caller has verified body[i+1]=='['.
+	void Expander::expandHeredocArithBracket(const std::string& body, std::size_t& i,
+	                                         std::string& out)
+	{
+		const std::size_t end = body.size();
+		const std::size_t k = scanBalancedBrackets(body, i + 2);
+		const std::string inner = body.substr(i + 2, k - (i + 2));
 		const long long v = evalArith(inner);
 		out += std::to_string(v);
 		i = (k < end) ? k + 1 : end;
@@ -650,6 +677,7 @@ namespace wbsh {
 						expandHeredocCmdSubst(body, i, out);
 					continue;
 				}
+				if (n1 == '[') { expandHeredocArithBracket(body, i, out); continue; }
 				if (isNameStart(n1) || std::isdigit(static_cast<unsigned char>(n1))
 				    || isSpecialParam1(n1)) {
 					expandHeredocSimpleParam(body, i, out);

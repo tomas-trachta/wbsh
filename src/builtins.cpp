@@ -626,9 +626,11 @@ namespace wbsh {
 	// Walk the leading `-r` / `-p prompt` / `--` options of a `read` invocation.
 	// Returns the index of the first non-option arg (the variable list).
 	static std::size_t parseReadFlags(const std::vector<std::string>& args,
-	                                  bool* out_raw, std::string* out_prompt) {
+	                                  bool* out_raw, std::string* out_prompt,
+	                                  std::string* out_array_name) {
 		*out_raw = false;
 		out_prompt->clear();
+		out_array_name->clear();
 		std::size_t i = 0;
 		while (i < args.size() && !args[i].empty() && args[i][0] == '-') {
 			const std::string& f = args[i];
@@ -636,6 +638,17 @@ namespace wbsh {
 			if (f == "-r") { *out_raw = true; ++i; continue; }
 			if (f == "-p") {
 				if (i + 1 < args.size()) { *out_prompt = args[i + 1]; i += 2; continue; }
+				++i;
+				continue;
+			}
+			if (f == "-a") {
+				// `read -a NAME` — every input field becomes one element of
+				// the indexed array NAME, replacing any prior value.
+				if (i + 1 < args.size()) {
+					*out_array_name = args[i + 1];
+					i += 2;
+					continue;
+				}
 				++i;
 				continue;
 			}
@@ -720,7 +733,8 @@ namespace wbsh {
 	static int builtin_read(Executor& exec, const std::vector<std::string>& args) {
 		bool raw = false;
 		std::string prompt;
-		const std::size_t i = parseReadFlags(args, &raw, &prompt);
+		std::string array_name;
+		const std::size_t i = parseReadFlags(args, &raw, &prompt, &array_name);
 
 		if (!prompt.empty()) {
 			std::fwrite(prompt.data(), 1, prompt.size(), stderr);
@@ -730,13 +744,20 @@ namespace wbsh {
 		std::string line;
 		if (!readOneLineFromStdin(raw, line)) return 1;
 
-		std::vector<std::string> names(args.begin() + i, args.end());
-		if (names.empty()) names.push_back("REPLY");
-
 		std::string ifs = exec.env().get("IFS");
 		if (ifs.empty()) ifs = " \t\n";
 
-		const auto fields = splitReadLine(line, ifs);
+		auto fields = splitReadLine(line, ifs);
+
+		// `-a NAME` short-circuits the per-name distribution: every field
+		// becomes one element of the indexed array NAME.
+		if (!array_name.empty()) {
+			exec.env().setIndexedArrayFromList(array_name, std::move(fields));
+			return 0;
+		}
+
+		std::vector<std::string> names(args.begin() + i, args.end());
+		if (names.empty()) names.push_back("REPLY");
 		assignReadFields(exec.env(), names, fields);
 		return 0;
 	}

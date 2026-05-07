@@ -1,0 +1,28 @@
+=== 1. factorial via recursion (returns via stdout)
+  0! = 1
+  1! = 1
+  2! = 2
+  3! = 6
+  5! = 120
+  7! = 5040
+  10! = 3628800
+=== 2. fibonacci (return value via stdout)
+  fib(0) = 0
+  fib(1) = 1
+  fib(5) = 5
+  fib(10) = 55
+=== 3. recursion respects local vars
+bottom marker=d3
+after-recurse marker=d2
+after-recurse marker=d1
+after-recurse marker=d0
+=== 4. return value (rc) plumbing
+  chk good -> 0
+  chk bad -> 1
+  chk warn -> 2
+=== 5. mutual recursion
+  0 is even
+  1 is odd
+  4 is even
+  7 is odd
+=== done

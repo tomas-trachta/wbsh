@@ -1,0 +1,27 @@
+=== 1. unquoted delim - parameter / cmdsubst / arith expand
+hello world
+result: computed
+math: 6
+literal-tilde: ~
+=== 2. single-quoted delim - body is verbatim
+hello $NAME
+result: $(echo computed)
+math: $((1 + 2 + 3))
+=== 3. double-quoted delim - same as single (no expansion)
+hello $NAME
+=== 4. <<- strips ONLY leading tabs, not spaces
+tab-indented (stripped)
+double-tab (stripped)
+    space-indented (kept)
+mixed	tab	in	the	middle
+=== 5. heredoc inside a function
+greet for alice, count=42
+=== 6. heredoc piped into another command
+SHOUTING AT WORLD
+=== 7. heredoc with backslash escapes
+backslash-escape-of-dollar: $NAME
+backslash-escape-of-backslash: \
+backslash-other: \x
+=== 8. heredoc redirected to a file then back
+saved world
+=== done

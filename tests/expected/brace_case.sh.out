@@ -1,0 +1,30 @@
+=== 1. brace expansion: list
+a b c
+=== 2. brace: numeric range
+1 2 3 4 5
+=== 3. brace: numeric range with step
+0 2 4 6 8 10
+=== 4. brace: alpha range
+a b c d e
+=== 5. brace: prefix and suffix
+pre-a-post pre-b-post pre-c-post
+=== 6. brace: cartesian product (two adjacent groups)
+a1 a2 b1 b2
+=== 7. brace: nested
+a bd cd
+=== 8. case with multiple patterns
+  [a]        -> letter abc
+  [b]        -> letter abc
+  [c]        -> letter abc
+  [1]        -> digit
+  [X]        -> starts upper
+  [HELLO]    -> starts upper
+  [foo.txt]  -> txt file
+  [bar.cpp]  -> has extension
+  [baz]      -> other [baz]
+  []         -> empty
+  [9z]       -> other [9z]
+=== 9. case with literal star (quoted glob)
+literal star
+literal star
+=== done

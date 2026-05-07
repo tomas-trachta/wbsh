@@ -202,6 +202,12 @@ namespace wbsh {
 		// Stops at the matching "))". Respects strings and nested ((..)).
 		std::string readBalancedDoubleParens();
 
+		// Capture a `$[...]` (legacy bash arithmetic) body, starting past
+		// the opening `[`. Stops at the matching `]`. Respects strings
+		// and nested `[...]` so that array subscripts inside the
+		// expression don't terminate the form prematurely.
+		std::string readBalancedBrackets();
+
 		// Verbatim-copy helpers shared by the readBalanced* family. Each
 		// consumes exactly one syntactic unit (escape, quoted string,
 		// substitution) and appends the matched span to `out`.

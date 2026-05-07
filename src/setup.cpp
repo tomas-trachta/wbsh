@@ -271,6 +271,11 @@ namespace wbsh {
 			env.unset("WBSH_ALIASES");
 			exec.executeText(inherited_aliases, "<inherited aliases>");
 		}
+		std::string inherited_arrays = env.get("WBSH_ARRAYS");
+		if (!inherited_arrays.empty()) {
+			env.unset("WBSH_ARRAYS");
+			exec.executeText(inherited_arrays, "<inherited arrays>");
+		}
 	}
 
 }  // namespace wbsh
