@@ -147,6 +147,7 @@
     <ClInclude Include="src\setup.h" />
     <ClInclude Include="src\repl.h" />
     <ClInclude Include="src\script.h" />
+    <ClInclude Include="src\coreutils_internal.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp" />
@@ -157,6 +158,9 @@
     <ClCompile Include="src\executor.cpp" />
     <ClCompile Include="src\builtins.cpp" />
     <ClCompile Include="src\coreutils.cpp" />
+    <ClCompile Include="src\coreutils_bc.cpp" />
+    <ClCompile Include="src\coreutils_curl.cpp" />
+    <ClCompile Include="src\coreutils_hash.cpp" />
     <ClCompile Include="src\pathconv.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\awk.cpp" />

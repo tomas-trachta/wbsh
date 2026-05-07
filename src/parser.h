@@ -114,6 +114,11 @@ namespace wbsh {
 		// Try to interpret a Word token as `name=value`. Returns false if the
 		// token does not have the assignment shape.
 		bool extractAssignment(const Token& t, Assignment& out) const;
+		// Helpers for parseSimpleCommand — extract the array-literal sub-grammar
+		// (`arr=(...)`) and the leading-assignment-vs-word disambiguation.
+		bool tryConsumeLeadingAssignment(SimpleCommand& cmd);
+		void parseArrayLiteralBody(Assignment& a);
+		void parseArrayLiteralItem(Assignment& a);
 
 		// ---- State ----
 		std::vector<Token> toks_;

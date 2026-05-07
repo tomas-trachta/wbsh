@@ -19,11 +19,7 @@
 #  define NOMINMAX
 #  include <windows.h>
 
-#  include <bcrypt.h>
 #  include <io.h>
-#  include <winhttp.h>
-#  pragma comment(lib, "bcrypt.lib")
-#  pragma comment(lib, "winhttp.lib")
 #endif /* _WIN32 */
 
 #include <algorithm>
@@ -44,6 +40,7 @@
 #include <vector>
 
 #include "awk.h"
+#include "coreutils_internal.h"
 #include "executor.h"
 #include "inflate.h"
 
@@ -336,22 +333,22 @@ namespace wbsh {
 		}
 	}
 
-	static int builtin_ls(Executor& exec, const std::vector<std::string>& args) {
-		LsOpts opts;
-		std::vector<std::string> paths;
+	// Returns 0 on success, 2 on unknown short option (with diagnostic).
+	static int parseLsArgs(const std::vector<std::string>& args,
+	                       LsOpts& opts, std::vector<std::string>& paths) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "--") {
 				for (++i; i < args.size(); ++i) paths.push_back(args[i]);
 				break;
 			}
-			if (a == "--color" || a == "--color=auto") opts.color = LsOpts::Auto;
+			if      (a == "--color" || a == "--color=auto")  opts.color = LsOpts::Auto;
 			else if (a == "--color=always" || a == "--color=yes") opts.color = LsOpts::Always;
-			else if (a == "--color=never" || a == "--color=no")  opts.color = LsOpts::Never;
-			else if (a == "--all")         opts.all = true;
+			else if (a == "--color=never"  || a == "--color=no")  opts.color = LsOpts::Never;
+			else if (a == "--all")            opts.all = true;
 			else if (a == "--human-readable") opts.human = true;
-			else if (a == "--reverse")     opts.reverse = true;
-			else if (a == "--classify")    opts.classify = true;
+			else if (a == "--reverse")        opts.reverse = true;
+			else if (a == "--classify")       opts.classify = true;
 			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 				for (std::size_t k = 1; k < a.size(); ++k) {
 					switch (a[k]) {
@@ -374,15 +371,49 @@ namespace wbsh {
 			}
 		}
 		if (paths.empty()) paths.push_back(".");
+		return 0;
+	}
 
-		bool use_color = (opts.color == LsOpts::Always)
+	// Collect the directory entries of `target` into `items`. Filters
+	// hidden files unless opts.all. Returns false (with diagnostic) on
+	// iteration error.
+	static bool collectLsDirectoryEntries(const fs::path& target, const LsOpts& opts,
+	                                      const std::string& source_path,
+	                                      std::vector<LsEntry>& items) {
+		std::error_code ec;
+		fs::directory_iterator it(target, ec);
+		if (ec) {
+			perr("ls", source_path, ec);
+			return false;
+		}
+		for (const auto& de : it) {
+			std::string name;
+			try { name = pathToUtf8(de.path().filename()); }
+			catch (...) { continue; }
+			LsEntry e = collect(target, name);
+			if (!opts.all && e.is_hidden) continue;
+			items.push_back(std::move(e));
+		}
+		return true;
+	}
+
+	static void emitLsItems(const std::vector<LsEntry>& items, const LsOpts& opts,
+	                        bool use_color, Executor& exec) {
+		if (opts.long_fmt) printLong(items, opts, use_color, exec);
+		else               printColumns(items, opts, use_color);
+	}
+
+	static int builtin_ls(Executor& exec, const std::vector<std::string>& args) {
+		LsOpts opts;
+		std::vector<std::string> paths;
+		const int parse_rc = parseLsArgs(args, opts, paths);
+		if (parse_rc != 0) return parse_rc;
+
+		const bool use_color = (opts.color == LsOpts::Always)
 			|| (opts.color == LsOpts::Auto && stdoutIsTty());
-		// classify is implicit with -F; otherwise off.
-		bool classify_set = opts.classify;
-		(void)classify_set;
 
 		int rc = 0;
-		bool show_headers = paths.size() > 1;
+		const bool show_headers = paths.size() > 1;
 		for (std::size_t pi = 0; pi < paths.size(); ++pi) {
 			const std::string& p = paths[pi];
 			fs::path target = toNative(exec, p);
@@ -399,31 +430,17 @@ namespace wbsh {
 					if (pi) std::fputc('\n', stdout);
 					std::fprintf(stdout, "%s:\n", p.c_str());
 				}
-				fs::directory_iterator it(target, ec);
-				if (ec) { perr("ls", p, ec); rc = 1; continue; }
-				for (const auto& de : it) {
-					std::string name;
-					try { name = pathToUtf8(de.path().filename()); }
-					catch (...) { continue; }
-					LsEntry e = collect(target, name);
-					if (!opts.all && e.is_hidden) continue;
-					items.push_back(std::move(e));
+				if (!collectLsDirectoryEntries(target, opts, p, items)) {
+					rc = 1;
+					continue;
 				}
-			}
-			else {
+			} else {
 				LsEntry e = collect(fs::path(), p);
 				e.name = p;   // preserve user-supplied spelling
 				items.push_back(std::move(e));
 			}
 			sortEntries(items, opts);
-			if (opts.long_fmt) {
-				std::uintmax_t total_blocks = 0;
-				(void)total_blocks;
-				printLong(items, opts, use_color, exec);
-			}
-			else {
-				printColumns(items, opts, use_color);
-			}
+			emitLsItems(items, opts, use_color, exec);
 		}
 		std::fflush(stdout);
 		return rc;
@@ -1791,241 +1808,360 @@ namespace wbsh {
 
 	// ---- grep ------------------------------------------------------------
 
-	static int builtin_grep(Executor& exec, const std::vector<std::string>& args) {
-		bool icase = false, invert = false, line_no = false, count_only = false;
-		bool fixed = false, list_only = false, quiet = false, recursive = false;
-		bool whole_line = false;
-		std::string pattern;
-		std::vector<std::string> files;
+	namespace grep_internal {
+		struct GrepOptions {
+			bool icase = false;
+			bool invert = false;
+			bool line_no = false;
+			bool count_only = false;
+			bool fixed = false;
+			bool list_only = false;
+			bool quiet = false;
+			bool recursive = false;
+			bool whole_line = false;
+			std::string pattern;
+			std::vector<std::string> files;
+		};
+
+		// Per-line matcher state. Borrows `opts` and `re` from the caller; both
+		// must outlive the matcher. `lower_pat` is owned and is the lowercased
+		// pattern used for case-insensitive fixed-string matching.
+		struct GrepMatcher {
+			const GrepOptions* opts = nullptr;
+			const std::regex*  re   = nullptr;
+			std::string        lower_pat;
+		};
+	}  // namespace grep_internal
+
+	// Apply one short-option char (one cluster letter at a time).
+	// Returns false on unknown option (caller prints error and returns 2).
+	static bool applyGrepShortFlag(char c, grep_internal::GrepOptions& o) {
+		switch (c) {
+		case 'i': o.icase = true; return true;
+		case 'v': o.invert = true; return true;
+		case 'n': o.line_no = true; return true;
+		case 'c': o.count_only = true; return true;
+		case 'F': o.fixed = true; return true;
+		case 'E': return true;                 // ERE — accept, no-op
+		case 'l': o.list_only = true; return true;
+		case 'q': o.quiet = true; return true;
+		case 'r': case 'R': o.recursive = true; return true;
+		case 'x': o.whole_line = true; return true;
+		default:  return false;
+		}
+	}
+
+	// Returns 0 on success, 2 on unknown option (matching GNU grep's exit
+	// code for bad flags).
+	static int parseGrepArgs(const std::vector<std::string>& args,
+	                         grep_internal::GrepOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "--") {
 				for (++i; i < args.size(); ++i) {
-					if (pattern.empty()) pattern = args[i];
-					else files.push_back(args[i]);
-				} break;
+					if (o.pattern.empty()) o.pattern = args[i];
+					else o.files.push_back(args[i]);
+				}
+				break;
 			}
-			if (a == "-e" && i + 1 < args.size()) { pattern = args[++i]; continue; }
-			if (a == "-i" || a == "--ignore-case") { icase = true; continue; }
-			if (a == "-v" || a == "--invert-match") { invert = true; continue; }
-			if (a == "-n" || a == "--line-number") { line_no = true; continue; }
-			if (a == "-c" || a == "--count") { count_only = true; continue; }
-			if (a == "-F" || a == "--fixed-strings") { fixed = true; continue; }
-			if (a == "-E" || a == "--extended-regexp") { continue; }
-			if (a == "-l") { list_only = true; continue; }
-			if (a == "-q" || a == "--quiet" || a == "--silent") { quiet = true; continue; }
-			if (a == "-r" || a == "-R" || a == "--recursive") { recursive = true; continue; }
-			if (a == "-x" || a == "--line-regexp") { whole_line = true; continue; }
+			if (a == "-e" && i + 1 < args.size()) { o.pattern = args[++i]; continue; }
+			if (a == "-i" || a == "--ignore-case")     { o.icase      = true; continue; }
+			if (a == "-v" || a == "--invert-match")    { o.invert     = true; continue; }
+			if (a == "-n" || a == "--line-number")     { o.line_no    = true; continue; }
+			if (a == "-c" || a == "--count")           { o.count_only = true; continue; }
+			if (a == "-F" || a == "--fixed-strings")   { o.fixed      = true; continue; }
+			if (a == "-E" || a == "--extended-regexp") continue;
+			if (a == "-l")                                                 { o.list_only  = true; continue; }
+			if (a == "-q" || a == "--quiet" || a == "--silent")            { o.quiet      = true; continue; }
+			if (a == "-r" || a == "-R" || a == "--recursive")              { o.recursive  = true; continue; }
+			if (a == "-x" || a == "--line-regexp")                         { o.whole_line = true; continue; }
+
+			// Short-flag cluster.
 			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 				for (std::size_t k = 1; k < a.size(); ++k) {
-					switch (a[k]) {
-					case 'i': icase = true; break;
-					case 'v': invert = true; break;
-					case 'n': line_no = true; break;
-					case 'c': count_only = true; break;
-					case 'F': fixed = true; break;
-					case 'E': break;
-					case 'l': list_only = true; break;
-					case 'q': quiet = true; break;
-					case 'r': case 'R': recursive = true; break;
-					case 'x': whole_line = true; break;
-					default:
+					if (!applyGrepShortFlag(a[k], o)) {
 						std::fprintf(stderr, "wbsh: grep: unknown option -%c\n", a[k]);
 						return 2;
 					}
 				}
 				continue;
 			}
-			if (pattern.empty()) pattern = a;
-			else files.push_back(a);
-		}
-		if (pattern.empty()) { perr("grep", "missing pattern"); return 2; }
-		if (files.empty()) files.push_back(recursive ? "." : "-");
 
-		// -r: expand any directory arg into the files it contains.
-		if (recursive) {
-			std::vector<std::string> expanded;
-			for (const auto& f : files) {
-				if (f == "-") { expanded.push_back(f); continue; }
-				fs::path nat = toNative(exec, f);
-				std::error_code ec;
-				if (!fs::is_directory(nat, ec)) {
-					expanded.push_back(f);
-					continue;
-				}
-				fs::recursive_directory_iterator it(nat,
-					fs::directory_options::skip_permission_denied, ec);
-				if (ec) continue;
-				for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
-					if (ec) break;
-					std::error_code fec;
-					if (cur->is_regular_file(fec)) {
-						std::string p = pathToUtf8(cur->path());
-						std::replace(p.begin(), p.end(), '\\', '/');
-						expanded.push_back(p);
-					}
-				}
-			}
-			files = std::move(expanded);
+			// Positionals: first one is the pattern, rest are files.
+			if (o.pattern.empty()) o.pattern = a;
+			else o.files.push_back(a);
 		}
-
-		std::regex::flag_type flags = std::regex::ECMAScript;
-		if (icase) flags |= std::regex::icase;
-		std::regex re;
-		if (!fixed) {
-			try { re = std::regex(pattern, flags); }
-			catch (const std::regex_error& e) {
-				perr("grep", std::string("bad pattern: ") + e.what());
-				return 2;
-			}
-		}
-		std::string lower_pat;
-		if (fixed && icase) {
-			lower_pat = pattern;
-			for (char& c : lower_pat) c = static_cast<char>(std::tolower((unsigned char)c));
-		}
-
-		auto match_line = [&](const std::string& line) {
-			if (fixed) {
-				if (whole_line) {
-					if (line.size() != pattern.size()) return false;
-					if (!icase) return line == pattern;
-					for (std::size_t k = 0; k < line.size(); ++k) {
-						if (std::tolower((unsigned char)line[k]) !=
-						    std::tolower((unsigned char)pattern[k])) return false;
-					}
-					return true;
-				}
-				if (!icase) return line.find(pattern) != std::string::npos;
-				std::string lo = line;
-				for (char& c : lo) c = static_cast<char>(std::tolower((unsigned char)c));
-				return lo.find(lower_pat) != std::string::npos;
-			}
-			if (whole_line) return std::regex_match(line, re);
-			return std::regex_search(line, re);
-			};
-
-		bool any_match = false;
-		bool show_filename = files.size() > 1;
-		int rc = 1;   // default: no matches
-		for (const auto& f : files) {
-			std::vector<std::string> lines;
-			if (!readAllLines(exec, f, lines)) {
-				perr("grep", f + ": " + std::strerror(errno));
-				rc = 2;
-				continue;
-			}
-			int file_count = 0;
-			bool file_any = false;
-			for (std::size_t k = 0; k < lines.size(); ++k) {
-				bool m = match_line(lines[k]);
-				if (invert) m = !m;
-				if (!m) continue;
-				++file_count;
-				file_any = true;
-				any_match = true;
-				if (quiet) goto next_file;
-				if (list_only) { std::printf("%s\n", f.c_str()); break; }
-				if (count_only) continue;
-				if (show_filename) std::printf("%s:", f.c_str());
-				if (line_no) std::printf("%zu:", k + 1);
-				std::printf("%s\n", lines[k].c_str());
-			}
-			if (count_only && !list_only && !quiet) {
-				if (show_filename) std::printf("%s:", f.c_str());
-				std::printf("%d\n", file_count);
-			}
-		next_file:
-			(void)file_any;
-		}
-		std::fflush(stdout);
-		if (quiet) return any_match ? 0 : 1;
-		return any_match ? 0 : rc;
+		return 0;
 	}
 
-	// ---- find ------------------------------------------------------------
-
-	static int builtin_find(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> roots;
-		std::string name_pat;
-		char type_filter = 0;   // 0 = any, 'f' = file, 'd' = dir, 'l' = symlink
-		int max_depth = -1;
-		std::size_t i = 0;
-		while (i < args.size()) {
-			const std::string& a = args[i];
-			if (a == "-name" && i + 1 < args.size()) { name_pat = args[++i]; ++i; continue; }
-			if (a == "-type" && i + 1 < args.size()) {
-				if (!args[i + 1].empty()) type_filter = args[i + 1][0];
-				i += 2; continue;
-			}
-			if (a == "-maxdepth" && i + 1 < args.size()) {
-				try { max_depth = std::stoi(args[++i]); ++i; continue; }
-				catch (...) { perr("find", "bad -maxdepth"); return 1; }
-			}
-			if (!a.empty() && a[0] == '-') {
-				std::fprintf(stderr, "wbsh: find: option %s not implemented\n", a.c_str());
-				return 1;
-			}
-			roots.push_back(a);
-			++i;
-		}
-		if (roots.empty()) roots.push_back(".");
-
-		auto match_name = [&](const std::string& name) {
-			if (name_pat.empty()) return true;
-			// Lightweight glob: treat * and ? like fnmatch.
-			std::regex_constants::syntax_option_type fl = std::regex::ECMAScript;
-			std::string r;
-			for (char c : name_pat) {
-				switch (c) {
-				case '*': r += ".*"; break;
-				case '?': r += "."; break;
-				case '.': case '+': case '(': case ')': case '|': case '^':
-				case '$': case '{': case '}': case '\\':
-					r.push_back('\\'); r.push_back(c); break;
-				default: r.push_back(c); break;
-				}
-			}
-			try { return std::regex_match(name, std::regex(r, fl)); }
-			catch (...) { return false; }
-			};
-
-		auto pass_type = [&](const fs::path& p) {
+	// `-r`: descend each directory in `files`, replacing it with its
+	// regular-file contents. Stdin marker `-` is preserved.
+	static std::vector<std::string> expandGrepRecursive(Executor& exec,
+	                                                    const std::vector<std::string>& files) {
+		std::vector<std::string> out;
+		for (const auto& f : files) {
+			if (f == "-") { out.push_back(f); continue; }
+			fs::path nat = toNative(exec, f);
 			std::error_code ec;
-			if (type_filter == 0) return true;
-			auto st = fs::symlink_status(p, ec);
-			if (ec) return false;
-			if (type_filter == 'l') return fs::is_symlink(st);
-			if (type_filter == 'd') return fs::is_directory(st);
-			if (type_filter == 'f') return fs::is_regular_file(st);
-			return true;
-			};
-
-		int rc = 0;
-		for (const auto& r : roots) {
-			std::error_code ec;
-			fs::path nat(toNative(exec, r));
-			if (!fs::exists(nat, ec)) {
-				std::fprintf(stderr, "wbsh: find: %s: no such file or directory\n", r.c_str());
-				rc = 1;
+			if (!fs::is_directory(nat, ec)) {
+				out.push_back(f);
 				continue;
 			}
-			// Print root itself if it matches.
-			if (pass_type(nat) && match_name(pathToUtf8(nat.filename()).empty() ? r : pathToUtf8(nat.filename()))) {
-				std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(nat)).c_str());
-			}
-			if (!fs::is_directory(nat, ec)) continue;
 			fs::recursive_directory_iterator it(nat,
 				fs::directory_options::skip_permission_denied, ec);
 			if (ec) continue;
 			for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
 				if (ec) break;
-				if (max_depth >= 0 && cur.depth() >= max_depth) cur.disable_recursion_pending();
-				fs::path p = cur->path();
-				if (!pass_type(p)) continue;
-				if (!match_name(pathToUtf8(p.filename()))) continue;
-				std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(p)).c_str());
+				std::error_code fec;
+				if (cur->is_regular_file(fec)) {
+					std::string p = pathToUtf8(cur->path());
+					std::replace(p.begin(), p.end(), '\\', '/');
+					out.push_back(std::move(p));
+				}
 			}
+		}
+		return out;
+	}
+
+	// Initialise `out` so matchesGrepLine() can be called against `o` and
+	// `re`. The matcher borrows both — they must outlive it.
+	static void prepareGrepMatcher(const grep_internal::GrepOptions& o,
+	                               const std::regex& re,
+	                               grep_internal::GrepMatcher& out) {
+		out.opts = &o;
+		out.re   = &re;
+		out.lower_pat.clear();
+		if (o.fixed && o.icase) {
+			out.lower_pat = o.pattern;
+			for (char& c : out.lower_pat)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		}
+	}
+
+	// Test whether `line` matches under `m`. Replaces what used to be the
+	// closure produced by makeGrepMatcher: fixed-string vs regex, plus the
+	// case-insensitive and whole-line variants.
+	static bool matchesGrepLine(const grep_internal::GrepMatcher& m,
+	                            const std::string& line) {
+		const grep_internal::GrepOptions& o = *m.opts;
+		if (o.fixed) {
+			if (o.whole_line) {
+				if (line.size() != o.pattern.size()) return false;
+				if (!o.icase) return line == o.pattern;
+				for (std::size_t k = 0; k < line.size(); ++k) {
+					if (std::tolower(static_cast<unsigned char>(line[k])) !=
+					    std::tolower(static_cast<unsigned char>(o.pattern[k])))
+						return false;
+				}
+				return true;
+			}
+			if (!o.icase) return line.find(o.pattern) != std::string::npos;
+			std::string lo = line;
+			for (char& c : lo)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			return lo.find(m.lower_pat) != std::string::npos;
+		}
+		if (o.whole_line) return std::regex_match(line, *m.re);
+		return std::regex_search(line, *m.re);
+	}
+
+	// Scan one file's lines against `matcher`, emitting matches per the
+	// grep options. Sets `*any_match` if anything matched in any file
+	// (across calls). Returns 1 if the file's I/O failed.
+	static int grepOneFile(const std::string& f,
+	                       const grep_internal::GrepOptions& o,
+	                       const grep_internal::GrepMatcher& matcher,
+	                       bool show_filename, bool* any_match, Executor& exec) {
+		std::vector<std::string> lines;
+		if (!readAllLines(exec, f, lines)) {
+			perr("grep", f + ": " + std::strerror(errno));
+			return 2;
+		}
+		int file_count = 0;
+		for (std::size_t k = 0; k < lines.size(); ++k) {
+			bool m = matchesGrepLine(matcher, lines[k]);
+			if (o.invert) m = !m;
+			if (!m) continue;
+
+			++file_count;
+			*any_match = true;
+			if (o.quiet) return 0;          // caller short-circuits anyway
+			if (o.list_only) { std::printf("%s\n", f.c_str()); return 0; }
+			if (o.count_only) continue;
+			if (show_filename) std::printf("%s:", f.c_str());
+			if (o.line_no)     std::printf("%zu:", k + 1);
+			std::printf("%s\n", lines[k].c_str());
+		}
+		if (o.count_only && !o.list_only && !o.quiet) {
+			if (show_filename) std::printf("%s:", f.c_str());
+			std::printf("%d\n", file_count);
+		}
+		return 0;
+	}
+
+	static int builtin_grep(Executor& exec, const std::vector<std::string>& args) {
+		grep_internal::GrepOptions o;
+		const int parse_rc = parseGrepArgs(args, o);
+		if (parse_rc != 0) return parse_rc;
+
+		if (o.pattern.empty()) { perr("grep", "missing pattern"); return 2; }
+		if (o.files.empty())   o.files.push_back(o.recursive ? "." : "-");
+		if (o.recursive)       o.files = expandGrepRecursive(exec, o.files);
+
+		std::regex re;
+		if (!o.fixed) {
+			std::regex::flag_type flags = std::regex::ECMAScript;
+			if (o.icase) flags |= std::regex::icase;
+			try { re = std::regex(o.pattern, flags); }
+			catch (const std::regex_error& e) {
+				perr("grep", std::string("bad pattern: ") + e.what());
+				return 2;
+			}
+		}
+		grep_internal::GrepMatcher matcher;
+		prepareGrepMatcher(o, re, matcher);
+
+		bool any_match = false;
+		const bool show_filename = o.files.size() > 1;
+		int rc = 1;   // default: no match
+		for (const auto& f : o.files) {
+			const int file_rc = grepOneFile(f, o, matcher, show_filename, &any_match, exec);
+			if (file_rc == 2) rc = 2;
+		}
+		std::fflush(stdout);
+		if (o.quiet) return any_match ? 0 : 1;
+		return any_match ? 0 : rc;
+	}
+
+	// ---- find ------------------------------------------------------------
+
+	namespace find_internal {
+		struct FindOptions {
+			std::vector<std::string> roots;
+			std::string name_pat;
+			char type_filter = 0;   // 0 = any, 'f', 'd', 'l'
+			int max_depth = -1;
+		};
+	}  // namespace find_internal
+
+	// Returns 0 on success, 1 on a recoverable usage error (bad option).
+	static int parseFindArgs(const std::vector<std::string>& args,
+	                         find_internal::FindOptions& o) {
+		std::size_t i = 0;
+		while (i < args.size()) {
+			const std::string& a = args[i];
+			if (a == "-name" && i + 1 < args.size()) {
+				o.name_pat = args[++i];
+				++i;
+				continue;
+			}
+			if (a == "-type" && i + 1 < args.size()) {
+				if (!args[i + 1].empty()) o.type_filter = args[i + 1][0];
+				i += 2;
+				continue;
+			}
+			if (a == "-maxdepth" && i + 1 < args.size()) {
+				try {
+					o.max_depth = std::stoi(args[++i]);
+					++i;
+				} catch (...) {
+					perr("find", "bad -maxdepth");
+					return 1;
+				}
+				continue;
+			}
+			if (!a.empty() && a[0] == '-') {
+				std::fprintf(stderr,
+					"wbsh: find: option %s not implemented\n", a.c_str());
+				return 1;
+			}
+			o.roots.push_back(a);
+			++i;
+		}
+		if (o.roots.empty()) o.roots.push_back(".");
+		return 0;
+	}
+
+	// Compile the `-name` glob (with * / ?) into a regex matcher. Empty
+	// pattern means "match anything".
+	static bool findNameMatches(const std::string& name_pat, const std::string& name) {
+		if (name_pat.empty()) return true;
+		std::string r;
+		for (char c : name_pat) {
+			switch (c) {
+			case '*': r += ".*"; break;
+			case '?': r += ".";  break;
+			case '.': case '+': case '(': case ')': case '|':
+			case '^': case '$': case '{': case '}': case '\\':
+				r.push_back('\\');
+				r.push_back(c);
+				break;
+			default:  r.push_back(c); break;
+			}
+		}
+		try { return std::regex_match(name, std::regex(r, std::regex::ECMAScript)); }
+		catch (...) { return false; }
+	}
+
+	static bool findTypeMatches(char type_filter, const fs::path& p) {
+		if (type_filter == 0) return true;
+		std::error_code ec;
+		const auto st = fs::symlink_status(p, ec);
+		if (ec) return false;
+		if (type_filter == 'l') return fs::is_symlink(st);
+		if (type_filter == 'd') return fs::is_directory(st);
+		if (type_filter == 'f') return fs::is_regular_file(st);
+		return true;
+	}
+
+	// Walk one root, emitting matching paths (relative to the original root
+	// shape — POSIX-form via PathConv).
+	static void walkAndPrintFindMatches(Executor& exec,
+	                                    const find_internal::FindOptions& o,
+	                                    const fs::path& nat,
+	                                    const std::string& root_arg) {
+		std::error_code ec;
+		// Print the root itself if it matches.
+		const std::string root_basename = pathToUtf8(nat.filename()).empty()
+			? root_arg
+			: pathToUtf8(nat.filename());
+		if (findTypeMatches(o.type_filter, nat)
+		    && findNameMatches(o.name_pat, root_basename)) {
+			std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(nat)).c_str());
+		}
+		if (!fs::is_directory(nat, ec)) return;
+
+		fs::recursive_directory_iterator it(nat,
+			fs::directory_options::skip_permission_denied, ec);
+		if (ec) return;
+		for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
+			if (ec) break;
+			if (o.max_depth >= 0 && cur.depth() >= o.max_depth) {
+				cur.disable_recursion_pending();
+			}
+			const fs::path p = cur->path();
+			if (!findTypeMatches(o.type_filter, p)) continue;
+			if (!findNameMatches(o.name_pat, pathToUtf8(p.filename()))) continue;
+			std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(p)).c_str());
+		}
+	}
+
+	static int builtin_find(Executor& exec, const std::vector<std::string>& args) {
+		find_internal::FindOptions o;
+		const int parse_rc = parseFindArgs(args, o);
+		if (parse_rc != 0) return parse_rc;
+
+		int rc = 0;
+		for (const auto& r : o.roots) {
+			std::error_code ec;
+			const fs::path nat = toNative(exec, r);
+			if (!fs::exists(nat, ec)) {
+				std::fprintf(stderr,
+					"wbsh: find: %s: no such file or directory\n", r.c_str());
+				rc = 1;
+				continue;
+			}
+			walkAndPrintFindMatches(exec, o, nat, r);
 		}
 		std::fflush(stdout);
 		return rc;
@@ -2273,324 +2409,6 @@ namespace wbsh {
 		return 2;
 	}
 
-	// ---- curl (basic HTTP/HTTPS GET via WinHTTP) -----------------------
-
-#ifdef _WIN32
-	std::wstring utf8ToWideLocal(const std::string& s) {
-		if (s.empty()) return {};
-		int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
-		std::wstring r(n, L'\0');
-		MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), r.data(), n);
-		return r;
-	}
-#endif
-
-	static int builtin_curl(Executor& exec, const std::vector<std::string>& args) {
-#ifndef _WIN32
-		(void)exec; (void)args;
-		perr("curl", "not supported");
-		return 1;
-#else
-		bool silent = false;
-		bool include_headers = false;
-		bool head_only = false;
-		bool save_remote = false;
-		std::string output_file;
-		std::string method = "GET";
-		std::string body_data;
-		std::vector<std::string> headers;
-		std::string url;
-
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			// Long forms.
-			if (a == "--silent") { silent = true; continue; }
-			if (a == "--include") { include_headers = true; continue; }
-			if (a == "--head") { head_only = true; method = "HEAD"; continue; }
-			if (a == "--location") continue;
-			if (a == "--remote-name") { save_remote = true; continue; }
-			if (a == "--output" && i + 1 < args.size()) { output_file = args[++i]; continue; }
-			if (a == "--request" && i + 1 < args.size()) { method = args[++i]; continue; }
-			if (a == "--header" && i + 1 < args.size()) { headers.push_back(args[++i]); continue; }
-			if (a == "--data" && i + 1 < args.size()) {
-				body_data = args[++i];
-				if (method == "GET") method = "POST";
-				continue;
-			}
-			// Short flags, possibly bundled. The value-taking ones (-o/-X/-H/-d)
-			// must be the last char in the cluster.
-			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				bool consumed_next = false;
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					char c = a[k];
-					bool last = (k + 1 == a.size());
-					switch (c) {
-					case 's': silent = true; break;
-					case 'i': include_headers = true; break;
-					case 'I': head_only = true; method = "HEAD"; break;
-					case 'L': break;
-					case 'O': save_remote = true; break;
-					case 'o':
-						if (last && i + 1 < args.size()) {
-							output_file = args[++i];
-							consumed_next = true;
-						}
-						break;
-					case 'X':
-						if (last && i + 1 < args.size()) {
-							method = args[++i];
-							consumed_next = true;
-						}
-						break;
-					case 'H':
-						if (last && i + 1 < args.size()) {
-							headers.push_back(args[++i]);
-							consumed_next = true;
-						}
-						break;
-					case 'd':
-						if (last && i + 1 < args.size()) {
-							body_data = args[++i];
-							if (method == "GET") method = "POST";
-							consumed_next = true;
-						}
-						break;
-					default: break;
-					}
-				}
-				(void)consumed_next;
-				continue;
-			}
-			if (!a.empty() && a[0] != '-') url = a;
-		}
-
-		if (url.empty()) {
-			if (!silent) perr("curl", "no URL specified");
-			return 2;
-		}
-
-		// Default to https:// if no scheme.
-		if (url.find("://") == std::string::npos) url = "https://" + url;
-
-		URL_COMPONENTS uc{};
-		uc.dwStructSize = sizeof(uc);
-		wchar_t hostBuf[256] = {};
-		wchar_t pathBuf[2048] = {};
-		uc.lpszHostName = hostBuf;
-		uc.dwHostNameLength = sizeof(hostBuf) / sizeof(hostBuf[0]);
-		uc.lpszUrlPath = pathBuf;
-		uc.dwUrlPathLength = sizeof(pathBuf) / sizeof(pathBuf[0]);
-
-		std::wstring wurl = utf8ToWideLocal(url);
-		if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc)) {
-			if (!silent) perr("curl", "bad URL");
-			return 1;
-		}
-		bool is_https = (uc.nScheme == INTERNET_SCHEME_HTTPS);
-		std::wstring path = uc.dwUrlPathLength
-			? std::wstring(uc.lpszUrlPath, uc.dwUrlPathLength)
-			: std::wstring(L"/");
-
-		HINTERNET hSession = WinHttpOpen(L"wbsh-curl/0.1",
-			WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-		if (!hSession) { if (!silent) perr("curl", "WinHttpOpen failed"); return 1; }
-
-		HINTERNET hConnect = WinHttpConnect(hSession, hostBuf, uc.nPort, 0);
-		if (!hConnect) {
-			WinHttpCloseHandle(hSession);
-			if (!silent) perr("curl", "connect failed");
-			return 1;
-		}
-
-		std::wstring wmethod = utf8ToWideLocal(method);
-		HINTERNET hRequest = WinHttpOpenRequest(hConnect, wmethod.c_str(),
-			path.c_str(), nullptr, WINHTTP_NO_REFERER,
-			WINHTTP_DEFAULT_ACCEPT_TYPES,
-			is_https ? WINHTTP_FLAG_SECURE : 0);
-		if (!hRequest) {
-			WinHttpCloseHandle(hConnect);
-			WinHttpCloseHandle(hSession);
-			if (!silent) perr("curl", "open request failed");
-			return 1;
-		}
-
-		// Add custom headers.
-		for (const auto& h : headers) {
-			std::wstring wh = utf8ToWideLocal(h + "\r\n");
-			WinHttpAddRequestHeaders(hRequest, wh.c_str(),
-				(DWORD)-1L, WINHTTP_ADDREQ_FLAG_ADD);
-		}
-
-		BOOL r = WinHttpSendRequest(hRequest,
-			WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-			body_data.empty() ? WINHTTP_NO_REQUEST_DATA
-			: const_cast<char*>(body_data.data()),
-			static_cast<DWORD>(body_data.size()),
-			static_cast<DWORD>(body_data.size()), 0);
-		if (!r || !WinHttpReceiveResponse(hRequest, nullptr)) {
-			DWORD err = GetLastError();
-			WinHttpCloseHandle(hRequest);
-			WinHttpCloseHandle(hConnect);
-			WinHttpCloseHandle(hSession);
-			if (!silent) std::fprintf(stderr,
-				"wbsh: curl: request failed (err=%lu)\n", err);
-			return 1;
-		}
-
-		DWORD status_code = 0;
-		DWORD sz = sizeof(status_code);
-		WinHttpQueryHeaders(hRequest,
-			WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-			WINHTTP_HEADER_NAME_BY_INDEX,
-			&status_code, &sz, WINHTTP_NO_HEADER_INDEX);
-
-		// Decide where to write. If -O, derive from URL path.
-		FILE* out = stdout;
-		std::string opened_path;
-		if (save_remote) {
-			std::string p(path.begin(), path.end());
-			auto slash = p.find_last_of('/');
-			std::string name = (slash == std::string::npos) ? p : p.substr(slash + 1);
-			if (name.empty() || name == "/") name = "index.html";
-			output_file = name;
-		}
-		if (!output_file.empty()) {
-			out = fopenNative(exec, output_file, "wb");
-			if (!out) {
-				WinHttpCloseHandle(hRequest);
-				WinHttpCloseHandle(hConnect);
-				WinHttpCloseHandle(hSession);
-				if (!silent) perr("curl", output_file + ": cannot open");
-				return 1;
-			}
-			opened_path = output_file;
-		}
-
-		if (include_headers || head_only) {
-			DWORD hdr_size = 0;
-			WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_RAW_HEADERS_CRLF,
-				WINHTTP_HEADER_NAME_BY_INDEX, nullptr, &hdr_size,
-				WINHTTP_NO_HEADER_INDEX);
-			if (hdr_size > 0) {
-				std::vector<wchar_t> hbuf(hdr_size / sizeof(wchar_t) + 1);
-				if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_RAW_HEADERS_CRLF,
-					WINHTTP_HEADER_NAME_BY_INDEX,
-					hbuf.data(), &hdr_size, WINHTTP_NO_HEADER_INDEX)) {
-					int n = WideCharToMultiByte(CP_UTF8, 0, hbuf.data(), -1,
-						nullptr, 0, nullptr, nullptr);
-					std::string utf(n, '\0');
-					WideCharToMultiByte(CP_UTF8, 0, hbuf.data(), -1,
-						utf.data(), n, nullptr, nullptr);
-					std::fwrite(utf.data(), 1, utf.size() ? utf.size() - 1 : 0, out);
-				}
-			}
-		}
-
-		if (!head_only) {
-			while (true) {
-				DWORD avail = 0;
-				if (!WinHttpQueryDataAvailable(hRequest, &avail)) break;
-				if (avail == 0) break;
-				std::vector<char> buf(avail);
-				DWORD got = 0;
-				if (!WinHttpReadData(hRequest, buf.data(), avail, &got)) break;
-				if (got == 0) break;
-				std::fwrite(buf.data(), 1, got, out);
-			}
-		}
-
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		if (out != stdout) std::fclose(out);
-		std::fflush(stdout);
-		return (status_code >= 400) ? 22 : 0;
-#endif
-	}
-
-	// ---- Hashes (md5sum / sha1sum / sha256sum / sha512sum) -------------
-
-#ifdef _WIN32
-	static bool computeHashHex(LPCWSTR algId, FILE* fp, std::string& hex_out) {
-		BCRYPT_ALG_HANDLE hAlg = nullptr;
-		if (BCryptOpenAlgorithmProvider(&hAlg, algId, nullptr, 0) != 0) return false;
-		DWORD hashLen = 0, dummy = 0;
-		BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH,
-			reinterpret_cast<PUCHAR>(&hashLen), sizeof(hashLen), &dummy, 0);
-		BCRYPT_HASH_HANDLE hHash = nullptr;
-		if (BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0) != 0) {
-			BCryptCloseAlgorithmProvider(hAlg, 0);
-			return false;
-		}
-		unsigned char buf[8192];
-		while (true) {
-			std::size_t n = std::fread(buf, 1, sizeof(buf), fp);
-			if (n == 0) break;
-			BCryptHashData(hHash, buf, static_cast<ULONG>(n), 0);
-		}
-		std::vector<unsigned char> bytes(hashLen);
-		BCryptFinishHash(hHash, bytes.data(), hashLen, 0);
-		BCryptDestroyHash(hHash);
-		BCryptCloseAlgorithmProvider(hAlg, 0);
-		char hex[3];
-		hex_out.reserve(hashLen * 2);
-		for (DWORD i = 0; i < hashLen; ++i) {
-			std::snprintf(hex, sizeof(hex), "%02x", bytes[i]);
-			hex_out += hex;
-		}
-		return true;
-	}
-#endif
-
-	static int builtinHashImpl(Executor& exec, const std::vector<std::string>& args,
-		const wchar_t* algId, const char* cmd) {
-		std::vector<std::string> files;
-		for (const auto& a : args) {
-			if (!a.empty() && a[0] == '-' && a != "-") continue;
-			files.push_back(a);
-		}
-		if (files.empty()) files.push_back("-");
-		int rc = 0;
-		for (const auto& f : files) {
-			FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
-			if (!fp) {
-				std::fprintf(stderr, "wbsh: %s: %s: %s\n",
-					cmd, f.c_str(), std::strerror(errno));
-				rc = 1;
-				continue;
-			}
-			std::string hex;
-#ifdef _WIN32
-			bool ok = computeHashHex(algId, fp, hex);
-#else
-			bool ok = false;
-			(void)algId;
-#endif
-			if (fp != stdin) std::fclose(fp);
-			if (!ok) {
-				std::fprintf(stderr, "wbsh: %s: hash failed\n", cmd);
-				rc = 1;
-				continue;
-			}
-			std::printf("%s  %s\n", hex.c_str(), f.c_str());
-		}
-		std::fflush(stdout);
-		return rc;
-	}
-
-	static int builtin_md5sum(Executor& e, const std::vector<std::string>& a) {
-		return builtinHashImpl(e, a, BCRYPT_MD5_ALGORITHM, "md5sum");
-	}
-	static int builtin_sha1sum(Executor& e, const std::vector<std::string>& a) {
-		return builtinHashImpl(e, a, BCRYPT_SHA1_ALGORITHM, "sha1sum");
-	}
-	static int builtin_sha256sum(Executor& e, const std::vector<std::string>& a) {
-		return builtinHashImpl(e, a, BCRYPT_SHA256_ALGORITHM, "sha256sum");
-	}
-	static int builtin_sha512sum(Executor& e, const std::vector<std::string>& a) {
-		return builtinHashImpl(e, a, BCRYPT_SHA512_ALGORITHM, "sha512sum");
-	}
 
 	// ---- base64 ---------------------------------------------------------
 
@@ -2739,46 +2557,56 @@ namespace wbsh {
 		else        std::printf("%d,%d", a, b);
 	}
 
-	static int builtin_diff(Executor& exec, const std::vector<std::string>& args) {
-		bool brief = false;
-		bool unified = false;
-		int context = 3;
-		std::vector<std::string> files;
+	namespace diff_internal {
+		struct DiffOptions {
+			bool brief = false;
+			bool unified = false;
+			int context = 3;
+			std::vector<std::string> files;
+		};
+
+		// Item in a unified-diff edit script, in source order.
+		struct UnifiedItem {
+			char kind;        // ' ', '-', '+'
+			int a, b;         // 1-based line numbers in A / B (0 if N/A)
+			std::string text;
+		};
+
+		// One change region in normal-format diff output.
+		struct NormalHunk {
+			int a1, a2;
+			int b1, b2;
+			char kind;        // 'a' = add, 'd' = delete, 'c' = change
+		};
+	}  // namespace diff_internal
+
+	static diff_internal::DiffOptions parseDiffArgs(const std::vector<std::string>& args) {
+		diff_internal::DiffOptions o;
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
-			if (a == "-q" || a == "--brief") { brief = true; continue; }
-			if (a == "-u" || a == "--unified") { unified = true; continue; }
+			if (a == "-q" || a == "--brief")   { o.brief = true; continue; }
+			if (a == "-u" || a == "--unified") { o.unified = true; continue; }
 			if (a.size() > 2 && a.compare(0, 2, "-U") == 0) {
-				unified = true;
-				try { context = std::stoi(a.substr(2)); }
-				catch (...) {}
+				o.unified = true;
+				try { o.context = std::stoi(a.substr(2)); } catch (...) {}
 				continue;
 			}
 			if (a == "-U" && i + 1 < args.size()) {
-				unified = true;
-				try { context = std::stoi(args[++i]); }
-				catch (...) {}
+				o.unified = true;
+				try { o.context = std::stoi(args[++i]); } catch (...) {}
 				continue;
 			}
 			if (!a.empty() && a[0] == '-') continue;
-			files.push_back(a);
+			o.files.push_back(a);
 		}
-		if (files.size() < 2) {
-			perr("diff", "usage: diff [-q] FILE1 FILE2");
-			return 2;
-		}
-		std::vector<std::string> A, B;
-		if (!readAllLines(exec, files[0], A) || !readAllLines(exec, files[1], B)) {
-			return 2;
-		}
-		if (A == B) return 0;
-		if (brief) {
-			std::printf("Files %s and %s differ\n",
-				files[0].c_str(), files[1].c_str());
-			return 1;
-		}
-		// LCS table.
-		std::size_t m = A.size(), n = B.size();
+		return o;
+	}
+
+	// LCS dynamic-programming table (m+1) x (n+1) for line lists A and B.
+	static std::vector<std::vector<int>>
+	buildLcsTable(const std::vector<std::string>& A, const std::vector<std::string>& B) {
+		const std::size_t m = A.size();
+		const std::size_t n = B.size();
 		std::vector<std::vector<int>> L(m + 1, std::vector<int>(n + 1, 0));
 		for (std::size_t i = 1; i <= m; ++i) {
 			for (std::size_t j = 1; j <= n; ++j) {
@@ -2786,110 +2614,154 @@ namespace wbsh {
 				else                      L[i][j] = (std::max)(L[i - 1][j], L[i][j - 1]);
 			}
 		}
-		// Unified-diff path: walk LCS into ' '/'-'/'+' items and group
-		// runs of changes (with `context` lines on each side) into hunks.
-		if (unified) {
-			struct Item { char kind; int a, b; std::string text; };
-			std::vector<Item> items;
-			int ai = static_cast<int>(m), bj = static_cast<int>(n);
-			while (ai > 0 || bj > 0) {
-				if (ai > 0 && bj > 0 && A[ai - 1] == B[bj - 1]) {
-					items.push_back({ ' ', ai, bj, A[ai - 1] });
-					--ai; --bj;
-				}
-				else if (bj > 0 && (ai == 0 || L[ai][bj - 1] >= L[ai - 1][bj])) {
-					items.push_back({ '+', 0, bj, B[bj - 1] });
-					--bj;
-				}
-				else {
-					items.push_back({ '-', ai, 0, A[ai - 1] });
-					--ai;
-				}
-			}
-			std::reverse(items.begin(), items.end());
+		return L;
+	}
 
-			std::printf("--- %s\n+++ %s\n",
-				files[0].c_str(), files[1].c_str());
-
-			int N = static_cast<int>(items.size());
-			int i = 0;
-			while (i < N) {
-				while (i < N && items[i].kind == ' ') ++i;
-				if (i >= N) break;
-				int change_start = i;
-				int last_change = i;
-				int j = i + 1;
-				while (j < N) {
-					if (items[j].kind != ' ') {
-						last_change = j;
-						++j;
-					}
-					else {
-						int run = 0, k = j;
-						while (k < N && items[k].kind == ' ' && run < 2 * context) {
-							++run; ++k;
-						}
-						if (k < N && items[k].kind != ' ') {
-							j = k;
-						}
-						else {
-							break;
-						}
-					}
-				}
-				int hstart = (std::max)(0, change_start - context);
-				int hend = (std::min)(N - 1, last_change + context);
-				int a_start = 0, a_count = 0, b_start = 0, b_count = 0;
-				for (int k = hstart; k <= hend; ++k) {
-					if (items[k].kind != '+') {
-						if (a_count == 0) a_start = items[k].a;
-						++a_count;
-					}
-					if (items[k].kind != '-') {
-						if (b_count == 0) b_start = items[k].b;
-						++b_count;
-					}
-				}
-				std::printf("@@ -%d,%d +%d,%d @@\n",
-					a_count == 0 ? 0 : a_start, a_count,
-					b_count == 0 ? 0 : b_start, b_count);
-				for (int k = hstart; k <= hend; ++k) {
-					std::putchar(items[k].kind);
-					std::printf("%s\n", items[k].text.c_str());
-				}
-				i = hend + 1;
+	// Walk the LCS table backwards into a forward-ordered list of edit
+	// items, classifying each line as ' ' (common), '-' (in A only), or
+	// '+' (in B only).
+	static std::vector<diff_internal::UnifiedItem>
+	walkLcsToUnifiedItems(const std::vector<std::string>& A,
+	                      const std::vector<std::string>& B,
+	                      const std::vector<std::vector<int>>& L) {
+		std::vector<diff_internal::UnifiedItem> items;
+		int ai = static_cast<int>(A.size());
+		int bj = static_cast<int>(B.size());
+		while (ai > 0 || bj > 0) {
+			if (ai > 0 && bj > 0 && A[ai - 1] == B[bj - 1]) {
+				items.push_back({ ' ', ai, bj, A[ai - 1] });
+				--ai; --bj;
+			} else if (bj > 0 && (ai == 0 || L[ai][bj - 1] >= L[ai - 1][bj])) {
+				items.push_back({ '+', 0, bj, B[bj - 1] });
+				--bj;
+			} else {
+				items.push_back({ '-', ai, 0, A[ai - 1] });
+				--ai;
 			}
-			return 1;
 		}
+		std::reverse(items.begin(), items.end());
+		return items;
+	}
 
-		// Normal-format path: backtrack to produce a hunk list.
-		struct Hunk { int a1, a2, b1, b2; char kind; };
-		std::vector<Hunk> hunks;
-		std::size_t i = m, j = n;
+	// Find the index just past the last change-or-near-change in the run
+	// starting at `i`. Allows up to 2*context contiguous common lines
+	// inside a single hunk before splitting.
+	static int findHunkLastChange(const std::vector<diff_internal::UnifiedItem>& items,
+	                              int i, int context) {
+		const int N = static_cast<int>(items.size());
+		int last_change = i;
+		int j = i + 1;
+		while (j < N) {
+			if (items[j].kind != ' ') {
+				last_change = j;
+				++j;
+				continue;
+			}
+			// Look ahead: if the run of common lines is short enough to
+			// keep the surrounding changes in a single hunk, swallow it.
+			int run = 0;
+			int k = j;
+			while (k < N && items[k].kind == ' ' && run < 2 * context) {
+				++run;
+				++k;
+			}
+			if (k < N && items[k].kind != ' ') {
+				j = k;
+				continue;
+			}
+			break;
+		}
+		return last_change;
+	}
+
+	// Emit one `@@ -A,B +C,D @@` hunk and its body lines.
+	static void emitUnifiedHunk(const std::vector<diff_internal::UnifiedItem>& items,
+	                            int hstart, int hend) {
+		int a_start = 0, a_count = 0, b_start = 0, b_count = 0;
+		for (int k = hstart; k <= hend; ++k) {
+			if (items[k].kind != '+') {
+				if (a_count == 0) a_start = items[k].a;
+				++a_count;
+			}
+			if (items[k].kind != '-') {
+				if (b_count == 0) b_start = items[k].b;
+				++b_count;
+			}
+		}
+		std::printf("@@ -%d,%d +%d,%d @@\n",
+			a_count == 0 ? 0 : a_start, a_count,
+			b_count == 0 ? 0 : b_start, b_count);
+		for (int k = hstart; k <= hend; ++k) {
+			std::putchar(items[k].kind);
+			std::printf("%s\n", items[k].text.c_str());
+		}
+	}
+
+	static int emitUnifiedDiff(const std::vector<std::string>& A,
+	                           const std::vector<std::string>& B,
+	                           const std::vector<std::vector<int>>& L,
+	                           const std::string& fa, const std::string& fb,
+	                           int context) {
+		const auto items = walkLcsToUnifiedItems(A, B, L);
+		std::printf("--- %s\n+++ %s\n", fa.c_str(), fb.c_str());
+
+		const int N = static_cast<int>(items.size());
+		int i = 0;
+		while (i < N) {
+			while (i < N && items[i].kind == ' ') ++i;
+			if (i >= N) break;
+			const int change_start = i;
+			const int last_change = findHunkLastChange(items, i, context);
+			const int hstart = (std::max)(0, change_start - context);
+			const int hend = (std::min)(N - 1, last_change + context);
+			emitUnifiedHunk(items, hstart, hend);
+			i = hend + 1;
+		}
+		return 1;
+	}
+
+	// Backtrack the LCS into normal-format hunks (a/d/c).
+	static std::vector<diff_internal::NormalHunk>
+	buildNormalHunks(const std::vector<std::string>& A,
+	                 const std::vector<std::string>& B,
+	                 const std::vector<std::vector<int>>& L) {
+		std::vector<diff_internal::NormalHunk> hunks;
+		std::size_t i = A.size();
+		std::size_t j = B.size();
 		while (i > 0 || j > 0) {
 			if (i > 0 && j > 0 && A[i - 1] == B[j - 1]) {
 				--i; --j;
 				continue;
 			}
-			// Walk a contiguous mismatch run.
-			std::size_t ei = i, ej = j;
+			const std::size_t ei = i;
+			const std::size_t ej = j;
 			while (i > 0 && j > 0 && A[i - 1] != B[j - 1]) {
 				if (L[i - 1][j] >= L[i][j - 1]) --i;
 				else                            --j;
 			}
 			while (i > 0 && (j == 0 || L[i - 1][j] >= L[i][j])) --i;
-			while (j > 0 && (i == 0 || L[i][j - 1] > L[i][j])) --j;
-			int a1 = static_cast<int>(i + 1), a2 = static_cast<int>(ei);
-			int b1 = static_cast<int>(j + 1), b2 = static_cast<int>(ej);
+			while (j > 0 && (i == 0 || L[i][j - 1] >  L[i][j])) --j;
+
+			int a1 = static_cast<int>(i + 1);
+			const int a2 = static_cast<int>(ei);
+			int b1 = static_cast<int>(j + 1);
+			const int b2 = static_cast<int>(ej);
 			char kind;
-			if (a1 > a2 && b1 <= b2) { kind = 'a'; --a1; }   // pure addition
-			else if (b1 > b2 && a1 <= a2) { kind = 'd'; --b1; }   // pure deletion
-			else { kind = 'c'; }
+			if      (a1 > a2 && b1 <= b2) { kind = 'a'; --a1; }
+			else if (b1 > b2 && a1 <= a2) { kind = 'd'; --b1; }
+			else                          { kind = 'c'; }
 			hunks.push_back({ a1, a2, b1, b2, kind });
 		}
 		std::reverse(hunks.begin(), hunks.end());
-		// Emit normal-format diff: `<` lines (from A) come first, then
-		// `---` separator on `c`, then `>` lines (from B).
+		return hunks;
+	}
+
+	static int emitNormalDiff(const std::vector<std::string>& A,
+	                          const std::vector<std::string>& B,
+	                          const std::vector<std::vector<int>>& L) {
+		const auto hunks = buildNormalHunks(A, B, L);
+		// Each normal-format hunk is: range opcode range, optional `<` block,
+		// optional `---` separator, optional `>` block.
 		for (const auto& h : hunks) {
 			diffEmitRange(h.a1, h.a2);
 			std::putchar(h.kind);
@@ -2897,21 +2769,44 @@ namespace wbsh {
 			std::putchar('\n');
 			if (h.kind == 'd' || h.kind == 'c') {
 				for (int k = h.a1; k <= h.a2; ++k) {
-					if (k - 1 < static_cast<int>(A.size())) {
+					if (k - 1 < static_cast<int>(A.size()))
 						std::printf("< %s\n", A[k - 1].c_str());
-					}
 				}
 			}
 			if (h.kind == 'c') std::puts("---");
 			if (h.kind == 'a' || h.kind == 'c') {
 				for (int k = h.b1; k <= h.b2; ++k) {
-					if (k - 1 < static_cast<int>(B.size())) {
+					if (k - 1 < static_cast<int>(B.size()))
 						std::printf("> %s\n", B[k - 1].c_str());
-					}
 				}
 			}
 		}
 		return 1;
+	}
+
+	static int builtin_diff(Executor& exec, const std::vector<std::string>& args) {
+		diff_internal::DiffOptions o = parseDiffArgs(args);
+		if (o.files.size() < 2) {
+			perr("diff", "usage: diff [-q] FILE1 FILE2");
+			return 2;
+		}
+		std::vector<std::string> A;
+		std::vector<std::string> B;
+		if (!readAllLines(exec, o.files[0], A) || !readAllLines(exec, o.files[1], B))
+			return 2;
+		if (A == B) return 0;
+
+		if (o.brief) {
+			std::printf("Files %s and %s differ\n",
+				o.files[0].c_str(), o.files[1].c_str());
+			return 1;
+		}
+
+		const auto L = buildLcsTable(A, B);
+		if (o.unified) {
+			return emitUnifiedDiff(A, B, L, o.files[0], o.files[1], o.context);
+		}
+		return emitNormalDiff(A, B, L);
 	}
 
 	// ---- du -------------------------------------------------------------
@@ -3111,23 +3006,30 @@ namespace wbsh {
 		return true;
 	}
 
-	static int builtin_sed(Executor& exec, const std::vector<std::string>& args) {
-		bool quiet = false;
-		std::string script;
-		std::vector<std::string> files;
+	// Walk `args`, joining `-e SCRIPT` / inline `-eSCRIPT` / leading
+	// positional fragments into a single `;`-separated script string.
+	// Anything left over goes into `files`.
+	static void parseSedArgs(const std::vector<std::string>& args,
+	                         bool& quiet, std::string& script,
+	                         std::vector<std::string>& files) {
+		auto append_script = [&](const std::string& s) {
+			if (!script.empty()) script.push_back(';');
+			script += s;
+		};
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "-n" || a == "--quiet" || a == "--silent") { quiet = true; continue; }
 			if (a == "-E" || a == "-r" || a == "--regexp-extended") continue;
-			if (a == "--") { ++i; while (i < args.size()) files.push_back(args[i++]); break; }
+			if (a == "--") {
+				for (++i; i < args.size(); ++i) files.push_back(args[i]);
+				break;
+			}
 			if (a == "-e" && i + 1 < args.size()) {
-				if (!script.empty()) script.push_back(';');
-				script += args[++i];
+				append_script(args[++i]);
 				continue;
 			}
 			if (a.size() > 2 && a.compare(0, 2, "-e") == 0) {
-				if (!script.empty()) script.push_back(';');
-				script += a.substr(2);
+				append_script(a.substr(2));
 				continue;
 			}
 			if (script.empty() && (a.empty() || a[0] != '-')) {
@@ -3136,65 +3038,86 @@ namespace wbsh {
 			}
 			files.push_back(a);
 		}
+	}
+
+	// Parse the `;`-separated `s/.../.../` commands inside a sed script.
+	// Returns false on parse error (already diagnosed).
+	static bool compileSedScript(const std::string& script,
+	                             std::vector<SedSubst>& out_cmds) {
+		std::size_t s = 0;
+		while (s <= script.size()) {
+			std::size_t e = script.find(';', s);
+			if (e == std::string::npos) e = script.size();
+			const std::string sub = script.substr(s, e - s);
+			if (!sub.empty()) {
+				SedSubst c;
+				std::string err;
+				if (!sedParseSubst(sub, c, err)) {
+					std::fprintf(stderr, "wbsh: sed: %s\n", err.c_str());
+					return false;
+				}
+				out_cmds.push_back(std::move(c));
+			}
+			if (e == script.size()) break;
+			s = e + 1;
+		}
+		return true;
+	}
+
+	static std::string applySedCommandsToLine(const std::vector<SedSubst>& cmds,
+	                                          const std::string& line) {
+		std::string out = line;
+		for (const auto& c : cmds) {
+			out = c.global
+				? std::regex_replace(out, c.re, c.repl)
+				: std::regex_replace(out, c.re, c.repl,
+				                     std::regex_constants::format_first_only);
+		}
+		return out;
+	}
+
+	static int runSedOnFile(FILE* fp, const std::vector<SedSubst>& cmds, bool quiet) {
+		std::string line;
+		int c;
+		while ((c = std::fgetc(fp)) != EOF) {
+			if (c == '\n') {
+				const std::string out = applySedCommandsToLine(cmds, line);
+				if (!quiet) {
+					std::fwrite(out.data(), 1, out.size(), stdout);
+					std::fputc('\n', stdout);
+				}
+				line.clear();
+				continue;
+			}
+			line.push_back(static_cast<char>(c));
+		}
+		if (!line.empty()) {
+			const std::string out = applySedCommandsToLine(cmds, line);
+			if (!quiet) std::fwrite(out.data(), 1, out.size(), stdout);
+		}
+		return 0;
+	}
+
+	static int builtin_sed(Executor& exec, const std::vector<std::string>& args) {
+		bool quiet = false;
+		std::string script;
+		std::vector<std::string> files;
+		parseSedArgs(args, quiet, script, files);
 		if (script.empty()) { perr("sed", "no script provided"); return 2; }
 
 		std::vector<SedSubst> cmds;
-		{
-			std::size_t s = 0;
-			while (s <= script.size()) {
-				std::size_t e = script.find(';', s);
-				if (e == std::string::npos) e = script.size();
-				std::string sub = script.substr(s, e - s);
-				if (!sub.empty()) {
-					SedSubst c;
-					std::string err;
-					if (!sedParseSubst(sub, c, err)) {
-						std::fprintf(stderr, "wbsh: sed: %s\n", err.c_str());
-						return 2;
-					}
-					cmds.push_back(std::move(c));
-				}
-				if (e == script.size()) break;
-				s = e + 1;
-			}
-		}
+		if (!compileSedScript(script, cmds)) return 2;
 		if (files.empty()) files.push_back("-");
-
-		auto applyAll = [&](const std::string& line) -> std::string {
-			std::string out = line;
-			for (const auto& c : cmds) {
-				if (c.global) {
-					out = std::regex_replace(out, c.re, c.repl);
-				}
-				else {
-					out = std::regex_replace(out, c.re, c.repl,
-						std::regex_constants::format_first_only);
-				}
-			}
-			return out;
-			};
 
 		int rc = 0;
 		for (const auto& f : files) {
 			FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
-			if (!fp) { perr("sed", f + ": " + std::strerror(errno)); rc = 1; continue; }
-			std::string line;
-			int c;
-			while ((c = std::fgetc(fp)) != EOF) {
-				if (c == '\n') {
-					std::string out = applyAll(line);
-					if (!quiet) {
-						std::fwrite(out.data(), 1, out.size(), stdout);
-						std::fputc('\n', stdout);
-					}
-					line.clear();
-				}
-				else line.push_back(static_cast<char>(c));
+			if (!fp) {
+				perr("sed", f + ": " + std::strerror(errno));
+				rc = 1;
+				continue;
 			}
-			if (!line.empty()) {
-				std::string out = applyAll(line);
-				if (!quiet) std::fwrite(out.data(), 1, out.size(), stdout);
-			}
+			runSedOnFile(fp, cmds, quiet);
 			if (fp != stdin) std::fclose(fp);
 		}
 		std::fflush(stdout);
@@ -3679,133 +3602,300 @@ namespace wbsh {
 		return false;
 	}
 
-	static int builtin_unzip(Executor& exec, const std::vector<std::string>& args) {
-		bool list_only = false;
-		bool to_stdout = false;
-		bool overwrite = true;
-		std::string archive;
-		std::vector<std::string> select;
-		std::string outdir;
+	namespace unzip_internal {
+		struct UnzipOptions {
+			bool list_only = false;
+			bool to_stdout = false;
+			std::string archive;
+			std::vector<std::string> select;
+			std::string outdir;
+		};
+
+		// Decoded central-directory entry. `lfh_off` points at the matching
+		// local-file-header in the archive bytes.
+		struct CentralEntry {
+			std::uint16_t method;
+			std::uint32_t csize;
+			std::uint32_t usize;
+			std::uint32_t lfh_off;
+			std::string name;
+		};
+	}  // namespace unzip_internal
+
+	static unzip_internal::UnzipOptions parseUnzipArgs(const std::vector<std::string>& args) {
+		unzip_internal::UnzipOptions o;
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
-			if (a == "-l") list_only = true;
-			else if (a == "-p") to_stdout = true;
-			else if (a == "-o") overwrite = true;
-			else if (a == "-n") overwrite = false;
-			else if (a == "-d" && i + 1 < args.size()) outdir = args[++i];
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				/* ignore */
-			}
-			else if (archive.empty()) archive = a;
-			else select.push_back(a);
+			if      (a == "-l") o.list_only = true;
+			else if (a == "-p") o.to_stdout = true;
+			else if (a == "-o") { /* overwrite (default) */ }
+			else if (a == "-n") { /* never overwrite — not implemented */ }
+			else if (a == "-d" && i + 1 < args.size()) o.outdir = args[++i];
+			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore */ }
+			else if (o.archive.empty()) o.archive = a;
+			else o.select.push_back(a);
 		}
-		if (archive.empty()) {
-			perr("unzip", "missing archive name"); return 1;
+		return o;
+	}
+
+	// Read one central-directory entry at `*p`, advancing `*p` past name +
+	// extras + comment. Returns false on malformed input.
+	static bool readZipCentralEntry(const std::vector<std::uint8_t>& bytes, std::size_t* p,
+	                                unzip_internal::CentralEntry& e) {
+		if (*p + 46 > bytes.size()) return false;
+		if (zipR32(bytes.data() + *p) != 0x02014B50u) return false;
+		e.method  = zipR16(bytes.data() + *p + 10);
+		e.csize   = zipR32(bytes.data() + *p + 20);
+		e.usize   = zipR32(bytes.data() + *p + 24);
+		const std::uint16_t nlen = zipR16(bytes.data() + *p + 28);
+		const std::uint16_t xlen = zipR16(bytes.data() + *p + 30);
+		const std::uint16_t clen = zipR16(bytes.data() + *p + 32);
+		e.lfh_off = zipR32(bytes.data() + *p + 42);
+		e.name.assign(reinterpret_cast<const char*>(bytes.data() + *p + 46), nlen);
+		*p += 46 + nlen + xlen + clen;
+		return true;
+	}
+
+	// Decompress one entry's payload, returning false on a method we don't
+	// support or on inflate failure.
+	static bool decompressZipEntry(const std::vector<std::uint8_t>& bytes,
+	                               const unzip_internal::CentralEntry& e,
+	                               std::vector<std::uint8_t>& out_data) {
+		if (e.lfh_off + 30 > bytes.size()) return false;
+		if (zipR32(bytes.data() + e.lfh_off) != 0x04034B50u) return false;
+		const std::uint16_t l_nlen = zipR16(bytes.data() + e.lfh_off + 26);
+		const std::uint16_t l_xlen = zipR16(bytes.data() + e.lfh_off + 28);
+		const std::size_t data_off = e.lfh_off + 30 + l_nlen + l_xlen;
+		if (data_off + e.csize > bytes.size()) return false;
+
+		if (e.method == 0) {
+			out_data.assign(bytes.begin() + data_off,
+			                bytes.begin() + data_off + e.csize);
+			return true;
 		}
-		(void)overwrite;
-		FILE* f = fopenNative(exec, archive, "rb");
+		if (e.method == 8) {
+			return inflateRaw(bytes.data() + data_off, e.csize, out_data);
+		}
+		return false;
+	}
+
+	// Write a decompressed entry to `outdir/name` (or stdout). Creates
+	// directories as needed; treats trailing-slash names as bare directories.
+	static void writeZipEntryToDisk(Executor& exec, const std::string& outdir,
+	                                const std::string& name,
+	                                const std::vector<std::uint8_t>& data) {
+		const std::string out_path = outdir.empty() ? name : (outdir + "/" + name);
+		if (!name.empty() && name.back() == '/') {
+			std::error_code ec;
+			std::filesystem::create_directories(toNative(exec, out_path), ec);
+			return;
+		}
+		std::filesystem::path pp = toNative(exec, out_path);
+		std::error_code ec;
+		if (pp.has_parent_path()) {
+			std::filesystem::create_directories(pp.parent_path(), ec);
+		}
+		FILE* of = openUtf8(pathToUtf8(pp), "wb");
+		if (!of) {
+			perr("unzip", out_path,
+				std::error_code(errno, std::system_category()));
+			return;
+		}
+		std::fwrite(data.data(), 1, data.size(), of);
+		std::fclose(of);
+	}
+
+	static bool entryIsSelected(const std::vector<std::string>& select,
+	                            const std::string& name) {
+		if (select.empty()) return true;
+		for (const auto& s : select) if (s == name) return true;
+		return false;
+	}
+
+	static int builtin_unzip(Executor& exec, const std::vector<std::string>& args) {
+		const unzip_internal::UnzipOptions o = parseUnzipArgs(args);
+		if (o.archive.empty()) {
+			perr("unzip", "missing archive name");
+			return 1;
+		}
+
+		FILE* f = fopenNative(exec, o.archive, "rb");
 		if (!f) {
-			perr("unzip", archive,
+			perr("unzip", o.archive,
 				std::error_code(errno, std::system_category()));
 			return 1;
 		}
-		auto bytes = readAllBytesFromFile(f);
+		const auto bytes = readAllBytesFromFile(f);
 		std::fclose(f);
-		std::size_t eocd;
+
+		std::size_t eocd = 0;
 		if (!zipFindEOCD(bytes, eocd)) {
-			perr("unzip", "not a zip archive: " + archive); return 1;
+			perr("unzip", "not a zip archive: " + o.archive);
+			return 1;
 		}
-		std::uint16_t total = zipR16(bytes.data() + eocd + 10);
-		std::uint32_t cd_size = zipR32(bytes.data() + eocd + 12);
-		std::uint32_t cd_off = zipR32(bytes.data() + eocd + 16);
-		(void)cd_size;
-		std::size_t p = cd_off;
-		if (list_only) {
-			std::printf("Archive:  %s\n", archive.c_str());
+		const std::uint16_t total = zipR16(bytes.data() + eocd + 10);
+		std::size_t p = zipR32(bytes.data() + eocd + 16);   // cd_off
+
+		if (o.list_only) {
+			std::printf("Archive:  %s\n", o.archive.c_str());
 			std::printf("  Length      Date    Time    Name\n");
 			std::printf("---------  ---------- -----   ----\n");
 		}
+
 		std::size_t total_bytes = 0;
 		for (std::size_t k = 0; k < total; ++k) {
-			if (p + 46 > bytes.size()) break;
-			if (zipR32(bytes.data() + p) != 0x02014B50u) break;
-			std::uint16_t method = zipR16(bytes.data() + p + 10);
-			std::uint32_t crc = zipR32(bytes.data() + p + 16);
-			std::uint32_t csize = zipR32(bytes.data() + p + 20);
-			std::uint32_t usize = zipR32(bytes.data() + p + 24);
-			std::uint16_t nlen = zipR16(bytes.data() + p + 28);
-			std::uint16_t xlen = zipR16(bytes.data() + p + 30);
-			std::uint16_t clen = zipR16(bytes.data() + p + 32);
-			std::uint32_t lfh = zipR32(bytes.data() + p + 42);
-			(void)crc;
-			std::string name((const char*)(bytes.data() + p + 46), nlen);
-			p += 46 + nlen + xlen + clen;
-			if (!select.empty()) {
-				bool found = false;
-				for (const auto& s : select) if (s == name) { found = true; break; }
-				if (!found) continue;
-			}
-			if (list_only) {
+			unzip_internal::CentralEntry e;
+			if (!readZipCentralEntry(bytes, &p, e)) break;
+			if (!entryIsSelected(o.select, e.name)) continue;
+
+			if (o.list_only) {
 				std::printf("%9u  ----------- ------  %s\n",
-					(unsigned)usize, name.c_str());
-				total_bytes += usize;
+					static_cast<unsigned>(e.usize), e.name.c_str());
+				total_bytes += e.usize;
 				continue;
 			}
-			if (lfh + 30 > bytes.size()) continue;
-			if (zipR32(bytes.data() + lfh) != 0x04034B50u) continue;
-			std::uint16_t l_nlen = zipR16(bytes.data() + lfh + 26);
-			std::uint16_t l_xlen = zipR16(bytes.data() + lfh + 28);
-			std::size_t data_off = lfh + 30 + l_nlen + l_xlen;
-			if (data_off + csize > bytes.size()) continue;
+
 			std::vector<std::uint8_t> data;
-			if (method == 0) {
-				data.assign(bytes.begin() + data_off,
-					bytes.begin() + data_off + csize);
-			}
-			else if (method == 8) {
-				if (!inflateRaw(bytes.data() + data_off, csize, data)) {
-					std::fprintf(stderr, "wbsh: unzip: inflate failed: %s\n",
-						name.c_str());
-					continue;
-				}
-			}
-			else {
+			if (!decompressZipEntry(bytes, e, data)) {
 				std::fprintf(stderr,
-					"wbsh: unzip: unsupported method %d for %s\n",
-					(int)method, name.c_str());
+					"wbsh: unzip: inflate / unsupported-method on %s\n",
+					e.name.c_str());
 				continue;
 			}
-			if (to_stdout) {
+
+			if (o.to_stdout) {
 				std::fwrite(data.data(), 1, data.size(), stdout);
 				continue;
 			}
-			std::string out_path = outdir.empty() ? name : (outdir + "/" + name);
-			if (!name.empty() && name.back() == '/') {
-				std::error_code ec;
-				std::filesystem::create_directories(toNative(exec, out_path), ec);
-				continue;
-			}
-			std::filesystem::path pp = toNative(exec, out_path);
-			std::error_code ec;
-			if (pp.has_parent_path()) {
-				std::filesystem::create_directories(pp.parent_path(), ec);
-			}
-			FILE* of = openUtf8(pathToUtf8(pp), "wb");
-			if (!of) {
-				perr("unzip", out_path,
-					std::error_code(errno, std::system_category()));
-				continue;
-			}
-			std::fwrite(data.data(), 1, data.size(), of);
-			std::fclose(of);
-			if (!list_only) std::printf("  inflating: %s\n", name.c_str());
+			writeZipEntryToDisk(exec, o.outdir, e.name, data);
+			std::printf("  inflating: %s\n", e.name.c_str());
 		}
-		if (list_only) {
+
+		if (o.list_only) {
 			std::printf("---------                     -------\n");
 			std::printf("%9zu                     %u files\n",
-				total_bytes, (unsigned)total);
+				total_bytes, static_cast<unsigned>(total));
 		}
 		return 0;
+	}
+
+	namespace zip_internal {
+		// One entry recorded as we stream the archive's LFH section. Used
+		// to emit the matching central-directory entry afterwards.
+		struct ZipCdEntry {
+			std::string name;
+			std::uint32_t crc;
+			std::uint32_t size;
+			std::uint32_t lfh_off;
+		};
+	}  // namespace zip_internal
+
+	// Walk `inputs`, materialising any directories (in `recurse` mode) into
+	// their regular-file descendants. Returns POSIX-style relative paths so
+	// the archive stays portable.
+	static std::vector<std::string> gatherZipInputs(Executor& exec,
+	                                                const std::vector<std::string>& inputs,
+	                                                bool recurse) {
+		namespace fs = std::filesystem;
+		std::vector<std::string> paths;
+		for (const auto& in : inputs) {
+			const fs::path win = toNative(exec, in);
+			std::error_code ec;
+			if (fs::is_directory(win, ec) && recurse) {
+				for (auto it = fs::recursive_directory_iterator(win, ec);
+				     it != fs::recursive_directory_iterator(); it.increment(ec))
+				{
+					if (ec) break;
+					if (it->is_regular_file(ec)) {
+						std::string rel = pathToUtf8(fs::relative(it->path(),
+							fs::current_path(ec)));
+						std::replace(rel.begin(), rel.end(), '\\', '/');
+						paths.push_back(std::move(rel));
+					}
+				}
+			} else if (fs::is_regular_file(win, ec)) {
+				paths.push_back(in);
+			}
+		}
+		return paths;
+	}
+
+	// Emit one local-file-header + name + (stored) data for `path`, and
+	// return the metadata needed to build the matching CD entry later.
+	// Returns std::nullopt-like via empty `name` on read failure.
+	static zip_internal::ZipCdEntry writeZipLocalEntry(Executor& exec,
+	                                                   const std::string& path,
+	                                                   std::vector<std::uint8_t>& out) {
+		zip_internal::ZipCdEntry meta{ path, 0, 0, 0 };
+
+		FILE* f = fopenNative(exec, path, "rb");
+		if (!f) {
+			perr("zip", path, std::error_code(errno, std::system_category()));
+			meta.name.clear();
+			return meta;
+		}
+		const auto data = readAllBytesFromFile(f);
+		std::fclose(f);
+
+		const std::uint32_t crc = crc32Update(0, data.data(), data.size());
+		const std::uint32_t lfh_off = static_cast<std::uint32_t>(out.size());
+
+		zipW32(out, 0x04034B50u);
+		zipW16(out, 20);                                // version needed
+		zipW16(out, 0);                                 // flags
+		zipW16(out, 0);                                 // method = stored
+		zipW16(out, 0);                                 // mod time
+		zipW16(out, 0);                                 // mod date
+		zipW32(out, crc);
+		zipW32(out, static_cast<std::uint32_t>(data.size()));
+		zipW32(out, static_cast<std::uint32_t>(data.size()));
+		zipW16(out, static_cast<std::uint16_t>(path.size()));
+		zipW16(out, 0);                                 // extra
+		out.insert(out.end(), path.begin(), path.end());
+		out.insert(out.end(), data.begin(), data.end());
+
+		meta.crc = crc;
+		meta.size = static_cast<std::uint32_t>(data.size());
+		meta.lfh_off = lfh_off;
+		return meta;
+	}
+
+	static void writeZipCentralDir(std::vector<std::uint8_t>& out,
+	                               const std::vector<zip_internal::ZipCdEntry>& cd) {
+		for (const auto& e : cd) {
+			zipW32(out, 0x02014B50u);
+			zipW16(out, 20);                            // version made
+			zipW16(out, 20);                            // version needed
+			zipW16(out, 0);                             // flags
+			zipW16(out, 0);                             // method
+			zipW16(out, 0);                             // mod time
+			zipW16(out, 0);                             // mod date
+			zipW32(out, e.crc);
+			zipW32(out, e.size);                        // comp size
+			zipW32(out, e.size);                        // uncomp size
+			zipW16(out, static_cast<std::uint16_t>(e.name.size()));
+			zipW16(out, 0);                             // extra
+			zipW16(out, 0);                             // comment len
+			zipW16(out, 0);                             // disk
+			zipW16(out, 0);                             // int attr
+			zipW32(out, 0);                             // ext attr
+			zipW32(out, e.lfh_off);
+			out.insert(out.end(), e.name.begin(), e.name.end());
+		}
+	}
+
+	static void writeZipEocd(std::vector<std::uint8_t>& out,
+	                         std::uint32_t cd_off,
+	                         std::uint32_t cd_size,
+	                         std::uint16_t entry_count) {
+		zipW32(out, 0x06054B50u);
+		zipW16(out, 0);
+		zipW16(out, 0);
+		zipW16(out, entry_count);
+		zipW16(out, entry_count);
+		zipW32(out, cd_size);
+		zipW32(out, cd_off);
+		zipW16(out, 0);
 	}
 
 	static int builtin_zip(Executor& exec, const std::vector<std::string>& args) {
@@ -3819,98 +3909,28 @@ namespace wbsh {
 			else inputs.push_back(a);
 		}
 		if (archive.empty()) { perr("zip", "missing archive name"); return 1; }
-		if (inputs.empty()) { perr("zip", "no input files"); return 1; }
-		namespace fs = std::filesystem;
-		std::vector<std::string> paths;
-		for (const auto& in : inputs) {
-			fs::path win = toNative(exec, in);
-			std::error_code ec;
-			if (fs::is_directory(win, ec) && recurse) {
-				for (auto it = fs::recursive_directory_iterator(win, ec);
-					it != fs::recursive_directory_iterator(); it.increment(ec))
-				{
-					if (ec) break;
-					if (it->is_regular_file(ec)) {
-						std::string rel = pathToUtf8(fs::relative(it->path(), fs::current_path(ec)));
-						std::replace(rel.begin(), rel.end(), '\\', '/');
-						paths.push_back(rel);
-					}
-				}
-			}
-			else if (fs::is_regular_file(win, ec)) {
-				paths.push_back(in);
-			}
-		}
+		if (inputs.empty())  { perr("zip", "no input files");      return 1; }
+
+		const std::vector<std::string> paths = gatherZipInputs(exec, inputs, recurse);
+
 		std::vector<std::uint8_t> out;
-		struct CDEntry {
-			std::string name;
-			std::uint32_t crc;
-			std::uint32_t size;
-			std::uint32_t lfh_off;
-		};
-		std::vector<CDEntry> cd;
+		std::vector<zip_internal::ZipCdEntry> cd;
 		for (const auto& path : paths) {
-			FILE* f = fopenNative(exec, path, "rb");
-			if (!f) {
-				perr("zip", path,
-					std::error_code(errno, std::system_category()));
-				continue;
-			}
-			auto data = readAllBytesFromFile(f);
-			std::fclose(f);
-			std::uint32_t crc = crc32Update(0, data.data(), data.size());
-			std::uint32_t lfh_off = (std::uint32_t)out.size();
-			// Local file header.
-			zipW32(out, 0x04034B50u);
-			zipW16(out, 20);                       // version needed
-			zipW16(out, 0);                        // flags
-			zipW16(out, 0);                        // method = stored
-			zipW16(out, 0);                        // mod time
-			zipW16(out, 0);                        // mod date
-			zipW32(out, crc);
-			zipW32(out, (std::uint32_t)data.size());   // comp size
-			zipW32(out, (std::uint32_t)data.size());   // uncomp size
-			zipW16(out, (std::uint16_t)path.size());
-			zipW16(out, 0);                        // extra
-			out.insert(out.end(), path.begin(), path.end());
-			out.insert(out.end(), data.begin(), data.end());
-			cd.push_back({ path, crc, (std::uint32_t)data.size(), lfh_off });
+			zip_internal::ZipCdEntry e = writeZipLocalEntry(exec, path, out);
+			if (e.name.empty()) continue;     // read failure already reported
 			std::printf("  adding: %s (stored)\n", path.c_str());
+			cd.push_back(std::move(e));
 		}
-		std::uint32_t cd_off = (std::uint32_t)out.size();
-		for (const auto& e : cd) {
-			zipW32(out, 0x02014B50u);
-			zipW16(out, 20);                       // version made
-			zipW16(out, 20);                       // version needed
-			zipW16(out, 0);                        // flags
-			zipW16(out, 0);                        // method
-			zipW16(out, 0);                        // mod time
-			zipW16(out, 0);                        // mod date
-			zipW32(out, e.crc);
-			zipW32(out, e.size);                   // comp size
-			zipW32(out, e.size);                   // uncomp size
-			zipW16(out, (std::uint16_t)e.name.size());
-			zipW16(out, 0);                        // extra
-			zipW16(out, 0);                        // comment len
-			zipW16(out, 0);                        // disk
-			zipW16(out, 0);                        // int attr
-			zipW32(out, 0);                        // ext attr
-			zipW32(out, e.lfh_off);
-			out.insert(out.end(), e.name.begin(), e.name.end());
-		}
-		std::uint32_t cd_size = (std::uint32_t)(out.size() - cd_off);
-		zipW32(out, 0x06054B50u);
-		zipW16(out, 0);
-		zipW16(out, 0);
-		zipW16(out, (std::uint16_t)cd.size());
-		zipW16(out, (std::uint16_t)cd.size());
-		zipW32(out, cd_size);
-		zipW32(out, cd_off);
-		zipW16(out, 0);
+
+		const std::uint32_t cd_off = static_cast<std::uint32_t>(out.size());
+		writeZipCentralDir(out, cd);
+		const std::uint32_t cd_size = static_cast<std::uint32_t>(out.size() - cd_off);
+		writeZipEocd(out, cd_off, cd_size,
+		             static_cast<std::uint16_t>(cd.size()));
+
 		FILE* of = fopenNative(exec, archive, "wb");
 		if (!of) {
-			perr("zip", archive,
-				std::error_code(errno, std::system_category()));
+			perr("zip", archive, std::error_code(errno, std::system_category()));
 			return 1;
 		}
 		std::fwrite(out.data(), 1, out.size(), of);
@@ -3918,384 +3938,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	// ---- bc -------------------------------------------------------------
-
-	// Pragmatic bc(1): parses arithmetic expressions, assignments, and
-	// simple control flow. Uses double precision; `scale` controls
-	// fraction display. Math library (-l) provides sqrt, s, c, e, l, a.
-
-	struct BcState {
-		std::map<std::string, double> vars;
-		int scale = 0;
-		bool with_lib = false;
-		bool quiet = false;
-		bool exit_now = false;
-	};
-
-	struct BcLex {
-		const std::string& src;
-		std::size_t i = 0;
-		std::vector<std::string> pushback;
-		explicit BcLex(const std::string& s) : src(s) {}
-		void skip() {
-			while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) ++i;
-			while (i + 1 < src.size() && src[i] == '\\' && src[i + 1] == '\n') i += 2;
-			if (i < src.size() && src[i] == '#') {
-				while (i < src.size() && src[i] != '\n') ++i;
-			}
-		}
-		std::string next() {
-			if (!pushback.empty()) {
-				std::string t = pushback.back();
-				pushback.pop_back();
-				return t;
-			}
-			skip();
-			if (i >= src.size()) return "";
-			char c = src[i];
-			if (std::isdigit((unsigned char)c) || c == '.') {
-				std::size_t s = i;
-				while (i < src.size()
-					&& (std::isdigit((unsigned char)src[i]) || src[i] == '.')) ++i;
-				return src.substr(s, i - s);
-			}
-			if (std::isalpha((unsigned char)c) || c == '_') {
-				std::size_t s = i;
-				while (i < src.size()
-					&& (std::isalnum((unsigned char)src[i]) || src[i] == '_')) ++i;
-				return src.substr(s, i - s);
-			}
-			if (c == '<' || c == '>' || c == '=' || c == '!') {
-				if (i + 1 < src.size() && src[i + 1] == '=') {
-					std::string r = src.substr(i, 2);
-					i += 2; return r;
-				}
-			}
-			if (c == '\n') { ++i; return ";"; }
-			char r = src[i++]; return std::string(1, r);
-		}
-		std::string peek() {
-			if (pushback.empty()) {
-				std::string t = next();
-				if (t.empty()) return t;
-				pushback.push_back(t);
-			}
-			return pushback.back();
-		}
-		void unread(std::string t) { pushback.push_back(std::move(t)); }
-	};
-
-	static bool bcIsName(const std::string& t) {
-		if (t.empty()) return false;
-		char c = t[0];
-		if (!(std::isalpha((unsigned char)c) || c == '_')) return false;
-		for (char x : t) if (!std::isalnum((unsigned char)x) && x != '_') return false;
-		return true;
-	}
-	static bool bcIsNumber(const std::string& t) {
-		if (t.empty()) return false;
-		for (char c : t) {
-			if (!std::isdigit((unsigned char)c) && c != '.') return false;
-		}
-		return true;
-	}
-
-	// Recursive-descent expression parser/evaluator. Operates directly
-	// on lex stream and BcState; emits the value of each top-level
-	// expression to stdout.
-	struct BcEval {
-		BcLex& lex;
-		BcState& st;
-		BcEval(BcLex& l, BcState& s) : lex(l), st(s) {}
-
-		double parseExpr() { return parseAssign(); }
-		double parseAssign() {
-			// lookahead: NAME = expr
-			std::string t = lex.peek();
-			if (bcIsName(t)) {
-				std::string n = lex.next();
-				std::string op = lex.peek();
-				if (op == "=" || op == "+=" || op == "-=" || op == "*="
-					|| op == "/=" || op == "%=" || op == "^=") {
-					lex.next();
-					double rhs = parseAssign();
-					double cur = st.vars.count(n) ? st.vars[n] : 0.0;
-					double v = rhs;
-					if (op == "+=") v = cur + rhs;
-					else if (op == "-=") v = cur - rhs;
-					else if (op == "*=") v = cur * rhs;
-					else if (op == "/=") v = rhs == 0 ? 0 : cur / rhs;
-					else if (op == "%=") v = rhs == 0 ? 0 : std::fmod(cur, rhs);
-					else if (op == "^=") v = std::pow(cur, rhs);
-					if (n == "scale") st.scale = (int)v;
-					else st.vars[n] = v;
-					return v;
-				}
-				lex.unread(std::move(n));
-			}
-			return parseOr();
-		}
-		double parseOr() {
-			double a = parseAnd();
-			while (lex.peek() == "||") { lex.next(); double b = parseAnd(); a = (a != 0 || b != 0) ? 1 : 0; }
-			return a;
-		}
-		double parseAnd() {
-			double a = parseCmp();
-			while (lex.peek() == "&&") { lex.next(); double b = parseCmp(); a = (a != 0 && b != 0) ? 1 : 0; }
-			return a;
-		}
-		double parseCmp() {
-			double a = parseAddSub();
-			while (true) {
-				std::string p = lex.peek();
-				if (p == "==" || p == "!=" || p == "<" || p == "<="
-					|| p == ">" || p == ">=") {
-					lex.next();
-					double b = parseAddSub();
-					bool r = false;
-					if (p == "==") r = a == b;
-					else if (p == "!=") r = a != b;
-					else if (p == "<") r = a < b;
-					else if (p == "<=") r = a <= b;
-					else if (p == ">") r = a > b;
-					else                r = a >= b;
-					a = r ? 1.0 : 0.0;
-				}
-				else break;
-			}
-			return a;
-		}
-		double parseAddSub() {
-			double a = parseMul();
-			while (true) {
-				std::string p = lex.peek();
-				if (p == "+") { lex.next(); a += parseMul(); }
-				else if (p == "-") { lex.next(); a -= parseMul(); }
-				else break;
-			}
-			return a;
-		}
-		double parseMul() {
-			double a = parseExp();
-			while (true) {
-				std::string p = lex.peek();
-				if (p == "*") { lex.next(); a *= parseExp(); }
-				else if (p == "/") {
-					lex.next();
-					double b = parseExp();
-					a = b == 0 ? 0 : a / b;
-				}
-				else if (p == "%") {
-					lex.next();
-					double b = parseExp();
-					a = b == 0 ? 0 : std::fmod(a, b);
-				}
-				else break;
-			}
-			return a;
-		}
-		double parseExp() {
-			double a = parseUnary();
-			if (lex.peek() == "^") {
-				lex.next();
-				a = std::pow(a, parseExp());
-			}
-			return a;
-		}
-		double parseUnary() {
-			std::string p = lex.peek();
-			if (p == "-") { lex.next(); return -parseUnary(); }
-			if (p == "+") { lex.next(); return  parseUnary(); }
-			if (p == "!") { lex.next(); return parseUnary() == 0 ? 1 : 0; }
-			if (p == "++") {
-				lex.next();
-				std::string n = lex.next();
-				double v = (st.vars.count(n) ? st.vars[n] : 0.0) + 1;
-				st.vars[n] = v;
-				return v;
-			}
-			if (p == "--") {
-				lex.next();
-				std::string n = lex.next();
-				double v = (st.vars.count(n) ? st.vars[n] : 0.0) - 1;
-				st.vars[n] = v;
-				return v;
-			}
-			return parsePrimary();
-		}
-		double parsePrimary() {
-			std::string t = lex.next();
-			if (t.empty()) return 0;
-			if (t == "(") {
-				double v = parseExpr();
-				if (lex.peek() == ")") lex.next();
-				return v;
-			}
-			if (bcIsNumber(t)) {
-				try { return std::stod(t); }
-				catch (...) { return 0; }
-			}
-			if (bcIsName(t)) {
-				if (lex.peek() == "(") {
-					// Function call
-					lex.next();
-					std::vector<double> args;
-					if (lex.peek() != ")") {
-						args.push_back(parseExpr());
-						while (lex.peek() == ",") { lex.next(); args.push_back(parseExpr()); }
-					}
-					if (lex.peek() == ")") lex.next();
-					return callFunc(t, args);
-				}
-				// Postfix ++/--
-				if (lex.peek() == "++" || lex.peek() == "--") {
-					double cur = st.vars.count(t) ? st.vars[t] : 0.0;
-					double nv = lex.next() == "++" ? cur + 1 : cur - 1;
-					st.vars[t] = nv;
-					return cur;
-				}
-				if (t == "scale") return st.scale;
-				return st.vars.count(t) ? st.vars[t] : 0.0;
-			}
-			return 0;
-		}
-		double callFunc(const std::string& n, const std::vector<double>& a) {
-			auto get0 = [&]() { return a.empty() ? 0 : a[0]; };
-			if (n == "sqrt") return std::sqrt(get0());
-			if (st.with_lib) {
-				if (n == "s") return std::sin(get0());
-				if (n == "c") return std::cos(get0());
-				if (n == "e") return std::exp(get0());
-				if (n == "l") return std::log(get0());
-				if (n == "a") return std::atan(get0());
-			}
-			if (n == "length") {
-				char buf[64];
-				std::snprintf(buf, sizeof(buf), "%.20g", get0());
-				std::string s = buf;
-				int c = 0;
-				for (char x : s) if (std::isdigit((unsigned char)x)) ++c;
-				return (double)c;
-			}
-			return 0;
-		}
-	};
-
-	// Suppress-output check: an expression starting with `NAME = ...`
-	// (or `NAME op= ...`, or `++NAME` / `--NAME`) is an assignment and
-	// bc does not print its value. We do a cheap lookahead on the
-	// token stream before eval to decide.
-	static bool bcStartsAssign(BcLex& lex) {
-		// Peek up to two tokens.
-		std::string t1 = lex.next();
-		if (t1.empty()) { return false; }
-		std::string t2 = lex.next();
-		lex.unread(t2);
-		lex.unread(t1);
-		if (t1 == "++" || t1 == "--") return true;
-		if (!bcIsName(t1)) return false;
-		return t2 == "=" || t2 == "+=" || t2 == "-=" || t2 == "*="
-			|| t2 == "/=" || t2 == "%=" || t2 == "^=";
-	}
-
-	static void bcEvalLine(BcLex& lex, BcState& st) {
-		while (true) {
-			std::string p = lex.peek();
-			if (p.empty()) return;
-			if (p == ";") { lex.next(); continue; }
-			if (p == "quit" || p == "halt") {
-				lex.next(); st.exit_now = true; return;
-			}
-			if (p == "if") {
-				lex.next();
-				if (lex.peek() == "(") lex.next();
-				BcEval e(lex, st);
-				double cond = e.parseExpr();
-				if (lex.peek() == ")") lex.next();
-				if ((bool)cond) {
-					bcEvalLine(lex, st);
-				}
-				else {
-					// Skip the controlled statement.
-					std::string nx = lex.next();
-					if (nx == "{") {
-						int d = 1;
-						while (d > 0) {
-							std::string t = lex.next();
-							if (t.empty()) return;
-							if (t == "{") ++d;
-							else if (t == "}") --d;
-						}
-					}
-					else {
-						while (!nx.empty() && nx != ";" && nx != "\n") nx = lex.next();
-					}
-				}
-				continue;
-			}
-			if (p == "{") {
-				lex.next();
-				while (lex.peek() != "}" && !lex.peek().empty()) bcEvalLine(lex, st);
-				if (lex.peek() == "}") lex.next();
-				continue;
-			}
-			if (p == "}") return;
-			bool suppress = bcStartsAssign(lex);
-			BcEval e(lex, st);
-			double v = e.parseExpr();
-			if (!suppress) {
-				if (st.scale == 0) std::printf("%lld\n", (long long)v);
-				else std::printf("%.*f\n", st.scale, v);
-			}
-			if (lex.peek() == ";") lex.next();
-			if (lex.peek().empty() || lex.peek() == "}") return;
-		}
-	}
-
-	static int builtin_bc(Executor& exec, const std::vector<std::string>& args) {
-		BcState st;
-		std::vector<std::string> files;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-l" || a == "--mathlib") { st.with_lib = true; st.scale = 20; }
-			else if (a == "-q" || a == "--quiet") st.quiet = true;
-			else if (a == "-e" && i + 1 < args.size()) {
-				BcLex lex(args[++i]);
-				while (!lex.peek().empty() && !st.exit_now)
-					bcEvalLine(lex, st);
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore */ }
-			else files.push_back(a);
-		}
-		auto runStream = [&](FILE* f) {
-			std::string buf;
-			int c;
-			while ((c = std::fgetc(f)) != EOF && !st.exit_now) {
-				buf.push_back((char)c);
-				if (c == '\n') {
-					BcLex lex(buf);
-					while (!lex.peek().empty() && !st.exit_now)
-						bcEvalLine(lex, st);
-					buf.clear();
-				}
-			}
-			if (!buf.empty() && !st.exit_now) {
-				BcLex lex(buf);
-				while (!lex.peek().empty() && !st.exit_now) bcEvalLine(lex, st);
-			}
-			};
-		if (files.empty()) runStream(stdin);
-		else {
-			for (const auto& fn : files) {
-				FILE* f = fopenNative(exec, fn, "rb");
-				if (!f) { perr("bc", fn, std::error_code(errno, std::system_category())); continue; }
-				runStream(f);
-				std::fclose(f);
-			}
-		}
-		return 0;
-	}
 
 	// ---- xxd ------------------------------------------------------------
 
@@ -4912,105 +4554,136 @@ namespace wbsh {
 
 	// ---- mktemp ---------------------------------------------------------
 
-	static int builtin_mktemp(Executor& exec, const std::vector<std::string>& args) {
-		bool make_dir = false;
-		bool dry_run = false;
-		bool quiet = false;
-		std::string template_arg;
-		std::string tmpdir_override;
-		bool template_from_p = false;
-		(void)template_from_p;
+	namespace mktemp_internal {
+		struct MktempOptions {
+			bool make_dir = false;
+			bool dry_run = false;
+			bool quiet = false;
+			std::string template_arg;
+			std::string tmpdir_override;
+		};
+	}  // namespace mktemp_internal
+
+	// Returns 0 on success, 1 on unknown option (with diagnostic).
+	static int parseMktempArgs(const std::vector<std::string>& args,
+	                           mktemp_internal::MktempOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
-			if (a == "-d" || a == "--directory") make_dir = true;
-			else if (a == "-u" || a == "--dry-run") dry_run = true;
-			else if (a == "-q" || a == "--quiet") quiet = true;
-			else if (a == "-t") {
-				// legacy "use TMPDIR" — already our default; ignore
-			}
+			if      (a == "-d" || a == "--directory") o.make_dir = true;
+			else if (a == "-u" || a == "--dry-run")   o.dry_run = true;
+			else if (a == "-q" || a == "--quiet")     o.quiet = true;
+			else if (a == "-t") { /* legacy: use TMPDIR — already default */ }
 			else if (a == "-p" || a == "--tmpdir") {
-				if (i + 1 < args.size()) tmpdir_override = args[++i];
+				if (i + 1 < args.size()) o.tmpdir_override = args[++i];
 			}
 			else if (a.size() > 9 && a.compare(0, 9, "--tmpdir=") == 0) {
-				tmpdir_override = a.substr(9);
+				o.tmpdir_override = a.substr(9);
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
 				std::fprintf(stderr, "wbsh: mktemp: unknown option: %s\n", a.c_str());
 				return 1;
 			}
-			else if (template_arg.empty()) {
-				template_arg = a;
+			else if (o.template_arg.empty()) {
+				o.template_arg = a;
 			}
 		}
-		if (template_arg.empty()) {
-			template_arg = make_dir ? "tmp.XXXXXXXXXX" : "tmp.XXXXXXXXXX";
-		}
-		// Resolve TMPDIR: explicit override > $TMPDIR > $TEMP > $TMP > /tmp.
-		std::string base;
-		if (!tmpdir_override.empty()) base = tmpdir_override;
-		else if (!exec.env().get("TMPDIR").empty()) base = exec.env().get("TMPDIR");
-		else if (!exec.env().get("TEMP").empty())   base = exec.env().get("TEMP");
-		else if (!exec.env().get("TMP").empty())    base = exec.env().get("TMP");
-		else base = "/tmp";
-		// If template contains a slash, treat it as path relative to CWD.
-		fs::path full;
+		if (o.template_arg.empty()) o.template_arg = "tmp.XXXXXXXXXX";
+		return 0;
+	}
+
+	// Resolve the directory the template expands relative to: explicit
+	// `-p / --tmpdir` > $TMPDIR > $TEMP > $TMP > "/tmp".
+	static std::string resolveMktempBaseDir(Executor& exec,
+	                                        const std::string& tmpdir_override) {
+		if (!tmpdir_override.empty()) return tmpdir_override;
+		if (!exec.env().get("TMPDIR").empty()) return exec.env().get("TMPDIR");
+		if (!exec.env().get("TEMP").empty())   return exec.env().get("TEMP");
+		if (!exec.env().get("TMP").empty())    return exec.env().get("TMP");
+		return "/tmp";
+	}
+
+	// Compose the final on-disk path. If the template carries a slash it's
+	// treated as a path relative to CWD; otherwise it's joined to `base_dir`.
+	static fs::path resolveMktempFullPath(Executor& exec,
+	                                      const std::string& template_arg,
+	                                      const std::string& base_dir) {
 		if (template_arg.find('/') != std::string::npos
-			|| template_arg.find('\\') != std::string::npos) {
-			full = fs::path(toNative(exec, template_arg));
+		    || template_arg.find('\\') != std::string::npos) {
+			return fs::path(toNative(exec, template_arg));
 		}
-		else {
-			full = fs::path(toNative(exec, base)) / template_arg;
+		return fs::path(toNative(exec, base_dir)) / template_arg;
+	}
+
+	// Generate a fresh `xcount`-length suffix using a poor-man's PCG-style
+	// mix. `attempt` is folded in so retries produce different values.
+	static std::string randomMktempSuffix(std::size_t xcount, int attempt) {
+		static const char* alpha =
+			"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+		constexpr std::size_t alpha_n = 62;
+		const auto t = std::chrono::steady_clock::now().time_since_epoch().count();
+		unsigned long long mix = static_cast<unsigned long long>(t)
+			^ (static_cast<unsigned long long>(GetCurrentProcessId()) << 32)
+			^ static_cast<unsigned long long>(attempt) * 0x9E3779B97F4A7C15ULL;
+		std::string suffix(xcount, 'X');
+		for (std::size_t k = 0; k < xcount; ++k) {
+			suffix[k] = alpha[mix % alpha_n];
+			mix = mix * 6364136223846793005ULL + 1442695040888963407ULL;
 		}
+		return suffix;
+	}
+
+	// Try to atomically claim `candidate` (file or directory). Returns true
+	// on success; on file-mode `_NEW` fails for already-existing names so
+	// the loop in builtin_mktemp can retry safely.
+	static bool tryClaimMktempCandidate(const std::string& candidate, bool make_dir) {
+		std::error_code ec;
+		if (make_dir) {
+			return fs::create_directory(candidate, ec) && !ec;
+		}
+		HANDLE h = CreateFileA(candidate.c_str(),
+			GENERIC_WRITE, 0, nullptr,
+			CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (h == INVALID_HANDLE_VALUE) return false;
+		CloseHandle(h);
+		return true;
+	}
+
+	static int builtin_mktemp(Executor& exec, const std::vector<std::string>& args) {
+		mktemp_internal::MktempOptions o;
+		const int parse_rc = parseMktempArgs(args, o);
+		if (parse_rc != 0) return parse_rc;
+
+		const std::string base = resolveMktempBaseDir(exec, o.tmpdir_override);
+		const fs::path full = resolveMktempFullPath(exec, o.template_arg, base);
+
 		std::string s = pathToUtf8(full);
-		// Find trailing run of X (must be at least 3).
+		// Trailing run of `X`s (must be at least 3, per coreutils).
 		std::size_t end = s.size();
 		std::size_t start = end;
 		while (start > 0 && s[start - 1] == 'X') --start;
-		std::size_t xcount = end - start;
+		const std::size_t xcount = end - start;
 		if (xcount < 3) {
-			if (!quiet) std::fprintf(stderr, "wbsh: mktemp: too few X's in template '%s'\n",
-				template_arg.c_str());
+			if (!o.quiet) std::fprintf(stderr,
+				"wbsh: mktemp: too few X's in template '%s'\n",
+				o.template_arg.c_str());
 			return 1;
 		}
-		// Try up to a few attempts with random suffixes.
-		static const char* alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-		constexpr std::size_t alpha_n = 62;
-		std::error_code ec;
+
 		for (int attempt = 0; attempt < 200; ++attempt) {
-			std::string suffix(xcount, 'X');
-			auto t = std::chrono::steady_clock::now().time_since_epoch().count();
-			unsigned long long mix = static_cast<unsigned long long>(t)
-				^ (static_cast<unsigned long long>(GetCurrentProcessId()) << 32)
-				^ static_cast<unsigned long long>(attempt) * 0x9E3779B97F4A7C15ULL;
-			for (std::size_t k = 0; k < xcount; ++k) {
-				suffix[k] = alpha[mix % alpha_n];
-				mix = mix * 6364136223846793005ULL + 1442695040888963407ULL;
-			}
-			std::string candidate = s.substr(0, start) + suffix;
-			if (dry_run) {
+			const std::string candidate =
+				s.substr(0, start) + randomMktempSuffix(xcount, attempt);
+			if (o.dry_run) {
 				std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
 				return 0;
 			}
-			if (make_dir) {
-				if (fs::create_directory(candidate, ec) && !ec) {
-					std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
-					return 0;
-				}
-			}
-			else {
-				HANDLE h = CreateFileA(candidate.c_str(),
-					GENERIC_WRITE, 0, nullptr,
-					CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-				if (h != INVALID_HANDLE_VALUE) {
-					CloseHandle(h);
-					std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
-					return 0;
-				}
+			if (tryClaimMktempCandidate(candidate, o.make_dir)) {
+				std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
+				return 0;
 			}
 		}
-		if (!quiet) std::fprintf(stderr,
+		if (!o.quiet) std::fprintf(stderr,
 			"wbsh: mktemp: failed to create unique file from '%s'\n",
-			template_arg.c_str());
+			o.template_arg.c_str());
 		return 1;
 	}
 
@@ -5211,7 +4884,7 @@ namespace wbsh {
 		exec.registerBuiltin("sed", builtin_sed);
 		exec.registerBuiltin("awk", builtin_awk);
 		exec.registerBuiltin("gawk", builtin_awk);
-		exec.registerBuiltin("bc", builtin_bc);
+		registerBcBuiltin(exec);   // defined in coreutils_bc.cpp
 		exec.registerBuiltin("gzip", builtin_gzip);
 		exec.registerBuiltin("gunzip", builtin_gunzip);
 		exec.registerBuiltin("zcat", builtin_zcat);
@@ -5224,12 +4897,9 @@ namespace wbsh {
 		exec.registerBuiltin("diff", builtin_diff);
 		exec.registerBuiltin("du", builtin_du);
 		exec.registerBuiltin("df", builtin_df);
-		exec.registerBuiltin("md5sum", builtin_md5sum);
-		exec.registerBuiltin("sha1sum", builtin_sha1sum);
-		exec.registerBuiltin("sha256sum", builtin_sha256sum);
-		exec.registerBuiltin("sha512sum", builtin_sha512sum);
+		registerHashBuiltins(exec);   // defined in coreutils_hash.cpp
 		exec.registerBuiltin("base64", builtin_base64);
-		exec.registerBuiltin("curl", builtin_curl);
+		registerCurlBuiltin(exec);   // defined in coreutils_curl.cpp
 		exec.registerBuiltin("tar", builtin_tar);
 	}
 

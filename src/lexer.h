@@ -202,6 +202,15 @@ namespace wbsh {
 		// Stops at the matching "))". Respects strings and nested ((..)).
 		std::string readBalancedDoubleParens();
 
+		// Verbatim-copy helpers shared by the readBalanced* family. Each
+		// consumes exactly one syntactic unit (escape, quoted string,
+		// substitution) and appends the matched span to `out`.
+		void copyBackslashEscape(std::string& out);
+		void copySingleQuotedRun(std::string& out);
+		void copyDoubleQuotedRun(std::string& out);
+		void copyBackquotedRun  (std::string& out);
+		void copyDollarParenRun (std::string& out, int* paren_depth);
+
 		// ---- Heredoc handling ----
 		// Examine `delimiter_token` (the WORD that followed <<). Stash a flag for
 		// when we hit a newline; afterwards the body is collected until a line

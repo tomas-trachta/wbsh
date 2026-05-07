@@ -27,7 +27,7 @@
 #  include <windows.h>
 #endif
 
-#include <functional>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -44,8 +44,10 @@ namespace wbsh {
 	struct ShellExit       { int status = 0; };
 
 	class Executor;
-	/// Signature of a registered shell builtin / coreutil.
-	using BuiltinFn = std::function<int(Executor&, const std::vector<std::string>&)>;
+	/// Signature of a registered shell builtin / coreutil. Plain function
+	/// pointer — every builtin in this codebase is a named static function
+	/// with no captured state, so a typed function pointer is enough.
+	typedef int (*BuiltinFn)(Executor&, const std::vector<std::string>&);
 
 	/**
 	 * @brief AST executor and runtime registry.
@@ -245,6 +247,34 @@ namespace wbsh {
 		// .exe/.cmd/.bat resolution. Used by `type`, `command -v`, etc.
 		std::string findExecutable(const std::string& name);
 
+		// Pre-expanded assignment forms used by execSimpleCommand. Built from
+		// the SimpleCommand AST's `assignments` list before the command runs.
+		// Public because the implementation file's small helper functions
+		// (applyArrayAssignToEnv etc.) need to consume them by name.
+		struct ScalarAssign { std::string name; std::string value; };
+		struct ElemAssign   { std::string name; Word subscript; std::string value; };
+		struct ArrayAssign  {
+			std::string name;
+			bool sparse = false;   ///< true iff any keyed item is present
+			std::vector<std::pair<std::string, std::string>> keyed;   // key,value
+			std::vector<std::string> items;                            // unkeyed
+		};
+		struct SimpleCmdAssigns {
+			std::vector<ScalarAssign> scalar;
+			std::vector<ElemAssign>   elem;
+			std::vector<ArrayAssign>  array;
+
+			// Flat (name,value) view of just the scalar entries — kept because
+			// some downstream paths (function / builtin / external prefix)
+			// still consume that older format.
+			std::vector<std::pair<std::string, std::string>> scalarPairs() const {
+				std::vector<std::pair<std::string, std::string>> out;
+				out.reserve(scalar.size());
+				for (const auto& s : scalar) out.emplace_back(s.name, s.value);
+				return out;
+			}
+		};
+
 	private:
 		// AST execution.
 		int execNode(const Node& n);
@@ -273,8 +303,103 @@ namespace wbsh {
 		bool applyRedirections(const std::vector<Redirection>& rs, RedirState& out);
 		void undoRedirections(RedirState& s);
 
+		// Helpers for applyRedirections — one per redirection-op family. Each
+		// either installs the redirection (saving the prior fd into `s`) and
+		// returns true, or prints a diagnostic and returns false.
+		void saveFd(RedirState& s, int fd) const;
+		// Open a virtual `/dev/{stdin,stdout,stderr,fd/N}` path as a fresh fd,
+		// or return -1 if `path` is not a recognised dev-fd alias.
+		static int dupSpecialDevFd(const std::string& path);
+		// Open a `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT` socket and wrap
+		// it as a CRT fd. Returns -1 on no-match or any failure.
+		static int openTcpUdpStream(const std::string& path);
+		// Composite of the two above: try special-fd dispatch first, then
+		// fall back to opening `path` (translated via PathConv) on the FS.
+		int openRedirSourceFd(const std::string& path, int flags) const;
+		// Open `path`, dup it onto `target`, save the prior fd into `s`, and
+		// print a `wbsh: <path>: <err>` diagnostic on failure.
+		bool redirectFdFromPath(const std::string& path, int flags,
+		                        int target, RedirState& s);
+		// Spill `body` into a temp file, redirect `target` to read from it,
+		// and remember the temp path so undoRedirections cleans it up.
+		bool installRedirFromTempBody(std::string body, int target, RedirState& s);
+		bool applyLessRedir       (const Redirection& r, int target, RedirState& s);
+		bool applyTruncOrClobber  (const Redirection& r, int target, RedirState& s);
+		bool applyAppendRedir     (const Redirection& r, int target, RedirState& s);
+		bool applyAmpGreatRedir   (const Redirection& r, RedirState& s);
+		bool applyAmpDGreatRedir  (const Redirection& r, RedirState& s);
+		bool applyLessGreatRedir  (const Redirection& r, int target, RedirState& s);
+		bool applyDupRedir        (const Redirection& r, int target, RedirState& s);
+		bool applyHeredocRedir    (const Redirection& r, int target, RedirState& s);
+		bool applyHerestringRedir (const Redirection& r, int target, RedirState& s);
+
+		// Helpers for execSimpleCommand. Each returns true / a status; on a
+		// recoverable expansion error they print a diagnostic and return false
+		// (or the appropriate non-zero status).
+		bool expandSimpleCmdAssigns(const SimpleCommand& sc, SimpleCmdAssigns& out);
+		bool expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv);
+		void aliasExpandArgvHead(std::vector<std::string>& argv);
+		// `exec` with no command: install the redirections on the current
+		// shell permanently and return the resulting status.
+		int  execBareRedirsForExec(const std::vector<Redirection>& redirs);
+		// No-command form: just apply the assignments to the current shell.
+		void applyBareAssignmentsToShell(const SimpleCmdAssigns& a);
+		// `set -x` trace announcement to stderr.
+		void traceXtrace(const std::vector<std::string>& argv);
+
+		// State snapshotted at the start of a shell-script invocation
+		// (`./script.sh` and similar). Restored after the script returns,
+		// regardless of whether it returned normally, called `exit`, or
+		// threw out. The asymmetry between the normal- and exception-path
+		// restore (set vs forceSet) is preserved from the original code.
+		struct ShellScriptScope {
+			std::unordered_map<std::string, std::string> saved_vars;
+			std::vector<std::string> saved_pos;
+			std::string saved_name;
+			std::unordered_map<std::string, const FunctionDef*> saved_funcs;
+			bool s_errexit, s_nounset, s_xtrace, s_pipefail, s_noglob;
+			std::filesystem::path saved_cwd;
+		};
+		ShellScriptScope snapshotShellScriptScope() const;
+		void restoreShellScriptScope(ShellScriptScope& snap, bool force_set);
+
+		// State snapshotted at the start of a `( ... )` subshell. Restored
+		// before returning. Trap handlers are included because POSIX
+		// requires a subshell's trap installs to be local to it.
+		struct SubshellScope {
+			std::unordered_map<std::string, std::string> saved_vars;
+			bool errexit, nounset, xtrace, pipefail, noglob;
+			std::unordered_map<std::string, std::string> traps;
+			std::filesystem::path saved_cwd;
+		};
+		SubshellScope snapshotSubshellScope() const;
+		void restoreSubshellScope(SubshellScope& snap);
+
 		int  runExternal(const std::vector<std::string>& argv,
 		                 const std::vector<std::pair<std::string, std::string>>& temp_env);
+
+#ifdef _WIN32
+		// Build the argv passed to CreateProcess: replaces argv[0] with the
+		// resolved exec_path and POSIX-to-Win32-translates each arg unless
+		// the callee is an MSYS binary or WBSH_NO_PATHCONV is set.
+		std::vector<std::string>
+		prepareExternalArgv(const std::vector<std::string>& argv,
+		                    const std::string& exec_path);
+		// Build env overrides for a Win32 child, layered on top of `temp_env`.
+		// Translates PATH to `;`-separated Win32 form and adds HOME in Win32
+		// 8.3 short form so MinGW tools with diacritics in profile paths work.
+		std::vector<std::pair<std::string, std::string>>
+		prepareExternalEnvOverrides(
+			const std::vector<std::pair<std::string, std::string>>& temp_env);
+		// Run CreateProcessW + Wait + GetExitCodeProcess; on success returns
+		// true and writes the exit status to *exit_status. On failure
+		// returns false; the caller can inspect GetLastError() (still valid
+		// because we didn't call any other Win32 API after the failure).
+		bool spawnExternalAndWait(const std::wstring& exe,
+		                          std::wstring& cmdline,
+		                          std::wstring& envblock,
+		                          int* exit_status);
+#endif
 
 		// Heuristic: does the file at `path` look like a shell script we
 		// should interpret in-process rather than handing to CreateProcess?
@@ -288,10 +413,39 @@ namespace wbsh {
 		                   const std::vector<std::pair<std::string, std::string>>& temp_env);
 
 #ifdef _WIN32
+		// Multi-command branch of execPipeline (the n>=2 case). Sets up the
+		// inter-stage pipes, launches each element, and waits for completion.
+		// Returns the resolved pipeline status (pipefail-aware) BEFORE any
+		// `! pipeline` negation by the caller.
+		int execPipelineMultiCmd(const Pipeline& p);
+
+		// `cmd &` — spawn a detached child sharing our std{in,out,err} fds,
+		// register it as a job, announce `[id] pid` to stderr. Returns 0 on
+		// success, 1 if the spawn failed.
+		int launchBackgroundCommand(const Node& cmd);
+
 		// Pipeline element launch. Returns a process HANDLE the parent waits
 		// on, or INVALID_HANDLE_VALUE on failure.
 		HANDLE launchPipelineElement(const Node& elem,
 		                             HANDLE h_in, HANDLE h_out, HANDLE h_err);
+		// Fast-path branch of launchPipelineElement: try to launch `elem` as
+		// a direct external (skipping the intermediate `wbsh.exe -r -c ...`
+		// shell). Returns the spawned HANDLE on success, INVALID_HANDLE_VALUE
+		// on a hard failure (command-not-found etc.), or sets `*tried = false`
+		// and returns INVALID_HANDLE_VALUE when the element is not eligible
+		// for the fast path and we should fall through to the self-spawn.
+		HANDLE tryDirectExternalLaunch(const Node& elem,
+		                               HANDLE h_in, HANDLE h_out, HANDLE h_err,
+		                               bool* tried);
+		// Re-enter wbsh on the original source slice that produced this AST
+		// node. Used as the fallback when a pipeline element is a builtin,
+		// function, alias, or anything else that can't run as a separate exe.
+		HANDLE selfSpawnPipelineElement(const Node& elem,
+		                                HANDLE h_in, HANDLE h_out, HANDLE h_err);
+		// Env-block overrides passed to a self-spawned child shell so it
+		// inherits our full state (translated PATH, serialised functions
+		// and aliases, non-exported var marker).
+		std::vector<std::pair<std::string, std::string>> buildSelfSpawnOverrides();
 		HANDLE launchExternalDirect(const SimpleCommand& sc,
 		                            const std::vector<std::string>& argv,
 		                            const std::string& exec_path,
@@ -299,9 +453,10 @@ namespace wbsh {
 #endif
 		bool isAbsoluteOrRelativePath(const std::string& name) const;
 		bool patternMatches(const std::string& pat, const std::string& s);
-
-		void execCompoundRedirsWrapper(const std::vector<Redirection>& redirs,
-		                               const std::function<int()>& body, int& out_status);
+		// Pop the top frame off `scope_stack_` and restore each entry's prior
+		// value (or unset if the name didn't exist before). Called when a
+		// function body finishes for any reason.
+		void popLocalScope();
 
 		struct ScopeEntry {
 			std::string name;

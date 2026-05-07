@@ -927,28 +927,126 @@ namespace wbsh {
 		}
 	}
 
+	// Configure stdin for raw key-by-key input. Returns the prior mode bits
+	// so the caller can restore them on exit.
+	static DWORD enterRawInputMode(HANDLE h_in) {
+		DWORD saved = 0;
+		GetConsoleMode(h_in, &saved);
+		DWORD in_mode = saved;
+		// Turn OFF cooked behaviour. We keep ENABLE_VIRTUAL_TERMINAL_INPUT
+		// (already on at REPL boot) so OS-generated escape sequences arrive
+		// untouched.
+		in_mode &= ~ENABLE_LINE_INPUT;
+		in_mode &= ~ENABLE_ECHO_INPUT;
+		in_mode &= ~ENABLE_PROCESSED_INPUT;
+		// Mouse / window events interleave with key events; suppress so the
+		// read loop only sees keys.
+		in_mode &= ~ENABLE_MOUSE_INPUT;
+		in_mode &= ~ENABLE_WINDOW_INPUT;
+		SetConsoleMode(h_in, in_mode);
+		return saved;
+	}
+
+	// AltGr (the right-Alt key on EU layouts) arrives as LEFT_CTRL +
+	// RIGHT_ALT. Hardware sends it as Ctrl+Alt for legacy reasons, but the
+	// layout engine has already resolved the keystroke to its layout-mapped
+	// character (e.g. AltGr+W -> `|` on Czech). Without this detection,
+	// the LEFT_CTRL bit would make us mistake the keystroke for Ctrl+W.
+	static bool isAltGrActive(const KEY_EVENT_RECORD& k) {
+		const DWORD ctrl = k.dwControlKeyState;
+		return (ctrl & (LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED))
+		           == (LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED)
+		    && k.uChar.UnicodeChar != 0;
+	}
+
+	// Alt-code sequences (Alt + numpad digits) are delivered to the console
+	// as a key-UP event for VK_MENU with the resolved Unicode char in
+	// UnicodeChar. We pluck that out here so they show up as input.
+	void LineEditor::handleAltKeyUp(const KEY_EVENT_RECORD& k) {
+		if (k.wVirtualKeyCode != VK_MENU) return;
+		if (k.uChar.UnicodeChar < 0x20) return;
+		const WCHAR ach = k.uChar.UnicodeChar;
+		char buf[8] = {};
+		const int n = WideCharToMultiByte(CP_UTF8, 0, &ach, 1,
+			buf, sizeof(buf), nullptr, nullptr);
+		if (n > 0) {
+			insertChars(std::string(buf, n));
+			redraw();
+		}
+	}
+
+	// Handle one Ctrl-modified keystroke. Returns true if recognised.
+	bool LineEditor::handleCtrlKey(const KEY_EVENT_RECORD& k,
+	                               const std::string& prompt,
+	                               std::string& out, bool& done, bool& eof) {
+		(void)out;
+		switch (k.wVirtualKeyCode) {
+		case 'C':
+			emit("^C\r\n");
+			buffer_.clear();
+			cursor_ = 0;
+			last_cursor_row_ = 0;
+			emit(prompt_raw_);
+			(void)prompt;
+			return true;
+		case 'D':
+			if (buffer_.empty()) { eof = true; done = true; }
+			else { handleDelete(); redraw(); }
+			return true;
+		case 'A': cursor_ = 0;              redraw(); return true;
+		case 'E': cursor_ = buffer_.size(); redraw(); return true;
+		case 'K': handleKillToEnd();        redraw(); return true;
+		case 'U': handleKillToStart();      redraw(); return true;
+		case 'W': handleKillWordBack();     redraw(); return true;
+		case 'L': handleClearScreen();                return true;
+		case 'B': if (cursor_ > 0)              { --cursor_; redraw(); } return true;
+		case 'F': if (cursor_ < buffer_.size()) { ++cursor_; redraw(); } return true;
+		case 'P': handleHistoryUp();        redraw(); return true;
+		case 'N': handleHistoryDown();      redraw(); return true;
+		case 'V': pasteFromClipboard();               return true;
+		default:  return false;
+		}
+	}
+
+	// Handle the navigation / editing virtual keys (Enter, arrows, Home,
+	// End, Backspace, Delete, Tab). Returns true if the key was a known
+	// VK; false means it's an ordinary character or modifier.
+	bool LineEditor::handleNavigationKey(const KEY_EVENT_RECORD& k,
+	                                     std::string& out, bool& done, bool& was_tab) {
+		switch (k.wVirtualKeyCode) {
+		case VK_RETURN:  handleEnter(out, done);                                     return true;
+		case VK_BACK:    handleBackspace(); redraw();                                 return true;
+		case VK_DELETE:  handleDelete();    redraw();                                 return true;
+		case VK_TAB:     handleTab();       redraw(); was_tab = true;                 return true;
+		case VK_LEFT:    if (cursor_ > 0)              { --cursor_; redraw(); }      return true;
+		case VK_RIGHT:   if (cursor_ < buffer_.size()) { ++cursor_; redraw(); }      return true;
+		case VK_UP:      handleHistoryUp();   redraw();                              return true;
+		case VK_DOWN:    handleHistoryDown(); redraw();                              return true;
+		case VK_HOME:    cursor_ = 0;              redraw();                         return true;
+		case VK_END:     cursor_ = buffer_.size(); redraw();                         return true;
+		default:                                                                      return false;
+		}
+	}
+
+	void LineEditor::insertReceivedChar(WCHAR ch) {
+		if (ch == 0) return;   // pure modifier press
+		if (ch >= 0x20 && ch < 0x7F) {
+			insertChars(std::string(1, static_cast<char>(ch)));
+			redraw();
+			return;
+		}
+		if (ch >= 0x80) {
+			insertWideCharFromConsole(ch);
+		}
+	}
+
 	bool LineEditor::readLineRaw(const std::string& prompt, std::string& out) {
 		HANDLE h_in  = GetStdHandle(STD_INPUT_HANDLE);
 		HANDLE h_out = GetStdHandle(STD_OUTPUT_HANDLE);
 		if (h_in == INVALID_HANDLE_VALUE || h_out == INVALID_HANDLE_VALUE) {
 			return readLineCooked(out);
 		}
-		DWORD saved_in_mode = 0, saved_out_mode = 0;
-		GetConsoleMode(h_in,  &saved_in_mode);
-		GetConsoleMode(h_out, &saved_out_mode);
-
-		// Raw input: keep VT processing for input on (so escape sequences
-		// from the OS are handled), but turn OFF line input + echo +
-		// processed-input so we see every keystroke. Output mode keeps VT
-		// processing (set up at REPL boot).
-		DWORD in_mode = saved_in_mode;
-		in_mode &= ~ENABLE_LINE_INPUT;
-		in_mode &= ~ENABLE_ECHO_INPUT;
-		in_mode &= ~ENABLE_PROCESSED_INPUT;
-		// Mouse / window events would interleave with key events; suppress.
-		in_mode &= ~ENABLE_MOUSE_INPUT;
-		in_mode &= ~ENABLE_WINDOW_INPUT;
-		SetConsoleMode(h_in, in_mode);
+		const DWORD saved_in_mode = enterRawInputMode(h_in);
 
 		emit(prompt);
 		bool done = false;
@@ -963,129 +1061,30 @@ namespace wbsh {
 			if (rec.EventType != KEY_EVENT) continue;
 			KEY_EVENT_RECORD& k = rec.Event.KeyEvent;
 			if (!k.bKeyDown) {
-				// Alt-code sequences (Alt + numpad digits) are delivered
-				// to the console as a key-UP event for VK_MENU, with the
-				// resolved Unicode char in UnicodeChar. Without this branch
-				// we'd drop them along with every other key-up.
-				if (k.wVirtualKeyCode == VK_MENU
-				    && k.uChar.UnicodeChar >= 0x20) {
-					WCHAR ach = k.uChar.UnicodeChar;
-					char buf[8] = {};
-					int n = WideCharToMultiByte(CP_UTF8, 0, &ach, 1,
-						buf, sizeof(buf), nullptr, nullptr);
-					if (n > 0) {
-						insertChars(std::string(buf, n));
-						redraw();
-					}
-				}
+				handleAltKeyUp(k);
 				continue;
 			}
 
-			DWORD ctrl = k.dwControlKeyState;
-			// AltGr (the right-Alt key on Czech / German / many EU layouts)
-			// arrives as LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED. Hardware
-			// sends it as the Ctrl+Alt combo for legacy reasons, but the
-			// layout engine has already produced the layout-translated char
-			// in UnicodeChar (e.g. AltGr+W -> `|` on Czech). If we let
-			// is_ctrl pick up the LEFT_CTRL bit, AltGr+W gets treated as
-			// Ctrl+W and triggers kill-word instead of inserting `|`.
-			const bool altgr_active =
-				(ctrl & (LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED))
-					== (LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED)
-				&& k.uChar.UnicodeChar != 0;
-			bool is_ctrl  = !altgr_active &&
-				(ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
-			bool is_alt   = !altgr_active &&
-				(ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
-			(void)is_alt;
-			WCHAR ch = k.uChar.UnicodeChar;
+			const bool altgr = isAltGrActive(k);
+			const bool is_ctrl = !altgr
+				&& (k.dwControlKeyState
+				    & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+			const WCHAR ch = k.uChar.UnicodeChar;
 			bool was_tab = false;
 
-			switch (k.wVirtualKeyCode) {
-			case VK_RETURN:
-				handleEnter(out, done);
-				break;
-			case VK_BACK:
-				handleBackspace();
-				redraw();
-				break;
-			case VK_DELETE:
-				handleDelete();
-				redraw();
-				break;
-			case VK_TAB:
-				handleTab();
-				redraw();
-				was_tab = true;
-				break;
-			case VK_LEFT:
-				if (cursor_ > 0) { --cursor_; redraw(); }
-				break;
-			case VK_RIGHT:
-				if (cursor_ < buffer_.size()) { ++cursor_; redraw(); }
-				break;
-			case VK_UP:
-				handleHistoryUp();
-				redraw();
-				break;
-			case VK_DOWN:
-				handleHistoryDown();
-				redraw();
-				break;
-			case VK_HOME:
-				cursor_ = 0;
-				redraw();
-				break;
-			case VK_END:
-				cursor_ = buffer_.size();
-				redraw();
-				break;
-			default:
-				if (is_ctrl) {
-					bool handled = true;
-					switch (k.wVirtualKeyCode) {
-					case 'C':
-						emit("^C\r\n");
-						buffer_.clear();
-						cursor_ = 0;
-						last_cursor_row_ = 0;
-						emit(prompt_raw_);
-						break;
-					case 'D':
-						if (buffer_.empty()) { eof = true; done = true; }
-						else { handleDelete(); redraw(); }
-						break;
-					case 'A': cursor_ = 0;               redraw(); break;
-					case 'E': cursor_ = buffer_.size();  redraw(); break;
-					case 'K': handleKillToEnd();         redraw(); break;
-					case 'U': handleKillToStart();       redraw(); break;
-					case 'W': handleKillWordBack();      redraw(); break;
-					case 'L': handleClearScreen();                 break;
-					case 'B': if (cursor_ > 0)             { --cursor_; redraw(); } break;
-					case 'F': if (cursor_ < buffer_.size()) { ++cursor_; redraw(); } break;
-					case 'P': handleHistoryUp();         redraw(); break;
-					case 'N': handleHistoryDown();       redraw(); break;
-					case 'V': pasteFromClipboard();                break;
-					default:  handled = false;                     break;
-					}
-					if (handled) break;
-				}
-
-				if (ch == 0) break;   // pure modifier press
-				if (ch >= 0x20 && ch < 0x7F) {
-					char c = static_cast<char>(ch);
-					insertChars(std::string(1, c));
-					redraw();
-				} else if (ch >= 0x80) {
-					insertWideCharFromConsole(ch);
-				}
-				break;
+			if (handleNavigationKey(k, out, done, was_tab)) {
+				last_was_tab_ = was_tab;
+				continue;
 			}
+			if (is_ctrl && handleCtrlKey(k, prompt, out, done, eof)) {
+				last_was_tab_ = was_tab;
+				continue;
+			}
+			insertReceivedChar(ch);
 			last_was_tab_ = was_tab;
 		}
 
 		SetConsoleMode(h_in, saved_in_mode);
-		(void)saved_out_mode;
 		return !eof || !out.empty();
 	}
 

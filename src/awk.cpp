@@ -1311,162 +1311,229 @@ struct AwkInterp {
 		assignTo(lhs, "=", std::move(v));
 	}
 
-	AwkValue callBuiltin(Expr& e) {
+	// Split `s` on `sep` for the awk `split()` builtin.
+	// `sep == " "` is special-cased to mean "any run of spaces / tabs".
+	// A single-character separator is matched literally; longer separators
+	// are interpreted as ECMAScript regex.
+	static std::vector<std::string> splitOnAwkSeparator(const std::string& s,
+	                                                    const std::string& sep) {
+		std::vector<std::string> parts;
+		if (sep == " ") {
+			std::size_t i = 0;
+			const std::size_t m = s.size();
+			while (i < m) {
+				while (i < m && (s[i] == ' ' || s[i] == '\t')) ++i;
+				if (i >= m) break;
+				const std::size_t st = i;
+				while (i < m && s[i] != ' ' && s[i] != '\t') ++i;
+				parts.push_back(s.substr(st, i - st));
+			}
+			return parts;
+		}
+		if (sep.size() == 1) {
+			std::string cur;
+			for (char c : s) {
+				if (c == sep[0]) { parts.push_back(std::move(cur)); cur.clear(); }
+				else cur.push_back(c);
+			}
+			parts.push_back(std::move(cur));
+			return parts;
+		}
+		try {
+			std::regex re(sep);
+			auto bg = std::sregex_token_iterator(s.begin(), s.end(), re, -1);
+			auto ed = std::sregex_token_iterator();
+			for (auto it = bg; it != ed; ++it) parts.push_back(*it);
+		} catch (...) {
+			parts.push_back(s);
+		}
+		return parts;
+	}
+
+	AwkValue callStringBuiltin(Expr& e) {
 		const std::string& n = e.name;
-		auto sval = [&](std::size_t i) -> std::string {
+		auto sval = [&](std::size_t i) {
 			return i < e.args.size() ? eval(*e.args[i]).asString() : std::string();
 		};
-		auto nval = [&](std::size_t i) -> double {
+		auto nval = [&](std::size_t i) {
 			return i < e.args.size() ? eval(*e.args[i]).asNumber() : 0.0;
 		};
 		if (n == "length") {
-			if (e.args.empty()) return AwkValue::num((double)record.size());
-			return AwkValue::num((double)sval(0).size());
+			if (e.args.empty()) return AwkValue::num(static_cast<double>(record.size()));
+			return AwkValue::num(static_cast<double>(sval(0).size()));
 		}
 		if (n == "substr") {
-			std::string s = sval(0);
-			long long start = (long long)nval(1);
+			const std::string s = sval(0);
+			long long start = static_cast<long long>(nval(1));
 			if (start < 1) start = 1;
-			long long len = (e.args.size() >= 3)
-			    ? (long long)nval(2)
-			    : (long long)s.size() - start + 1;
-			if (start > (long long)s.size() || len <= 0) return AwkValue::str("");
-			return AwkValue::str(s.substr((std::size_t)(start - 1),
-			    (std::size_t)std::min<long long>(len, (long long)s.size() - start + 1)));
+			const long long len = (e.args.size() >= 3)
+				? static_cast<long long>(nval(2))
+				: static_cast<long long>(s.size()) - start + 1;
+			if (start > static_cast<long long>(s.size()) || len <= 0)
+				return AwkValue::str("");
+			return AwkValue::str(s.substr(static_cast<std::size_t>(start - 1),
+				static_cast<std::size_t>(std::min<long long>(
+					len, static_cast<long long>(s.size()) - start + 1))));
 		}
 		if (n == "index") {
-			auto s = sval(0); auto t = sval(1);
+			const auto s = sval(0);
+			const auto t = sval(1);
 			if (t.empty()) return AwkValue::num(0);
-			auto p = s.find(t);
-			return AwkValue::num(p == std::string::npos ? 0 : (double)(p + 1));
+			const auto p = s.find(t);
+			return AwkValue::num(p == std::string::npos
+				? 0 : static_cast<double>(p + 1));
 		}
-		if (n == "split") {
+		if (n == "tolower" || n == "toupper") {
 			std::string s = sval(0);
-			std::string sep = (e.args.size() >= 3) ? sval(2) : FS;
-			std::string aname;
-			if (e.args.size() >= 2 && e.args[1]->kind == EK::Var) {
-				aname = e.args[1]->name;
-			} else if (e.args.size() >= 2 && e.args[1]->kind == EK::ArrayRef) {
-				aname = e.args[1]->name;
+			for (auto& c : s) {
+				c = static_cast<char>(n == "tolower"
+					? std::tolower(static_cast<unsigned char>(c))
+					: std::toupper(static_cast<unsigned char>(c)));
 			}
-			arrays[aname].clear();
-			std::vector<std::string> parts;
-			if (sep == " ") {
-				std::size_t i = 0, m = s.size();
-				while (i < m) {
-					while (i < m && (s[i] == ' ' || s[i] == '\t')) ++i;
-					if (i >= m) break;
-					std::size_t st = i;
-					while (i < m && s[i] != ' ' && s[i] != '\t') ++i;
-					parts.push_back(s.substr(st, i - st));
-				}
-			} else if (sep.size() == 1) {
-				std::string cur;
-				for (char c : s) {
-					if (c == sep[0]) { parts.push_back(std::move(cur)); cur.clear(); }
-					else cur.push_back(c);
-				}
-				parts.push_back(std::move(cur));
-			} else {
-				try {
-					std::regex re(sep);
-					auto bg = std::sregex_token_iterator(s.begin(), s.end(), re, -1);
-					auto ed = std::sregex_token_iterator();
-					for (auto it = bg; it != ed; ++it) parts.push_back(*it);
-				} catch (...) { parts.push_back(s); }
-			}
-			for (std::size_t i = 0; i < parts.size(); ++i) {
-				arrays[aname][std::to_string(i + 1)] = AwkValue::str(parts[i]);
-			}
-			return AwkValue::num((double)parts.size());
+			return AwkValue::str(std::move(s));
 		}
-		if (n == "sub" || n == "gsub") {
-			std::string pat = sval(0);
-			std::string rep = sval(1);
-			Expr* target = (e.args.size() >= 3) ? e.args[2].get() : nullptr;
-			std::string subject;
-			if (target) subject = eval(*target).asString();
-			else subject = record;
-			int count = 0;
-			try {
-				std::regex re(pat);
-				if (n == "sub") {
-					std::smatch m;
-					if (std::regex_search(subject, m, re)) {
-						subject = m.prefix().str() + std::regex_replace(m[0].str(), re, rep) + m.suffix().str();
-						count = 1;
-					}
-				} else {
-					std::string out;
-					auto begin = std::sregex_iterator(subject.begin(), subject.end(), re);
-					auto end = std::sregex_iterator();
-					std::size_t prev = 0;
-					for (auto it = begin; it != end; ++it) {
-						out.append(subject, prev, it->position() - prev);
-						out.append(it->format(rep));
-						prev = it->position() + it->length();
-						++count;
-					}
-					out.append(subject, prev, std::string::npos);
-					subject = std::move(out);
-				}
-			} catch (...) {}
-			if (target) assignLValue(*target, AwkValue::str(subject));
-			else { record = std::move(subject); splitRecord(); }
-			return AwkValue::num((double)count);
+		return AwkValue::str("");
+	}
+
+	AwkValue callSplitBuiltin(Expr& e) {
+		auto sval = [&](std::size_t i) {
+			return i < e.args.size() ? eval(*e.args[i]).asString() : std::string();
+		};
+		const std::string s = sval(0);
+		const std::string sep = (e.args.size() >= 3) ? sval(2) : FS;
+
+		std::string aname;
+		if (e.args.size() >= 2 && (e.args[1]->kind == EK::Var
+		                           || e.args[1]->kind == EK::ArrayRef)) {
+			aname = e.args[1]->name;
 		}
-		if (n == "match") {
-			std::string s = sval(0);
-			std::string pat = sval(1);
-			try {
-				std::regex re(pat);
+		arrays[aname].clear();
+
+		const auto parts = splitOnAwkSeparator(s, sep);
+		for (std::size_t i = 0; i < parts.size(); ++i) {
+			arrays[aname][std::to_string(i + 1)] = AwkValue::str(parts[i]);
+		}
+		return AwkValue::num(static_cast<double>(parts.size()));
+	}
+
+	AwkValue callSubGsubBuiltin(Expr& e) {
+		const bool gsub = e.name == "gsub";
+		auto sval = [&](std::size_t i) {
+			return i < e.args.size() ? eval(*e.args[i]).asString() : std::string();
+		};
+		const std::string pat = sval(0);
+		const std::string rep = sval(1);
+		Expr* target = (e.args.size() >= 3) ? e.args[2].get() : nullptr;
+		std::string subject = target ? eval(*target).asString() : record;
+
+		int count = 0;
+		try {
+			const std::regex re(pat);
+			if (!gsub) {
 				std::smatch m;
-				if (std::regex_search(s, m, re)) {
-					vars["RSTART"] = AwkValue::num((double)(m.position(0) + 1));
-					vars["RLENGTH"] = AwkValue::num((double)m.length(0));
-					return AwkValue::num((double)(m.position(0) + 1));
+				if (std::regex_search(subject, m, re)) {
+					subject = m.prefix().str()
+						+ std::regex_replace(m[0].str(), re, rep)
+						+ m.suffix().str();
+					count = 1;
 				}
-			} catch (...) {}
-			vars["RSTART"] = AwkValue::num(0);
-			vars["RLENGTH"] = AwkValue::num(-1);
-			return AwkValue::num(0);
+			} else {
+				std::string out;
+				auto begin = std::sregex_iterator(subject.begin(), subject.end(), re);
+				auto end = std::sregex_iterator();
+				std::size_t prev = 0;
+				for (auto it = begin; it != end; ++it) {
+					out.append(subject, prev, it->position() - prev);
+					out.append(it->format(rep));
+					prev = it->position() + it->length();
+					++count;
+				}
+				out.append(subject, prev, std::string::npos);
+				subject = std::move(out);
+			}
+		} catch (...) {
+			// Bad regex: leave subject untouched.
 		}
-		if (n == "tolower") {
-			std::string s = sval(0);
-			for (auto& c : s) c = (char)std::tolower((unsigned char)c);
-			return AwkValue::str(s);
+
+		if (target) {
+			assignLValue(*target, AwkValue::str(subject));
+		} else {
+			record = std::move(subject);
+			splitRecord();
 		}
-		if (n == "toupper") {
-			std::string s = sval(0);
-			for (auto& c : s) c = (char)std::toupper((unsigned char)c);
-			return AwkValue::str(s);
+		return AwkValue::num(static_cast<double>(count));
+	}
+
+	AwkValue callMatchBuiltin(Expr& e) {
+		auto sval = [&](std::size_t i) {
+			return i < e.args.size() ? eval(*e.args[i]).asString() : std::string();
+		};
+		const std::string s = sval(0);
+		const std::string pat = sval(1);
+		try {
+			const std::regex re(pat);
+			std::smatch m;
+			if (std::regex_search(s, m, re)) {
+				vars["RSTART"]  = AwkValue::num(static_cast<double>(m.position(0) + 1));
+				vars["RLENGTH"] = AwkValue::num(static_cast<double>(m.length(0)));
+				return AwkValue::num(static_cast<double>(m.position(0) + 1));
+			}
+		} catch (...) {
+			// Fall through to "no match" result.
 		}
-		if (n == "sprintf" || n == "printf") {
-			std::vector<AwkValue> a;
-			for (auto& x : e.args) a.push_back(eval(*x));
-			std::string out = formatPrintf(a);
-			if (n == "sprintf") return AwkValue::str(out);
-			std::fputs(out.c_str(), stdout);
-			return AwkValue::str("");
-		}
-		if (n == "system") {
-			std::string cmd = sval(0);
-			int rc = std::system(cmd.c_str());
-			return AwkValue::num((double)rc);
-		}
-		if (n == "int") return AwkValue::num(std::trunc(nval(0)));
-		if (n == "sqrt") return AwkValue::num(std::sqrt(nval(0)));
-		if (n == "exp") return AwkValue::num(std::exp(nval(0)));
-		if (n == "log") return AwkValue::num(std::log(nval(0)));
-		if (n == "sin") return AwkValue::num(std::sin(nval(0)));
-		if (n == "cos") return AwkValue::num(std::cos(nval(0)));
+		vars["RSTART"]  = AwkValue::num(0);
+		vars["RLENGTH"] = AwkValue::num(-1);
+		return AwkValue::num(0);
+	}
+
+	AwkValue callPrintfBuiltin(Expr& e) {
+		std::vector<AwkValue> a;
+		for (auto& x : e.args) a.push_back(eval(*x));
+		std::string out = formatPrintf(a);
+		if (e.name == "sprintf") return AwkValue::str(std::move(out));
+		std::fputs(out.c_str(), stdout);
+		return AwkValue::str("");
+	}
+
+	AwkValue callMathBuiltin(Expr& e) {
+		const std::string& n = e.name;
+		auto nval = [&](std::size_t i) {
+			return i < e.args.size() ? eval(*e.args[i]).asNumber() : 0.0;
+		};
+		if (n == "int")   return AwkValue::num(std::trunc(nval(0)));
+		if (n == "sqrt")  return AwkValue::num(std::sqrt(nval(0)));
+		if (n == "exp")   return AwkValue::num(std::exp(nval(0)));
+		if (n == "log")   return AwkValue::num(std::log(nval(0)));
+		if (n == "sin")   return AwkValue::num(std::sin(nval(0)));
+		if (n == "cos")   return AwkValue::num(std::cos(nval(0)));
 		if (n == "atan2") return AwkValue::num(std::atan2(nval(0), nval(1)));
-		if (n == "rand") return AwkValue::num((double)std::rand() / RAND_MAX);
+		if (n == "rand")  return AwkValue::num(static_cast<double>(std::rand()) / RAND_MAX);
 		if (n == "srand") {
-			unsigned s = (unsigned)nval(0);
-			std::srand(s);
+			std::srand(static_cast<unsigned>(nval(0)));
 			return AwkValue::num(0);
 		}
+		return AwkValue::str("");
+	}
+
+	AwkValue callBuiltin(Expr& e) {
+		const std::string& n = e.name;
+		if (n == "length"  || n == "substr"  || n == "index"
+		    || n == "tolower" || n == "toupper")
+			return callStringBuiltin(e);
+		if (n == "split")                    return callSplitBuiltin(e);
+		if (n == "sub" || n == "gsub")       return callSubGsubBuiltin(e);
+		if (n == "match")                    return callMatchBuiltin(e);
+		if (n == "sprintf" || n == "printf") return callPrintfBuiltin(e);
+		if (n == "system") {
+			const std::string cmd = e.args.empty()
+				? std::string()
+				: eval(*e.args[0]).asString();
+			return AwkValue::num(static_cast<double>(std::system(cmd.c_str())));
+		}
+		if (n == "int" || n == "sqrt" || n == "exp" || n == "log"
+		    || n == "sin" || n == "cos" || n == "atan2"
+		    || n == "rand" || n == "srand")
+			return callMathBuiltin(e);
 		// Unknown — return empty.
 		return AwkValue::str("");
 	}

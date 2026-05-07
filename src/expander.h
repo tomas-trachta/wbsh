@@ -127,9 +127,10 @@ namespace wbsh {
 			return out;
 		}
 
-	private:
 		// Tagged text used internally during expansion. Each character
 		// carries flags describing its provenance.
+		// Public because file-static helpers in expander.cpp consume it as
+		// an opaque "string + per-char flags" buffer.
 		static constexpr std::uint8_t F_QUOTED = 1u << 0;
 
 		struct Tagged {
@@ -143,6 +144,8 @@ namespace wbsh {
 			}
 		};
 
+	private:
+
 		Environment& env_;
 		CommandSubstitutor* sub_;
 		PathConv path_conv_;
@@ -151,9 +154,20 @@ namespace wbsh {
 		// ---- Rendering ----
 		Tagged renderWord(const Word& w);
 		void   renderSegment(const WordSegment& s, Tagged& out, bool inside_dq);
+		// Sub-renderers for the bulkier WordSegment kinds. Kept private —
+		// renderSegment dispatches into them.
+		void   renderArrayFields(const std::vector<std::string>& elems,
+		                         bool star, bool inside_dq, Tagged& out);
+		void   renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq);
+		void   renderProcSubstSegment(const WordSegment& s, Tagged& out);
+		void   renderDollarAt(Tagged& out, bool inside_dq);
 
 		// ---- Parameter / command / arith ----
 		std::string lookupParam(const std::string& name);
+		// Helpers consumed by lookupParam:
+		std::string joinPositionals(char form) const;
+		bool        lookupSpecialChar(char c, std::string& out);
+		bool        lookupDynamicSpecial(const std::string& name, std::string& out) const;
 		// Look up name[subscript] as a scalar string. Supports numeric
 		// subscripts (indexed arrays, where the subscript is an arithmetic
 		// expression), `@`/`*` (joined elements), and assoc-array string
@@ -161,6 +175,7 @@ namespace wbsh {
 		std::string lookupSubscripted(const std::string& name,
 		                              const std::string& subscript,
 		                              bool star_join_ifs);
+		std::string starSeparator(bool star_join_ifs) const;
 		// Count of elements: ${#name[@]} / ${#name[*]}.
 		std::size_t arrayLength(const std::string& name) const;
 		// Indices / keys: ${!name[@]}.
@@ -169,10 +184,38 @@ namespace wbsh {
 		// field-aware emission of `${name[@]}`.
 		std::vector<std::string> arrayValues(const std::string& name) const;
 		std::string expandParam(const std::string& body, bool quoted_ctx);
+		// Helpers used internally by expandParam — broken out so the main
+		// dispatcher fits on one screen.
+		std::string expandParamLengthForm(const std::string& body);
+		std::string expandParamIndicesForm(const std::string& body);
+		std::string evalParamDefaultOp(char op, bool colon,
+		                               const std::string& name,
+		                               const std::string& cur,
+		                               const std::string& arg);
+		std::string evalArraySlice(const std::string& name, const std::string& args);
+		std::string evalParamReplace(const std::string& cur,
+		                             const std::string& args, bool all);
+
 		std::string runCmdSubst(const std::string& body);
 		std::string interpretAnsiC(const std::string& body);
 
+		// Helpers for expandHeredoc — one per `$X` / backquote shape.
+		// Each takes the body, the cursor `i` (advanced through the
+		// matched span), and the output buffer.
+		void expandHeredocParamBraces(const std::string& body, std::size_t& i,
+		                              std::string& out);
+		void expandHeredocCmdSubst   (const std::string& body, std::size_t& i,
+		                              std::string& out);
+		void expandHeredocArith      (const std::string& body, std::size_t& i,
+		                              std::string& out);
+		void expandHeredocSimpleParam(const std::string& body, std::size_t& i,
+		                              std::string& out);
+		void expandHeredocBackquote  (const std::string& body, std::size_t& i,
+		                              std::string& out);
+
+	public:
 		bool        isSpecialParam1(char c) const;
+	private:
 
 		// ---- Tilde ----
 		Word applyTildeExpansion(const Word& w);

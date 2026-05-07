@@ -706,101 +706,121 @@ namespace wbsh {
 	// Simple command
 	// ---------------------------------------------------------------------------
 
+	// Try to parse one item inside an `arr=(...)` array literal. Detects the
+	// `[key]=value` form by inspecting the raw token text. Falls back to a
+	// plain unkeyed value for anything else. Caller has already verified
+	// that `peek()` is a Word token.
+	void Parser::parseArrayLiteralItem(Assignment& a) {
+		Word w = tokenToWord(advance());
+		Assignment::Keyed item;
+
+		const bool has_key_form =
+			!w.raw.empty() && w.raw[0] == '['
+			&& !w.segments.empty()
+			&& w.segments[0].kind == WordSegment::Kind::Literal;
+		if (has_key_form) {
+			const std::string& lit = w.segments[0].text;
+			const std::size_t close = lit.find(']');
+			if (close != std::string::npos
+			    && close + 1 < lit.size()
+			    && lit[close + 1] == '=')
+			{
+				WordSegment ks;
+				ks.kind = WordSegment::Kind::Literal;
+				ks.text = lit.substr(1, close - 1);
+				item.key.segments.push_back(std::move(ks));
+				item.has_key = true;
+
+				// Everything after `]=` is the value's first segment,
+				// followed by any further segments from the same token.
+				const std::string val_text = lit.substr(close + 2);
+				if (!val_text.empty()) {
+					WordSegment vs;
+					vs.kind = WordSegment::Kind::Literal;
+					vs.text = val_text;
+					item.value.segments.push_back(std::move(vs));
+				}
+				for (std::size_t k = 1; k < w.segments.size(); ++k) {
+					item.value.segments.push_back(w.segments[k]);
+				}
+				item.value.raw = w.raw;
+				a.keyed_items.push_back(std::move(item));
+				return;
+			}
+		}
+		// Plain unkeyed value.
+		Assignment::Keyed unkeyed;
+		unkeyed.value = std::move(w);
+		a.keyed_items.push_back(std::move(unkeyed));
+	}
+
+	// Consume `(...)` for `arr=(...)` array literals. Caller has already
+	// consumed `arr=` (with empty value) and the opening `(`. On unexpected
+	// tokens an error is reported and parsing skips to the closing `)`.
+	void Parser::parseArrayLiteralBody(Assignment& a) {
+		a.is_array = true;
+		skipNewlines();
+		while (!atEnd() && peek().kind != TokKind::RParen) {
+			if (peek().kind == TokKind::Newline) {
+				advance();
+				continue;
+			}
+			if (peek().kind != TokKind::Word) {
+				error(peek(), "unexpected token in array literal");
+				break;
+			}
+			parseArrayLiteralItem(a);
+		}
+		if (!match(TokKind::RParen)) {
+			error(peek(), "expected `)` to close array literal");
+		}
+	}
+
+	// True iff `a` is a scalar `name=` with an empty RHS — the tell-tale
+	// pre-state of an `arr=(...)` array literal once the `name=` portion
+	// has been consumed.
+	static bool isEmptyScalarAssignmentSlot(const Assignment& a) {
+		return a.value.segments.empty() && !a.has_subscript;
+	}
+
+	// Try to parse a leading assignment (or array literal) at the current
+	// position. Returns true if one was consumed and pushed onto `cmd`.
+	bool Parser::tryConsumeLeadingAssignment(SimpleCommand& cmd) {
+		Assignment a;
+		if (!extractAssignment(peek(), a)) return false;
+		advance();
+		// `name=(...)` array literal: when the scalar parse left an empty
+		// value and the next token is `(`, switch to array mode.
+		if (isEmptyScalarAssignmentSlot(a) && peek().kind == TokKind::LParen) {
+			advance();   // consume `(`
+			parseArrayLiteralBody(a);
+		}
+		cmd.assignments.push_back(std::move(a));
+		return true;
+	}
+
 	NodePtr Parser::parseSimpleCommand() {
-		std::size_t start = srcOffsetHere();
+		const std::size_t start = srcOffsetHere();
 		auto cmd = std::make_unique<SimpleCommand>();
 		cmd->loc = peek().loc;
 		bool seen_word = false;
 
-		while (true) {
-			if (atEnd()) break;
+		while (!atEnd()) {
 			// Redirection (with or without leading IO_NUMBER).
 			if (atRedirOp() || peek().kind == TokKind::IoNumber) {
 				Redirection r;
-				if (tryParseRedirection(r)) {
-					cmd->redirs.push_back(std::move(r));
-					continue;
-				}
-				break;
-			}
-			if (peek().kind == TokKind::Word) {
-				if (!seen_word) {
-					Assignment a;
-					if (extractAssignment(peek(), a)) {
-						advance();
-						// `name=(...)` array literal: the empty-value
-						// scalar form was just consumed; if the next
-						// token is `(`, switch to array mode.
-						if (a.value.segments.empty() && !a.has_subscript
-						    && peek().kind == TokKind::LParen)
-						{
-							advance();   // consume `(`
-							a.is_array = true;
-							skipNewlines();
-							while (!atEnd() && peek().kind != TokKind::RParen) {
-								if (peek().kind == TokKind::Newline) {
-									advance(); continue;
-								}
-								if (peek().kind != TokKind::Word) {
-									error(peek(), "unexpected token in array literal");
-									break;
-								}
-								// Detect [key]=value form by inspecting the
-								// raw token text. Bracketed key with `=`
-								// somewhere after `]`.
-								Word w = tokenToWord(advance());
-								Assignment::Keyed item;
-								if (!w.raw.empty() && w.raw[0] == '['
-								    && !w.segments.empty()
-								    && w.segments[0].kind == WordSegment::Kind::Literal)
-								{
-									const std::string& lit = w.segments[0].text;
-									std::size_t close = lit.find(']');
-									if (close != std::string::npos
-									    && close + 1 < lit.size()
-									    && lit[close + 1] == '=')
-									{
-										std::string key_text = lit.substr(1, close - 1);
-										std::string val_text = lit.substr(close + 2);
-										WordSegment ks;
-										ks.kind = WordSegment::Kind::Literal;
-										ks.text = std::move(key_text);
-										item.key.segments.push_back(std::move(ks));
-										item.has_key = true;
-										// Value is the rest of the first
-										// segment plus any following segments.
-										if (!val_text.empty()) {
-											WordSegment vs;
-											vs.kind = WordSegment::Kind::Literal;
-											vs.text = std::move(val_text);
-											item.value.segments.push_back(std::move(vs));
-										}
-										for (std::size_t k = 1; k < w.segments.size(); ++k) {
-											item.value.segments.push_back(w.segments[k]);
-										}
-										item.value.raw = w.raw;
-										a.keyed_items.push_back(std::move(item));
-										continue;
-									}
-								}
-								Assignment::Keyed unkeyed;
-								unkeyed.value = std::move(w);
-								a.keyed_items.push_back(std::move(unkeyed));
-							}
-							if (!match(TokKind::RParen)) {
-								error(peek(), "expected `)` to close array literal");
-							}
-						}
-						cmd->assignments.push_back(std::move(a));
-						continue;
-					}
-				}
-				cmd->words.push_back(tokenToWord(advance()));
-				seen_word = true;
+				if (!tryParseRedirection(r)) break;
+				cmd->redirs.push_back(std::move(r));
 				continue;
 			}
-			// Anything else terminates the simple command.
-			break;
+			if (peek().kind != TokKind::Word) break;
+
+			// Leading assignments only — once a non-assignment word is
+			// seen, every subsequent Word is just a command argument.
+			if (!seen_word && tryConsumeLeadingAssignment(*cmd)) continue;
+
+			cmd->words.push_back(tokenToWord(advance()));
+			seen_word = true;
 		}
 
 		if (cmd->words.empty() && cmd->assignments.empty() && cmd->redirs.empty()) {
@@ -810,140 +830,173 @@ namespace wbsh {
 		return cmd;
 	}
 
+	// Scan `s0` for the leading `[A-Za-z_][A-Za-z0-9_]*` identifier. Returns
+	// the offset just past the name (0 == not a name).
+	static std::size_t scanAssignmentNameLength(const std::string& s0) {
+		if (s0.empty()) return 0;
+		const unsigned char c0 = static_cast<unsigned char>(s0[0]);
+		if (!(std::isalpha(c0) || c0 == '_')) return 0;
+		std::size_t i = 1;
+		while (i < s0.size()
+		       && (std::isalnum(static_cast<unsigned char>(s0[i])) || s0[i] == '_'))
+		{
+			++i;
+		}
+		return i;
+	}
+
+	// Walk `t.segments` to locate the `]` that closes the subscript started
+	// at (cur_seg, cur_pos). Returns false if the segments don't actually
+	// form a `name[...]=` shape; on true, fills *out_close_seg and
+	// *out_close_pos.
+	static bool findSubscriptCloseBracket(const Token& t,
+	                                      std::size_t cur_seg, std::size_t cur_pos,
+	                                      std::size_t* out_close_seg,
+	                                      std::size_t* out_close_pos) {
+		for (std::size_t k = 0; k < t.segments.size(); ++k) {
+			const auto& seg = t.segments[k];
+			if (seg.kind != WordSegment::Kind::Literal) continue;
+			const std::size_t start = (k == cur_seg) ? cur_pos : 0;
+			const auto rb = seg.text.find(']', start);
+			if (rb == std::string::npos) continue;
+			*out_close_seg = k;
+			*out_close_pos = rb;
+			return true;
+		}
+		return false;
+	}
+
+	// After locating `]`, verify `]=` follows (either in the same literal
+	// segment or as the leading `=` of the next literal segment).
+	static bool subscriptIsFollowedByEquals(const Token& t,
+	                                        std::size_t close_seg,
+	                                        std::size_t close_pos) {
+		const auto& close_text = t.segments[close_seg].text;
+		if (close_pos + 1 < close_text.size()) {
+			return close_text[close_pos + 1] == '=';
+		}
+		if (close_seg + 1 >= t.segments.size()) return false;
+		const auto& nxt = t.segments[close_seg + 1];
+		if (nxt.kind != WordSegment::Kind::Literal) return false;
+		return !nxt.text.empty() && nxt.text[0] == '=';
+	}
+
+	// Append the subscript content (stripping the surrounding `[` and `]`)
+	// from segments[cur_seg..close_seg] onto `out_subscript`.
+	static void buildSubscriptWord(const Token& t,
+	                               std::size_t cur_seg, std::size_t cur_pos,
+	                               std::size_t close_seg, std::size_t close_pos,
+	                               Word& out_subscript) {
+		auto push_literal = [&](std::string text) {
+			if (text.empty()) return;
+			WordSegment w;
+			w.kind = WordSegment::Kind::Literal;
+			w.text = std::move(text);
+			out_subscript.segments.push_back(std::move(w));
+		};
+		for (std::size_t k = cur_seg; k <= close_seg; ++k) {
+			const auto& seg = t.segments[k];
+			if (k == cur_seg && seg.kind == WordSegment::Kind::Literal) {
+				std::string slice = (k == close_seg)
+					? seg.text.substr(cur_pos, close_pos - cur_pos)
+					: seg.text.substr(cur_pos);
+				push_literal(std::move(slice));
+			} else if (k == close_seg && seg.kind == WordSegment::Kind::Literal) {
+				push_literal(seg.text.substr(0, close_pos));
+			} else {
+				out_subscript.segments.push_back(seg);
+			}
+		}
+	}
+
+	// Append the value portion (everything after the `=` that follows `]`)
+	// from `t` onto `out_value`.
+	static void buildValueWordAfterSubscript(const Token& t,
+	                                         std::size_t close_seg,
+	                                         std::size_t close_pos,
+	                                         Word& out_value) {
+		auto push_literal = [&](std::string text) {
+			if (text.empty()) return;
+			WordSegment w;
+			w.kind = WordSegment::Kind::Literal;
+			w.text = std::move(text);
+			out_value.segments.push_back(std::move(w));
+		};
+		const auto& close_text = t.segments[close_seg].text;
+		if (close_pos + 1 < close_text.size()) {
+			// `]=` lives in close_seg; value starts at close_pos + 2.
+			push_literal(close_text.substr(close_pos + 2));
+			for (std::size_t k = close_seg + 1; k < t.segments.size(); ++k)
+				out_value.segments.push_back(t.segments[k]);
+			return;
+		}
+		// `]` ends close_seg; the leading `=` lives in the next literal.
+		const auto& nxt = t.segments[close_seg + 1];
+		push_literal(nxt.text.substr(1));
+		for (std::size_t k = close_seg + 2; k < t.segments.size(); ++k)
+			out_value.segments.push_back(t.segments[k]);
+	}
+
+	// Plain `name=value` shape: build out.value from t.segments using the
+	// known position of the `=` inside segment 0.
+	static void buildSimpleAssignmentValue(const Token& t, std::size_t name_end,
+	                                       Assignment& out) {
+		const std::string& s0 = t.segments[0].text;
+		if (name_end + 1 < s0.size()) {
+			WordSegment seg;
+			seg.kind = WordSegment::Kind::Literal;
+			seg.text = s0.substr(name_end + 1);
+			out.value.segments.push_back(std::move(seg));
+		}
+		for (std::size_t k = 1; k < t.segments.size(); ++k)
+			out.value.segments.push_back(t.segments[k]);
+
+		const auto eqpos = t.text.find('=');
+		out.value.raw = (eqpos == std::string::npos)
+			? std::string()
+			: t.text.substr(eqpos + 1);
+	}
+
 	bool Parser::extractAssignment(const Token& t, Assignment& out) const {
 		if (t.kind != TokKind::Word || t.segments.empty()) return false;
 		const auto& first = t.segments[0];
 		if (first.kind != WordSegment::Kind::Literal) return false;
+
 		const std::string& s0 = first.text;
-		std::size_t i = 0;
-		if (i >= s0.size()) return false;
-		char c0 = s0[i];
-		if (!(std::isalpha(static_cast<unsigned char>(c0)) || c0 == '_')) return false;
-		++i;
-		while (i < s0.size()
-			&& (std::isalnum(static_cast<unsigned char>(s0[i])) || s0[i] == '_'))
-			++i;
-		std::size_t name_end = i;
+		const std::size_t name_end = scanAssignmentNameLength(s0);
+		if (name_end == 0) return false;
 
 		out.name = s0.substr(0, name_end);
 		out.loc = t.loc;
 		out.value.loc = t.loc;
 
-		auto append_value_seg = [&](WordSegment seg) {
-			out.value.segments.push_back(std::move(seg));
-		};
-
-		// Simple case: `name=...` with `=` in the first literal segment.
-		if (i < s0.size() && s0[i] == '=') {
-			if (i + 1 < s0.size()) {
-				WordSegment seg;
-				seg.kind = WordSegment::Kind::Literal;
-				seg.text = s0.substr(i + 1);
-				append_value_seg(std::move(seg));
-			}
-			for (std::size_t k = 1; k < t.segments.size(); ++k)
-				append_value_seg(t.segments[k]);
-			auto eqpos = t.text.find('=');
-			out.value.raw = (eqpos == std::string::npos)
-				? std::string()
-				: t.text.substr(eqpos + 1);
+		// Plain `name=...` (the common case).
+		if (name_end < s0.size() && s0[name_end] == '=') {
+			buildSimpleAssignmentValue(t, name_end, out);
 			return true;
 		}
 
-		// Subscripted: `name[...]=...`. The subscript may span multiple
+		// Subscripted `name[...]=...`. The subscript may span multiple
 		// segments (`m[$key]=v` lexes as Lit("m["), SimpleVar("key"),
-		// Lit("]=v")). Walk segments collecting subscript content until we
-		// hit a literal segment containing `]=` (or `]` then `=` in the
-		// next literal).
-		if (i >= s0.size() || s0[i] != '[') return false;
-		std::size_t cur_seg = 0;
-		std::size_t cur_pos = i + 1;   // skip the `[`
-		out.has_subscript = true;
-		out.subscript.loc = t.loc;
-		// First literal slice: from cur_pos onward (or until `]`).
-		bool found_close = false;
+		// Lit("]=v")). Caller has already verified the leading `name[`
+		// shape via the early returns above.
+		if (name_end >= s0.size() || s0[name_end] != '[') return false;
+
+		const std::size_t cur_seg = 0;
+		const std::size_t cur_pos = name_end + 1;   // skip the `[`
 		std::size_t close_seg = 0;
 		std::size_t close_pos = 0;
-		// Scan literal segments to find the `]`.
-		for (std::size_t k = 0; k < t.segments.size(); ++k) {
-			const auto& seg = t.segments[k];
-			if (seg.kind != WordSegment::Kind::Literal) continue;
-			std::size_t start = (k == cur_seg) ? cur_pos : 0;
-			auto rb = seg.text.find(']', start);
-			if (rb != std::string::npos) {
-				close_seg = k;
-				close_pos = rb;
-				found_close = true;
-				break;
-			}
-		}
-		if (!found_close) return false;
-		// Verify `]=` (or `]` immediately followed by `=` next).
-		const auto& close_text = t.segments[close_seg].text;
-		if (close_pos + 1 < close_text.size()) {
-			if (close_text[close_pos + 1] != '=') return false;
-		} else {
-			// `]` is the last char of this literal; next segment must start
-			// with `=` (only meaningful if the next segment is literal).
-			if (close_seg + 1 >= t.segments.size()) return false;
-			const auto& nxt = t.segments[close_seg + 1];
-			if (nxt.kind != WordSegment::Kind::Literal) return false;
-			if (nxt.text.empty() || nxt.text[0] != '=') return false;
-		}
+		if (!findSubscriptCloseBracket(t, cur_seg, cur_pos, &close_seg, &close_pos))
+			return false;
+		if (!subscriptIsFollowedByEquals(t, close_seg, close_pos))
+			return false;
 
-		// Build subscript Word from segments[cur_seg..close_seg], trimming
-		// the leading `[` and trailing `]`.
-		for (std::size_t k = cur_seg; k <= close_seg; ++k) {
-			const auto& seg = t.segments[k];
-			if (k == cur_seg && seg.kind == WordSegment::Kind::Literal) {
-				std::string slice = (k == close_seg)
-				    ? seg.text.substr(cur_pos, close_pos - cur_pos)
-				    : seg.text.substr(cur_pos);
-				if (!slice.empty()) {
-					WordSegment w;
-					w.kind = WordSegment::Kind::Literal;
-					w.text = std::move(slice);
-					out.subscript.segments.push_back(std::move(w));
-				}
-			} else if (k == close_seg && seg.kind == WordSegment::Kind::Literal) {
-				std::string slice = seg.text.substr(0, close_pos);
-				if (!slice.empty()) {
-					WordSegment w;
-					w.kind = WordSegment::Kind::Literal;
-					w.text = std::move(slice);
-					out.subscript.segments.push_back(std::move(w));
-				}
-			} else {
-				out.subscript.segments.push_back(seg);
-			}
-		}
+		out.has_subscript = true;
+		out.subscript.loc = t.loc;
+		buildSubscriptWord(t, cur_seg, cur_pos, close_seg, close_pos, out.subscript);
+		buildValueWordAfterSubscript(t, close_seg, close_pos, out.value);
 
-		// Build value Word from after `=`.
-		if (close_pos + 1 < close_text.size()) {
-			// `]=` in same segment; value starts at close_pos + 2.
-			std::string slice = close_text.substr(close_pos + 2);
-			if (!slice.empty()) {
-				WordSegment w;
-				w.kind = WordSegment::Kind::Literal;
-				w.text = std::move(slice);
-				append_value_seg(std::move(w));
-			}
-			for (std::size_t k = close_seg + 1; k < t.segments.size(); ++k)
-				append_value_seg(t.segments[k]);
-		} else {
-			// `]` ends close_seg; next literal segment starts with `=`.
-			const auto& nxt = t.segments[close_seg + 1];
-			std::string slice = nxt.text.substr(1);
-			if (!slice.empty()) {
-				WordSegment w;
-				w.kind = WordSegment::Kind::Literal;
-				w.text = std::move(slice);
-				append_value_seg(std::move(w));
-			}
-			for (std::size_t k = close_seg + 2; k < t.segments.size(); ++k)
-				append_value_seg(t.segments[k]);
-		}
-		auto eqpos = t.text.find("]=");
+		const auto eqpos = t.text.find("]=");
 		out.value.raw = (eqpos == std::string::npos)
 			? std::string()
 			: t.text.substr(eqpos + 2);

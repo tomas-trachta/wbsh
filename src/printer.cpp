@@ -84,157 +84,199 @@ namespace wbsh {
 		dumpNode(os, depth, *maybe_list);
 	}
 
+	static void dumpSimpleCommand(std::ostream& os, int depth, const SimpleCommand& sc) {
+		for (const auto& a : sc.assignments) {
+			indent(os, depth + 1);
+			os << "Assign " << a.name << "=";
+			dumpSegments(os, a.value.segments);
+			os << "\n";
+		}
+		for (const auto& w : sc.words) dumpWord(os, depth + 1, "Word", w);
+		for (const auto& r : sc.redirs) dumpRedir(os, depth + 1, r);
+	}
+
+	static void dumpPipeline(std::ostream& os, int depth, const Pipeline& p) {
+		if (p.bang) { indent(os, depth + 1); os << "(bang)\n"; }
+		for (std::size_t i = 0; i < p.commands.size(); ++i) {
+			if (i > 0) {
+				indent(os, depth + 1);
+				os << (p.stderr_to_stdout[i - 1] ? "|& pipe\n" : "| pipe\n");
+			}
+			dumpNode(os, depth + 1, *p.commands[i]);
+		}
+	}
+
+	static void dumpAndOr(std::ostream& os, int depth, const AndOr& ao) {
+		indent(os, depth + 1);
+		os << (ao.op == AndOr::Op::AndIf ? "&&" : "||") << "\n";
+		dumpNode(os, depth + 1, *ao.left);
+		dumpNode(os, depth + 1, *ao.right);
+	}
+
+	static void dumpList(std::ostream& os, int depth, const List& l) {
+		for (const auto& it : l.items) {
+			indent(os, depth + 1);
+			os << "Item" << (it.background ? " (bg)" : "") << "\n";
+			dumpNode(os, depth + 2, *it.command);
+		}
+	}
+
+	static void dumpIfClause(std::ostream& os, int depth, const IfClause& ic) {
+		for (std::size_t i = 0; i < ic.branches.size(); ++i) {
+			indent(os, depth + 1);
+			os << (i == 0 ? "if-cond\n" : "elif-cond\n");
+			dumpListBody(os, depth + 2, ic.branches[i].cond.get());
+			indent(os, depth + 1);
+			os << "then\n";
+			dumpListBody(os, depth + 2, ic.branches[i].body.get());
+		}
+		if (ic.else_body) {
+			indent(os, depth + 1); os << "else\n";
+			dumpListBody(os, depth + 2, ic.else_body.get());
+		}
+		for (const auto& r : ic.redirs) dumpRedir(os, depth + 1, r);
+	}
+
+	static void dumpWhileClause(std::ostream& os, int depth, const WhileClause& w) {
+		indent(os, depth + 1);
+		os << (w.until ? "until-cond\n" : "while-cond\n");
+		dumpListBody(os, depth + 2, w.cond.get());
+		indent(os, depth + 1); os << "do\n";
+		dumpListBody(os, depth + 2, w.body.get());
+		for (const auto& r : w.redirs) dumpRedir(os, depth + 1, r);
+	}
+
+	static void dumpForClause(std::ostream& os, int depth, const ForClause& f) {
+		indent(os, depth + 1);
+		os << "var " << f.var << "\n";
+		if (f.has_in) {
+			indent(os, depth + 1); os << "in\n";
+			for (const auto& w : f.items) dumpWord(os, depth + 2, "Word", w);
+		}
+		indent(os, depth + 1); os << "do\n";
+		dumpListBody(os, depth + 2, f.body.get());
+		for (const auto& r : f.redirs) dumpRedir(os, depth + 1, r);
+	}
+
+	static const char* caseTermName(CaseClause::Term t) {
+		switch (t) {
+		case CaseClause::Term::DSemi:    return ";;";
+		case CaseClause::Term::SemiAmp:  return ";&";
+		case CaseClause::Term::DSemiAmp: return ";;&";
+		}
+		return "?";
+	}
+
+	static void dumpCaseClause(std::ostream& os, int depth, const CaseClause& c) {
+		dumpWord(os, depth + 1, "subject", c.subject);
+		for (const auto& it : c.items) {
+			indent(os, depth + 1);
+			os << "Case-Item term=" << caseTermName(it.term) << "\n";
+			indent(os, depth + 2); os << "patterns:\n";
+			for (const auto& p : it.patterns) dumpWord(os, depth + 3, "Word", p);
+			indent(os, depth + 2); os << "body:\n";
+			dumpListBody(os, depth + 3, it.body.get());
+		}
+		for (const auto& r : c.redirs) dumpRedir(os, depth + 1, r);
+	}
+
+	static void dumpFunctionDef(std::ostream& os, int depth, const FunctionDef& f) {
+		indent(os, depth + 1); os << "name " << f.name << "\n";
+		indent(os, depth + 1); os << "body:\n";
+		dumpNode(os, depth + 2, *f.body);
+	}
+
+	static void dumpDBracketExpr(std::ostream& os, int depth,
+	                             const DBracketCond::Expr& e) {
+		using K = DBracketCond::Expr::K;
+		indent(os, depth);
+		switch (e.k) {
+		case K::And:
+			os << "&&\n";
+			dumpDBracketExpr(os, depth + 1, *e.a);
+			dumpDBracketExpr(os, depth + 1, *e.b);
+			return;
+		case K::Or:
+			os << "||\n";
+			dumpDBracketExpr(os, depth + 1, *e.a);
+			dumpDBracketExpr(os, depth + 1, *e.b);
+			return;
+		case K::Not:
+			os << "!\n";
+			dumpDBracketExpr(os, depth + 1, *e.a);
+			return;
+		case K::Prim:
+			if (e.op.empty()) {
+				os << "test \"" << e.lhs.raw << "\"\n";
+			} else if (e.rhs.raw.empty()) {
+				os << "test " << e.op << " \"" << e.lhs.raw << "\"\n";
+			} else {
+				os << "test \"" << e.lhs.raw << "\" "
+				   << e.op << " \"" << e.rhs.raw << "\"\n";
+			}
+			return;
+		}
+	}
+
+	static void dumpDBracket(std::ostream& os, int depth, const DBracketCond& d) {
+		if (d.root) {
+			indent(os, depth + 1); os << "expr:\n";
+			dumpDBracketExpr(os, depth + 2, *d.root);
+		}
+		for (const auto& r : d.redirs) dumpRedir(os, depth + 1, r);
+	}
+
+	static void dumpCompoundWithRedirs(std::ostream& os, int depth,
+	                                   const Node* body,
+	                                   const std::vector<Redirection>& redirs) {
+		dumpListBody(os, depth + 1, body);
+		for (const auto& r : redirs) dumpRedir(os, depth + 1, r);
+	}
+
 	static void dumpNode(std::ostream& os, int depth, const Node& n) {
 		indent(os, depth);
 		os << nodeKindName(n.kind) << "\n";
 		switch (n.kind) {
-		case Node::Kind::SimpleCommand: {
-			const auto& sc = static_cast<const SimpleCommand&>(n);
-			for (const auto& a : sc.assignments) {
-				indent(os, depth + 1);
-				os << "Assign " << a.name << "=";
-				dumpSegments(os, a.value.segments);
-				os << "\n";
-			}
-			for (const auto& w : sc.words) dumpWord(os, depth + 1, "Word", w);
-			for (const auto& r : sc.redirs) dumpRedir(os, depth + 1, r);
-			break;
-		}
-		case Node::Kind::Pipeline: {
-			const auto& p = static_cast<const Pipeline&>(n);
-			if (p.bang) { indent(os, depth + 1); os << "(bang)\n"; }
-			for (std::size_t i = 0; i < p.commands.size(); ++i) {
-				if (i > 0) {
-					indent(os, depth + 1);
-					os << (p.stderr_to_stdout[i - 1] ? "|& pipe\n" : "| pipe\n");
-				}
-				dumpNode(os, depth + 1, *p.commands[i]);
-			}
-			break;
-		}
-		case Node::Kind::AndOr: {
-			const auto& ao = static_cast<const AndOr&>(n);
-			indent(os, depth + 1);
-			os << (ao.op == AndOr::Op::AndIf ? "&&" : "||") << "\n";
-			dumpNode(os, depth + 1, *ao.left);
-			dumpNode(os, depth + 1, *ao.right);
-			break;
-		}
-		case Node::Kind::List: {
-			const auto& l = static_cast<const List&>(n);
-			for (const auto& it : l.items) {
-				indent(os, depth + 1);
-				os << "Item" << (it.background ? " (bg)" : "") << "\n";
-				dumpNode(os, depth + 2, *it.command);
-			}
-			break;
-		}
+		case Node::Kind::SimpleCommand:
+			dumpSimpleCommand(os, depth, static_cast<const SimpleCommand&>(n));
+			return;
+		case Node::Kind::Pipeline:
+			dumpPipeline(os, depth, static_cast<const Pipeline&>(n));
+			return;
+		case Node::Kind::AndOr:
+			dumpAndOr(os, depth, static_cast<const AndOr&>(n));
+			return;
+		case Node::Kind::List:
+			dumpList(os, depth, static_cast<const List&>(n));
+			return;
 		case Node::Kind::BraceGroup: {
 			const auto& bg = static_cast<const BraceGroup&>(n);
-			dumpListBody(os, depth + 1, bg.body.get());
-			for (const auto& r : bg.redirs) dumpRedir(os, depth + 1, r);
-			break;
+			dumpCompoundWithRedirs(os, depth, bg.body.get(), bg.redirs);
+			return;
 		}
 		case Node::Kind::Subshell: {
 			const auto& ss = static_cast<const Subshell&>(n);
-			dumpListBody(os, depth + 1, ss.body.get());
-			for (const auto& r : ss.redirs) dumpRedir(os, depth + 1, r);
-			break;
+			dumpCompoundWithRedirs(os, depth, ss.body.get(), ss.redirs);
+			return;
 		}
-		case Node::Kind::IfClause: {
-			const auto& ic = static_cast<const IfClause&>(n);
-			for (std::size_t i = 0; i < ic.branches.size(); ++i) {
-				indent(os, depth + 1);
-				os << (i == 0 ? "if-cond\n" : "elif-cond\n");
-				dumpListBody(os, depth + 2, ic.branches[i].cond.get());
-				indent(os, depth + 1);
-				os << "then\n";
-				dumpListBody(os, depth + 2, ic.branches[i].body.get());
-			}
-			if (ic.else_body) {
-				indent(os, depth + 1); os << "else\n";
-				dumpListBody(os, depth + 2, ic.else_body.get());
-			}
-			for (const auto& r : ic.redirs) dumpRedir(os, depth + 1, r);
-			break;
-		}
-		case Node::Kind::WhileClause: {
-			const auto& w = static_cast<const WhileClause&>(n);
-			indent(os, depth + 1);
-			os << (w.until ? "until-cond\n" : "while-cond\n");
-			dumpListBody(os, depth + 2, w.cond.get());
-			indent(os, depth + 1); os << "do\n";
-			dumpListBody(os, depth + 2, w.body.get());
-			for (const auto& r : w.redirs) dumpRedir(os, depth + 1, r);
-			break;
-		}
-		case Node::Kind::ForClause: {
-			const auto& f = static_cast<const ForClause&>(n);
-			indent(os, depth + 1);
-			os << "var " << f.var << "\n";
-			if (f.has_in) {
-				indent(os, depth + 1); os << "in\n";
-				for (const auto& w : f.items) dumpWord(os, depth + 2, "Word", w);
-			}
-			indent(os, depth + 1); os << "do\n";
-			dumpListBody(os, depth + 2, f.body.get());
-			for (const auto& r : f.redirs) dumpRedir(os, depth + 1, r);
-			break;
-		}
-		case Node::Kind::CaseClause: {
-			const auto& c = static_cast<const CaseClause&>(n);
-			dumpWord(os, depth + 1, "subject", c.subject);
-			for (const auto& it : c.items) {
-				indent(os, depth + 1);
-				os << "Case-Item term=";
-				switch (it.term) {
-				case CaseClause::Term::DSemi:    os << ";;"; break;
-				case CaseClause::Term::SemiAmp:  os << ";&"; break;
-				case CaseClause::Term::DSemiAmp: os << ";;&"; break;
-				}
-				os << "\n";
-				indent(os, depth + 2); os << "patterns:\n";
-				for (const auto& p : it.patterns) dumpWord(os, depth + 3, "Word", p);
-				indent(os, depth + 2); os << "body:\n";
-				dumpListBody(os, depth + 3, it.body.get());
-			}
-			for (const auto& r : c.redirs) dumpRedir(os, depth + 1, r);
-			break;
-		}
-		case Node::Kind::FunctionDef: {
-			const auto& f = static_cast<const FunctionDef&>(n);
-			indent(os, depth + 1); os << "name " << f.name << "\n";
-			indent(os, depth + 1); os << "body:\n";
-			dumpNode(os, depth + 2, *f.body);
-			break;
-		}
-		case Node::Kind::DBracket: {
-			const auto& d = static_cast<const DBracketCond&>(n);
-			if (d.root) {
-				indent(os, depth + 1); os << "expr:\n";
-				std::function<void(const DBracketCond::Expr&, int)> dump =
-					[&](const DBracketCond::Expr& e, int dd) {
-					using K = DBracketCond::Expr::K;
-					indent(os, dd);
-					switch (e.k) {
-					case K::And: os << "&&\n"; dump(*e.a, dd + 1); dump(*e.b, dd + 1); break;
-					case K::Or:  os << "||\n"; dump(*e.a, dd + 1); dump(*e.b, dd + 1); break;
-					case K::Not: os << "!\n";  dump(*e.a, dd + 1); break;
-					case K::Prim:
-						if (e.op.empty()) os << "test \"" << e.lhs.raw << "\"\n";
-						else if (e.rhs.raw.empty())
-							os << "test " << e.op << " \"" << e.lhs.raw << "\"\n";
-						else
-							os << "test \"" << e.lhs.raw << "\" "
-							   << e.op << " \"" << e.rhs.raw << "\"\n";
-						break;
-					}
-				};
-				dump(*d.root, depth + 2);
-			}
-			for (const auto& r : d.redirs) dumpRedir(os, depth + 1, r);
-			break;
-		}
+		case Node::Kind::IfClause:
+			dumpIfClause(os, depth, static_cast<const IfClause&>(n));
+			return;
+		case Node::Kind::WhileClause:
+			dumpWhileClause(os, depth, static_cast<const WhileClause&>(n));
+			return;
+		case Node::Kind::ForClause:
+			dumpForClause(os, depth, static_cast<const ForClause&>(n));
+			return;
+		case Node::Kind::CaseClause:
+			dumpCaseClause(os, depth, static_cast<const CaseClause&>(n));
+			return;
+		case Node::Kind::FunctionDef:
+			dumpFunctionDef(os, depth, static_cast<const FunctionDef&>(n));
+			return;
+		case Node::Kind::DBracket:
+			dumpDBracket(os, depth, static_cast<const DBracketCond&>(n));
+			return;
 		}
 	}
 

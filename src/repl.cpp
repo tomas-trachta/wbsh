@@ -282,116 +282,140 @@ namespace wbsh {
 		return info;
 	}
 
+	static std::string currentCwdAsUtf8() {
+		std::error_code ec;
+		const auto p = std::filesystem::current_path(ec);
+		return ec ? std::string(".") : pathToUtf8(p);
+	}
+
+	// `\u` — user name. Falls back to %USERNAME% on Windows.
+	static std::string promptUser(const Environment& env) {
+		std::string u = env.get("USER");
+		if (u.empty()) u = env.get("USERNAME");
+		return u;
+	}
+
+	// `\h` (short) / `\H` (long) — host name. The short form trims the
+	// first dot-component.
+	static std::string promptHost(const Environment& env, char form) {
+		std::string h = env.get("HOSTNAME");
+		if (h.empty()) h = env.get("COMPUTERNAME");
+		if (form == 'h') {
+			const auto dot = h.find('.');
+			if (dot != std::string::npos) h.resize(dot);
+		}
+		return h;
+	}
+
+	// `\w` — full CWD with `~` substitution for $HOME.
+	static std::string promptCwdHome(const Environment& env, const PathConv& pc) {
+		std::string posix = pc.toPosix(currentCwdAsUtf8());
+		const std::string home = env.get("HOME");
+		if (!home.empty() && posix.size() >= home.size()
+		    && posix.compare(0, home.size(), home) == 0
+		    && (posix.size() == home.size() || posix[home.size()] == '/'))
+		{
+			posix = "~" + posix.substr(home.size());
+		}
+		return posix;
+	}
+
+	// `\W` — basename of the CWD.
+	static std::string promptCwdBasename(const PathConv& pc) {
+		const std::string posix = pc.toPosix(currentCwdAsUtf8());
+		const auto slash = posix.rfind('/');
+		return (slash == std::string::npos) ? posix : posix.substr(slash + 1);
+	}
+
+	// `\g` — git branch + state. Plain ` (branch)` / ` (branch | state)`
+	// when stdout is not a TTY; yellow-bold (with optional state-specific
+	// colour) on a TTY.
+	static std::string promptGitBranch() {
+		GitInfo gi = detectGitInfo();
+		if (gi.branch.empty()) return {};
+
+#ifdef _WIN32
+		const bool tty = _isatty(_fileno(stdout)) != 0;
+#else
+		const bool tty = false;
+#endif
+		std::string out;
+		if (!tty) {
+			out += " (";
+			out += gi.branch;
+			if (!gi.state.empty()) { out += " | "; out += gi.state; }
+			out += ")";
+			return out;
+		}
+		const char* yellow = "\x1b[33;1m";
+		out += " ";
+		out += yellow;
+		out += "(";
+		out += gi.branch;
+		if (!gi.state.empty()) {
+			out += " | ";
+			const char* sc = gitStateColor(gi.state);
+			if (*sc) {
+				out += sc;
+				out += gi.state;
+				out += yellow;   // back to yellow for the closing paren
+			} else {
+				out += gi.state;
+			}
+		}
+		out += ")\x1b[0m";
+		return out;
+	}
+
+	// `\t` — current local time, "HH:MM:SS".
+	static std::string promptTimeHms() {
+		const std::time_t t = std::time(nullptr);
+		char buf[16];
+		std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
+		return buf;
+	}
+
+	// Expand one `\X` escape from the prompt string. Returns the expansion.
+	// `nx` is the character following the backslash. Unknown escapes pass
+	// through as the backslash + nx (matching bash leniency).
+	static std::string expandPromptEscape(char nx, const Environment& env,
+	                                      const PathConv& pc) {
+		switch (nx) {
+		case 'n':  return "\n";
+		case 'r':  return "\r";
+		case 'a':  return "\a";
+		case 'e':  return "\x1b";
+		case '\\': return "\\";
+		case '$':  return "$";
+		case 's':  return "wbsh";
+		// \[ and \] mark non-printing regions for line-editor width
+		// accounting. We don't have a fancy editor, so just drop them.
+		case '[':  return {};
+		case ']':  return {};
+		case 'u':  return promptUser(env);
+		case 'h':
+		case 'H':  return promptHost(env, nx);
+		case 'w':  return promptCwdHome(env, pc);
+		case 'W':  return promptCwdBasename(pc);
+		case 'g':  return promptGitBranch();
+		case 't':  return promptTimeHms();
+		default: {
+			std::string out;
+			out.push_back('\\');
+			out.push_back(nx);
+			return out;
+		}
+		}
+	}
+
 	static std::string expandPrompt(const std::string& ps, Environment& env, const PathConv& pc) {
-		auto cwdStr = []() -> std::string {
-			std::error_code ec;
-			auto p = std::filesystem::current_path(ec);
-			return ec ? std::string(".") : pathToUtf8(p);
-		};
 		std::string out;
 		for (std::size_t i = 0; i < ps.size(); ++i) {
 			if (ps[i] != '\\' || i + 1 >= ps.size()) {
 				out.push_back(ps[i]);
 				continue;
 			}
-			char nx = ps[++i];
-			switch (nx) {
-			case 'n':  out.push_back('\n');     break;
-			case 'r':  out.push_back('\r');     break;
-			case 'a':  out.push_back('\a');     break;
-			case 'e':  out.push_back('\x1b');   break;
-			case '\\': out.push_back('\\');     break;
-			case '$':  out.push_back('$');      break;
-			case 's':  out += "wbsh";           break;
-			// \[ and \] mark non-printing regions for line-editor width
-			// accounting. We don't have a fancy editor, so just drop them.
-			case '[':                           break;
-			case ']':                           break;
-			case 'u': {
-				std::string u = env.get("USER");
-				if (u.empty()) u = env.get("USERNAME");
-				out += u;
-				break;
-			}
-			case 'h':
-			case 'H': {
-				std::string h = env.get("HOSTNAME");
-				if (h.empty()) h = env.get("COMPUTERNAME");
-				if (nx == 'h') {
-					auto dot = h.find('.');
-					if (dot != std::string::npos) h.resize(dot);
-				}
-				out += h;
-				break;
-			}
-			case 'w': {
-				std::string posix = pc.toPosix(cwdStr());
-				std::string home = env.get("HOME");
-				if (!home.empty() && posix.size() >= home.size()
-				    && posix.compare(0, home.size(), home) == 0
-				    && (posix.size() == home.size() || posix[home.size()] == '/')) {
-					posix = "~" + posix.substr(home.size());
-				}
-				out += posix;
-				break;
-			}
-			case 'W': {
-				std::string posix = pc.toPosix(cwdStr());
-				auto slash = posix.rfind('/');
-				out += (slash == std::string::npos) ? posix : posix.substr(slash + 1);
-				break;
-			}
-			case 'g': {
-				// `\g` — git branch + state (or empty when not in a repo).
-				// Renders as " (branch)" or " (branch | state)". On a TTY,
-				// branch + decoration are yellow bold, and the state word
-				// gets its own colour (see gitStateColor). Plain otherwise
-				// so piped/redirected output stays clean.
-				GitInfo gi = detectGitInfo();
-				if (gi.branch.empty()) break;
-#ifdef _WIN32
-				bool tty = _isatty(_fileno(stdout)) != 0;
-#else
-				bool tty = false;
-#endif
-				if (!tty) {
-					out += " (";
-					out += gi.branch;
-					if (!gi.state.empty()) { out += " | "; out += gi.state; }
-					out += ")";
-					break;
-				}
-				const char* yellow = "\x1b[33;1m";
-				out += " ";
-				out += yellow;
-				out += "(";
-				out += gi.branch;
-				if (!gi.state.empty()) {
-					out += " | ";
-					const char* sc = gitStateColor(gi.state);
-					if (*sc) {
-						out += sc;
-						out += gi.state;
-						out += yellow; // back to yellow for the closing paren
-					} else {
-						out += gi.state;
-					}
-				}
-				out += ")\x1b[0m";
-				break;
-			}
-			case 't': {
-				std::time_t t = std::time(nullptr);
-				char buf[16];
-				std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
-				out += buf;
-				break;
-			}
-			default:
-				out.push_back('\\');
-				out.push_back(nx);
-				break;
-			}
+			out += expandPromptEscape(ps[++i], env, pc);
 		}
 		return out;
 	}

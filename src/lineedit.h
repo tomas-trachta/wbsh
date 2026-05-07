@@ -16,6 +16,11 @@
 #include "environment.h"
 #include "executor.h"
 
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#endif
+
 #include <string>
 #include <vector>
 
@@ -52,6 +57,19 @@ namespace wbsh {
 		bool readLineRaw(const std::string& prompt, std::string& out);
 		// Cooked / piped fallback.
 		bool readLineCooked(std::string& out);
+
+#ifdef _WIN32
+		// Helpers used inside readLineRaw — declared here only to keep the
+		// .cpp's per-key dispatch under 60 lines. KEY_EVENT_RECORD comes
+		// from <windows.h>, which the .cpp pulls in unconditionally.
+		void handleAltKeyUp(const ::KEY_EVENT_RECORD& k);
+		bool handleCtrlKey(const ::KEY_EVENT_RECORD& k,
+		                   const std::string& prompt,
+		                   std::string& out, bool& done, bool& eof);
+		bool handleNavigationKey(const ::KEY_EVENT_RECORD& k,
+		                         std::string& out, bool& done, bool& was_tab);
+		void insertReceivedChar(wchar_t ch);
+#endif
 
 		// ---- Helpers used by the raw path ----
 		void redraw();

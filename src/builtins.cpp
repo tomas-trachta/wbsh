@@ -153,6 +153,124 @@ namespace wbsh {
 
 	// ---- printf (subset) ----
 
+	// Emit the C-string equivalent of a `\X` escape (e.g. `\n` -> newline).
+	// Unknown escapes pass through as `\X` literal (matching bash printf).
+	static void emitBackslashEscape(char nx) {
+		switch (nx) {
+		case 'a':  std::fputc('\a', stdout); break;
+		case 'b':  std::fputc('\b', stdout); break;
+		case 'e':  std::fputc('\x1b', stdout); break;
+		case 'f':  std::fputc('\f', stdout); break;
+		case 'n':  std::fputc('\n', stdout); break;
+		case 'r':  std::fputc('\r', stdout); break;
+		case 't':  std::fputc('\t', stdout); break;
+		case 'v':  std::fputc('\v', stdout); break;
+		case '\\': std::fputc('\\', stdout); break;
+		default:
+			std::fputc('\\', stdout);
+			std::fputc(nx, stdout);
+			break;
+		}
+	}
+
+	// Parse a `%[flags][width][.precision]<conv>` spec starting at fmt[i]
+	// (which must be `%`). On return, `i` indexes the conversion char and
+	// `out_spec` holds the full spec string (including the conv char).
+	// Returns false if the format ended mid-spec (no conv char); the caller
+	// should print the partial spec verbatim and stop emitting.
+	static bool parsePrintfConversionSpec(const std::string& fmt, std::size_t& i,
+	                                      std::string& out_spec) {
+		out_spec = "%";
+		++i;  // step past '%'
+		while (i < fmt.size() && std::strchr("-+ #0", fmt[i])) out_spec.push_back(fmt[i++]);
+		while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i])))
+			out_spec.push_back(fmt[i++]);
+		if (i < fmt.size() && fmt[i] == '.') {
+			out_spec.push_back(fmt[i++]);
+			while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i])))
+				out_spec.push_back(fmt[i++]);
+		}
+		if (i >= fmt.size()) return false;
+		out_spec.push_back(fmt[i]);   // conversion char
+		return true;
+	}
+
+	// Emit one conversion. `spec` ends in `conv`; `arg_text` is the next
+	// printf positional arg (already consumed by the caller).
+	static void emitPrintfConversion(const std::string& spec, char conv,
+	                                 const std::string& arg_text) {
+		switch (conv) {
+		case 's':
+			std::fprintf(stdout, spec.c_str(), arg_text.c_str());
+			break;
+		case 'd':
+		case 'i': {
+			bool ok;
+			const long long v = toIntSafe(arg_text, ok);
+			std::string s2 = spec; s2.pop_back(); s2 += "lld";
+			std::fprintf(stdout, s2.c_str(), v);
+			break;
+		}
+		case 'u': {
+			bool ok;
+			const long long v = toIntSafe(arg_text, ok);
+			std::string s2 = spec; s2.pop_back(); s2 += "llu";
+			std::fprintf(stdout, s2.c_str(), static_cast<unsigned long long>(v));
+			break;
+		}
+		case 'x':
+		case 'X':
+		case 'o': {
+			bool ok;
+			const long long v = toIntSafe(arg_text, ok);
+			std::string s2 = spec; s2.pop_back(); s2 += "ll";
+			s2.push_back(conv);
+			std::fprintf(stdout, s2.c_str(), static_cast<unsigned long long>(v));
+			break;
+		}
+		case 'c':
+			std::fputc(arg_text.empty() ? '\0' : arg_text[0], stdout);
+			break;
+		case '%':
+			std::fputc('%', stdout);
+			break;
+		default:
+			// Unknown conversion: print the spec verbatim.
+			std::fwrite(spec.data(), 1, spec.size(), stdout);
+			break;
+		}
+	}
+
+	// Walk `fmt` once, emitting literal text and consuming positional args
+	// from `args` starting at `*ai`. On return `*ai` is updated to the
+	// index of the next unconsumed arg.
+	static void emitPrintfFormatOnce(const std::string& fmt,
+	                                 const std::vector<std::string>& args,
+	                                 std::size_t* ai) {
+		auto next_arg = [&]() -> std::string {
+			return (*ai < args.size()) ? args[(*ai)++] : std::string();
+		};
+		for (std::size_t i = 0; i < fmt.size(); ++i) {
+			const char c = fmt[i];
+			if (c == '\\' && i + 1 < fmt.size()) {
+				emitBackslashEscape(fmt[++i]);
+				continue;
+			}
+			if (c != '%') {
+				std::fputc(c, stdout);
+				continue;
+			}
+			const std::size_t spec_start = i;
+			std::string spec;
+			if (!parsePrintfConversionSpec(fmt, i, spec)) {
+				// Truncated spec at end of string: emit verbatim, stop.
+				std::fwrite(fmt.data() + spec_start, 1, fmt.size() - spec_start, stdout);
+				return;
+			}
+			emitPrintfConversion(spec, fmt[i], next_arg());
+		}
+	}
+
 	static int builtin_printf(Executor&, const std::vector<std::string>& args) {
 		if (args.empty()) {
 			printerr("printf: missing format");
@@ -160,91 +278,14 @@ namespace wbsh {
 		}
 		const std::string& fmt = args[0];
 		std::size_t ai = 1;
-		auto arg = [&](bool& consumed) -> std::string {
-			consumed = true;
-			if (ai < args.size()) return args[ai++];
-			consumed = false;
-			return {};
-		};
-		auto emit_once = [&]() {
-			for (std::size_t i = 0; i < fmt.size(); ++i) {
-				char c = fmt[i];
-				if (c == '\\' && i + 1 < fmt.size()) {
-					char nx = fmt[++i];
-					switch (nx) {
-					case 'a': std::fputc('\a', stdout); break;
-					case 'b': std::fputc('\b', stdout); break;
-					case 'e': std::fputc('\x1b', stdout); break;
-					case 'f': std::fputc('\f', stdout); break;
-					case 'n': std::fputc('\n', stdout); break;
-					case 'r': std::fputc('\r', stdout); break;
-					case 't': std::fputc('\t', stdout); break;
-					case 'v': std::fputc('\v', stdout); break;
-					case '\\': std::fputc('\\', stdout); break;
-					default: std::fputc('\\', stdout); std::fputc(nx, stdout); break;
-					}
-					continue;
-				}
-				if (c != '%') { std::fputc(c, stdout); continue; }
-				// Parse conversion spec.
-				std::size_t spec_start = i;
-				++i;
-				std::string spec = "%";
-				while (i < fmt.size() && std::strchr("-+ #0", fmt[i])) spec.push_back(fmt[i++]);
-				while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i]))) spec.push_back(fmt[i++]);
-				if (i < fmt.size() && fmt[i] == '.') {
-					spec.push_back(fmt[i++]);
-					while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i]))) spec.push_back(fmt[i++]);
-				}
-				if (i >= fmt.size()) {
-					std::fwrite(fmt.data() + spec_start, 1, fmt.size() - spec_start, stdout);
-					break;
-				}
-				char conv = fmt[i];
-				spec.push_back(conv);
-				bool consumed;
-				std::string a = arg(consumed);
-				char buf[64];
-				switch (conv) {
-				case 's': std::fprintf(stdout, spec.c_str(), a.c_str()); break;
-				case 'd': case 'i': {
-					bool ok; long long v = toIntSafe(a, ok);
-					std::string s2 = spec; s2.pop_back(); s2 += "lld";
-					std::fprintf(stdout, s2.c_str(), v);
-					break;
-				}
-				case 'u': {
-					bool ok; long long v = toIntSafe(a, ok);
-					unsigned long long uv = (unsigned long long)v;
-					std::string s2 = spec; s2.pop_back(); s2 += "llu";
-					std::fprintf(stdout, s2.c_str(), uv);
-					break;
-				}
-				case 'x': case 'X': case 'o': {
-					bool ok; long long v = toIntSafe(a, ok);
-					unsigned long long uv = (unsigned long long)v;
-					std::string s2 = spec; s2.pop_back(); s2 += "ll";
-					s2.push_back(conv);
-					std::fprintf(stdout, s2.c_str(), uv);
-					break;
-				}
-				case 'c': {
-					char ch = a.empty() ? '\0' : a[0];
-					std::fputc(ch, stdout);
-					(void)buf;
-					break;
-				}
-				case '%': std::fputc('%', stdout); break;
-				default:
-					std::fwrite(spec.data(), 1, spec.size(), stdout);
-					break;
-				}
-			}
-		};
-		emit_once();
+
+		// Bash printf semantics: emit the format once, then keep cycling
+		// while there are unconsumed args. If a pass consumes nothing
+		// (a literal-only format), stop to avoid an infinite loop.
+		emitPrintfFormatOnce(fmt, args, &ai);
 		while (ai < args.size()) {
-			std::size_t before = ai;
-			emit_once();
+			const std::size_t before = ai;
+			emitPrintfFormatOnce(fmt, args, &ai);
 			if (ai == before) break;
 		}
 		std::fflush(stdout);
@@ -362,63 +403,90 @@ namespace wbsh {
 		return 0;
 	}
 
-	static int builtin_set(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) {
-			std::vector<std::pair<std::string, std::string>> v(
-				exec.env().vars().begin(), exec.env().vars().end());
-			std::sort(v.begin(), v.end());
-			for (const auto& kv : v) std::printf("%s=%s\n", kv.first.c_str(), kv.second.c_str());
-			return 0;
+	// Bare `set`: dump all shell vars (sorted, `name=value` per line).
+	static int dumpAllShellVars(Executor& exec) {
+		std::vector<std::pair<std::string, std::string>> v(
+			exec.env().vars().begin(), exec.env().vars().end());
+		std::sort(v.begin(), v.end());
+		for (const auto& kv : v) std::printf("%s=%s\n", kv.first.c_str(), kv.second.c_str());
+		return 0;
+	}
+
+	// Apply one short option char (`e`, `u`, `x`, `f`) to the shell flags.
+	// Unknown chars are silently ignored, matching bash leniency.
+	static void applyShortSetFlag(Environment& env, char ch, bool on) {
+		switch (ch) {
+		case 'e': env.setErrexit(on); break;
+		case 'u': env.setNounset(on); break;
+		case 'x': env.setXtrace(on);  break;
+		case 'f': env.setNoglob(on);  break;
+		default: break;
 		}
-		auto applyShort = [&](char ch, bool on) {
-			switch (ch) {
-			case 'e': exec.env().setErrexit(on); break;
-			case 'u': exec.env().setNounset(on); break;
-			case 'x': exec.env().setXtrace(on);  break;
-			case 'f': exec.env().setNoglob(on);  break;
-			default: break;
-			}
-		};
-		auto applyLong = [&](const std::string& name, bool on) -> bool {
-			if (name == "errexit")       exec.env().setErrexit(on);
-			else if (name == "nounset")  exec.env().setNounset(on);
-			else if (name == "xtrace")   exec.env().setXtrace(on);
-			else if (name == "noglob")   exec.env().setNoglob(on);
-			else if (name == "pipefail") exec.env().setPipefail(on);
-			else return false;
-			return true;
-		};
+	}
+
+	// Apply one long option name (`-o errexit`, `+o pipefail`). Returns
+	// false if the name is not a recognised option.
+	static bool applyLongSetOption(Environment& env, const std::string& name, bool on) {
+		if (name == "errexit")  { env.setErrexit(on);  return true; }
+		if (name == "nounset")  { env.setNounset(on);  return true; }
+		if (name == "xtrace")   { env.setXtrace(on);   return true; }
+		if (name == "noglob")   { env.setNoglob(on);   return true; }
+		if (name == "pipefail") { env.setPipefail(on); return true; }
+		return false;
+	}
+
+	// Walk `args` consuming option-style entries (`-e`, `-o errexit`,
+	// `+u`, `--`) until the first non-option. Returns the index of the
+	// first non-option arg via `*out_idx` and writes whether any flags
+	// were consumed via `*out_consumed`. Returns 0 on success or a
+	// non-zero status mirroring bash for unknown `-o NAME` operands.
+	static int parseSetFlags(Executor& exec, const std::vector<std::string>& args,
+	                         std::size_t* out_idx, bool* out_consumed) {
 		std::size_t i = 0;
-		bool consumed_flags = false;
+		bool consumed = false;
 		while (i < args.size()) {
 			const std::string& a = args[i];
-			if (a == "--") { ++i; consumed_flags = true; break; }
-			if (a == "-")  { ++i; consumed_flags = true; break; }
-			if (!a.empty() && (a[0] == '-' || a[0] == '+')) {
-				bool on = (a[0] == '-');
-				if (a.size() > 1 && a[1] == 'o') {
-					if (i + 1 < args.size()) {
-						if (!applyLong(args[i + 1], on)) {
-							std::fprintf(stderr, "wbsh: set: unknown option: %s\n",
-								args[i + 1].c_str());
-							return 2;
-						}
-						i += 2;
-						consumed_flags = true;
-						continue;
+			if (a == "--" || a == "-") { ++i; consumed = true; break; }
+			if (a.empty() || (a[0] != '-' && a[0] != '+')) break;
+
+			const bool on = (a[0] == '-');
+			// `-o NAME` / `+o NAME` — long option toggle.
+			if (a.size() > 1 && a[1] == 'o') {
+				if (i + 1 < args.size()) {
+					if (!applyLongSetOption(exec.env(), args[i + 1], on)) {
+						std::fprintf(stderr, "wbsh: set: unknown option: %s\n",
+							args[i + 1].c_str());
+						return 2;
 					}
-					++i;
-					consumed_flags = true;
-					continue;
+					i += 2;
+				} else {
+					++i;   // bare `-o` / `+o` — bash prints opts; we no-op.
 				}
-				for (std::size_t k = 1; k < a.size(); ++k) applyShort(a[k], on);
-				++i;
-				consumed_flags = true;
+				consumed = true;
 				continue;
 			}
-			break;
+			// `-eXf` / `+xu` — cluster of short options.
+			for (std::size_t k = 1; k < a.size(); ++k) {
+				applyShortSetFlag(exec.env(), a[k], on);
+			}
+			++i;
+			consumed = true;
 		}
-		// Positional arguments only set when explicit args remain after flags.
+		*out_idx = i;
+		*out_consumed = consumed;
+		return 0;
+	}
+
+	static int builtin_set(Executor& exec, const std::vector<std::string>& args) {
+		if (args.empty()) return dumpAllShellVars(exec);
+
+		std::size_t i = 0;
+		bool consumed_flags = false;
+		const int rc = parseSetFlags(exec, args, &i, &consumed_flags);
+		if (rc != 0) return rc;
+
+		// Positional arguments are reset only when explicit args remain
+		// after flag parsing (otherwise `set -e` would erase $@).
 		if (i < args.size() || !consumed_flags) {
 			std::vector<std::string> pos(args.begin() + i, args.end());
 			exec.env().setPositional(std::move(pos));
@@ -555,66 +623,86 @@ namespace wbsh {
 
 	// ---- read ----
 
-	static int builtin_read(Executor& exec, const std::vector<std::string>& args) {
-		bool raw = false;
-		std::string prompt;
+	// Walk the leading `-r` / `-p prompt` / `--` options of a `read` invocation.
+	// Returns the index of the first non-option arg (the variable list).
+	static std::size_t parseReadFlags(const std::vector<std::string>& args,
+	                                  bool* out_raw, std::string* out_prompt) {
+		*out_raw = false;
+		out_prompt->clear();
 		std::size_t i = 0;
 		while (i < args.size() && !args[i].empty() && args[i][0] == '-') {
 			const std::string& f = args[i];
 			if (f == "--") { ++i; break; }
-			if (f == "-r") { raw = true; ++i; continue; }
+			if (f == "-r") { *out_raw = true; ++i; continue; }
 			if (f == "-p") {
-				if (i + 1 < args.size()) { prompt = args[i + 1]; i += 2; continue; }
-				++i; continue;
+				if (i + 1 < args.size()) { *out_prompt = args[i + 1]; i += 2; continue; }
+				++i;
+				continue;
 			}
 			break;
 		}
-		if (!prompt.empty()) {
-			std::fwrite(prompt.data(), 1, prompt.size(), stderr);
-			std::fflush(stderr);
-		}
-		std::string line;
+		return i;
+	}
+
+	// Read one line from stdin honouring `read`'s `\` escapes (unless raw).
+	// Returns false if EOF was hit before any input — the caller should
+	// then return 1 from the builtin.
+	static bool readOneLineFromStdin(bool raw, std::string& line) {
 		while (true) {
-			int c = std::fgetc(stdin);
+			const int c = std::fgetc(stdin);
 			if (c == EOF) {
-				if (line.empty()) return 1;
-				break;
+				return !line.empty();
 			}
-			if (c == '\n') break;
+			if (c == '\n') return true;
 			if (!raw && c == '\\') {
-				int n = std::fgetc(stdin);
-				if (n == EOF) break;
+				const int n = std::fgetc(stdin);
+				if (n == EOF) return true;
 				if (n == '\n') continue;   // line continuation
 				line.push_back(static_cast<char>(n));
 				continue;
 			}
 			line.push_back(static_cast<char>(c));
 		}
+	}
 
-		std::vector<std::string> names(args.begin() + i, args.end());
-		if (names.empty()) names.push_back("REPLY");
-
-		std::string ifs = exec.env().get("IFS");
-		if (ifs.empty()) ifs = " \t\n";
-		auto isIfsWS = [&](char c) {
-			return (c == ' ' || c == '\t' || c == '\n') && ifs.find(c) != std::string::npos;
+	// Split `line` into fields per the rules in `read` / POSIX field
+	// splitting: leading IFS whitespace is skipped; then alternating
+	// non-IFS fields and IFS runs (where each non-whitespace IFS char is
+	// at most one field separator).
+	static std::vector<std::string> splitReadLine(const std::string& line,
+	                                              const std::string& ifs) {
+		auto is_ifs_ws = [&](char c) {
+			return (c == ' ' || c == '\t' || c == '\n')
+			       && ifs.find(c) != std::string::npos;
 		};
-		auto isIfs = [&](char c) { return ifs.find(c) != std::string::npos; };
+		auto is_ifs = [&](char c) { return ifs.find(c) != std::string::npos; };
 
 		std::vector<std::string> fields;
 		std::size_t pos = 0;
-		while (pos < line.size() && isIfsWS(line[pos])) ++pos;
+		while (pos < line.size() && is_ifs_ws(line[pos])) ++pos;
 		while (pos < line.size()) {
 			std::string cur;
-			while (pos < line.size() && !isIfs(line[pos])) cur.push_back(line[pos++]);
+			while (pos < line.size() && !is_ifs(line[pos]))
+				cur.push_back(line[pos++]);
 			fields.push_back(std::move(cur));
 			bool saw_nonws = false;
-			while (pos < line.size() && isIfs(line[pos])) {
-				if (!isIfsWS(line[pos])) { if (saw_nonws) break; saw_nonws = true; }
+			while (pos < line.size() && is_ifs(line[pos])) {
+				if (!is_ifs_ws(line[pos])) {
+					if (saw_nonws) break;
+					saw_nonws = true;
+				}
 				++pos;
 			}
 		}
+		return fields;
+	}
 
+	// Assign `fields` into the listed variable `names`. The last named var
+	// receives all remaining fields joined by a single space (matching
+	// bash's read).
+	static void assignReadFields(Environment& env,
+	                             const std::vector<std::string>& names,
+	                             const std::vector<std::string>& fields) {
 		for (std::size_t k = 0; k < names.size(); ++k) {
 			std::string val;
 			if (k + 1 == names.size()) {
@@ -622,11 +710,34 @@ namespace wbsh {
 					if (m > k) val.push_back(' ');
 					val += fields[m];
 				}
-			} else {
-				if (k < fields.size()) val = fields[k];
+			} else if (k < fields.size()) {
+				val = fields[k];
 			}
-			exec.env().set(names[k], val);
+			env.set(names[k], val);
 		}
+	}
+
+	static int builtin_read(Executor& exec, const std::vector<std::string>& args) {
+		bool raw = false;
+		std::string prompt;
+		const std::size_t i = parseReadFlags(args, &raw, &prompt);
+
+		if (!prompt.empty()) {
+			std::fwrite(prompt.data(), 1, prompt.size(), stderr);
+			std::fflush(stderr);
+		}
+
+		std::string line;
+		if (!readOneLineFromStdin(raw, line)) return 1;
+
+		std::vector<std::string> names(args.begin() + i, args.end());
+		if (names.empty()) names.push_back("REPLY");
+
+		std::string ifs = exec.env().get("IFS");
+		if (ifs.empty()) ifs = " \t\n";
+
+		const auto fields = splitReadLine(line, ifs);
+		assignReadFields(exec.env(), names, fields);
 		return 0;
 	}
 
@@ -742,20 +853,32 @@ namespace wbsh {
 			attrs.c_str(), n.c_str(), exec.env().get(n).c_str());
 	}
 
-	static int builtin_declare(Executor& exec, const std::vector<std::string>& args) {
-		bool flag_x = false, flag_r = false, flag_p = false;
-		bool flag_a = false, flag_A = false;
-		std::vector<std::string> names;
+	namespace declare_internal {
+		struct DeclareFlags {
+			bool x = false;   ///< -x: mark exported
+			bool r = false;   ///< -r: mark readonly
+			bool p = false;   ///< -p: print one entry
+			bool a = false;   ///< -a: indexed array
+			bool A = false;   ///< -A: associative array
+		};
+	}  // namespace declare_internal
+
+	// Walk `args`, splitting them into a flag bundle and the trailing list of
+	// `name` or `name=value` operands. Unknown letters in a `-XYZ` cluster
+	// are silently ignored (matching bash's lenient declare).
+	static void parseDeclareFlags(const std::vector<std::string>& args,
+	                              declare_internal::DeclareFlags& f,
+	                              std::vector<std::string>& names) {
 		for (const auto& a : args) {
 			if (a == "--") continue;
 			if (!a.empty() && a[0] == '-') {
 				for (std::size_t k = 1; k < a.size(); ++k) {
 					switch (a[k]) {
-					case 'x': flag_x = true; break;
-					case 'r': flag_r = true; break;
-					case 'p': flag_p = true; break;
-					case 'a': flag_a = true; break;
-					case 'A': flag_A = true; break;
+					case 'x': f.x = true; break;
+					case 'r': f.r = true; break;
+					case 'p': f.p = true; break;
+					case 'a': f.a = true; break;
+					case 'A': f.A = true; break;
 					default: break;
 					}
 				}
@@ -763,51 +886,70 @@ namespace wbsh {
 			}
 			names.push_back(a);
 		}
+	}
 
-		if (names.empty()) {
-			std::vector<std::pair<std::string, std::string>> v(
-				exec.env().vars().begin(), exec.env().vars().end());
-			std::sort(v.begin(), v.end());
-			for (const auto& kv : v) printDeclareEntry(exec, kv.first);
-			std::vector<std::string> array_names;
-			for (const auto& kv : exec.env().indexedArrays())
-				array_names.push_back(kv.first);
-			for (const auto& kv : exec.env().assocArrays())
-				array_names.push_back(kv.first);
-			std::sort(array_names.begin(), array_names.end());
-			for (const auto& n : array_names) printDeclareEntry(exec, n);
-			return 0;
-		}
-		if (flag_p) {
-			int rc = 0;
-			for (const auto& nv : names) {
-				auto eq = nv.find('=');
-				std::string n = (eq == std::string::npos) ? nv : nv.substr(0, eq);
-				if (!exec.env().has(n)) {
-					std::fprintf(stderr,
-						"wbsh: declare: %s: not found\n", n.c_str());
-					rc = 1;
-					continue;
-				}
-				printDeclareEntry(exec, n);
-			}
-			return rc;
-		}
+	// Bare `declare`: dump the entire variable + array tables (sorted).
+	static int dumpAllDeclareEntries(Executor& exec) {
+		std::vector<std::pair<std::string, std::string>> v(
+			exec.env().vars().begin(), exec.env().vars().end());
+		std::sort(v.begin(), v.end());
+		for (const auto& kv : v) printDeclareEntry(exec, kv.first);
+
+		std::vector<std::string> array_names;
+		for (const auto& kv : exec.env().indexedArrays()) array_names.push_back(kv.first);
+		for (const auto& kv : exec.env().assocArrays())   array_names.push_back(kv.first);
+		std::sort(array_names.begin(), array_names.end());
+		for (const auto& n : array_names) printDeclareEntry(exec, n);
+		return 0;
+	}
+
+	// `declare -p name [name ...]`: print each named entry, or a "not
+	// found" error per missing one. Returns 1 if any name was missing.
+	static int printDeclareNamedEntries(Executor& exec,
+	                                    const std::vector<std::string>& names) {
+		int rc = 0;
 		for (const auto& nv : names) {
-			auto eq = nv.find('=');
-			std::string n = (eq == std::string::npos) ? nv : nv.substr(0, eq);
-			// `declare -A name` declares without assigning a value.
-			if (flag_A && eq == std::string::npos) {
-				exec.env().declareAssocArray(n);
-			} else if (flag_a && eq == std::string::npos) {
-				// `declare -a name` initialises an empty indexed array.
-				exec.env().setIndexedArrayFromList(n, {});
-			} else if (eq != std::string::npos) {
-				exec.env().set(n, nv.substr(eq + 1));
+			const auto eq = nv.find('=');
+			const std::string n = (eq == std::string::npos) ? nv : nv.substr(0, eq);
+			if (!exec.env().has(n)) {
+				std::fprintf(stderr, "wbsh: declare: %s: not found\n", n.c_str());
+				rc = 1;
+				continue;
 			}
-			if (flag_x) exec.env().exportVar(n);
-			if (flag_r) exec.env().markReadonly(n);
+			printDeclareEntry(exec, n);
 		}
+		return rc;
+	}
+
+	// Apply `declare -aArx ...` to a single name (with optional =value).
+	static void applyDeclareToName(Executor& exec,
+	                               const declare_internal::DeclareFlags& f,
+	                               const std::string& nv) {
+		const auto eq = nv.find('=');
+		const std::string n = (eq == std::string::npos) ? nv : nv.substr(0, eq);
+
+		if (f.A && eq == std::string::npos) {
+			exec.env().declareAssocArray(n);
+		} else if (f.a && eq == std::string::npos) {
+			// `declare -a name` initialises an empty indexed array.
+			exec.env().setIndexedArrayFromList(n, {});
+		} else if (eq != std::string::npos) {
+			exec.env().set(n, nv.substr(eq + 1));
+		}
+
+		if (f.x) exec.env().exportVar(n);
+		if (f.r) exec.env().markReadonly(n);
+	}
+
+	static int builtin_declare(Executor& exec, const std::vector<std::string>& args) {
+		declare_internal::DeclareFlags f;
+		std::vector<std::string> names;
+		parseDeclareFlags(args, f, names);
+
+		if (names.empty()) return dumpAllDeclareEntries(exec);
+		if (f.p)            return printDeclareNamedEntries(exec, names);
+
+		for (const auto& nv : names) applyDeclareToName(exec, f, nv);
 		return 0;
 	}
 
@@ -834,71 +976,106 @@ namespace wbsh {
 		return kFlags;
 	}
 
-	static int builtin_shopt(Executor& exec, const std::vector<std::string>& args) {
-		enum class Mode { ListSet, ListUnset, ListAll, Set, Unset, Query };
-		Mode mode = Mode::ListAll;
-		bool printable = false;
-		std::vector<std::string> names;
+	namespace shopt_internal {
+		enum class Mode { ListAll, Set, Unset, Query };
+	}
+
+	// Find an entry in the shopt option table by name. Returns null if the
+	// name is not a known shopt option.
+	static const ShoptFlag* findShoptFlag(const std::string& name) {
+		for (const ShoptFlag* p = shoptTable(); p->name; ++p) {
+			if (name == p->name) return p;
+		}
+		return nullptr;
+	}
+
+	static void printShoptFlag(const Environment& env, const ShoptFlag* f) {
+		const bool on = (env.*(f->get))();
+		std::printf("%-15s %s\n", f->name, on ? "on" : "off");
+	}
+
+	// Walk `args`, pulling out option flags into `mode` and pushing each
+	// option name onto `names`. Returns false (with diagnostic) on an
+	// unknown option spelling.
+	static bool parseShoptArgs(const std::vector<std::string>& args,
+	                           shopt_internal::Mode& mode,
+	                           std::vector<std::string>& names) {
+		using shopt_internal::Mode;
 		for (const auto& a : args) {
-			if (a == "-s") mode = Mode::Set;
-			else if (a == "-u") mode = Mode::Unset;
-			else if (a == "-q") mode = Mode::Query;
-			else if (a == "-p") printable = true;
-			else if (!a.empty() && a[0] == '-' && a != "--") {
+			if (a == "-s") { mode = Mode::Set;   continue; }
+			if (a == "-u") { mode = Mode::Unset; continue; }
+			if (a == "-q") { mode = Mode::Query; continue; }
+			if (a == "-p") { /* printable form: same as default list */ continue; }
+			if (a == "--") continue;
+			if (!a.empty() && a[0] == '-') {
 				std::fprintf(stderr, "wbsh: shopt: unknown option: %s\n", a.c_str());
-				return 1;
+				return false;
 			}
-			else if (a == "--") { /* end of opts */ }
-			else names.push_back(a);
+			names.push_back(a);
 		}
-		auto findFlag = [](const std::string& n) -> const ShoptFlag* {
+		return true;
+	}
+
+	// `shopt -s name ...` / `shopt -u name ...`: toggle each flag, diagnose
+	// invalid names. Returns 1 if any name was unknown.
+	static int shoptSetOrUnset(Executor& exec,
+	                           const std::vector<std::string>& names, bool on) {
+		int rc = 0;
+		for (const auto& n : names) {
+			const ShoptFlag* f = findShoptFlag(n);
+			if (!f) {
+				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", n.c_str());
+				rc = 1;
+				continue;
+			}
+			(exec.env().*(f->set))(on);
+		}
+		return rc;
+	}
+
+	// `shopt -q name ...`: silently return 0 iff every named flag is set.
+	static int shoptQuery(Executor& exec, const std::vector<std::string>& names) {
+		for (const auto& n : names) {
+			const ShoptFlag* f = findShoptFlag(n);
+			if (!f) return 1;
+			if (!(exec.env().*(f->get))()) return 1;
+		}
+		return 0;
+	}
+
+	// `shopt` / `shopt name ...`: print the current setting of all (or just
+	// the listed) flags. Diagnoses invalid names with rc=1.
+	static int shoptListMode(Executor& exec, const std::vector<std::string>& names) {
+		if (names.empty()) {
 			for (const ShoptFlag* p = shoptTable(); p->name; ++p) {
-				if (n == p->name) return p;
-			}
-			return nullptr;
-		};
-		(void)printable;
-		if (mode == Mode::Set || mode == Mode::Unset) {
-			bool on = (mode == Mode::Set);
-			int rc = 0;
-			for (const auto& n : names) {
-				auto* f = findFlag(n);
-				if (!f) {
-					std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", n.c_str());
-					rc = 1;
-					continue;
-				}
-				(exec.env().*(f->set))(on);
-			}
-			return rc;
-		}
-		if (mode == Mode::Query) {
-			for (const auto& n : names) {
-				auto* f = findFlag(n);
-				if (!f) return 1;
-				if (!(exec.env().*(f->get))()) return 1;
+				printShoptFlag(exec.env(), p);
 			}
 			return 0;
 		}
-		// List form. With names: print only those. Without names: all.
-		auto print_one = [&](const ShoptFlag* f) {
-			bool on = (exec.env().*(f->get))();
-			std::printf("%-15s %s\n", f->name, on ? "on" : "off");
-		};
-		if (!names.empty()) {
-			int rc = 0;
-			for (const auto& n : names) {
-				auto* f = findFlag(n);
-				if (!f) {
-					std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", n.c_str());
-					rc = 1;
-					continue;
-				}
-				print_one(f);
+		int rc = 0;
+		for (const auto& n : names) {
+			const ShoptFlag* f = findShoptFlag(n);
+			if (!f) {
+				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", n.c_str());
+				rc = 1;
+				continue;
 			}
-			return rc;
+			printShoptFlag(exec.env(), f);
 		}
-		for (const ShoptFlag* p = shoptTable(); p->name; ++p) print_one(p);
+		return rc;
+	}
+
+	static int builtin_shopt(Executor& exec, const std::vector<std::string>& args) {
+		shopt_internal::Mode mode = shopt_internal::Mode::ListAll;
+		std::vector<std::string> names;
+		if (!parseShoptArgs(args, mode, names)) return 1;
+
+		switch (mode) {
+		case shopt_internal::Mode::Set:     return shoptSetOrUnset(exec, names, true);
+		case shopt_internal::Mode::Unset:   return shoptSetOrUnset(exec, names, false);
+		case shopt_internal::Mode::Query:   return shoptQuery(exec, names);
+		case shopt_internal::Mode::ListAll: return shoptListMode(exec, names);
+		}
 		return 0;
 	}
 
@@ -1014,115 +1191,185 @@ namespace wbsh {
 		return 0;
 	}
 
+	namespace getopts_internal {
+		// Cursor state shared between the main loop and its helpers. `optind`
+		// points one past the last consumed positional arg (1-based, like
+		// bash's $OPTIND); `sub` is the index inside the current cluster
+		// `-abc` of arg[optind-1].
+		struct GetoptsCtx {
+			Executor& exec;
+			std::string opts;            ///< Spec without leading `:`.
+			const std::string& name;     ///< Variable to assign the option char to.
+			std::vector<std::string> source;
+			bool silent;
+			int& sub;
+			int optind;
+
+			void setName(const std::string& v) const { exec.env().set(name, v); }
+			void storeOptind() const {
+				exec.env().set("OPTIND", std::to_string(optind));
+			}
+		};
+
+		// Read $OPTIND from the env and clamp to >= 1.
+		static int loadOptind(Executor& exec) {
+			int v = 1;
+			try {
+				const std::string s = exec.env().get("OPTIND");
+				if (!s.empty()) v = std::stoi(s);
+			} catch (...) {
+				v = 1;
+			}
+			return v < 1 ? 1 : v;
+		}
+
+		// End-of-options markers: out of arguments, or a positional that
+		// can't be an option (`-`, no leading `-`, or empty after `-`).
+		// Resets state and returns 1, mirroring bash's getopts.
+		static int finishWithoutOption(GetoptsCtx& ctx) {
+			ctx.setName("?");
+			ctx.exec.env().unset("OPTARG");
+			ctx.exec.resetGetopts();
+			ctx.storeOptind();
+			return 1;
+		}
+
+		// Hit `--`: bump past it, reset, mark $? = 1 to terminate the
+		// caller's getopts loop.
+		static int finishOnDoubleDash(GetoptsCtx& ctx) {
+			++ctx.optind;
+			ctx.exec.resetGetopts();
+			ctx.setName("?");
+			ctx.storeOptind();
+			return 1;
+		}
+
+		// Move past `cur[ctx.sub]`, advancing optind when the cluster is done.
+		static void advanceOneOptionChar(GetoptsCtx& ctx, const std::string& cur) {
+			++ctx.sub;
+			if (ctx.sub >= static_cast<int>(cur.size())) {
+				++ctx.optind;
+				ctx.sub = 1;
+			}
+		}
+
+		// Option char isn't in spec or is the placeholder `:`. Diagnose
+		// (loud or silent) and return 0 with NAME set to "?".
+		static int handleIllegalOption(GetoptsCtx& ctx,
+		                               const std::string& cur, char opt) {
+			if (ctx.silent) {
+				ctx.setName("?");
+				ctx.exec.env().set("OPTARG", std::string(1, opt));
+			} else {
+				std::fprintf(stderr, "getopts: illegal option -- %c\n", opt);
+				ctx.setName("?");
+				ctx.exec.env().unset("OPTARG");
+			}
+			advanceOneOptionChar(ctx, cur);
+			ctx.storeOptind();
+			return 0;
+		}
+
+		// Option `opt` takes an arg ("o:" in spec). Try to fetch it from
+		// the rest of the current word, or from the next positional.
+		// Returns 0 with NAME set to either the option char (success) or
+		// `?` / `:` (missing-arg, depending on silent mode).
+		static int handleOptionWithArg(GetoptsCtx& ctx,
+		                               const std::string& cur, char opt) {
+			std::string optarg;
+
+			// Form 1: -ofoo — arg is glued to the option letter.
+			if (ctx.sub + 1 < static_cast<int>(cur.size())) {
+				optarg = cur.substr(ctx.sub + 1);
+				++ctx.optind;
+				ctx.sub = 1;
+				ctx.setName(std::string(1, opt));
+				ctx.exec.env().set("OPTARG", optarg);
+				ctx.storeOptind();
+				return 0;
+			}
+
+			// Form 2: -o foo — arg is the next positional.
+			if (ctx.optind >= static_cast<int>(ctx.source.size())) {
+				if (ctx.silent) {
+					ctx.setName(":");
+					ctx.exec.env().set("OPTARG", std::string(1, opt));
+				} else {
+					std::fprintf(stderr,
+						"getopts: option requires an argument -- %c\n", opt);
+					ctx.setName("?");
+					ctx.exec.env().unset("OPTARG");
+				}
+				++ctx.optind;
+				ctx.sub = 1;
+				ctx.storeOptind();
+				return 0;
+			}
+			optarg = ctx.source[ctx.optind];
+			ctx.optind += 2;
+			ctx.sub = 1;
+			ctx.setName(std::string(1, opt));
+			ctx.exec.env().set("OPTARG", optarg);
+			ctx.storeOptind();
+			return 0;
+		}
+	}  // namespace getopts_internal
+
 	static int builtin_getopts(Executor& exec, const std::vector<std::string>& args) {
 		if (args.size() < 2) {
 			printerr("getopts: usage: getopts OPTSTRING NAME [ARG ...]");
 			return 2;
 		}
+
+		// First char `:` switches getopts into silent mode (errors via OPTARG
+		// instead of printed diagnostics, plus the `:` exit-name signal).
 		std::string opts = args[0];
-		const std::string& name = args[1];
-		bool silent = !opts.empty() && opts[0] == ':';
+		const bool silent = !opts.empty() && opts[0] == ':';
 		if (silent) opts.erase(0, 1);
 
-		std::vector<std::string> source;
-		if (args.size() > 2) {
-			source.assign(args.begin() + 2, args.end());
-		} else {
-			source = exec.env().positional();
-		}
+		// `getopts spec name args...` overrides the positional list; with
+		// fewer args the shell's positionals are scanned.
+		std::vector<std::string> source = (args.size() > 2)
+			? std::vector<std::string>(args.begin() + 2, args.end())
+			: exec.env().positional();
 
-		int optind = 1;
-		try {
-			std::string s = exec.env().get("OPTIND");
-			if (!s.empty()) optind = std::stoi(s);
-		} catch (...) {}
-		if (optind < 1) optind = 1;
 		int& sub = exec.getoptsSubindex();
 		if (sub < 1) sub = 1;
 
-		auto setName = [&](const std::string& v) { exec.env().set(name, v); };
-		auto storeOptind = [&]() { exec.env().set("OPTIND", std::to_string(optind)); };
+		getopts_internal::GetoptsCtx ctx{
+			exec, std::move(opts), args[1], std::move(source),
+			silent, sub, getopts_internal::loadOptind(exec),
+		};
 
 		while (true) {
-			if (optind > static_cast<int>(source.size())) {
-				setName("?");
-				exec.env().unset("OPTARG");
-				exec.resetGetopts();
-				storeOptind();
-				return 1;
-			}
-			const std::string& cur = source[optind - 1];
-			if (cur.size() < 2 || cur[0] != '-' || cur == "-") {
-				setName("?");
-				exec.env().unset("OPTARG");
-				exec.resetGetopts();
-				storeOptind();
-				return 1;
-			}
-			if (cur == "--") {
-				++optind;
-				exec.resetGetopts();
-				setName("?");
-				storeOptind();
-				return 1;
-			}
-			if (sub >= static_cast<int>(cur.size())) {
-				++optind;
-				sub = 1;
+			if (ctx.optind > static_cast<int>(ctx.source.size()))
+				return getopts_internal::finishWithoutOption(ctx);
+
+			const std::string& cur = ctx.source[ctx.optind - 1];
+			if (cur.size() < 2 || cur[0] != '-' || cur == "-")
+				return getopts_internal::finishWithoutOption(ctx);
+			if (cur == "--")
+				return getopts_internal::finishOnDoubleDash(ctx);
+
+			// Cluster done; advance to next positional and re-enter.
+			if (ctx.sub >= static_cast<int>(cur.size())) {
+				++ctx.optind;
+				ctx.sub = 1;
 				continue;
 			}
-			char opt = cur[sub];
-			auto pos = opts.find(opt);
-			if (pos == std::string::npos || opt == ':') {
-				if (silent) {
-					setName("?");
-					exec.env().set("OPTARG", std::string(1, opt));
-				} else {
-					std::fprintf(stderr, "getopts: illegal option -- %c\n", opt);
-					setName("?");
-					exec.env().unset("OPTARG");
-				}
-				++sub;
-				if (sub >= static_cast<int>(cur.size())) { ++optind; sub = 1; }
-				storeOptind();
-				return 0;
-			}
-			if (pos + 1 < opts.size() && opts[pos + 1] == ':') {
-				std::string optarg;
-				if (sub + 1 < static_cast<int>(cur.size())) {
-					optarg = cur.substr(sub + 1);
-					++optind;
-					sub = 1;
-				} else {
-					if (optind >= static_cast<int>(source.size())) {
-						if (silent) {
-							setName(":");
-							exec.env().set("OPTARG", std::string(1, opt));
-						} else {
-							std::fprintf(stderr,
-								"getopts: option requires an argument -- %c\n", opt);
-							setName("?");
-							exec.env().unset("OPTARG");
-						}
-						++optind;
-						sub = 1;
-						storeOptind();
-						return 0;
-					}
-					optarg = source[optind];
-					optind += 2;
-					sub = 1;
-				}
-				setName(std::string(1, opt));
-				exec.env().set("OPTARG", optarg);
-				storeOptind();
-				return 0;
-			}
-			setName(std::string(1, opt));
-			exec.env().unset("OPTARG");
-			++sub;
-			if (sub >= static_cast<int>(cur.size())) { ++optind; sub = 1; }
-			storeOptind();
+
+			const char opt = cur[ctx.sub];
+			const auto pos = ctx.opts.find(opt);
+			if (pos == std::string::npos || opt == ':')
+				return getopts_internal::handleIllegalOption(ctx, cur, opt);
+			if (pos + 1 < ctx.opts.size() && ctx.opts[pos + 1] == ':')
+				return getopts_internal::handleOptionWithArg(ctx, cur, opt);
+
+			// Plain flag (no argument).
+			ctx.setName(std::string(1, opt));
+			ctx.exec.env().unset("OPTARG");
+			getopts_internal::advanceOneOptionChar(ctx, cur);
+			ctx.storeOptind();
 			return 0;
 		}
 	}
@@ -1351,6 +1598,147 @@ namespace wbsh {
 		return out;
 	}
 
+	namespace compgen_internal {
+		// Parsed `compgen` / `complete` flag set. Built up by parseCompgenFlags.
+		struct CompgenFlags {
+			std::string action;
+			std::string prefix;
+			std::vector<std::string> wordlist;
+			bool include_files    = false;
+			bool include_dirs     = false;
+			bool include_cmds     = false;
+			bool include_builtins = false;
+			bool include_funcs    = false;
+			bool include_aliases  = false;
+			bool include_vars     = false;
+			bool include_keywords = false;
+		};
+	}  // namespace compgen_internal
+
+	// Split a `-W "word1 word2 ..."` argument on whitespace.
+	static std::vector<std::string> splitDashWWordList(const std::string& s) {
+		std::vector<std::string> out;
+		std::string cur;
+		for (char c : s) {
+			if (c == ' ' || c == '\t' || c == '\n') {
+				if (!cur.empty()) { out.push_back(std::move(cur)); cur.clear(); }
+			} else {
+				cur.push_back(c);
+			}
+		}
+		if (!cur.empty()) out.push_back(std::move(cur));
+		return out;
+	}
+
+	// Parse the option flags accepted by compgen / complete and capture the
+	// trailing positional arg (the prefix) into `f`. Unknown options are
+	// silently ignored, matching bash for forward compatibility.
+	static void parseCompgenFlags(const std::vector<std::string>& args,
+	                              compgen_internal::CompgenFlags& f) {
+		for (std::size_t i = 0; i < args.size(); ++i) {
+			const std::string& a = args[i];
+			if (a == "-W" && i + 1 < args.size()) {
+				f.wordlist = splitDashWWordList(args[++i]);
+				continue;
+			}
+			if (a == "-A" && i + 1 < args.size()) { f.action = args[++i]; continue; }
+			if (a == "-f") { f.include_files    = true; continue; }
+			if (a == "-d") { f.include_dirs     = true; continue; }
+			if (a == "-c") { f.include_cmds     = true; continue; }
+			if (a == "-b") { f.include_builtins = true; continue; }
+			if (a == "-a") { f.include_aliases  = true; continue; }
+			if (a == "-v") { f.include_vars     = true; continue; }
+			if (a == "-k") { f.include_keywords = true; continue; }
+			// user / group / service / exported — not meaningful on Windows.
+			if (a == "-u" || a == "-g" || a == "-s" || a == "-e") continue;
+			// Options we recognise but don't act on at this layer.
+			if (a == "-o" && i + 1 < args.size()) { ++i; continue; }
+			if (a == "-F" && i + 1 < args.size()) { ++i; continue; }
+			if (a == "-C" && i + 1 < args.size()) { ++i; continue; }
+			if (!a.empty() && a[0] == '-' && a != "-" && a != "--") continue;
+			if (a == "--") continue;
+			f.prefix = a;
+		}
+
+		// `-A <name>` aliases for the boolean flags.
+		if (f.action == "function")  f.include_funcs    = true;
+		if (f.action == "variable")  f.include_vars     = true;
+		if (f.action == "alias")     f.include_aliases  = true;
+		if (f.action == "builtin")   f.include_builtins = true;
+		if (f.action == "command")   f.include_cmds     = true;
+		if (f.action == "file")      f.include_files    = true;
+		if (f.action == "directory") f.include_dirs     = true;
+	}
+
+	// Append every prefix-matching item from `src` (sorted) to `out`.
+	static void appendSortedFiltered(std::vector<std::string>& out,
+	                                 std::vector<std::string> src,
+	                                 const std::string& prefix) {
+		std::sort(src.begin(), src.end());
+		for (auto& n : filterByPrefix(src, prefix)) out.push_back(std::move(n));
+	}
+
+	// Append the (sorted, deduplicated) names of all `-c command` candidates
+	// — builtins + functions + every executable on PATH — that begin with
+	// `prefix`.
+	static void appendCommandCandidates(std::vector<std::string>& out,
+	                                    Executor& exec, const std::string& prefix) {
+		std::vector<std::string> names = exec.builtinNames();
+		auto fns = exec.functionNames();
+		names.insert(names.end(), fns.begin(), fns.end());
+		collectCommandsFromPath(exec, names);
+		std::sort(names.begin(), names.end());
+		names.erase(std::unique(names.begin(), names.end()), names.end());
+		for (auto& n : filterByPrefix(names, prefix)) out.push_back(std::move(n));
+	}
+
+	// Append shell-keyword candidates matching `prefix`.
+	static void appendKeywordCandidates(std::vector<std::string>& out,
+	                                    const std::string& prefix) {
+		static const char* kw[] = {
+			"if","then","else","elif","fi","case","esac","for",
+			"while","until","do","done","function","in","select",
+			"time","[[","]]","return","break","continue", nullptr };
+		std::vector<std::string> v;
+		for (int k = 0; kw[k]; ++k) v.push_back(kw[k]);
+		for (auto& n : filterByPrefix(v, prefix)) out.push_back(std::move(n));
+	}
+
+	// Append filename / directory candidates whose basename matches the
+	// `prefix` argument's leaf component. Directories are suffixed with `/`.
+	static void appendFileDirCandidates(std::vector<std::string>& out, Executor& exec,
+	                                    const std::string& prefix,
+	                                    bool include_files, bool include_dirs) {
+		namespace fs = std::filesystem;
+		std::string dir = ".";
+		std::string leaf = prefix;
+		const auto sl = prefix.find_last_of('/');
+		if (sl != std::string::npos) {
+			dir  = prefix.substr(0, sl);
+			leaf = prefix.substr(sl + 1);
+			if (dir.empty()) dir = "/";
+		}
+		std::error_code ec;
+		fs::path list_dir = utf8ToPath(exec.pathConv().toWin32(dir));
+		fs::directory_iterator it(list_dir, ec);
+		if (ec) return;
+
+		for (auto& e : it) {
+			std::string n;
+			try { n = pathToUtf8(e.path().filename()); }
+			catch (...) { continue; }
+			if (n.empty() || n[0] == '.') continue;
+			if (n.compare(0, leaf.size(), leaf) != 0) continue;
+			const bool isdir = e.is_directory(ec);
+			if (include_dirs && !isdir && !include_files) continue;
+			std::string full = (dir == ".")
+				? n
+				: (dir == "/" ? "/" + n : dir + "/" + n);
+			if (isdir) full.push_back('/');
+			out.push_back(std::move(full));
+		}
+	}
+
 	// Shared candidate generator used by compgen and (later) the line
 	// editor's programmable-completion path. Reads -A action / -W words /
 	// -f / -d / -c flags from `args` and produces the prefix-filtered
@@ -1360,131 +1748,35 @@ namespace wbsh {
 			const std::vector<std::string>& args,
 			/*out*/ std::string& prefix_out)
 	{
-		std::vector<std::string> out;
-		std::string prefix;
-		std::vector<std::string> wordlist;
-		std::string action;
-		bool include_files = false;
-		bool include_dirs = false;
-		bool include_cmds = false;
-		bool include_builtins = false;
-		bool include_funcs = false;
-		bool include_aliases = false;
-		bool include_vars = false;
-		bool include_keywords = false;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-W" && i + 1 < args.size()) {
-				std::string s = args[++i];
-				std::string cur;
-				for (char c : s) {
-					if (c == ' ' || c == '\t' || c == '\n') {
-						if (!cur.empty()) { wordlist.push_back(std::move(cur)); cur.clear(); }
-					} else cur.push_back(c);
-				}
-				if (!cur.empty()) wordlist.push_back(std::move(cur));
-			}
-			else if (a == "-A" && i + 1 < args.size()) action = args[++i];
-			else if (a == "-f") include_files = true;
-			else if (a == "-d") include_dirs = true;
-			else if (a == "-c") include_cmds = true;
-			else if (a == "-b") include_builtins = true;
-			else if (a == "-a") include_aliases = true;
-			else if (a == "-v") include_vars = true;
-			else if (a == "-k") include_keywords = true;
-			else if (a == "-u" || a == "-g" || a == "-s" || a == "-e") {
-				/* user/group/service/exported — skip on Windows */
-			}
-			else if (a == "-o" && i + 1 < args.size()) ++i;  // ignore option
-			else if (a == "-F" && i + 1 < args.size()) ++i;  // function: not invoked here
-			else if (a == "-C" && i + 1 < args.size()) ++i;  // external cmd: not invoked here
-			else if (!a.empty() && a[0] == '-' && a != "-" && a != "--") {
-				// unknown option — ignore
-			}
-			else if (a == "--") { /* end of options */ }
-			else prefix = a;
-		}
-		if (action == "function")  include_funcs = true;
-		if (action == "variable")  include_vars = true;
-		if (action == "alias")     include_aliases = true;
-		if (action == "builtin")   include_builtins = true;
-		if (action == "command")   include_cmds = true;
-		if (action == "file")      include_files = true;
-		if (action == "directory") include_dirs = true;
+		compgen_internal::CompgenFlags f;
+		parseCompgenFlags(args, f);
 
-		if (!wordlist.empty()) {
-			for (auto& w : filterByPrefix(wordlist, prefix)) out.push_back(w);
+		std::vector<std::string> out;
+
+		if (!f.wordlist.empty()) {
+			for (auto& w : filterByPrefix(f.wordlist, f.prefix))
+				out.push_back(std::move(w));
 		}
-		if (include_funcs) {
-			auto names = exec.functionNames();
-			std::sort(names.begin(), names.end());
-			for (auto& n : filterByPrefix(names, prefix)) out.push_back(n);
-		}
-		if (include_builtins) {
-			auto names = exec.builtinNames();
-			std::sort(names.begin(), names.end());
-			for (auto& n : filterByPrefix(names, prefix)) out.push_back(n);
-		}
-		if (include_aliases) {
+		if (f.include_funcs)    appendSortedFiltered(out, exec.functionNames(),  f.prefix);
+		if (f.include_builtins) appendSortedFiltered(out, exec.builtinNames(),   f.prefix);
+		if (f.include_aliases) {
 			std::vector<std::string> names;
 			for (const auto& kv : exec.aliases()) names.push_back(kv.first);
-			std::sort(names.begin(), names.end());
-			for (auto& n : filterByPrefix(names, prefix)) out.push_back(n);
+			appendSortedFiltered(out, std::move(names), f.prefix);
 		}
-		if (include_vars) {
+		if (f.include_vars) {
 			std::vector<std::string> names;
 			for (const auto& kv : exec.env().vars()) names.push_back(kv.first);
-			std::sort(names.begin(), names.end());
-			for (auto& n : filterByPrefix(names, prefix)) out.push_back(n);
+			appendSortedFiltered(out, std::move(names), f.prefix);
 		}
-		if (include_cmds) {
-			auto names = exec.builtinNames();
-			auto fns = exec.functionNames();
-			names.insert(names.end(), fns.begin(), fns.end());
-			collectCommandsFromPath(exec, names);
-			std::sort(names.begin(), names.end());
-			names.erase(std::unique(names.begin(), names.end()), names.end());
-			for (auto& n : filterByPrefix(names, prefix)) out.push_back(n);
+		if (f.include_cmds)     appendCommandCandidates(out, exec, f.prefix);
+		if (f.include_keywords) appendKeywordCandidates(out, f.prefix);
+		if (f.include_files || f.include_dirs) {
+			appendFileDirCandidates(out, exec, f.prefix,
+				f.include_files, f.include_dirs);
 		}
-		if (include_keywords) {
-			static const char* kw[] = {
-				"if","then","else","elif","fi","case","esac","for",
-				"while","until","do","done","function","in","select",
-				"time","[[","]]","return","break","continue", nullptr };
-			std::vector<std::string> v;
-			for (int k = 0; kw[k]; ++k) v.push_back(kw[k]);
-			for (auto& n : filterByPrefix(v, prefix)) out.push_back(n);
-		}
-		if (include_files || include_dirs) {
-			namespace fs = std::filesystem;
-			// Split prefix into dir + leaf.
-			std::string dir = ".", leaf = prefix;
-			auto sl = prefix.find_last_of('/');
-			if (sl != std::string::npos) {
-				dir = prefix.substr(0, sl);
-				leaf = prefix.substr(sl + 1);
-				if (dir.empty()) dir = "/";
-			}
-			std::error_code ec;
-			fs::path list_dir = utf8ToPath(exec.pathConv().toWin32(dir));
-			fs::directory_iterator it(list_dir, ec);
-			if (!ec) {
-				for (auto& e : it) {
-					std::string n;
-					try { n = pathToUtf8(e.path().filename()); }
-					catch (...) { continue; }
-					if (n.empty() || n[0] == '.') continue;
-					if (n.compare(0, leaf.size(), leaf) != 0) continue;
-					bool isdir = e.is_directory(ec);
-					if (include_dirs && !isdir && !include_files) continue;
-					std::string full = (dir == ".") ? n
-					    : (dir == "/" ? "/" + n : dir + "/" + n);
-					if (isdir) full.push_back('/');
-					out.push_back(full);
-				}
-			}
-		}
-		prefix_out = prefix;
+
+		prefix_out = f.prefix;
 		return out;
 	}
 
@@ -1495,78 +1787,96 @@ namespace wbsh {
 		return cands.empty() ? 1 : 0;
 	}
 
-	static int builtin_complete(Executor& exec, const std::vector<std::string>& args) {
-		Executor::CompletionSpec spec;
-		std::vector<std::string> commands;
-		bool remove_mode = false;
-		bool print_mode = false;
-		bool default_complete = false;
-		(void)default_complete;
+	namespace complete_internal {
+		struct CompleteOptions {
+			Executor::CompletionSpec spec;
+			std::vector<std::string> commands;
+			bool remove_mode = false;
+			bool print_mode = false;
+			bool default_complete = false;
+		};
+	}  // namespace complete_internal
+
+	// Walk `args`, populating a CompletionSpec, the command-name list, and
+	// mode flags. Unrecognised `-X` options are silently accepted to stay
+	// forward-compatible with bash extensions.
+	static void parseCompleteArgs(const std::vector<std::string>& args,
+	                              complete_internal::CompleteOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
-			if (a == "-r") remove_mode = true;
-			else if (a == "-p") print_mode = true;
-			else if (a == "-D") default_complete = true;
-			else if (a == "-W" && i + 1 < args.size()) {
-				std::string s = args[++i];
-				std::string cur;
-				for (char c : s) {
-					if (c == ' ' || c == '\t' || c == '\n') {
-						if (!cur.empty()) { spec.words.push_back(std::move(cur)); cur.clear(); }
-					} else cur.push_back(c);
-				}
-				if (!cur.empty()) spec.words.push_back(std::move(cur));
+			if (a == "-r") { o.remove_mode = true; continue; }
+			if (a == "-p") { o.print_mode  = true; continue; }
+			if (a == "-D") { o.default_complete = true; continue; }
+			if (a == "-W" && i + 1 < args.size()) {
+				o.spec.words = splitDashWWordList(args[++i]);
+				continue;
 			}
-			else if (a == "-F" && i + 1 < args.size()) spec.function = args[++i];
-			else if (a == "-C" && i + 1 < args.size()) spec.command = args[++i];
-			else if (a == "-f") spec.include_files = true;
-			else if (a == "-d") spec.include_dirs = true;
-			else if (a == "-o" && i + 1 < args.size()) {
+			if (a == "-F" && i + 1 < args.size()) { o.spec.function = args[++i]; continue; }
+			if (a == "-C" && i + 1 < args.size()) { o.spec.command  = args[++i]; continue; }
+			if (a == "-f") { o.spec.include_files = true; continue; }
+			if (a == "-d") { o.spec.include_dirs  = true; continue; }
+			if (a == "-o" && i + 1 < args.size()) {
 				const std::string& opt = args[++i];
-				if (opt == "default") spec.default_fallback = true;
-				else if (opt == "plusdirs") spec.plusdirs = true;
-				else if (opt == "nospace") spec.nospace = true;
+				if      (opt == "default")  o.spec.default_fallback = true;
+				else if (opt == "plusdirs") o.spec.plusdirs = true;
+				else if (opt == "nospace")  o.spec.nospace = true;
+				continue;
 			}
-			else if (!a.empty() && a[0] == '-' && a != "-" && a != "--") {
-				// other flags — accept silently
-			}
-			else if (a == "--") { /* end of opts */ }
-			else commands.push_back(a);
+			if (!a.empty() && a[0] == '-' && a != "-" && a != "--") continue;
+			if (a == "--") continue;
+			o.commands.push_back(a);
 		}
-		if (print_mode) {
-			const auto& specs = exec.completionSpecs();
-			if (commands.empty()) {
-				for (const auto& kv : specs) {
-					std::printf("complete %s\n", kv.first.c_str());
-				}
-				return 0;
+	}
+
+	// `complete -p [name ...]`: print one `complete <name>` line per
+	// command with a registered spec. Returns 1 if any named command had
+	// no spec.
+	static int printCompleteSpecs(Executor& exec,
+	                              const std::vector<std::string>& commands) {
+		const auto& specs = exec.completionSpecs();
+		if (commands.empty()) {
+			for (const auto& kv : specs) {
+				std::printf("complete %s\n", kv.first.c_str());
 			}
-			int rc = 0;
-			for (const auto& c : commands) {
-				if (specs.count(c) == 0) {
-					std::fprintf(stderr,
-						"wbsh: complete: %s: no completion specification\n",
-						c.c_str());
-					rc = 1;
-				} else {
-					std::printf("complete %s\n", c.c_str());
-				}
-			}
-			return rc;
-		}
-		if (remove_mode) {
-			if (commands.empty()) {
-				for (const auto& kv : exec.completionSpecs())
-					exec.removeCompletionSpec(kv.first);
-				return 0;
-			}
-			for (const auto& c : commands) exec.removeCompletionSpec(c);
 			return 0;
 		}
-		if (commands.empty()) return 0;
+		int rc = 0;
 		for (const auto& c : commands) {
-			exec.setCompletionSpec(c, spec);
+			if (specs.count(c) == 0) {
+				std::fprintf(stderr,
+					"wbsh: complete: %s: no completion specification\n",
+					c.c_str());
+				rc = 1;
+				continue;
+			}
+			std::printf("complete %s\n", c.c_str());
 		}
+		return rc;
+	}
+
+	// `complete -r [name ...]`: clear all specs (no args), or just the
+	// named ones.
+	static int clearCompleteSpecs(Executor& exec,
+	                              const std::vector<std::string>& commands) {
+		if (commands.empty()) {
+			for (const auto& kv : exec.completionSpecs())
+				exec.removeCompletionSpec(kv.first);
+			return 0;
+		}
+		for (const auto& c : commands) exec.removeCompletionSpec(c);
+		return 0;
+	}
+
+	static int builtin_complete(Executor& exec, const std::vector<std::string>& args) {
+		complete_internal::CompleteOptions o;
+		parseCompleteArgs(args, o);
+		(void)o.default_complete;   // not yet acted on; stored for future use
+
+		if (o.print_mode)  return printCompleteSpecs(exec, o.commands);
+		if (o.remove_mode) return clearCompleteSpecs(exec, o.commands);
+		if (o.commands.empty()) return 0;
+
+		for (const auto& c : o.commands) exec.setCompletionSpec(c, o.spec);
 		return 0;
 	}
 

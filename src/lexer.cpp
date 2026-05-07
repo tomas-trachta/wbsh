@@ -621,79 +621,84 @@ namespace wbsh {
 		(void)start;
 	}
 
-	// Read until matching ')'. Respects single-/double-quoted strings, escapes,
-	// and nested $(...) / `...` constructs. Excludes the closing ')'.
+	// Copy a `\X` sequence (the backslash and the next char) verbatim.
+	// Used by every "balanced ..." reader to preserve escapes inside strings.
+	void Lexer::copyBackslashEscape(std::string& out) {
+		out.push_back(advance());                  // backslash
+		if (!eof()) out.push_back(advance());      // escaped char
+	}
+
+	// Copy a `'...'` single-quoted run, including the surrounding quotes.
+	// Single quotes don't interpret backslashes, so anything up to the next
+	// `'` is data.
+	void Lexer::copySingleQuotedRun(std::string& out) {
+		out.push_back(advance());                  // opening '
+		while (!eof() && peek() != '\'') out.push_back(advance());
+		if (!eof()) out.push_back(advance());      // closing '
+	}
+
+	// Copy a `"..."` double-quoted run, honouring `\X` escapes inside.
+	void Lexer::copyDoubleQuotedRun(std::string& out) {
+		out.push_back(advance());                  // opening "
+		while (!eof() && peek() != '"') {
+			if (peek() == '\\') { copyBackslashEscape(out); continue; }
+			out.push_back(advance());
+		}
+		if (!eof()) out.push_back(advance());      // closing "
+	}
+
+	// Copy a backquoted run, honouring `\X` escapes inside.
+	void Lexer::copyBackquotedRun(std::string& out) {
+		out.push_back(advance());                  // opening `
+		while (!eof() && peek() != '`') {
+			if (peek() == '\\') { copyBackslashEscape(out); continue; }
+			out.push_back(advance());
+		}
+		if (!eof()) out.push_back(advance());      // closing `
+	}
+
+	// Copy a `$(...)` or `$((...))` substitution, leaving the cursor just
+	// past the closing `)` / `))`. Adjusts `*paren_depth` for `$(...)`
+	// since that contributes to the outer depth.
+	void Lexer::copyDollarParenRun(std::string& out, int* paren_depth) {
+		out.push_back(advance());                       // $
+		out.push_back(advance());                       // first (
+		if (peek() != '(') {
+			++*paren_depth;
+			return;
+		}
+		// $((...)) — independent depth counter.
+		out.push_back(advance());                       // second (
+		int dep2 = 1;
+		while (!eof() && dep2 > 0) {
+			if (peek() == '(') ++dep2;
+			else if (peek() == ')') --dep2;
+			out.push_back(advance());
+			if (dep2 == 0 && peek() == ')') {
+				out.push_back(advance());
+				break;
+			}
+		}
+	}
+
+	// Read until matching ')'. Respects single-/double-quoted strings,
+	// escapes, and nested $(...) / `...` constructs. Excludes the closing ')'.
 	std::string Lexer::readBalancedParens() {
 		std::string out;
 		int depth = 1;
 		while (!eof() && depth > 0) {
-			char c = peek();
-			if (c == '\\') {
-				out.push_back(advance());
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
-			if (c == '\'') {
-				out.push_back(advance());
-				while (!eof() && peek() != '\'') out.push_back(advance());
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
-			if (c == '"') {
-				out.push_back(advance());
-				while (!eof() && peek() != '"') {
-					if (peek() == '\\') {
-						out.push_back(advance());
-						if (!eof()) out.push_back(advance());
-						continue;
-					}
-					out.push_back(advance());
-				}
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
-			if (c == '`') {
-				out.push_back(advance());
-				while (!eof() && peek() != '`') {
-					if (peek() == '\\') {
-						out.push_back(advance());
-						if (!eof()) out.push_back(advance());
-						continue;
-					}
-					out.push_back(advance());
-				}
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
+			const char c = peek();
+			if (c == '\\') { copyBackslashEscape(out); continue; }
+			if (c == '\'') { copySingleQuotedRun(out); continue; }
+			if (c == '"')  { copyDoubleQuotedRun(out); continue; }
+			if (c == '`')  { copyBackquotedRun(out); continue; }
 			if (c == '$' && peek(1) == '(') {
-				// Nested $(...) or $((...))
-				out.push_back(advance());   // $
-				out.push_back(advance());   // (
-				if (peek() == '(') {
-					out.push_back(advance());   // second (
-					int dep2 = 1;
-					while (!eof() && dep2 > 0) {
-						if (peek() == '(') dep2++;
-						else if (peek() == ')') dep2--;
-						out.push_back(advance());
-						if (dep2 == 0 && peek() == ')') {
-							out.push_back(advance());
-							break;
-						}
-					}
-				}
-				else {
-					depth++;
-				}
+				copyDollarParenRun(out, &depth);
 				continue;
 			}
-			if (c == '(') {
-				depth++;
-				out.push_back(advance());
-				continue;
-			}
+			if (c == '(') { ++depth; out.push_back(advance()); continue; }
 			if (c == ')') {
-				depth--;
+				--depth;
 				if (depth == 0) {
 					advance();   // consume final )
 					return out;
@@ -703,7 +708,6 @@ namespace wbsh {
 			}
 			out.push_back(advance());
 		}
-		// Unterminated.
 		error(loc_, "unterminated $(...) substitution");
 		return out;
 	}
@@ -714,43 +718,18 @@ namespace wbsh {
 		int depth = 1;
 		while (!eof() && depth > 0) {
 			char c = peek();
-			if (c == '\\') {
-				out.push_back(advance());
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
-			if (c == '\'') {
-				out.push_back(advance());
-				while (!eof() && peek() != '\'') out.push_back(advance());
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
-			if (c == '"') {
-				out.push_back(advance());
-				while (!eof() && peek() != '"') {
-					if (peek() == '\\') {
-						out.push_back(advance());
-						if (!eof()) out.push_back(advance());
-						continue;
-					}
-					out.push_back(advance());
-				}
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
+			if (c == '\\') { copyBackslashEscape(out); continue; }
+			if (c == '\'') { copySingleQuotedRun(out); continue; }
+			if (c == '"')  { copyDoubleQuotedRun(out); continue; }
 			if (c == '$' && peek(1) == '{') {
 				out.push_back(advance());
 				out.push_back(advance());
-				depth++;
+				++depth;
 				continue;
 			}
-			if (c == '{') {
-				depth++;
-				out.push_back(advance());
-				continue;
-			}
+			if (c == '{') { ++depth; out.push_back(advance()); continue; }
 			if (c == '}') {
-				depth--;
+				--depth;
 				if (depth == 0) {
 					advance();   // consume final }
 					return out;
@@ -770,45 +749,20 @@ namespace wbsh {
 		std::string out;
 		int depth = 1;
 		while (!eof() && depth > 0) {
-			char c = peek();
-			if (c == '(') {
-				depth++;
-				out.push_back(advance());
-				continue;
-			}
+			const char c = peek();
+			if (c == '(') { ++depth; out.push_back(advance()); continue; }
 			if (c == ')') {
 				if (peek(1) == ')' && depth == 1) {
 					advance(); advance();   // consume "))"
 					return out;
 				}
-				depth--;
+				--depth;
 				out.push_back(advance());
 				continue;
 			}
-			if (c == '\\') {
-				out.push_back(advance());
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
-			if (c == '\'') {
-				out.push_back(advance());
-				while (!eof() && peek() != '\'') out.push_back(advance());
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
-			if (c == '"') {
-				out.push_back(advance());
-				while (!eof() && peek() != '"') {
-					if (peek() == '\\') {
-						out.push_back(advance());
-						if (!eof()) out.push_back(advance());
-						continue;
-					}
-					out.push_back(advance());
-				}
-				if (!eof()) out.push_back(advance());
-				continue;
-			}
+			if (c == '\\') { copyBackslashEscape(out); continue; }
+			if (c == '\'') { copySingleQuotedRun(out); continue; }
+			if (c == '"')  { copyDoubleQuotedRun(out); continue; }
 			out.push_back(advance());
 		}
 		error(loc_, "unterminated $((...)) expansion");
