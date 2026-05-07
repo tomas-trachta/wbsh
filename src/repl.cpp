@@ -137,15 +137,96 @@ namespace wbsh {
 	// Prompt expansion: \u, \w, \g (git branch), \t, etc.
 	// =====================================================================
 
-	// Resolve the current git branch, walking up from cwd looking for .git.
-	// Returns the branch name (e.g. "main"), a short commit hash for detached
-	// HEAD, or empty if not inside a repository. Cheap enough to call every
-	// prompt redraw — bounded directory walk + one tiny file read.
-	static std::string detectGitBranch() {
+	struct GitInfo {
+		std::string branch;   // empty when not inside a repo
+		std::string state;    // empty when on a clean branch with no in-progress op
+	};
+
+	// ANSI colour for a state word. Mid-operation states (merging, rebasing,
+	// cherry-picking, reverting) are red bold — they're transitional modes
+	// where conflicts may exist and the user shouldn't lose track of them.
+	// Bisecting is magenta (investigation, not destructive). Working-tree
+	// states use red for unstaged (work to save), green for staged (ready
+	// to commit), cyan for untracked (peripheral). Empty string for unknown
+	// states or when colour is disabled.
+	static const char* gitStateColor(const std::string& state) {
+		if (state == "merging" ||
+		    state == "rebasing" ||
+		    state == "cherry-picking" ||
+		    state == "reverting")  return "\x1b[31;1m"; // red bold
+		if (state == "bisecting")  return "\x1b[35;1m"; // magenta bold
+		if (state == "unstaged")   return "\x1b[31m";   // red
+		if (state == "staged")     return "\x1b[32m";   // green
+		if (state == "untracked")  return "\x1b[36m";   // cyan
+		return "";
+	}
+
+	// In-progress operation states are detected from sentinel files inside
+	// the resolved git dir — same files Git itself uses, so this stays in
+	// sync with whatever the user is doing without forking git.
+	static std::string detectGitOpState(const std::filesystem::path& git_dir) {
 		namespace fs = std::filesystem;
 		std::error_code ec;
+		if (fs::exists(git_dir / "MERGE_HEAD", ec))        return "merging";
+		if (fs::exists(git_dir / "rebase-merge", ec) ||
+		    fs::exists(git_dir / "rebase-apply", ec))      return "rebasing";
+		if (fs::exists(git_dir / "CHERRY_PICK_HEAD", ec))  return "cherry-picking";
+		if (fs::exists(git_dir / "REVERT_HEAD", ec))       return "reverting";
+		if (fs::exists(git_dir / "BISECT_LOG", ec))        return "bisecting";
+		return {};
+	}
+
+	// Working-tree dirtiness via `git status --porcelain`. Forks once per
+	// prompt — same cost model as Git Bash's __git_ps1 with SHOWDIRTYSTATE.
+	// We read only the two status columns of each entry, so output size
+	// doesn't matter; we close the pipe as soon as we've classified.
+	// Priority: unstaged > staged > untracked. Set WBSH_GIT_NO_DIRTY=1 to
+	// skip this entirely (useful on huge repos where status is slow).
+	static std::string detectGitDirtyState() {
+		if (const char* off = std::getenv("WBSH_GIT_NO_DIRTY"); off && *off && *off != '0')
+			return {};
+		// `--no-optional-locks` is a top-level git option (must come before
+		// the subcommand) — it prevents `status` from refreshing the index
+		// on disk, which would race with a concurrent foreground git command.
+#ifdef _WIN32
+		FILE* p = _popen("git --no-optional-locks status --porcelain 2>NUL", "r");
+#else
+		FILE* p = popen("git --no-optional-locks status --porcelain 2>/dev/null", "r");
+#endif
+		if (!p) return {};
+		bool unstaged = false, staged = false, untracked = false;
+		char buf[512];
+		while (std::fgets(buf, sizeof(buf), p)) {
+			if (buf[0] == '?' && buf[1] == '?') {
+				untracked = true;
+			} else {
+				if (buf[0] != ' ' && buf[0] != '?') staged = true;
+				if (buf[1] != ' ' && buf[1] != '?') unstaged = true;
+			}
+			if (unstaged) break; // highest priority — no need to keep reading
+		}
+#ifdef _WIN32
+		_pclose(p);
+#else
+		pclose(p);
+#endif
+		if (unstaged)  return "unstaged";
+		if (staged)    return "staged";
+		if (untracked) return "untracked";
+		return {};
+	}
+
+	// Resolve the current git branch + state, walking up from cwd looking
+	// for .git. branch is the branch name (e.g. "main"), a short commit
+	// hash for detached HEAD, or empty if not inside a repository. state
+	// is one of merging / rebasing / cherry-picking / reverting / bisecting
+	// / unstaged / staged / untracked, or empty on a clean branch.
+	static GitInfo detectGitInfo() {
+		namespace fs = std::filesystem;
+		GitInfo info;
+		std::error_code ec;
 		fs::path cur = fs::current_path(ec);
-		if (ec) return {};
+		if (ec) return info;
 
 		fs::path git_dir;
 		fs::path probe = cur;
@@ -159,16 +240,16 @@ namespace wbsh {
 			if (parent == probe) break;
 			probe = parent;
 		}
-		if (git_dir.empty()) return {};
+		if (git_dir.empty()) return info;
 
 		// `.git` may be a regular directory OR a file containing
 		// `gitdir: <relative-or-absolute-path>` (worktrees, submodules).
 		if (!fs::is_directory(git_dir, ec)) {
 			std::ifstream f(git_dir);
 			std::string line;
-			if (!std::getline(f, line)) return {};
+			if (!std::getline(f, line)) return info;
 			const std::string prefix = "gitdir: ";
-			if (line.compare(0, prefix.size(), prefix) != 0) return {};
+			if (line.compare(0, prefix.size(), prefix) != 0) return info;
 			fs::path g(line.substr(prefix.size()));
 			if (!g.is_absolute()) g = (probe / g).lexically_normal();
 			git_dir = g;
@@ -176,7 +257,7 @@ namespace wbsh {
 
 		std::ifstream head(git_dir / "HEAD");
 		std::string line;
-		if (!std::getline(head, line)) return {};
+		if (!std::getline(head, line)) return info;
 		// Trim trailing CR/LF.
 		while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
 			line.pop_back();
@@ -185,14 +266,20 @@ namespace wbsh {
 		if (line.compare(0, ref_prefix.size(), ref_prefix) == 0) {
 			std::string ref = line.substr(ref_prefix.size());
 			const std::string heads = "refs/heads/";
-			if (ref.compare(0, heads.size(), heads) == 0) {
-				return ref.substr(heads.size());
-			}
-			return ref;
+			info.branch = (ref.compare(0, heads.size(), heads) == 0)
+				? ref.substr(heads.size()) : ref;
+		} else {
+			// Detached HEAD: line is a 40-char SHA. Show short form.
+			if (line.size() >= 7) line.resize(7);
+			info.branch = line + " (detached)";
 		}
-		// Detached HEAD: line is a 40-char SHA. Show short form.
-		if (line.size() >= 7) line.resize(7);
-		return line + " (detached)";
+
+		// Mid-operation state takes priority over working-tree dirtiness:
+		// during a merge/rebase the user already knows their tree is dirty,
+		// they need to see *which* operation they're in.
+		info.state = detectGitOpState(git_dir);
+		if (info.state.empty()) info.state = detectGitDirtyState();
+		return info;
 	}
 
 	static std::string expandPrompt(const std::string& ps, Environment& env, const PathConv& pc) {
@@ -255,25 +342,42 @@ namespace wbsh {
 				break;
 			}
 			case 'g': {
-				// `\g` — git branch (or empty when not inside a repo).
-				// Renders as " (branch)" — yellow when stdout is a TTY,
-				// plain otherwise so piped/redirected output stays clean.
-				std::string br = detectGitBranch();
-				if (br.empty()) break;
+				// `\g` — git branch + state (or empty when not in a repo).
+				// Renders as " (branch)" or " (branch | state)". On a TTY,
+				// branch + decoration are yellow bold, and the state word
+				// gets its own colour (see gitStateColor). Plain otherwise
+				// so piped/redirected output stays clean.
+				GitInfo gi = detectGitInfo();
+				if (gi.branch.empty()) break;
 #ifdef _WIN32
 				bool tty = _isatty(_fileno(stdout)) != 0;
 #else
 				bool tty = false;
 #endif
-				if (tty) {
-					out += " \x1b[33;1m(";
-					out += br;
-					out += ")\x1b[0m";
-				} else {
+				if (!tty) {
 					out += " (";
-					out += br;
+					out += gi.branch;
+					if (!gi.state.empty()) { out += " | "; out += gi.state; }
 					out += ")";
+					break;
 				}
+				const char* yellow = "\x1b[33;1m";
+				out += " ";
+				out += yellow;
+				out += "(";
+				out += gi.branch;
+				if (!gi.state.empty()) {
+					out += " | ";
+					const char* sc = gitStateColor(gi.state);
+					if (*sc) {
+						out += sc;
+						out += gi.state;
+						out += yellow; // back to yellow for the closing paren
+					} else {
+						out += gi.state;
+					}
+				}
+				out += ")\x1b[0m";
 				break;
 			}
 			case 't': {
