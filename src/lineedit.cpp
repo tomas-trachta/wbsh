@@ -32,22 +32,39 @@ namespace wbsh {
 		return _isatty(_fileno(stdin)) != 0;
 	}
 
-	// Compute "visible length" of a prompt — strips ANSI CSI sequences
-	// and the bash \[...\] non-printing markers (which our expandPrompt
-	// already removes, but be paranoid).
+	// Compute display-column width: strip ANSI CSI sequences (the bash
+	// \[...\] non-printing markers are already removed by expandPrompt)
+	// and count UTF-8 codepoints, not bytes. A "š" or "á" in a Czech
+	// hostname is one cell on screen but two bytes in std::string --
+	// counting bytes would push the cursor past the visible end of the
+	// prompt on every redraw. Doesn't account for wide CJK or combining
+	// marks; close enough for prompts that show up in practice.
 	static std::size_t visibleLen(const std::string& s) {
 		std::size_t n = 0;
 		std::size_t i = 0;
 		while (i < s.size()) {
-			if (s[i] == '\x1b' && i + 1 < s.size() && s[i + 1] == '[') {
+			unsigned char c = static_cast<unsigned char>(s[i]);
+			if (c == 0x1b && i + 1 < s.size() && s[i + 1] == '[') {
 				i += 2;
 				while (i < s.size()
 				       && !((s[i] >= '@' && s[i] <= '~'))) ++i;
 				if (i < s.size()) ++i;
 				continue;
 			}
-			++n;
+			if ((c & 0xC0) != 0x80) ++n;
 			++i;
+		}
+		return n;
+	}
+
+	// Count UTF-8 codepoints in s[0 .. end_byte). Same column-vs-byte
+	// reasoning as visibleLen -- needed for buffers that contain
+	// non-ASCII typed input.
+	static std::size_t utf8Cols(const std::string& s, std::size_t end_byte) {
+		std::size_t n = 0;
+		std::size_t lim = end_byte < s.size() ? end_byte : s.size();
+		for (std::size_t i = 0; i < lim; ++i) {
+			if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) ++n;
 		}
 		return n;
 	}
@@ -70,6 +87,7 @@ namespace wbsh {
 		saved_partial_.clear();
 		last_was_tab_ = false;
 		last_tab_word_.clear();
+		last_cursor_row_ = 0;
 		prompt_raw_ = prompt;
 #ifdef _WIN32
 		prompt_visible_len_ = visibleLen(prompt);
@@ -102,19 +120,52 @@ namespace wbsh {
 	}
 
 	void LineEditor::redraw() {
-		// Single-line redraw via VT escapes:
-		//   \r              go to start of current row
-		//   prompt + buffer
-		//   \x1b[K          clear to end of line
-		//   \x1b[<n>D       reposition cursor if not at end
+		// Multi-row-aware redraw via VT escapes. The previous render may
+		// have wrapped across several rows; we tracked the cursor's row
+		// offset from the prompt's first row in last_cursor_row_, so we
+		// can walk back up there, clear from cursor to end of screen,
+		// re-emit prompt + buffer, then position the cursor at cursor_.
+		HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+		CONSOLE_SCREEN_BUFFER_INFO info{};
+		std::size_t width = 80;
+		if (h != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(h, &info)) {
+			int w = info.srWindow.Right - info.srWindow.Left + 1;
+			if (w > 0) width = static_cast<std::size_t>(w);
+		}
+
 		std::string out;
-		out.push_back('\r');
+		if (last_cursor_row_ > 0) {
+			out += "\x1b[" + std::to_string(last_cursor_row_) + "A";
+		}
+		out += "\r";
+		out += "\x1b[J";
 		out += prompt_raw_;
 		out += buffer_;
-		out += "\x1b[K";
-		if (cursor_ < buffer_.size()) {
-			out += "\x1b[" + std::to_string(buffer_.size() - cursor_) + "D";
+
+		// After emitting buffer, the cursor sits at column
+		// (prompt_visible_len_ + buffer_.size()) modulo width, on a row
+		// that many rows below the prompt's first row -- except for the
+		// "deferred wrap" case where the content fills exactly to the
+		// right edge: in VT mode the cursor stays at the boundary column
+		// until the next char arrives, so we emit \r\n to materialise the
+		// wrap and land on a fresh row.
+		std::size_t end_cols  = prompt_visible_len_ + utf8Cols(buffer_, buffer_.size());
+		std::size_t want_cols = prompt_visible_len_ + utf8Cols(buffer_, cursor_);
+		std::size_t end_row   = end_cols / width;
+		std::size_t want_row  = want_cols / width;
+		std::size_t want_col  = want_cols % width;
+		bool at_boundary = end_cols > 0 && (end_cols % width) == 0;
+		std::size_t cur_row = end_row;
+		if (at_boundary) out += "\r\n";
+
+		out += "\r";
+		if (cur_row > want_row) {
+			out += "\x1b[" + std::to_string(cur_row - want_row) + "A";
 		}
+		if (want_col > 0) {
+			out += "\x1b[" + std::to_string(want_col) + "C";
+		}
+		last_cursor_row_ = want_row;
 		emit(out);
 	}
 
@@ -154,6 +205,7 @@ namespace wbsh {
 	void LineEditor::handleClearScreen() {
 		// Move cursor home + clear screen + clear scrollback, then redraw.
 		emit("\x1b[H\x1b[2J\x1b[3J");
+		last_cursor_row_ = 0;
 		redraw();
 	}
 
@@ -392,12 +444,14 @@ namespace wbsh {
 		return {};
 	}
 
-	std::vector<std::string> LineEditor::gitBranches() {
-		namespace fs = std::filesystem;
-		std::vector<std::string> branches;
+	// Walk up from CWD to find the enclosing `.git`. If `.git` is a worktree
+	// pointer file (a regular file with a `gitdir: <path>` line, used for
+	// linked worktrees and submodules), follow it to the real gitdir.
+	// Returns empty path when not inside a repo.
+	static fs::path findGitDir() {
 		std::error_code ec;
 		fs::path cur = fs::current_path(ec);
-		if (ec) return branches;
+		if (ec) return {};
 		fs::path gitdir;
 		fs::path probe = cur;
 		while (true) {
@@ -407,8 +461,7 @@ namespace wbsh {
 			if (parent == probe) break;
 			probe = parent;
 		}
-		if (gitdir.empty()) return branches;
-		// `.git` may be a worktree pointer file.
+		if (gitdir.empty()) return {};
 		if (!fs::is_directory(gitdir, ec)) {
 			std::ifstream f(gitdir);
 			std::string line;
@@ -421,6 +474,14 @@ namespace wbsh {
 				}
 			}
 		}
+		return gitdir;
+	}
+
+	std::vector<std::string> LineEditor::gitBranches() {
+		std::vector<std::string> branches;
+		fs::path gitdir = findGitDir();
+		if (gitdir.empty()) return branches;
+		std::error_code ec;
 		// Loose refs.
 		fs::path heads = gitdir / "refs" / "heads";
 		if (fs::is_directory(heads, ec)) {
@@ -457,6 +518,30 @@ namespace wbsh {
 		return branches;
 	}
 
+	std::vector<std::string> LineEditor::gitRemotes() {
+		std::vector<std::string> remotes;
+		fs::path gitdir = findGitDir();
+		if (gitdir.empty()) return remotes;
+		// Configured remotes live in `.git/config` as `[remote "name"]`
+		// section headers. Reading the file directly avoids a `git`
+		// subprocess on every Tab keystroke.
+		std::ifstream cfg(gitdir / "config");
+		std::string line;
+		while (std::getline(cfg, line)) {
+			std::size_t i = 0;
+			while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+			const std::string p = "[remote \"";
+			if (line.compare(i, p.size(), p) != 0) continue;
+			std::size_t start = i + p.size();
+			std::size_t end = line.find('"', start);
+			if (end == std::string::npos) continue;
+			remotes.push_back(line.substr(start, end - start));
+		}
+		std::sort(remotes.begin(), remotes.end());
+		remotes.erase(std::unique(remotes.begin(), remotes.end()), remotes.end());
+		return remotes;
+	}
+
 	static std::vector<std::string> filterPrefix(const char* const* table,
 	                                             const std::string& prefix) {
 		std::vector<std::string> out;
@@ -483,8 +568,24 @@ namespace wbsh {
 			};
 			return filterPrefix(kSubs, prefix);
 		}
-		// Branch-aware subcommands.
 		const std::string& sub = prev[1];
+		// pull / push / fetch: 1st positional arg = remote, then branch(es).
+		// `git pull <TAB>`        -> remotes (origin, upstream, ...)
+		// `git pull origin <TAB>` -> branches.
+		// Flags (`-u`, `--force`, ...) don't count toward the position.
+		if (sub == "pull" || sub == "push" || sub == "fetch") {
+			std::size_t non_flag = 0;
+			for (std::size_t i = 2; i < prev.size(); ++i) {
+				if (!prev[i].empty() && prev[i][0] != '-') ++non_flag;
+			}
+			auto src = (non_flag == 0) ? gitRemotes() : gitBranches();
+			std::vector<std::string> out;
+			for (auto& s : src) {
+				if (s.compare(0, prefix.size(), prefix) == 0) out.push_back(s);
+			}
+			return out;
+		}
+		// Branch-aware subcommands.
 		static const char* kBranchSubs[] = {
 			"checkout", "switch", "branch", "merge", "rebase", "reset",
 			"diff", "log", "show", "cherry-pick", "revert",
@@ -722,6 +823,7 @@ namespace wbsh {
 			}
 			emit(line + "\r\n");
 		}
+		last_cursor_row_ = 0;
 		redraw();
 	}
 
@@ -946,6 +1048,7 @@ namespace wbsh {
 						emit("^C\r\n");
 						buffer_.clear();
 						cursor_ = 0;
+						last_cursor_row_ = 0;
 						emit(prompt_raw_);
 						break;
 					case 'D':

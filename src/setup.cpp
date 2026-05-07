@@ -125,6 +125,42 @@ namespace wbsh {
 		return hits;
 	}
 
+	// Locate Git for Windows' bundled MSYS tree at `{root}\usr\bin` (sh.exe,
+	// env.exe, awk, sed, ...). Git launches its own sh via a hardcoded path,
+	// but scripts that sh runs as the actual editor -- VS Code's `code`
+	// wrapper invoked by `git pull` for the merge message, hooks, etc. --
+	// have a `#!/usr/bin/env sh` shebang that re-resolves sh through PATH.
+	// Without `\Git\usr\bin` on PATH, that fails with
+	// `/usr/bin/env: 'sh': No such file or directory`. findGitDirs only
+	// adds `\Git\cmd` (where git.exe lives), so this is a separate probe.
+	static std::vector<std::string> findGitUnixDirs() {
+		namespace fs = std::filesystem;
+		std::vector<std::string> candidates;
+		auto add = [&](const char* var, const char* suffix) {
+			if (const char* v = std::getenv(var)) {
+				candidates.push_back(std::string(v) + suffix);
+			}
+		};
+		add("ProgramFiles",      "\\Git\\usr\\bin");
+		add("ProgramFiles(x86)", "\\Git\\usr\\bin");
+		add("ProgramW6432",      "\\Git\\usr\\bin");
+		add("LOCALAPPDATA",      "\\Programs\\Git\\usr\\bin");
+		if (const char* up = std::getenv("USERPROFILE")) {
+			candidates.push_back(std::string(up)
+				+ "\\scoop\\apps\\git\\current\\usr\\bin");
+		}
+
+		std::vector<std::string> hits;
+		for (const auto& d : candidates) {
+			std::error_code ec;
+			fs::path exe = fs::path(d) / "sh.exe";
+			if (fs::exists(exe, ec) && !fs::is_directory(exe, ec)) {
+				hits.push_back(d);
+			}
+		}
+		return hits;
+	}
+
 	// Same idea as findGitDirs, for Docker. Docker Desktop installs its CLI
 	// under `Program Files\Docker\Docker\resources\bin`, which isn't on the
 	// PATH a non-shell parent (Explorer, VS debugger) inherits.
@@ -191,7 +227,11 @@ namespace wbsh {
 		// Make `git` and `docker` discoverable when launched standalone (from
 		// Explorer or via a non-shell parent). Doesn't affect users whose
 		// system PATH already includes them — the dedup check is a no-op there.
+		// `findGitUnixDirs` adds `\Git\usr\bin` so script-as-editor shebangs
+		// like `#!/usr/bin/env sh` (used by VS Code's `code` wrapper, picked up
+		// by git as merge-message editor) can resolve sh through PATH.
 		prependDirsToPath(env, pc, findGitDirs());
+		prependDirsToPath(env, pc, findGitUnixDirs());
 		prependDirsToPath(env, pc, findDockerDirs());
 		std::string home = env.get("HOME");
 		if (home.empty()) home = env.get("USERPROFILE");

@@ -106,6 +106,7 @@ namespace wbsh {
 		                                            const std::vector<std::string>& prev);
 		std::vector<std::string> prevTokensBefore(const Tok& tok) const;
 		std::vector<std::string> gitBranches();
+		std::vector<std::string> gitRemotes();
 		void applyCompletion(const Tok& tok,
 		                     const std::vector<std::string>& matches);
 		void printMatches(const std::vector<std::string>& matches);
@@ -122,6 +123,12 @@ namespace wbsh {
 		std::size_t cursor_ = 0;
 		std::string prompt_raw_;
 		std::size_t prompt_visible_len_ = 0;
+
+		// Row offset of the cursor below the prompt's first row, as of the
+		// most recent redraw. When the buffer wraps, redraw() must walk
+		// back up this many rows before re-emitting, otherwise it leaves
+		// stale wrapped lines above and re-prints the prompt on each row.
+		std::size_t last_cursor_row_ = 0;
 
 		// Tab-tracking: two consecutive tabs at the same word with no
 		// progress means "show me all matches".
