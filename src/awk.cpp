@@ -322,6 +322,131 @@ struct AwkLex {
 		t.text = std::move(r);
 		return t;
 	}
+	// Read a single-char punctuation/operator token: \n, ;, , ( ) { } [ ] ? : $ ~.
+	// Sets prev_was_value appropriately and advances past the char.
+	AwkTok readSimplePunct(char c) {
+		AwkTok t;
+		t.line = line;
+		advance();
+		switch (c) {
+		case '\n': t.kind = TK::NEWLINE;  prev_was_value = false; return t;
+		case ';':  t.kind = TK::SEMI;     prev_was_value = false; return t;
+		case ',':  t.kind = TK::COMMA;    prev_was_value = false; return t;
+		case '(':  t.kind = TK::LPAREN;   prev_was_value = false; return t;
+		case ')':  t.kind = TK::RPAREN;   prev_was_value = true;  return t;
+		case '{':  t.kind = TK::LBRACE;   prev_was_value = false; return t;
+		case '}':  t.kind = TK::RBRACE;   prev_was_value = false; return t;
+		case '[':  t.kind = TK::LBRACK;   prev_was_value = false; return t;
+		case ']':  t.kind = TK::RBRACK;   prev_was_value = true;  return t;
+		case '?':  t.kind = TK::QUESTION; prev_was_value = false; return t;
+		case ':':  t.kind = TK::COLON;    prev_was_value = false; return t;
+		case '$':  t.kind = TK::DOLLAR;   prev_was_value = false; return t;
+		case '~':  t.kind = TK::MATCH;    prev_was_value = false; return t;
+		default:   t.kind = TK::END;      return t;   // unreachable: caller filters
+		}
+	}
+
+	// '/' is either a regex literal (when no value-producing token preceded it)
+	// or division. Disambiguated by `prev_was_value`. Handles `/=` compound form.
+	AwkTok readSlashOp() {
+		if (!prev_was_value) {
+			AwkTok t = readRegex();
+			prev_was_value = false;
+			return t;
+		}
+		AwkTok t; t.line = line;
+		advance();
+		if (i < src.size() && src[i] == '=') {
+			advance(); t.kind = TK::SLASH_ASSIGN; prev_was_value = false; return t;
+		}
+		t.kind = TK::SLASH; prev_was_value = false; return t;
+	}
+
+	// Arithmetic operators: +, -, *, %, ^. Handles compound-assign (`+=`, …) and
+	// the `++` / `--` doubled forms on + / -.
+	AwkTok readArithOp(char c) {
+		AwkTok t; t.line = line;
+		advance();
+		auto compound = [&](TK simple, TK compound_kind) {
+			if (i < src.size() && src[i] == '=') {
+				advance(); t.kind = compound_kind;
+			} else {
+				t.kind = simple;
+			}
+			prev_was_value = false;
+		};
+		switch (c) {
+		case '+':
+			if (i < src.size() && src[i] == '+') {
+				advance(); t.kind = TK::INC; prev_was_value = true; return t;
+			}
+			compound(TK::PLUS, TK::PLUS_ASSIGN); return t;
+		case '-':
+			if (i < src.size() && src[i] == '-') {
+				advance(); t.kind = TK::DEC; prev_was_value = true; return t;
+			}
+			compound(TK::MINUS, TK::MINUS_ASSIGN); return t;
+		case '*': compound(TK::STAR,    TK::STAR_ASSIGN);    return t;
+		case '%': compound(TK::PERCENT, TK::PERCENT_ASSIGN); return t;
+		case '^': compound(TK::CARET,   TK::CARET_ASSIGN);   return t;
+		default:  t.kind = TK::END; return t;   // unreachable
+		}
+	}
+
+	// Comparison / assignment operators: =, !, <, >. Handles doubled forms
+	// (`==`, `>>`, `!~`) and compound-assign forms (`<=`, `>=`, `!=`).
+	AwkTok readCompareOp(char c) {
+		AwkTok t; t.line = line;
+		advance();
+		switch (c) {
+		case '=':
+			if (i < src.size() && src[i] == '=') {
+				advance(); t.kind = TK::EQ; prev_was_value = false; return t;
+			}
+			t.kind = TK::ASSIGN; prev_was_value = false; return t;
+		case '!':
+			if (i < src.size() && src[i] == '=') {
+				advance(); t.kind = TK::NE; prev_was_value = false; return t;
+			}
+			if (i < src.size() && src[i] == '~') {
+				advance(); t.kind = TK::NMATCH; prev_was_value = false; return t;
+			}
+			t.kind = TK::NOT; prev_was_value = false; return t;
+		case '<':
+			if (i < src.size() && src[i] == '=') {
+				advance(); t.kind = TK::LE; prev_was_value = false; return t;
+			}
+			t.kind = TK::LT; prev_was_value = false; return t;
+		case '>':
+			if (i < src.size() && src[i] == '>') {
+				advance(); t.kind = TK::APPEND; prev_was_value = false; return t;
+			}
+			if (i < src.size() && src[i] == '=') {
+				advance(); t.kind = TK::GE; prev_was_value = false; return t;
+			}
+			t.kind = TK::GT; prev_was_value = false; return t;
+		default: t.kind = TK::END; return t;   // unreachable
+		}
+	}
+
+	// Logical operators: && and ||. A bare `&` is unsupported and yields END;
+	// a bare `|` becomes a literal PIPE token (used for `getline | cmd`).
+	AwkTok readLogicalOp(char c) {
+		AwkTok t; t.line = line;
+		advance();
+		if (c == '&') {
+			if (i < src.size() && src[i] == '&') {
+				advance(); t.kind = TK::AND; prev_was_value = false; return t;
+			}
+			t.kind = TK::END; return t;   // unsupported bare &
+		}
+		// c == '|'
+		if (i < src.size() && src[i] == '|') {
+			advance(); t.kind = TK::OR; prev_was_value = false; return t;
+		}
+		t.kind = TK::PIPE; prev_was_value = false; return t;
+	}
+
 	AwkTok next() {
 		if (!pushback.empty()) {
 			AwkTok t = std::move(pushback.back());
@@ -333,19 +458,9 @@ struct AwkLex {
 		t.line = line;
 		if (atEnd()) { t.kind = TK::END; return t; }
 		char c = src[i];
-		if (c == '\n') { advance(); t.kind = TK::NEWLINE; prev_was_value = false; return t; }
-		if (c == ';') { advance(); t.kind = TK::SEMI; prev_was_value = false; return t; }
-		if (c == ',') { advance(); t.kind = TK::COMMA; prev_was_value = false; return t; }
-		if (c == '(') { advance(); t.kind = TK::LPAREN; prev_was_value = false; return t; }
-		if (c == ')') { advance(); t.kind = TK::RPAREN; prev_was_value = true; return t; }
-		if (c == '{') { advance(); t.kind = TK::LBRACE; prev_was_value = false; return t; }
-		if (c == '}') { advance(); t.kind = TK::RBRACE; prev_was_value = false; return t; }
-		if (c == '[') { advance(); t.kind = TK::LBRACK; prev_was_value = false; return t; }
-		if (c == ']') { advance(); t.kind = TK::RBRACK; prev_was_value = true; return t; }
-		if (c == '?') { advance(); t.kind = TK::QUESTION; prev_was_value = false; return t; }
-		if (c == ':') { advance(); t.kind = TK::COLON; prev_was_value = false; return t; }
-		if (c == '$') { advance(); t.kind = TK::DOLLAR; prev_was_value = false; return t; }
-		if (c == '"') { t = readString(); prev_was_value = true; return t; }
+
+		// Range predicates (numbers, identifiers) cannot be expressed as
+		// switch cases; handle them first.
 		if (std::isdigit((unsigned char)c)
 		    || (c == '.' && i + 1 < src.size() && std::isdigit((unsigned char)src[i + 1])))
 		{
@@ -356,79 +471,26 @@ struct AwkLex {
 			prev_was_value = (t.kind == TK::ID);
 			return t;
 		}
-		if (c == '/') {
-			if (!prev_was_value) {
-				t = readRegex();
-				prev_was_value = false;
-				return t;
-			}
-			advance();
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::SLASH_ASSIGN; prev_was_value = false; return t; }
-			t.kind = TK::SLASH; prev_was_value = false; return t;
+
+		switch (c) {
+		case '\n': case ';': case ',': case '(': case ')':
+		case '{':  case '}': case '[': case ']':
+		case '?':  case ':': case '$': case '~':
+			return readSimplePunct(c);
+		case '"':
+			t = readString(); prev_was_value = true; return t;
+		case '/':
+			return readSlashOp();
+		case '+': case '-': case '*': case '%': case '^':
+			return readArithOp(c);
+		case '=': case '!': case '<': case '>':
+			return readCompareOp(c);
+		case '&': case '|':
+			return readLogicalOp(c);
+		default:
+			advance();   // unknown char: skip
+			return next();
 		}
-		if (c == '+') {
-			advance();
-			if (i < src.size() && src[i] == '+') { advance(); t.kind = TK::INC; prev_was_value = true; return t; }
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::PLUS_ASSIGN; prev_was_value = false; return t; }
-			t.kind = TK::PLUS; prev_was_value = false; return t;
-		}
-		if (c == '-') {
-			advance();
-			if (i < src.size() && src[i] == '-') { advance(); t.kind = TK::DEC; prev_was_value = true; return t; }
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::MINUS_ASSIGN; prev_was_value = false; return t; }
-			t.kind = TK::MINUS; prev_was_value = false; return t;
-		}
-		if (c == '*') {
-			advance();
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::STAR_ASSIGN; prev_was_value = false; return t; }
-			t.kind = TK::STAR; prev_was_value = false; return t;
-		}
-		if (c == '%') {
-			advance();
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::PERCENT_ASSIGN; prev_was_value = false; return t; }
-			t.kind = TK::PERCENT; prev_was_value = false; return t;
-		}
-		if (c == '^') {
-			advance();
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::CARET_ASSIGN; prev_was_value = false; return t; }
-			t.kind = TK::CARET; prev_was_value = false; return t;
-		}
-		if (c == '=') {
-			advance();
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::EQ; prev_was_value = false; return t; }
-			t.kind = TK::ASSIGN; prev_was_value = false; return t;
-		}
-		if (c == '!') {
-			advance();
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::NE; prev_was_value = false; return t; }
-			if (i < src.size() && src[i] == '~') { advance(); t.kind = TK::NMATCH; prev_was_value = false; return t; }
-			t.kind = TK::NOT; prev_was_value = false; return t;
-		}
-		if (c == '<') {
-			advance();
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::LE; prev_was_value = false; return t; }
-			t.kind = TK::LT; prev_was_value = false; return t;
-		}
-		if (c == '>') {
-			advance();
-			if (i < src.size() && src[i] == '>') { advance(); t.kind = TK::APPEND; prev_was_value = false; return t; }
-			if (i < src.size() && src[i] == '=') { advance(); t.kind = TK::GE; prev_was_value = false; return t; }
-			t.kind = TK::GT; prev_was_value = false; return t;
-		}
-		if (c == '&') {
-			advance();
-			if (i < src.size() && src[i] == '&') { advance(); t.kind = TK::AND; prev_was_value = false; return t; }
-			t.kind = TK::END; return t;   // unsupported
-		}
-		if (c == '|') {
-			advance();
-			if (i < src.size() && src[i] == '|') { advance(); t.kind = TK::OR; prev_was_value = false; return t; }
-			t.kind = TK::PIPE; prev_was_value = false; return t;
-		}
-		if (c == '~') { advance(); t.kind = TK::MATCH; prev_was_value = false; return t; }
-		// Unknown char: skip.
-		advance();
-		return next();
 	}
 	AwkTok& peek() {
 		if (pushback.empty()) {
@@ -518,6 +580,34 @@ struct AwkParser {
 		return blk;
 	}
 
+	// `print` / `printf` statement body, with optional argument list and
+	// optional `> file` / `>> file` / `| cmd` redirection. Caller has not yet
+	// consumed the K_PRINT / K_PRINTF token.
+	AwkStmtPtr parsePrintStmt(TK k) {
+		lex.next();
+		auto s = std::make_unique<Stmt>();
+		s->kind = (k == TK::K_PRINT) ? SK::Print : SK::Printf;
+		if (lex.peek().kind != TK::SEMI && lex.peek().kind != TK::NEWLINE
+		    && lex.peek().kind != TK::RBRACE && lex.peek().kind != TK::END
+		    && lex.peek().kind != TK::GT && lex.peek().kind != TK::APPEND
+		    && lex.peek().kind != TK::PIPE)
+		{
+			s->exprs.push_back(parseExpr());
+			while (lex.peek().kind == TK::COMMA) {
+				lex.next();
+				s->exprs.push_back(parseExpr());
+			}
+		}
+		if (lex.peek().kind == TK::GT) {
+			lex.next(); s->redir_kind = 1; s->to_file = parseExpr();
+		} else if (lex.peek().kind == TK::APPEND) {
+			lex.next(); s->redir_kind = 2; s->to_file = parseExpr();
+		} else if (lex.peek().kind == TK::PIPE) {
+			lex.next(); s->redir_kind = 3; s->to_file = parseExpr();
+		}
+		return s;
+	}
+
 	AwkStmtPtr parseStmt() {
 		TK k = lex.peek().kind;
 		if (k == TK::LBRACE) return parseBlock();
@@ -525,9 +615,18 @@ struct AwkParser {
 		if (k == TK::K_WHILE) return parseWhile();
 		if (k == TK::K_DO) return parseDoWhile();
 		if (k == TK::K_FOR) return parseFor();
-		if (k == TK::K_BREAK) { lex.next(); auto s = std::make_unique<Stmt>(); s->kind = SK::Break; return s; }
-		if (k == TK::K_CONTINUE) { lex.next(); auto s = std::make_unique<Stmt>(); s->kind = SK::Continue; return s; }
-		if (k == TK::K_NEXT) { lex.next(); auto s = std::make_unique<Stmt>(); s->kind = SK::Next; return s; }
+		if (k == TK::K_BREAK) {
+			lex.next();
+			auto s = std::make_unique<Stmt>(); s->kind = SK::Break; return s;
+		}
+		if (k == TK::K_CONTINUE) {
+			lex.next();
+			auto s = std::make_unique<Stmt>(); s->kind = SK::Continue; return s;
+		}
+		if (k == TK::K_NEXT) {
+			lex.next();
+			auto s = std::make_unique<Stmt>(); s->kind = SK::Next; return s;
+		}
 		if (k == TK::K_EXIT) {
 			lex.next();
 			auto s = std::make_unique<Stmt>(); s->kind = SK::Exit;
@@ -543,28 +642,8 @@ struct AwkParser {
 			s->exprs.push_back(parseUnary());
 			return s;
 		}
-		if (k == TK::K_PRINT || k == TK::K_PRINTF) {
-			lex.next();
-			auto s = std::make_unique<Stmt>();
-			s->kind = (k == TK::K_PRINT) ? SK::Print : SK::Printf;
-			// argument list (possibly empty for print)
-			if (lex.peek().kind != TK::SEMI && lex.peek().kind != TK::NEWLINE
-			    && lex.peek().kind != TK::RBRACE && lex.peek().kind != TK::END
-			    && lex.peek().kind != TK::GT && lex.peek().kind != TK::APPEND
-			    && lex.peek().kind != TK::PIPE)
-			{
-				s->exprs.push_back(parseExpr());
-				while (lex.peek().kind == TK::COMMA) {
-					lex.next();
-					s->exprs.push_back(parseExpr());
-				}
-			}
-			if (lex.peek().kind == TK::GT)     { lex.next(); s->redir_kind = 1; s->to_file = parseExpr(); }
-			else if (lex.peek().kind == TK::APPEND) { lex.next(); s->redir_kind = 2; s->to_file = parseExpr(); }
-			else if (lex.peek().kind == TK::PIPE)   { lex.next(); s->redir_kind = 3; s->to_file = parseExpr(); }
-			return s;
-		}
-		// Expression statement (possibly assignment).
+		if (k == TK::K_PRINT || k == TK::K_PRINTF) return parsePrintStmt(k);
+
 		auto s = std::make_unique<Stmt>();
 		s->kind = SK::ExprStmt;
 		s->exprs.push_back(parseExpr());
@@ -907,27 +986,83 @@ struct AwkParser {
 		}
 		return a;
 	}
+	// Parse a `getline [var] [< file]` expression. Caller already consumed K_GETLINE.
+	AwkExprPtr parsePrimaryGetline() {
+		auto e = std::make_unique<Expr>();
+		e->kind = EK::Getline;
+		if (lex.peek().kind == TK::ID) {
+			e->name = lex.next().text;
+		}
+		if (lex.peek().kind == TK::LT) {
+			lex.next();
+			e->b = parseUnary();
+		}
+		return e;
+	}
+
+	// Parse the suffix after an identifier in primary position: function call,
+	// array reference, or bare variable.
+	AwkExprPtr parsePrimaryIdentSuffix(const std::string& name) {
+		if (lex.peek().kind == TK::LPAREN) {
+			lex.next();
+			auto e = std::make_unique<Expr>();
+			e->kind = EK::Call;
+			e->name = name;
+			if (lex.peek().kind != TK::RPAREN) {
+				e->args.push_back(parseExpr());
+				while (lex.peek().kind == TK::COMMA) {
+					lex.next();
+					e->args.push_back(parseExpr());
+				}
+			}
+			if (lex.peek().kind != TK::RPAREN) err("expected ')'");
+			lex.next();
+			return e;
+		}
+		if (lex.peek().kind == TK::LBRACK) {
+			lex.next();
+			std::vector<AwkExprPtr> subs;
+			subs.push_back(parseExpr());
+			while (lex.peek().kind == TK::COMMA) {
+				lex.next();
+				subs.push_back(parseExpr());
+			}
+			if (lex.peek().kind != TK::RBRACK) err("expected ']'");
+			lex.next();
+			auto e = std::make_unique<Expr>();
+			e->kind = EK::ArrayRef;
+			e->name = name;
+			e->args = std::move(subs);
+			return e;
+		}
+		auto e = std::make_unique<Expr>();
+		e->kind = EK::Var;
+		e->name = name;
+		return e;
+	}
+
 	AwkExprPtr parsePrimary() {
 		AwkTok t = lex.peek();
-		if (t.kind == TK::NUM) {
+		switch (t.kind) {
+		case TK::NUM: {
 			lex.next();
 			auto e = std::make_unique<Expr>();
 			e->kind = EK::Number; e->num_val = t.num;
 			return e;
 		}
-		if (t.kind == TK::STR) {
+		case TK::STR: {
 			lex.next();
 			auto e = std::make_unique<Expr>();
 			e->kind = EK::String; e->str_val = t.text;
 			return e;
 		}
-		if (t.kind == TK::REGEX) {
+		case TK::REGEX: {
 			lex.next();
 			auto e = std::make_unique<Expr>();
 			e->kind = EK::Regex; e->str_val = t.text;
 			return e;
 		}
-		if (t.kind == TK::DOLLAR) {
+		case TK::DOLLAR: {
 			lex.next();
 			auto inner = parseUnary();
 			auto e = std::make_unique<Expr>();
@@ -935,7 +1070,7 @@ struct AwkParser {
 			e->a = std::move(inner);
 			return e;
 		}
-		if (t.kind == TK::LPAREN) {
+		case TK::LPAREN: {
 			lex.next();
 			auto inner = parseExpr();
 			if (lex.peek().kind != TK::RPAREN) err("expected ')'");
@@ -944,64 +1079,16 @@ struct AwkParser {
 			e->kind = EK::Group; e->a = std::move(inner);
 			return e;
 		}
-		if (t.kind == TK::K_GETLINE) {
+		case TK::K_GETLINE:
 			lex.next();
-			auto e = std::make_unique<Expr>();
-			e->kind = EK::Getline;
-			// Optional variable target.
-			if (lex.peek().kind == TK::ID) {
-				e->name = lex.next().text;
-			}
-			// Optional `< file`.
-			if (lex.peek().kind == TK::LT) {
-				lex.next();
-				e->b = parseUnary();
-			}
-			return e;
-		}
-		if (t.kind == TK::ID) {
+			return parsePrimaryGetline();
+		case TK::ID:
 			lex.next();
-			// Function call?
-			if (lex.peek().kind == TK::LPAREN) {
-				lex.next();
-				auto e = std::make_unique<Expr>();
-				e->kind = EK::Call;
-				e->name = t.text;
-				if (lex.peek().kind != TK::RPAREN) {
-					e->args.push_back(parseExpr());
-					while (lex.peek().kind == TK::COMMA) {
-						lex.next();
-						e->args.push_back(parseExpr());
-					}
-				}
-				if (lex.peek().kind != TK::RPAREN) err("expected ')'");
-				lex.next();
-				return e;
-			}
-			// Array reference?
-			if (lex.peek().kind == TK::LBRACK) {
-				lex.next();
-				std::vector<AwkExprPtr> subs;
-				subs.push_back(parseExpr());
-				while (lex.peek().kind == TK::COMMA) {
-					lex.next();
-					subs.push_back(parseExpr());
-				}
-				if (lex.peek().kind != TK::RBRACK) err("expected ']'");
-				lex.next();
-				auto e = std::make_unique<Expr>();
-				e->kind = EK::ArrayRef;
-				e->name = t.text;
-				e->args = std::move(subs);
-				return e;
-			}
-			auto e = std::make_unique<Expr>();
-			e->kind = EK::Var;
-			e->name = t.text;
-			return e;
+			return parsePrimaryIdentSuffix(t.text);
+		default:
+			err("unexpected token");
+			return nullptr;
 		}
-		err("unexpected token");
-		return nullptr;
 	}
 };
 
@@ -1141,16 +1228,106 @@ struct AwkInterp {
 	}
 
 	// ---- Expression evaluation ----
+
+	AwkValue evalUnary(Expr& e) {
+		AwkValue v = eval(*e.a);
+		if (e.op == "!") return AwkValue::num(v.truthy() ? 0.0 : 1.0);
+		if (e.op == "-") return AwkValue::num(-v.asNumber());
+		if (e.op == "+") return AwkValue::num(v.asNumber());
+		if (e.op == "++" || e.op == "--") {
+			double cur = v.asNumber();
+			double nv = (e.op == "++") ? cur + 1 : cur - 1;
+			assignLValue(*e.a, AwkValue::num(nv));
+			return AwkValue::num(nv);
+		}
+		return AwkValue::str("");
+	}
+
+	// Apply one of ==, !=, <, <=, >, >= to two values. Numeric comparison when
+	// either operand has been computed numerically; string comparison otherwise.
+	AwkValue evalCompareOp(const AwkValue& av, const AwkValue& bv, const std::string& op) {
+		bool numeric = av.has_n || bv.has_n;
+		bool r;
+		if (numeric) {
+			double a = av.asNumber(), b = bv.asNumber();
+			if      (op == "==") r = a == b;
+			else if (op == "!=") r = a != b;
+			else if (op == "<")  r = a < b;
+			else if (op == "<=") r = a <= b;
+			else if (op == ">")  r = a > b;
+			else                 r = a >= b;
+		} else {
+			std::string a = av.asString(), b = bv.asString();
+			if      (op == "==") r = a == b;
+			else if (op == "!=") r = a != b;
+			else if (op == "<")  r = a < b;
+			else if (op == "<=") r = a <= b;
+			else if (op == ">")  r = a > b;
+			else                 r = a >= b;
+		}
+		return AwkValue::num(r ? 1.0 : 0.0);
+	}
+
+	// Regex match: `s ~ pat` (`positive=true`) or `s !~ pat` (`positive=false`).
+	// `pat_expr` is the RHS; if it's a Regex literal we use its text directly,
+	// otherwise we coerce its evaluation to a string and treat that as a pattern.
+	AwkValue evalRegexMatch(const std::string& s, Expr& pat_expr, bool positive) {
+		std::string pat;
+		if (pat_expr.kind == EK::Regex) pat = pat_expr.str_val;
+		else pat = eval(pat_expr).asString();
+		bool m = false;
+		try {
+			std::regex re(pat);
+			m = std::regex_search(s, re);
+		} catch (...) {}
+		bool r = positive ? m : !m;
+		return AwkValue::num(r ? 1.0 : 0.0);
+	}
+
+	AwkValue evalBinary(Expr& e) {
+		if (e.op == "&&") {
+			if (!eval(*e.a).truthy()) return AwkValue::num(0.0);
+			return AwkValue::num(eval(*e.b).truthy() ? 1.0 : 0.0);
+		}
+		if (e.op == "||") {
+			if (eval(*e.a).truthy()) return AwkValue::num(1.0);
+			return AwkValue::num(eval(*e.b).truthy() ? 1.0 : 0.0);
+		}
+		if (e.op == "~" || e.op == "!~") {
+			return evalRegexMatch(eval(*e.a).asString(), *e.b, e.op == "~");
+		}
+		if (e.op == " ") {
+			return AwkValue::str(eval(*e.a).asString() + eval(*e.b).asString());
+		}
+		AwkValue av = eval(*e.a);
+		AwkValue bv = eval(*e.b);
+		if (e.op == "+") return AwkValue::num(av.asNumber() + bv.asNumber());
+		if (e.op == "-") return AwkValue::num(av.asNumber() - bv.asNumber());
+		if (e.op == "*") return AwkValue::num(av.asNumber() * bv.asNumber());
+		if (e.op == "/") {
+			double d = bv.asNumber();
+			return AwkValue::num(d == 0 ? 0.0 : av.asNumber() / d);
+		}
+		if (e.op == "%") {
+			double d = bv.asNumber();
+			return AwkValue::num(d == 0 ? 0.0 : std::fmod(av.asNumber(), d));
+		}
+		if (e.op == "^") return AwkValue::num(std::pow(av.asNumber(), bv.asNumber()));
+		if (e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<="
+		    || e.op == ">" || e.op == ">=")
+		{
+			return evalCompareOp(av, bv, e.op);
+		}
+		return AwkValue::str("");
+	}
+
 	AwkValue eval(Expr& e) {
 		switch (e.kind) {
 		case EK::Number: return AwkValue::num(e.num_val);
 		case EK::String: return AwkValue::str(e.str_val);
 		case EK::Regex:  return AwkValue::str(e.str_val);
 		case EK::Var:    return getVar(e.name);
-		case EK::Field: {
-			int n = (int)eval(*e.a).asNumber();
-			return getField(n);
-		}
+		case EK::Field:  return getField((int)eval(*e.a).asNumber());
 		case EK::ArrayRef: {
 			std::string key = buildSubscript(e.args);
 			auto& m = arrays[e.name];
@@ -1162,100 +1339,17 @@ struct AwkInterp {
 			auto& m = arrays[e.name];
 			return AwkValue::num(m.count(key) ? 1.0 : 0.0);
 		}
-		case EK::Group: return eval(*e.a);
-		case EK::Unary: {
-			AwkValue v = eval(*e.a);
-			if (e.op == "!") return AwkValue::num(v.truthy() ? 0.0 : 1.0);
-			if (e.op == "-") return AwkValue::num(-v.asNumber());
-			if (e.op == "+") return AwkValue::num(v.asNumber());
-			if (e.op == "++" || e.op == "--") {
-				double cur = v.asNumber();
-				double nv = (e.op == "++") ? cur + 1 : cur - 1;
-				assignLValue(*e.a, AwkValue::num(nv));
-				return AwkValue::num(nv);
-			}
-			return AwkValue::str("");
-		}
+		case EK::Group:  return eval(*e.a);
+		case EK::Unary:  return evalUnary(e);
 		case EK::PostIncDec: {
 			double cur = eval(*e.a).asNumber();
 			double nv = (e.op == "++") ? cur + 1 : cur - 1;
 			assignLValue(*e.a, AwkValue::num(nv));
 			return AwkValue::num(cur);
 		}
-		case EK::Binary: {
-			if (e.op == "&&") {
-				if (!eval(*e.a).truthy()) return AwkValue::num(0.0);
-				return AwkValue::num(eval(*e.b).truthy() ? 1.0 : 0.0);
-			}
-			if (e.op == "||") {
-				if (eval(*e.a).truthy()) return AwkValue::num(1.0);
-				return AwkValue::num(eval(*e.b).truthy() ? 1.0 : 0.0);
-			}
-			if (e.op == "~" || e.op == "!~") {
-				std::string s = eval(*e.a).asString();
-				std::string pat;
-				if (e.b->kind == EK::Regex) pat = e.b->str_val;
-				else pat = eval(*e.b).asString();
-				bool m = false;
-				try {
-					std::regex re(pat);
-					m = std::regex_search(s, re);
-				} catch (...) {}
-				bool r = (e.op == "~") ? m : !m;
-				return AwkValue::num(r ? 1.0 : 0.0);
-			}
-			if (e.op == " ") {
-				std::string a = eval(*e.a).asString();
-				std::string b = eval(*e.b).asString();
-				return AwkValue::str(a + b);
-			}
-			AwkValue av = eval(*e.a);
-			AwkValue bv = eval(*e.b);
-			if (e.op == "+") return AwkValue::num(av.asNumber() + bv.asNumber());
-			if (e.op == "-") return AwkValue::num(av.asNumber() - bv.asNumber());
-			if (e.op == "*") return AwkValue::num(av.asNumber() * bv.asNumber());
-			if (e.op == "/") {
-				double d = bv.asNumber();
-				if (d == 0) return AwkValue::num(0);
-				return AwkValue::num(av.asNumber() / d);
-			}
-			if (e.op == "%") {
-				double d = bv.asNumber();
-				if (d == 0) return AwkValue::num(0);
-				return AwkValue::num(std::fmod(av.asNumber(), d));
-			}
-			if (e.op == "^") return AwkValue::num(std::pow(av.asNumber(), bv.asNumber()));
-			if (e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<="
-			    || e.op == ">" || e.op == ">=")
-			{
-				bool numeric = av.has_n || bv.has_n;
-				bool r;
-				if (numeric) {
-					double a = av.asNumber(), b = bv.asNumber();
-					if (e.op == "==") r = a == b;
-					else if (e.op == "!=") r = a != b;
-					else if (e.op == "<")  r = a < b;
-					else if (e.op == "<=") r = a <= b;
-					else if (e.op == ">")  r = a > b;
-					else                    r = a >= b;
-				} else {
-					std::string a = av.asString(), b = bv.asString();
-					if (e.op == "==") r = a == b;
-					else if (e.op == "!=") r = a != b;
-					else if (e.op == "<")  r = a < b;
-					else if (e.op == "<=") r = a <= b;
-					else if (e.op == ">")  r = a > b;
-					else                    r = a >= b;
-				}
-				return AwkValue::num(r ? 1.0 : 0.0);
-			}
-			return AwkValue::str("");
-		}
-		case EK::Ternary: {
-			AwkValue c = eval(*e.a);
-			return c.truthy() ? eval(*e.b) : eval(*e.c);
-		}
-		case EK::Assign:      return assignTo(*e.a, e.op, eval(*e.b));
+		case EK::Binary:  return evalBinary(e);
+		case EK::Ternary: return eval(*e.a).truthy() ? eval(*e.b) : eval(*e.c);
+		case EK::Assign:  return assignTo(*e.a, e.op, eval(*e.b));
 		case EK::FieldAssign: {
 			int n = (int)eval(*e.a).asNumber();
 			AwkValue cur = getField(n);
@@ -1538,6 +1632,53 @@ struct AwkInterp {
 		return AwkValue::str("");
 	}
 
+	// Append the result of a `\X` escape inside a printf format string.
+	static void formatPrintfEscape(std::string& out, char n) {
+		switch (n) {
+		case 'n':  out.push_back('\n'); return;
+		case 't':  out.push_back('\t'); return;
+		case 'r':  out.push_back('\r'); return;
+		case '\\': out.push_back('\\'); return;
+		case '"':  out.push_back('"');  return;
+		default:   out.push_back('\\'); out.push_back(n); return;
+		}
+	}
+
+	// Apply one parsed %-directive: `spec` is the full `%...` spec including
+	// the conversion char, `conv` is that final char, and `v` is the argument
+	// to format. Returns the rendered text (possibly empty).
+	static std::string formatPrintfDirective(const std::string& spec, char conv,
+	                                         const AwkValue& v) {
+		char buf[256];
+		if (conv == 's') {
+			std::snprintf(buf, sizeof(buf), spec.c_str(), v.asString().c_str());
+			return buf;
+		}
+		if (conv == 'c') {
+			if (v.has_s && !v.asString().empty())
+				std::snprintf(buf, sizeof(buf), spec.c_str(), v.asString()[0]);
+			else
+				std::snprintf(buf, sizeof(buf), spec.c_str(), (int)v.asNumber());
+			return buf;
+		}
+		if (conv == 'd' || conv == 'i') {
+			std::string mod = spec.substr(0, spec.size() - 1) + "ll" + conv;
+			std::snprintf(buf, sizeof(buf), mod.c_str(), (long long)v.asNumber());
+			return buf;
+		}
+		if (conv == 'o' || conv == 'x' || conv == 'X' || conv == 'u') {
+			std::string mod = spec.substr(0, spec.size() - 1) + "ll" + conv;
+			std::snprintf(buf, sizeof(buf), mod.c_str(), (unsigned long long)v.asNumber());
+			return buf;
+		}
+		if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G') {
+			std::snprintf(buf, sizeof(buf), spec.c_str(), v.asNumber());
+			return buf;
+		}
+		if (conv == '%') return "%";
+		return spec;
+	}
+
 	std::string formatPrintf(const std::vector<AwkValue>& args) {
 		if (args.empty()) return std::string();
 		const std::string& fmt = args[0].asString();
@@ -1548,25 +1689,16 @@ struct AwkInterp {
 			char c = fmt[i];
 			if (c != '%') {
 				if (c == '\\' && i + 1 < fmt.size()) {
-					char n = fmt[i + 1];
-					switch (n) {
-					case 'n': out.push_back('\n'); break;
-					case 't': out.push_back('\t'); break;
-					case 'r': out.push_back('\r'); break;
-					case '\\': out.push_back('\\'); break;
-					case '"': out.push_back('"'); break;
-					default: out.push_back('\\'); out.push_back(n); break;
-					}
+					formatPrintfEscape(out, fmt[i + 1]);
 					i += 2;
 					continue;
 				}
 				out.push_back(c); ++i; continue;
 			}
-			// %... directive
+			// %... directive: scan flags, width, precision, then conversion.
 			std::size_t s = i;
 			++i;
-			while (i < fmt.size()
-			    && std::strchr("-+0 #", fmt[i])) ++i;
+			while (i < fmt.size() && std::strchr("-+0 #", fmt[i])) ++i;
 			while (i < fmt.size() && std::isdigit((unsigned char)fmt[i])) ++i;
 			if (i < fmt.size() && fmt[i] == '.') {
 				++i;
@@ -1575,37 +1707,87 @@ struct AwkInterp {
 			if (i >= fmt.size()) { out.append(fmt, s, std::string::npos); break; }
 			char conv = fmt[i++];
 			std::string spec = fmt.substr(s, i - s);
-			char buf[256];
 			AwkValue v = (ai < args.size()) ? args[ai++] : AwkValue::str("");
-			if (conv == 's') {
-				std::snprintf(buf, sizeof(buf), spec.c_str(), v.asString().c_str());
-				out.append(buf);
-			} else if (conv == 'c') {
-				if (v.has_s && !v.asString().empty())
-					std::snprintf(buf, sizeof(buf), spec.c_str(), v.asString()[0]);
-				else
-					std::snprintf(buf, sizeof(buf), spec.c_str(), (int)v.asNumber());
-				out.append(buf);
-			} else if (conv == 'd' || conv == 'i') {
-				std::string mod = spec.substr(0, spec.size() - 1) + "ll" + conv;
-				std::snprintf(buf, sizeof(buf), mod.c_str(), (long long)v.asNumber());
-				out.append(buf);
-			} else if (conv == 'o' || conv == 'x' || conv == 'X' || conv == 'u') {
-				std::string mod = spec.substr(0, spec.size() - 1) + "ll" + conv;
-				std::snprintf(buf, sizeof(buf), mod.c_str(), (unsigned long long)v.asNumber());
-				out.append(buf);
-			} else if (conv == 'f' || conv == 'e' || conv == 'E'
-			    || conv == 'g' || conv == 'G')
-			{
-				std::snprintf(buf, sizeof(buf), spec.c_str(), v.asNumber());
-				out.append(buf);
-			} else if (conv == '%') {
-				out.push_back('%');
-			} else {
-				out.append(spec);
-			}
+			out.append(formatPrintfDirective(spec, conv, v));
 		}
 		return out;
+	}
+
+	void runIf(Stmt& s) {
+		AwkValue cond = eval(*s.exprs[0]);
+		if (cond.truthy()) {
+			if (!s.children.empty()) run(*s.children[0]);
+		} else if (s.children.size() >= 2) {
+			run(*s.children[1]);
+		}
+	}
+
+	void runWhile(Stmt& s) {
+		while (eval(*s.exprs[0]).truthy()) {
+			try { run(*s.children[0]); }
+			catch (AwkBreakEx&) { return; }
+			catch (AwkContinueEx&) { continue; }
+		}
+	}
+
+	void runDoWhile(Stmt& s) {
+		do {
+			try { run(*s.children[0]); }
+			catch (AwkBreakEx&) { return; }
+			catch (AwkContinueEx&) {}
+		} while (eval(*s.exprs[0]).truthy());
+	}
+
+	void runFor(Stmt& s) {
+		if (s.init) eval(*s.init);
+		while (!s.cond || eval(*s.cond).truthy()) {
+			try { run(*s.children[0]); }
+			catch (AwkBreakEx&) { return; }
+			catch (AwkContinueEx&) {}
+			if (s.step) eval(*s.step);
+		}
+	}
+
+	void runForIn(Stmt& s) {
+		// Snapshot keys so the body can mutate the array safely.
+		auto& m = arrays[s.name2];
+		std::vector<std::string> keys;
+		for (auto& kv : m) keys.push_back(kv.first);
+		for (const auto& k : keys) {
+			vars[s.name1] = AwkValue::str(k);
+			try { run(*s.children[0]); }
+			catch (AwkBreakEx&) { return; }
+			catch (AwkContinueEx&) { continue; }
+		}
+	}
+
+	void runDelete(Stmt& s) {
+		Expr& tgt = *s.exprs[0];
+		if (tgt.kind == EK::Var) { arrays.erase(tgt.name); return; }
+		if (tgt.kind == EK::ArrayRef) {
+			auto& m = arrays[tgt.name];
+			m.erase(buildSubscript(tgt.args));
+		}
+	}
+
+	void runPrint(Stmt& s) {
+		std::string out;
+		if (s.exprs.empty()) {
+			out = record;
+		} else {
+			for (std::size_t i = 0; i < s.exprs.size(); ++i) {
+				if (i) out += OFS;
+				out += eval(*s.exprs[i]).asString();
+			}
+		}
+		out += ORS;
+		emit(out, s);
+	}
+
+	void runPrintf(Stmt& s) {
+		std::vector<AwkValue> a;
+		for (auto& x : s.exprs) a.push_back(eval(*x));
+		emit(formatPrintf(a), s);
 	}
 
 	// Run statement; throws Break/Continue/Next/Exit for control.
@@ -1616,53 +1798,11 @@ struct AwkInterp {
 		case SK::Block:
 			for (auto& c : s.children) { run(*c); if (exiting) return; }
 			return;
-		case SK::If: {
-			AwkValue cond = eval(*s.exprs[0]);
-			if (cond.truthy()) {
-				if (!s.children.empty()) run(*s.children[0]);
-			} else if (s.children.size() >= 2) {
-				run(*s.children[1]);
-			}
-			return;
-		}
-		case SK::While: {
-			while (eval(*s.exprs[0]).truthy()) {
-				try { run(*s.children[0]); }
-				catch (AwkBreakEx&) { return; }
-				catch (AwkContinueEx&) { continue; }
-			}
-			return;
-		}
-		case SK::DoWhile: {
-			do {
-				try { run(*s.children[0]); }
-				catch (AwkBreakEx&) { return; }
-				catch (AwkContinueEx&) {}
-			} while (eval(*s.exprs[0]).truthy());
-			return;
-		}
-		case SK::For: {
-			if (s.init) eval(*s.init);
-			while (!s.cond || eval(*s.cond).truthy()) {
-				try { run(*s.children[0]); }
-				catch (AwkBreakEx&) { return; }
-				catch (AwkContinueEx&) {}
-				if (s.step) eval(*s.step);
-			}
-			return;
-		}
-		case SK::ForIn: {
-			auto& m = arrays[s.name2];
-			std::vector<std::string> keys;
-			for (auto& kv : m) keys.push_back(kv.first);
-			for (const auto& k : keys) {
-				vars[s.name1] = AwkValue::str(k);
-				try { run(*s.children[0]); }
-				catch (AwkBreakEx&) { return; }
-				catch (AwkContinueEx&) { continue; }
-			}
-			return;
-		}
+		case SK::If:       runIf(s);      return;
+		case SK::While:    runWhile(s);   return;
+		case SK::DoWhile:  runDoWhile(s); return;
+		case SK::For:      runFor(s);     return;
+		case SK::ForIn:    runForIn(s);   return;
 		case SK::Break:    throw AwkBreakEx{};
 		case SK::Continue: throw AwkContinueEx{};
 		case SK::Next:     throw AwkNextEx{};
@@ -1670,41 +1810,11 @@ struct AwkInterp {
 			if (!s.exprs.empty()) exit_status = (int)eval(*s.exprs[0]).asNumber();
 			exiting = true;
 			throw AwkExitEx{};
-		case SK::Delete: {
-			Expr& tgt = *s.exprs[0];
-			if (tgt.kind == EK::Var) { arrays.erase(tgt.name); return; }
-			if (tgt.kind == EK::ArrayRef) {
-				auto& m = arrays[tgt.name];
-				m.erase(buildSubscript(tgt.args));
-				return;
-			}
-			return;
-		}
-		case SK::Return: return;     // no user functions yet
-		case SK::Print: {
-			std::string out;
-			if (s.exprs.empty()) {
-				out = record;
-			} else {
-				for (std::size_t i = 0; i < s.exprs.size(); ++i) {
-					if (i) out += OFS;
-					out += eval(*s.exprs[i]).asString();
-				}
-			}
-			out += ORS;
-			emit(out, s);
-			return;
-		}
-		case SK::Printf: {
-			std::vector<AwkValue> a;
-			for (auto& x : s.exprs) a.push_back(eval(*x));
-			std::string out = formatPrintf(a);
-			emit(out, s);
-			return;
-		}
-		case SK::ExprStmt:
-			eval(*s.exprs[0]);
-			return;
+		case SK::Delete:   runDelete(s); return;
+		case SK::Return:   return;     // no user functions yet
+		case SK::Print:    runPrint(s);  return;
+		case SK::Printf:   runPrintf(s); return;
+		case SK::ExprStmt: eval(*s.exprs[0]); return;
 		}
 	}
 
@@ -1854,88 +1964,113 @@ struct AwkInterp {
 	}
 };
 
-int builtin_awk(Executor& exec, const std::vector<std::string>& args) {
+struct AwkInvocation {
 	std::string program_text;
 	std::string field_sep;
 	std::vector<std::string> files;
 	std::vector<std::pair<std::string, std::string>> var_assigns;
 	bool have_program = false;
+};
+
+// Parse a single -f program-file argument into `inv.program_text`. Returns
+// false (and prints an error) when the file can't be opened.
+static bool loadProgramFile(Executor& exec, const std::string& path, AwkInvocation& inv) {
+	std::string p = exec.pathConv().toWin32(path);
+	std::ifstream f(p, std::ios::binary);
+	if (!f) {
+		std::fprintf(stderr, "awk: cannot open program file: %s\n", path.c_str());
+		return false;
+	}
+	std::ostringstream ss; ss << f.rdbuf();
+	inv.program_text = ss.str();
+	inv.have_program = true;
+	return true;
+}
+
+// Walk argv collecting flags, the program text, and input files. Returns 0
+// on success, or the exit status to propagate from builtin_awk on error.
+static int parseAwkArgs(Executor& exec, const std::vector<std::string>& args, AwkInvocation& inv) {
 	for (std::size_t i = 0; i < args.size(); ++i) {
 		const std::string& a = args[i];
-		if (a == "-F" && i + 1 < args.size()) { field_sep = args[++i]; continue; }
-		if (a.size() > 2 && a.compare(0, 2, "-F") == 0) { field_sep = a.substr(2); continue; }
+		if (a == "-F" && i + 1 < args.size()) { inv.field_sep = args[++i]; continue; }
+		if (a.size() > 2 && a.compare(0, 2, "-F") == 0) { inv.field_sep = a.substr(2); continue; }
 		if (a == "-f" && i + 1 < args.size()) {
-			std::string p = exec.pathConv().toWin32(args[++i]);
-			std::ifstream f(p, std::ios::binary);
-			if (!f) {
-				std::fprintf(stderr, "awk: cannot open program file: %s\n", args[i].c_str());
-				return 2;
-			}
-			std::ostringstream ss; ss << f.rdbuf();
-			program_text = ss.str();
-			have_program = true;
+			if (!loadProgramFile(exec, args[++i], inv)) return 2;
 			continue;
 		}
 		if (a == "-v" && i + 1 < args.size()) {
 			std::string kv = args[++i];
 			auto eq = kv.find('=');
 			if (eq != std::string::npos) {
-				var_assigns.emplace_back(kv.substr(0, eq), kv.substr(eq + 1));
+				inv.var_assigns.emplace_back(kv.substr(0, eq), kv.substr(eq + 1));
 			}
 			continue;
 		}
 		if (a == "--") {
 			++i;
-			if (!have_program && i < args.size()) {
-				program_text = args[i++];
-				have_program = true;
+			if (!inv.have_program && i < args.size()) {
+				inv.program_text = args[i++];
+				inv.have_program = true;
 			}
-			while (i < args.size()) files.push_back(args[i++]);
+			while (i < args.size()) inv.files.push_back(args[i++]);
 			break;
 		}
-		if (!have_program) {
-			program_text = a;
-			have_program = true;
+		if (!inv.have_program) {
+			inv.program_text = a;
+			inv.have_program = true;
 			continue;
 		}
-		files.push_back(a);
+		inv.files.push_back(a);
 	}
-	if (!have_program) {
+	return 0;
+}
+
+// Feed each input file (or stdin) through the interpreter. Caller owns the
+// AwkExitEx handling for runEnds().
+static void runAwkInputs(Executor& exec, AwkInterp& interp, const std::vector<std::string>& files) {
+	if (files.empty()) {
+		interp.processStream(stdin, "");
+		return;
+	}
+	for (const auto& fn : files) {
+		FILE* f = std::fopen(exec.pathConv().toWin32(fn).c_str(), "rb");
+		if (!f) {
+			std::fprintf(stderr, "awk: cannot open: %s\n", fn.c_str());
+			continue;
+		}
+		interp.processStream(f, fn);
+		std::fclose(f);
+	}
+}
+
+int builtin_awk(Executor& exec, const std::vector<std::string>& args) {
+	AwkInvocation inv;
+	if (int rc = parseAwkArgs(exec, args, inv); rc != 0) return rc;
+	if (!inv.have_program) {
 		std::fprintf(stderr, "awk: missing program text\n");
 		return 2;
 	}
+
 	AwkProgram prog;
 	try {
-		AwkParser parser(program_text);
+		AwkParser parser(inv.program_text);
 		prog = parser.parseAwkProgram();
 	} catch (const std::exception& ex) {
 		std::fprintf(stderr, "%s\n", ex.what());
 		return 2;
 	}
+
 	AwkInterp interp(prog);
-	if (!field_sep.empty()) interp.FS = field_sep;
-	for (auto& kv : var_assigns) interp.vars[kv.first] = AwkValue::str(kv.second);
-	try {
-		interp.runBegins();
-	} catch (AwkInterp::AwkExitEx&) {
+	if (!inv.field_sep.empty()) interp.FS = inv.field_sep;
+	for (auto& kv : inv.var_assigns) interp.vars[kv.first] = AwkValue::str(kv.second);
+
+	try { interp.runBegins(); }
+	catch (AwkInterp::AwkExitEx&) {
 		interp.runEnds();
 		return interp.exit_status;
 	}
-	try {
-		if (files.empty()) {
-			interp.processStream(stdin, "");
-		} else {
-			for (const auto& fn : files) {
-				FILE* f = std::fopen(exec.pathConv().toWin32(fn).c_str(), "rb");
-				if (!f) {
-					std::fprintf(stderr, "awk: cannot open: %s\n", fn.c_str());
-					continue;
-				}
-				interp.processStream(f, fn);
-				std::fclose(f);
-			}
-		}
-	} catch (AwkInterp::AwkExitEx&) {}
+	try { runAwkInputs(exec, interp, inv.files); }
+	catch (AwkInterp::AwkExitEx&) {}
 	try { interp.runEnds(); }
 	catch (AwkInterp::AwkExitEx&) {}
 	return interp.exit_status;

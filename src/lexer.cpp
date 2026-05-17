@@ -80,8 +80,12 @@ namespace wbsh {
 		}
 	}
 
-	static bool isNameStart(char c) { return c == '_' || std::isalpha(static_cast<unsigned char>(c)); }
-	static bool isNameCont(char c) { return c == '_' || std::isalnum(static_cast<unsigned char>(c)); }
+	static bool isNameStart(char c) {
+		return c == '_' || std::isalpha(static_cast<unsigned char>(c));
+	}
+	static bool isNameCont(char c) {
+		return c == '_' || std::isalnum(static_cast<unsigned char>(c));
+	}
 
 	// Concatenate a heredoc delimiter into a plain string. Delimiter quoting is
 	// preserved by the caller; this just produces the comparison text.
@@ -246,83 +250,87 @@ namespace wbsh {
 	// Operator scanning
 	// ---------------------------------------------------------------------------
 
-	void Lexer::scanOperator() {
-		SourceLoc start = loc_;
-		char c = peek();
+	// Push a finished operator token, run heredoc collection on a Newline,
+	// and update at_line_start_.
+	void Lexer::emitOperator(SourceLoc start, TokKind kind, const char* text) {
 		Token tok;
 		tok.loc = start;
+		tok.kind = kind;
+		tok.text = text;
+		tokens_.push_back(std::move(tok));
+		if (kind == TokKind::Newline) {
+			collectHeredocBodies();
+			at_line_start_ = true;
+		} else {
+			at_line_start_ = false;
+		}
+	}
 
-		auto finish = [&](TokKind k, const char* text) {
-			tok.kind = k;
-			tok.text = text;
-			tokens_.push_back(std::move(tok));
-			if (k == TokKind::Newline) {
-				// Heredoc bodies (if any pending) immediately follow the newline.
-				collectHeredocBodies();
-				at_line_start_ = true;
-			}
-			else {
-				at_line_start_ = false;
-			}
-			};
+	// `&` / `&&` / `&>` / `&>>`.
+	void Lexer::scanAmpRun(SourceLoc start) {
+		advance();
+		if (match('&'))      { emitOperator(start, TokKind::AndIf, "&&");     return; }
+		if (match('>')) {
+			if (match('>'))  { emitOperator(start, TokKind::AmpDGreat, "&>>"); return; }
+			emitOperator(start, TokKind::AmpGreat, "&>");
+			return;
+		}
+		emitOperator(start, TokKind::Amp, "&");
+	}
 
+	// `;` / `;;` / `;;&` / `;&`.
+	void Lexer::scanSemiRun(SourceLoc start) {
+		advance();
+		if (match(';')) {
+			if (match('&')) { emitOperator(start, TokKind::DSemiAmp, ";;&"); return; }
+			emitOperator(start, TokKind::DSemi, ";;");
+			return;
+		}
+		if (match('&')) { emitOperator(start, TokKind::SemiAmp, ";&"); return; }
+		emitOperator(start, TokKind::Semi, ";");
+	}
+
+	// `<` / `<<` / `<<-` / `<<<` / `<&` / `<>`.
+	void Lexer::scanLessRun(SourceLoc start) {
+		advance();
+		if (match('<')) {
+			if (match('-'))     { emitOperator(start, TokKind::DLessDash, "<<-"); return; }
+			if (match('<'))     { emitOperator(start, TokKind::TLess, "<<<");     return; }
+			emitOperator(start, TokKind::DLess, "<<");
+			return;
+		}
+		if (match('&')) { emitOperator(start, TokKind::LessAnd, "<&"); return; }
+		if (match('>')) { emitOperator(start, TokKind::LessGreat, "<>"); return; }
+		emitOperator(start, TokKind::Less, "<");
+	}
+
+	// `>` / `>>` / `>&` / `>|`.
+	void Lexer::scanGreatRun(SourceLoc start) {
+		advance();
+		if (match('>')) { emitOperator(start, TokKind::DGreat, ">>");   return; }
+		if (match('&')) { emitOperator(start, TokKind::GreatAnd, ">&"); return; }
+		if (match('|')) { emitOperator(start, TokKind::Clobber, ">|");  return; }
+		emitOperator(start, TokKind::Great, ">");
+	}
+
+	void Lexer::scanOperator() {
+		const SourceLoc start = loc_;
+		const char c = peek();
 		switch (c) {
-		case '\n':
-			advance();
-			finish(TokKind::Newline, "\n");
-			return;
-		case '&':
-			advance();
-			if (match('&'))      finish(TokKind::AndIf, "&&");
-			else if (match('>')) {
-				if (match('>'))  finish(TokKind::AmpDGreat, "&>>");
-				else             finish(TokKind::AmpGreat, "&>");
-			}
-			else                 finish(TokKind::Amp, "&");
-			return;
+		case '\n': advance(); emitOperator(start, TokKind::Newline, "\n"); return;
+		case '&':  scanAmpRun(start);   return;
 		case '|':
 			advance();
-			if (match('|'))      finish(TokKind::OrIf, "||");
-			else if (match('&')) finish(TokKind::PipeAmp, "|&");
-			else                 finish(TokKind::Pipe, "|");
+			if (match('|'))      emitOperator(start, TokKind::OrIf, "||");
+			else if (match('&')) emitOperator(start, TokKind::PipeAmp, "|&");
+			else                 emitOperator(start, TokKind::Pipe, "|");
 			return;
-		case ';':
-			advance();
-			if (match(';')) {
-				if (match('&')) finish(TokKind::DSemiAmp, ";;&");
-				else            finish(TokKind::DSemi, ";;");
-			}
-			else if (match('&')) finish(TokKind::SemiAmp, ";&");
-			else                   finish(TokKind::Semi, ";");
-			return;
-		case '<':
-			advance();
-			if (match('<')) {
-				if (match('-'))      finish(TokKind::DLessDash, "<<-");
-				else if (match('<')) finish(TokKind::TLess, "<<<");
-				else                 finish(TokKind::DLess, "<<");
-			}
-			else if (match('&')) finish(TokKind::LessAnd, "<&");
-			else if (match('>')) finish(TokKind::LessGreat, "<>");
-			else                 finish(TokKind::Less, "<");
-			return;
-		case '>':
-			advance();
-			if (match('>'))      finish(TokKind::DGreat, ">>");
-			else if (match('&')) finish(TokKind::GreatAnd, ">&");
-			else if (match('|')) finish(TokKind::Clobber, ">|");
-			else                 finish(TokKind::Great, ">");
-			return;
-		case '(':
-			advance();
-			finish(TokKind::LParen, "(");
-			return;
-		case ')':
-			advance();
-			finish(TokKind::RParen, ")");
-			return;
+		case ';': scanSemiRun(start);   return;
+		case '<': scanLessRun(start);   return;
+		case '>': scanGreatRun(start);  return;
+		case '(': advance(); emitOperator(start, TokKind::LParen, "("); return;
+		case ')': advance(); emitOperator(start, TokKind::RParen, ")"); return;
 		default:
-			// Should not get here.
 			error(start, std::string("unexpected character '") + c + "'");
 			advance();
 			return;
@@ -389,7 +397,8 @@ namespace wbsh {
 	// Read one segment. Returns false if no segment was read (word ends).
 	bool Lexer::readWordSegment(std::vector<WordSegment>& out) {
 		char c = peek();
-		if (c == '\\') {
+		switch (c) {
+		case '\\': {
 			advance();
 			if (eof()) {
 				// trailing backslash: treat as literal
@@ -402,24 +411,26 @@ namespace wbsh {
 			out.push_back(std::move(s));
 			return true;
 		}
-		if (c == '\'') {
+		case '\'': {
 			WordSegment s; readSingleQuoted(s);
 			out.push_back(std::move(s));
 			return true;
 		}
-		if (c == '"') {
+		case '"': {
 			WordSegment s; readDoubleQuoted(s);
 			out.push_back(std::move(s));
 			return true;
 		}
-		if (c == '$') {
+		case '$':
 			readDollar(out);
 			return true;
-		}
-		if (c == '`') {
+		case '`': {
 			WordSegment s; readBacktick(s);
 			out.push_back(std::move(s));
 			return true;
+		}
+		default:
+			break;
 		}
 		// Plain literal run.
 		WordSegment s; s.kind = WordSegment::Kind::Literal;
@@ -504,81 +515,94 @@ namespace wbsh {
 		advance();   // closing "
 	}
 
+	// Read a `$'...'` ANSI-C-style string body. @p start is the `$` location,
+	// used only for the unterminated-string error message.
+	void Lexer::readDollarSingleQuoted(SourceLoc start, std::vector<WordSegment>& out) {
+		advance(); advance();   // consume "$'"
+		WordSegment s;
+		s.kind = WordSegment::Kind::DollarSingle;
+		// Like single-quoted but allow escape of the closing quote with backslash.
+		while (!eof() && peek() != '\'') {
+			if (peek() == '\\' && peek(1) != '\0') {
+				s.text.push_back(advance());
+				s.text.push_back(advance());
+				continue;
+			}
+			s.text.push_back(advance());
+		}
+		if (eof()) error(start, "unterminated $'...' string");
+		else advance();   // closing '
+		out.push_back(std::move(s));
+	}
+
+	// Is @p n1 a valid first character of a simple-variable name like $x / $1 / $? ?
+	static bool isSimpleVarStart(char n1) {
+		return isNameStart(n1)
+		    || n1 == '?' || n1 == '#' || n1 == '@' || n1 == '*'
+		    || n1 == '$' || n1 == '!' || n1 == '-' || n1 == '_'
+		    || std::isdigit(static_cast<unsigned char>(n1));
+	}
+
+	// Read the body of a `$name`, `$?`, `$1` etc. simple variable. Caller has
+	// validated @p n1 with isSimpleVarStart and not yet consumed the `$`.
+	void Lexer::readSimpleDollarVar(char n1, std::vector<WordSegment>& out) {
+		advance();   // consume $
+		WordSegment s;
+		s.kind = WordSegment::Kind::SimpleVar;
+		if (isNameStart(n1)) {
+			while (!eof() && isNameCont(peek())) s.text.push_back(advance());
+		} else if (std::isdigit(static_cast<unsigned char>(n1))) {
+			// $0..$9 — single digit only.
+			s.text.push_back(advance());
+		} else {
+			s.text.push_back(advance());   // single special parameter
+		}
+		out.push_back(std::move(s));
+	}
+
 	void Lexer::readDollar(std::vector<WordSegment>& out) {
 		// assumes peek() == '$'
-		SourceLoc start = loc_;
-		char n1 = peek(1);
-		if (n1 == '{') {
-			advance(); advance();   // consume "${"
+		const SourceLoc start = loc_;
+		const char n1 = peek(1);
+		switch (n1) {
+		case '{': {
+			advance(); advance();
 			WordSegment s;
 			s.kind = WordSegment::Kind::ParamExp;
 			s.text = readBalancedBraces();
 			out.push_back(std::move(s));
 			return;
 		}
-		if (n1 == '(') {
-			advance();              // consume "$"
+		case '(':
+			advance();
 			readDollarParen(out);
 			return;
-		}
-		if (n1 == '[') {
+		case '[': {
 			// Legacy bash arithmetic `$[expr]`. Equivalent to `$((expr))`
 			// for our purposes — re-use the same WordSegment kind so the
 			// expander evaluates it as arithmetic.
-			advance();              // consume "$"
-			advance();              // consume "["
+			advance(); advance();
 			WordSegment s;
 			s.kind = WordSegment::Kind::ArithExp;
 			s.text = readBalancedBrackets();
 			out.push_back(std::move(s));
 			return;
 		}
-		if (n1 == '\'') {
-			advance(); advance();   // consume "$'"
-			WordSegment s;
-			s.kind = WordSegment::Kind::DollarSingle;
-			// Like single-quoted but allow escape of the closing quote with backslash.
-			while (!eof() && peek() != '\'') {
-				if (peek() == '\\' && peek(1) != '\0') {
-					s.text.push_back(advance());
-					s.text.push_back(advance());
-					continue;
-				}
-				s.text.push_back(advance());
-			}
-			if (eof()) {
-				error(start, "unterminated $'...' string");
-			}
-			else {
-				advance();   // closing '
-			}
-			out.push_back(std::move(s));
+		case '\'':
+			readDollarSingleQuoted(start, out);
 			return;
-		}
-		if (n1 == '"') {
+		case '"': {
 			// $" is bash's localized string. Treat the $ as literal for now.
 			WordSegment lit; lit.kind = WordSegment::Kind::Literal; lit.text = "$";
-			advance();   // consume $
+			advance();
 			out.push_back(std::move(lit));
 			return;
 		}
-		if (isNameStart(n1) || n1 == '?' || n1 == '#' || n1 == '@' || n1 == '*' ||
-			n1 == '$' || n1 == '!' || n1 == '-' || n1 == '_' ||
-			std::isdigit(static_cast<unsigned char>(n1))) {
-			advance();   // consume $
-			WordSegment s; s.kind = WordSegment::Kind::SimpleVar;
-			if (isNameStart(n1)) {
-				while (!eof() && isNameCont(peek())) s.text.push_back(advance());
-			}
-			else if (std::isdigit(static_cast<unsigned char>(n1))) {
-				// $0..$9 — single digit only.
-				s.text.push_back(advance());
-			}
-			else {
-				// single special parameter
-				s.text.push_back(advance());
-			}
-			out.push_back(std::move(s));
+		default:
+			break;
+		}
+		if (isSimpleVarStart(n1)) {
+			readSimpleDollarVar(n1, out);
 			return;
 		}
 		// Lone $ followed by nothing useful — emit literal '$'.
@@ -700,16 +724,23 @@ namespace wbsh {
 		int depth = 1;
 		while (!eof() && depth > 0) {
 			const char c = peek();
-			if (c == '\\') { copyBackslashEscape(out); continue; }
-			if (c == '\'') { copySingleQuotedRun(out); continue; }
-			if (c == '"')  { copyDoubleQuotedRun(out); continue; }
-			if (c == '`')  { copyBackquotedRun(out); continue; }
-			if (c == '$' && peek(1) == '(') {
-				copyDollarParenRun(out, &depth);
+			switch (c) {
+			case '\\': copyBackslashEscape(out); continue;
+			case '\'': copySingleQuotedRun(out); continue;
+			case '"':  copyDoubleQuotedRun(out); continue;
+			case '`':  copyBackquotedRun(out); continue;
+			case '$':
+				if (peek(1) == '(') {
+					copyDollarParenRun(out, &depth);
+					continue;
+				}
+				out.push_back(advance());   // literal $
 				continue;
-			}
-			if (c == '(') { ++depth; out.push_back(advance()); continue; }
-			if (c == ')') {
+			case '(':
+				++depth;
+				out.push_back(advance());
+				continue;
+			case ')':
 				--depth;
 				if (depth == 0) {
 					advance();   // consume final )
@@ -717,8 +748,10 @@ namespace wbsh {
 				}
 				out.push_back(advance());
 				continue;
+			default:
+				out.push_back(advance());
+				continue;
 			}
-			out.push_back(advance());
 		}
 		error(loc_, "unterminated $(...) substitution");
 		return out;
@@ -730,17 +763,24 @@ namespace wbsh {
 		int depth = 1;
 		while (!eof() && depth > 0) {
 			char c = peek();
-			if (c == '\\') { copyBackslashEscape(out); continue; }
-			if (c == '\'') { copySingleQuotedRun(out); continue; }
-			if (c == '"')  { copyDoubleQuotedRun(out); continue; }
-			if (c == '$' && peek(1) == '{') {
-				out.push_back(advance());
-				out.push_back(advance());
-				++depth;
+			switch (c) {
+			case '\\': copyBackslashEscape(out); continue;
+			case '\'': copySingleQuotedRun(out); continue;
+			case '"':  copyDoubleQuotedRun(out); continue;
+			case '$':
+				if (peek(1) == '{') {
+					out.push_back(advance());
+					out.push_back(advance());
+					++depth;
+					continue;
+				}
+				out.push_back(advance());   // literal $
 				continue;
-			}
-			if (c == '{') { ++depth; out.push_back(advance()); continue; }
-			if (c == '}') {
+			case '{':
+				++depth;
+				out.push_back(advance());
+				continue;
+			case '}':
 				--depth;
 				if (depth == 0) {
 					advance();   // consume final }
@@ -748,8 +788,10 @@ namespace wbsh {
 				}
 				out.push_back(advance());
 				continue;
+			default:
+				out.push_back(advance());
+				continue;
 			}
-			out.push_back(advance());
 		}
 		error(loc_, "unterminated ${...} expansion");
 		return out;
@@ -763,11 +805,15 @@ namespace wbsh {
 		int depth = 1;
 		while (!eof() && depth > 0) {
 			const char c = peek();
-			if (c == '\\') { copyBackslashEscape(out); continue; }
-			if (c == '\'') { copySingleQuotedRun(out); continue; }
-			if (c == '"')  { copyDoubleQuotedRun(out); continue; }
-			if (c == '[')  { ++depth; out.push_back(advance()); continue; }
-			if (c == ']') {
+			switch (c) {
+			case '\\': copyBackslashEscape(out); continue;
+			case '\'': copySingleQuotedRun(out); continue;
+			case '"':  copyDoubleQuotedRun(out); continue;
+			case '[':
+				++depth;
+				out.push_back(advance());
+				continue;
+			case ']':
 				--depth;
 				if (depth == 0) {
 					advance();   // consume final ]
@@ -775,8 +821,10 @@ namespace wbsh {
 				}
 				out.push_back(advance());
 				continue;
+			default:
+				out.push_back(advance());
+				continue;
 			}
-			out.push_back(advance());
 		}
 		error(loc_, "unterminated $[...] expansion");
 		return out;
@@ -789,8 +837,12 @@ namespace wbsh {
 		int depth = 1;
 		while (!eof() && depth > 0) {
 			const char c = peek();
-			if (c == '(') { ++depth; out.push_back(advance()); continue; }
-			if (c == ')') {
+			switch (c) {
+			case '(':
+				++depth;
+				out.push_back(advance());
+				continue;
+			case ')':
 				if (peek(1) == ')' && depth == 1) {
 					advance(); advance();   // consume "))"
 					return out;
@@ -798,11 +850,13 @@ namespace wbsh {
 				--depth;
 				out.push_back(advance());
 				continue;
+			case '\\': copyBackslashEscape(out); continue;
+			case '\'': copySingleQuotedRun(out); continue;
+			case '"':  copyDoubleQuotedRun(out); continue;
+			default:
+				out.push_back(advance());
+				continue;
 			}
-			if (c == '\\') { copyBackslashEscape(out); continue; }
-			if (c == '\'') { copySingleQuotedRun(out); continue; }
-			if (c == '"')  { copyDoubleQuotedRun(out); continue; }
-			out.push_back(advance());
 		}
 		error(loc_, "unterminated $((...)) expansion");
 		return out;

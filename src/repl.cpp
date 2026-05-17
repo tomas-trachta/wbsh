@@ -432,74 +432,91 @@ namespace wbsh {
 	//   ^old^new   first occurrence of `old` in last entry replaced
 	// Returns true when the line was rewritten; on output, `expanded` holds
 	// the new text the caller should run.
+	// Handle the `^old^new[^]` substitution form. Returns true if a substitution
+	// was made; otherwise leaves @p expanded == @p line and returns false.
+	static bool expandHistoryCarat(const std::string& line,
+	                               const std::vector<std::string>& history,
+	                               std::string& expanded) {
+		if (history.empty()) { expanded = line; return false; }
+		std::size_t p1 = line.find('^', 1);
+		if (p1 == std::string::npos) { expanded = line; return false; }
+		std::size_t p2 = line.find('^', p1 + 1);
+		std::string oldp = line.substr(1, p1 - 1);
+		std::string newp = (p2 == std::string::npos)
+			? line.substr(p1 + 1)
+			: line.substr(p1 + 1, p2 - p1 - 1);
+		const std::string& base = history.back();
+		auto pos = base.find(oldp);
+		if (pos == std::string::npos) { expanded = line; return false; }
+		expanded = base.substr(0, pos) + newp + base.substr(pos + oldp.size());
+		return true;
+	}
+
+	// Resolve a single `!...` reference starting at @p line[@p i]. On success
+	// writes the historical line to @p sub and the number of source-characters
+	// consumed (including the `!`) to @p advance, and returns true.
+	static bool resolveHistoryBang(const std::string& line, std::size_t i,
+	                               const std::vector<std::string>& history,
+	                               std::string& sub, std::size_t& advance) {
+		const char nx = line[i + 1];
+		if (nx == '!') {
+			if (history.empty()) return false;
+			sub = history.back();
+			advance = 2;
+			return true;
+		}
+		if (nx == '-' && i + 2 < line.size() && std::isdigit((unsigned char)line[i + 2])) {
+			std::size_t k = i + 2;
+			while (k < line.size() && std::isdigit((unsigned char)line[k])) ++k;
+			int n = std::stoi(line.substr(i + 2, k - i - 2));
+			if (n <= 0 || static_cast<std::size_t>(n) > history.size()) return false;
+			sub = history[history.size() - n];
+			advance = k - i;
+			return true;
+		}
+		if (std::isdigit((unsigned char)nx)) {
+			std::size_t k = i + 1;
+			while (k < line.size() && std::isdigit((unsigned char)line[k])) ++k;
+			int n = std::stoi(line.substr(i + 1, k - i - 1));
+			if (n <= 0 || static_cast<std::size_t>(n) > history.size()) return false;
+			sub = history[n - 1];
+			advance = k - i;
+			return true;
+		}
+		if (std::isalpha((unsigned char)nx) || nx == '_') {
+			std::size_t k = i + 1;
+			while (k < line.size()
+			    && (std::isalnum((unsigned char)line[k]) || line[k] == '_' || line[k] == '-')) ++k;
+			std::string prefix = line.substr(i + 1, k - i - 1);
+			for (auto rit = history.rbegin(); rit != history.rend(); ++rit) {
+				if (rit->compare(0, prefix.size(), prefix) == 0) {
+					sub = *rit;
+					advance = k - i;
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	static bool expandHistory(const std::string& line,
 	                   const std::vector<std::string>& history,
 	                   std::string& expanded) {
 		expanded.clear();
 		if (line.empty()) { expanded = line; return false; }
-		// ^old^new(^) form.
-		if (line[0] == '^') {
-			if (history.empty()) { expanded = line; return false; }
-			std::size_t p1 = line.find('^', 1);
-			if (p1 == std::string::npos) { expanded = line; return false; }
-			std::size_t p2 = line.find('^', p1 + 1);
-			std::string oldp = line.substr(1, p1 - 1);
-			std::string newp = (p2 == std::string::npos)
-				? line.substr(p1 + 1)
-				: line.substr(p1 + 1, p2 - p1 - 1);
-			std::string base = history.back();
-			auto pos = base.find(oldp);
-			if (pos == std::string::npos) { expanded = line; return false; }
-			expanded = base.substr(0, pos) + newp + base.substr(pos + oldp.size());
-			return true;
-		}
+		if (line[0] == '^') return expandHistoryCarat(line, history, expanded);
+
 		bool any = false;
 		for (std::size_t i = 0; i < line.size(); ++i) {
 			char c = line[i];
-			if (c != '!') { expanded.push_back(c); continue; }
-			if (i + 1 >= line.size()) { expanded.push_back(c); continue; }
+			if (c != '!' || i + 1 >= line.size()) { expanded.push_back(c); continue; }
 			char nx = line[i + 1];
 			// Don't expand `!=`, `!"`, `!\`, end-of-line `!`, or `!{` (rare).
 			if (nx == ' ' || nx == '\t' || nx == '\n' || nx == '='
 			    || nx == '"' || nx == '\\') { expanded.push_back(c); continue; }
 			std::string sub;
 			std::size_t advance = 0;
-			if (nx == '!') {
-				if (history.empty()) { expanded.push_back(c); continue; }
-				sub = history.back();
-				advance = 2;
-			} else if (nx == '-' && i + 2 < line.size() && std::isdigit((unsigned char)line[i + 2])) {
-				std::size_t k = i + 2;
-				while (k < line.size() && std::isdigit((unsigned char)line[k])) ++k;
-				int n = std::stoi(line.substr(i + 2, k - i - 2));
-				if (n <= 0 || static_cast<std::size_t>(n) > history.size()) {
-					expanded.push_back(c); continue;
-				}
-				sub = history[history.size() - n];
-				advance = k - i;
-			} else if (std::isdigit((unsigned char)nx)) {
-				std::size_t k = i + 1;
-				while (k < line.size() && std::isdigit((unsigned char)line[k])) ++k;
-				int n = std::stoi(line.substr(i + 1, k - i - 1));
-				if (n <= 0 || static_cast<std::size_t>(n) > history.size()) {
-					expanded.push_back(c); continue;
-				}
-				sub = history[n - 1];
-				advance = k - i;
-			} else if (std::isalpha((unsigned char)nx) || nx == '_') {
-				std::size_t k = i + 1;
-				while (k < line.size()
-				    && (std::isalnum((unsigned char)line[k])
-				    || line[k] == '_' || line[k] == '-')) ++k;
-				std::string prefix = line.substr(i + 1, k - i - 1);
-				const std::string* match = nullptr;
-				for (auto rit = history.rbegin(); rit != history.rend(); ++rit) {
-					if (rit->compare(0, prefix.size(), prefix) == 0) { match = &*rit; break; }
-				}
-				if (!match) { expanded.push_back(c); continue; }
-				sub = *match;
-				advance = k - i;
-			} else {
+			if (!resolveHistoryBang(line, i, history, sub, advance)) {
 				expanded.push_back(c);
 				continue;
 			}

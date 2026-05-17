@@ -281,41 +281,57 @@ namespace wbsh {
 		return false;
 	}
 
-	// Spawn a process with explicit stdin / stdout / stderr handles via
-	// STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Each of h_in,
-	// h_out, h_err must already be inheritable (HANDLE_FLAG_INHERIT).
-	// Returns the process handle on success, INVALID_HANDLE_VALUE on failure.
-	static HANDLE spawnWithHandles(const std::wstring& exe,
-	                        std::wstring& cmdline,
-	                        std::wstring& envblock,
-	                        HANDLE h_in, HANDLE h_out, HANDLE h_err) {
+	// Allocate and initialise an empty PROC_THREAD_ATTRIBUTE_LIST sized for one
+	// attribute. Returns nullptr on failure. Caller owns the returned list and
+	// must call DeleteProcThreadAttributeList + HeapFree to release it.
+	static LPPROC_THREAD_ATTRIBUTE_LIST allocAttrList() {
 		SIZE_T attr_size = 0;
 		InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
 		auto attr_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
 			HeapAlloc(GetProcessHeap(), 0, attr_size));
-		if (!attr_list) return INVALID_HANDLE_VALUE;
+		if (!attr_list) return nullptr;
 		if (!InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size)) {
 			HeapFree(GetProcessHeap(), 0, attr_list);
-			return INVALID_HANDLE_VALUE;
+			return nullptr;
 		}
+		return attr_list;
+	}
 
-		HANDLE inherits[3];
-		DWORD inherit_count = 0;
+	// Populate @p inherits with the unique inheritable handles from
+	// {h_in, h_out, h_err}, marking each one HANDLE_FLAG_INHERIT as a side
+	// effect. Returns the number of handles written.
+	static DWORD collectInheritHandles(HANDLE inherits[3],
+	                                   HANDLE h_in, HANDLE h_out, HANDLE h_err) {
+		DWORD count = 0;
 		auto add_h = [&](HANDLE h) {
 			if (h == nullptr || h == INVALID_HANDLE_VALUE) return;
-			for (DWORD i = 0; i < inherit_count; ++i) {
-				if (inherits[i] == h) return;
-			}
-			inherits[inherit_count++] = h;
+			for (DWORD i = 0; i < count; ++i) if (inherits[i] == h) return;
+			inherits[count++] = h;
 			SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
 		};
-		add_h(h_in);
-		add_h(h_out);
-		add_h(h_err);
+		add_h(h_in); add_h(h_out); add_h(h_err);
+		return count;
+	}
 
+	// Spawn a process with explicit stdin / stdout / stderr handles via
+	// STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Returns the process
+	// handle on success, INVALID_HANDLE_VALUE on failure.
+	//
+	// Note: the inherits[] buffer is referenced by attr_list until
+	// DeleteProcThreadAttributeList runs, so it must live in this frame
+	// (not in a helper) — per the Win32 attribute-list ownership rules.
+	static HANDLE spawnWithHandles(const std::wstring& exe,
+	                        std::wstring& cmdline,
+	                        std::wstring& envblock,
+	                        HANDLE h_in, HANDLE h_out, HANDLE h_err) {
+		LPPROC_THREAD_ATTRIBUTE_LIST attr_list = allocAttrList();
+		if (!attr_list) return INVALID_HANDLE_VALUE;
+
+		HANDLE inherits[3];
+		const DWORD count = collectInheritHandles(inherits, h_in, h_out, h_err);
 		if (!UpdateProcThreadAttribute(attr_list, 0,
 			PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-			inherits, inherit_count * sizeof(HANDLE),
+			inherits, count * sizeof(HANDLE),
 			nullptr, nullptr)) {
 			DeleteProcThreadAttributeList(attr_list);
 			HeapFree(GetProcessHeap(), 0, attr_list);
@@ -331,16 +347,9 @@ namespace wbsh {
 		siex.lpAttributeList = attr_list;
 
 		PROCESS_INFORMATION pi{};
-		BOOL ok = CreateProcessW(
-			exe.c_str(),
-			cmdline.data(),
-			nullptr, nullptr,
-			TRUE,
+		BOOL ok = CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, TRUE,
 			EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-			envblock.data(),
-			nullptr,
-			&siex.StartupInfo,
-			&pi);
+			envblock.data(), nullptr, &siex.StartupInfo, &pi);
 
 		DeleteProcThreadAttributeList(attr_list);
 		HeapFree(GetProcessHeap(), 0, attr_list);
@@ -382,7 +391,8 @@ namespace wbsh {
 		case Node::Kind::List:          return execList(static_cast<const List&>(n));
 		case Node::Kind::AndOr:         return execAndOr(static_cast<const AndOr&>(n));
 		case Node::Kind::Pipeline:      return execPipeline(static_cast<const Pipeline&>(n));
-		case Node::Kind::SimpleCommand: return execSimpleCommand(static_cast<const SimpleCommand&>(n));
+		case Node::Kind::SimpleCommand:
+			return execSimpleCommand(static_cast<const SimpleCommand&>(n));
 		case Node::Kind::BraceGroup:    return execBraceGroup(static_cast<const BraceGroup&>(n));
 		case Node::Kind::Subshell:      return execSubshell(static_cast<const Subshell&>(n));
 		case Node::Kind::IfClause:      return execIf(static_cast<const IfClause&>(n));
@@ -1379,13 +1389,16 @@ namespace wbsh {
 		};
 	}  // namespace executor_internal
 
+	// Bag of `name=value` pairs from a command-prefix env-assignment list.
+	using NameValueList = std::vector<std::pair<std::string, std::string>>;
+
 	// Dispatch a function call under command-prefix env-assigns. The
 	// `assigns` are visible only for the duration of the call (RAII restore
 	// on both normal and exception exit).
 	static int callFunctionWithAssigns(Executor& exec,
 	                                   const std::string& cmd,
 	                                   const std::vector<std::string>& args,
-	                                   const std::vector<std::pair<std::string, std::string>>& assigns)
+	                                   const NameValueList& assigns)
 	{
 		executor_internal::EnvAssignsGuard guard(exec.env(), assigns);
 		return exec.callFunction(cmd, args);
@@ -1395,10 +1408,39 @@ namespace wbsh {
 	static int callBuiltinWithAssigns(Executor& exec,
 	                                  const std::string& cmd,
 	                                  const std::vector<std::string>& args,
-	                                  const std::vector<std::pair<std::string, std::string>>& assigns)
+	                                  const NameValueList& assigns)
 	{
 		executor_internal::EnvAssignsGuard guard(exec.env(), assigns);
 		return exec.callBuiltin(cmd, args);
+	}
+
+	// Handle a SimpleCommand with no argv: either `exec` (alone) or assignments
+	// without a command. Returns the exit status to propagate.
+	int Executor::execSimpleCommandNoArgv(const SimpleCommand& sc,
+	                                      SimpleCmdAssigns& assigns_data) {
+		RedirState rs;
+		if (!applyRedirections(sc.redirs, rs)) {
+			undoRedirections(rs);
+			return 1;
+		}
+		applyBareAssignmentsToShell(assigns_data);
+		undoRedirections(rs);
+		return 0;
+	}
+
+	// Dispatch a resolved argv to a function, builtin, or external process.
+	int Executor::runResolvedCommand(const std::vector<std::string>& argv,
+	                                 const NameValueList& assigns) {
+		const std::string& cmd = argv[0];
+		if (isFunction(cmd)) {
+			const std::vector<std::string> args(argv.begin() + 1, argv.end());
+			return callFunctionWithAssigns(*this, cmd, args, assigns);
+		}
+		if (isBuiltin(cmd)) {
+			const std::vector<std::string> args(argv.begin() + 1, argv.end());
+			return callBuiltinWithAssigns(*this, cmd, args, assigns);
+		}
+		return runExternal(argv, assigns);
 	}
 
 	int Executor::execSimpleCommand(const SimpleCommand& sc) {
@@ -1425,16 +1467,7 @@ namespace wbsh {
 		}
 
 		// No command, only assignments — run them against the live shell env.
-		if (argv.empty()) {
-			RedirState rs;
-			if (!applyRedirections(sc.redirs, rs)) {
-				undoRedirections(rs);
-				return 1;
-			}
-			applyBareAssignmentsToShell(assigns_data);
-			undoRedirections(rs);
-			return 0;
-		}
+		if (argv.empty()) return execSimpleCommandNoArgv(sc, assigns_data);
 
 		// Array / element assignments alongside a command are unsupported
 		// (bash also rejects `arr=(...) cmd`).
@@ -1449,21 +1482,11 @@ namespace wbsh {
 			undoRedirections(rs);
 			return 1;
 		}
-
 		traceXtrace(argv);
 
-		const std::string& cmd = argv[0];
 		int status = 0;
 		try {
-			if (isFunction(cmd)) {
-				const std::vector<std::string> args(argv.begin() + 1, argv.end());
-				status = callFunctionWithAssigns(*this, cmd, args, assigns);
-			} else if (isBuiltin(cmd)) {
-				const std::vector<std::string> args(argv.begin() + 1, argv.end());
-				status = callBuiltinWithAssigns(*this, cmd, args, assigns);
-			} else {
-				status = runExternal(argv, assigns);
-			}
+			status = runResolvedCommand(argv, assigns);
 		} catch (...) {
 			undoRedirections(rs);
 			throw;
@@ -2167,6 +2190,64 @@ namespace wbsh {
 	                             Expander& exp,
 	                             const PathConv& pc,
 	                             bool nocasematch);
+
+	// Unary `[[ -X PATH ]]` test. @p op is the letter after the dash.
+	static bool evalDBracketUnaryTest(char op, const std::string& lhs, const PathConv& pc) {
+		if (op == 'z') return lhs.empty();
+		if (op == 'n') return !lhs.empty();
+		std::string path = pc.toWin32(lhs);
+		struct stat st {};
+		bool ok = ::stat(path.c_str(), &st) == 0;
+		switch (op) {
+		case 'e': return ok;
+		case 'f': return ok && (st.st_mode & S_IFMT) == S_IFREG;
+		case 'd': return ok && (st.st_mode & S_IFMT) == S_IFDIR;
+		case 's': return ok && st.st_size > 0;
+		case 'r': return ok && (st.st_mode & 0444);
+		case 'w': return ok && (st.st_mode & 0222);
+		case 'x': return ok && (st.st_mode & 0111);
+		default:  return false;
+		}
+	}
+
+	// String comparison ops (==, =, !=, <, >). Inputs already case-folded if needed.
+	static bool evalDBracketStringOp(const std::string& op,
+	                                 const std::string& clhs, const std::string& crhs) {
+		if (op == "==" || op == "=") return clhs == crhs;
+		if (op == "!=") return clhs != crhs;
+		if (op == "<")  return clhs <  crhs;
+		if (op == ">")  return clhs >  crhs;
+		return false;
+	}
+
+	// `-eq` / `-ne` / `-lt` / `-le` / `-gt` / `-ge` integer comparisons.
+	static bool evalDBracketArithOp(const std::string& op,
+	                                const std::string& lhs, const std::string& rhs) {
+		long long li, ri;
+		try { li = std::stoll(lhs); ri = std::stoll(rhs); }
+		catch (...) { return false; }
+		if (op == "-eq") return li == ri;
+		if (op == "-ne") return li != ri;
+		if (op == "-lt") return li <  ri;
+		if (op == "-le") return li <= ri;
+		if (op == "-gt") return li >  ri;
+		return li >= ri;   // -ge
+	}
+
+	// `-ef` / `-nt` / `-ot` file comparisons by stat.
+	static bool evalDBracketFileOp(const std::string& op,
+	                               const std::string& lhs, const std::string& rhs,
+	                               const PathConv& pc) {
+		std::string a = pc.toWin32(lhs);
+		std::string b = pc.toWin32(rhs);
+		struct stat sa{}, sb{};
+		bool oa = ::stat(a.c_str(), &sa) == 0;
+		bool ob = ::stat(b.c_str(), &sb) == 0;
+		if (op == "-nt") return oa && (!ob || sa.st_mtime > sb.st_mtime);
+		if (op == "-ot") return ob && (!oa || sa.st_mtime < sb.st_mtime);
+		return oa && ob && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;   // -ef
+	}
+
 	static bool evalDBracketExpr(const DBracketCond::Expr& e,
 	                             Expander& exp,
 	                             const PathConv& pc,
@@ -2181,28 +2262,9 @@ namespace wbsh {
 		case K::Prim: break;
 		}
 		std::string lhs = exp.expandStringValue(e.lhs);
-		if (e.op.empty()) {
-			// Single operand: true iff non-empty.
-			return !lhs.empty();
-		}
-		// Unary -X tests.
+		if (e.op.empty()) return !lhs.empty();
 		if (e.op.size() == 2 && e.op[0] == '-') {
-			char op = e.op[1];
-			if (op == 'z') return lhs.empty();
-			if (op == 'n') return !lhs.empty();
-			std::string path = pc.toWin32(lhs);
-			struct stat st {};
-			bool ok = ::stat(path.c_str(), &st) == 0;
-			switch (op) {
-			case 'e': return ok;
-			case 'f': return ok && (st.st_mode & S_IFMT) == S_IFREG;
-			case 'd': return ok && (st.st_mode & S_IFMT) == S_IFDIR;
-			case 's': return ok && st.st_size > 0;
-			case 'r': return ok && (st.st_mode & 0444);
-			case 'w': return ok && (st.st_mode & 0222);
-			case 'x': return ok && (st.st_mode & 0111);
-			default:  return false;
-			}
+			return evalDBracketUnaryTest(e.op[1], lhs, pc);
 		}
 		std::string rhs = exp.expandStringValue(e.rhs);
 		auto lower = [](std::string s) {
@@ -2211,13 +2273,9 @@ namespace wbsh {
 		};
 		std::string clhs = nocasematch ? lower(lhs) : lhs;
 		std::string crhs = nocasematch ? lower(rhs) : rhs;
-		// String compares (glob match for == != = isn't done yet).
-		if (e.op == "==" || e.op == "=" || e.op == "!=") {
-			bool eq = (clhs == crhs);
-			return (e.op == "!=") ? !eq : eq;
+		if (e.op == "==" || e.op == "=" || e.op == "!=" || e.op == "<" || e.op == ">") {
+			return evalDBracketStringOp(e.op, clhs, crhs);
 		}
-		if (e.op == "<")  return clhs <  crhs;
-		if (e.op == ">")  return clhs >  crhs;
 		if (e.op == "=~") {
 			try {
 				auto flags = std::regex::ECMAScript;
@@ -2228,31 +2286,13 @@ namespace wbsh {
 				return false;
 			}
 		}
-		// Arithmetic comparisons.
 		if (e.op == "-eq" || e.op == "-ne" || e.op == "-lt"
 		    || e.op == "-le" || e.op == "-gt" || e.op == "-ge")
 		{
-			long long li = 0, ri = 0;
-			try { li = std::stoll(lhs); ri = std::stoll(rhs); }
-			catch (...) { return false; }
-			if (e.op == "-eq") return li == ri;
-			if (e.op == "-ne") return li != ri;
-			if (e.op == "-lt") return li <  ri;
-			if (e.op == "-le") return li <= ri;
-			if (e.op == "-gt") return li >  ri;
-			if (e.op == "-ge") return li >= ri;
+			return evalDBracketArithOp(e.op, lhs, rhs);
 		}
-		// File comparisons.
 		if (e.op == "-ef" || e.op == "-nt" || e.op == "-ot") {
-			std::string a = pc.toWin32(lhs);
-			std::string b = pc.toWin32(rhs);
-			struct stat sa{}, sb{};
-			bool oa = ::stat(a.c_str(), &sa) == 0;
-			bool ob = ::stat(b.c_str(), &sb) == 0;
-			if (e.op == "-nt") return oa && (!ob || sa.st_mtime > sb.st_mtime);
-			if (e.op == "-ot") return ob && (!oa || sa.st_mtime < sb.st_mtime);
-			if (e.op == "-ef") return oa && ob
-			    && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+			return evalDBracketFileOp(e.op, lhs, rhs, pc);
 		}
 		return false;
 	}

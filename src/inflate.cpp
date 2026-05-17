@@ -189,8 +189,7 @@ static int dynamicBlock(InflateState& s) {
 	return codes(s, ll, dc);
 }
 
-bool inflateRaw(const std::uint8_t* in, std::size_t in_len,
-                std::vector<std::uint8_t>& out) {
+bool inflateRaw(const std::uint8_t* in, std::size_t in_len, std::vector<std::uint8_t>& out) {
 	InflateState s(in, in_len, out);
 	int last;
 	do {
@@ -198,10 +197,12 @@ bool inflateRaw(const std::uint8_t* in, std::size_t in_len,
 		int type = s.bits(2);
 		if (s.err) return false;
 		int rc;
-		if (type == 0)      rc = stored(s);
-		else if (type == 1) rc = fixedBlock(s);
-		else if (type == 2) rc = dynamicBlock(s);
-		else                return false;
+		switch (type) {
+		case 0:  rc = stored(s);       break;
+		case 1:  rc = fixedBlock(s);   break;
+		case 2:  rc = dynamicBlock(s); break;
+		default: return false;
+		}
 		if (rc != 0 || s.err) return false;
 	} while (!last);
 	return true;

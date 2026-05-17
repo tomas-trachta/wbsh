@@ -136,8 +136,14 @@ namespace wbsh {
 	}
 
 	bool PathConv::isWin32Absolute(const std::string& p) {
-		if (p.size() >= 2 && std::isalpha(static_cast<unsigned char>(p[0])) && p[1] == ':') return true;
-		if (p.size() >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) return true;
+		if (p.size() >= 2
+		    && std::isalpha(static_cast<unsigned char>(p[0])) && p[1] == ':') {
+			return true;
+		}
+		if (p.size() >= 2
+		    && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) {
+			return true;
+		}
 		return false;
 	}
 

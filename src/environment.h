@@ -121,9 +121,13 @@ namespace wbsh {
 			assoc_.erase(name);
 		}
 		/// Iterate indexed arrays (for `set` / `declare -p`).
-		const std::unordered_map<std::string, IndexedArray>& indexedArrays() const { return indexed_; }
+		const std::unordered_map<std::string, IndexedArray>& indexedArrays() const {
+			return indexed_;
+		}
 		/// Iterate associative arrays (for `set` / `declare -p`).
-		const std::unordered_map<std::string, AssocArray>&   assocArrays()   const { return assoc_;   }
+		const std::unordered_map<std::string, AssocArray>& assocArrays() const {
+			return assoc_;
+		}
 
 		// ---- Positional parameters ----
 		/// Replace `$1..$N` with @p args.
@@ -155,25 +159,41 @@ namespace wbsh {
 			return s;
 		}
 
-		bool errexit() const  { return errexit_; }   void setErrexit(bool b)  { errexit_ = b; }
-		bool nounset() const  { return nounset_; }   void setNounset(bool b)  { nounset_ = b; }
-		bool xtrace()  const  { return xtrace_; }    void setXtrace(bool b)   { xtrace_  = b; }
-		bool pipefail() const { return pipefail_; }  void setPipefail(bool b) { pipefail_ = b; }
-		bool noglob()  const  { return noglob_; }    void setNoglob(bool b)   { noglob_  = b; }
+		bool errexit() const  { return errexit_; }
+		void setErrexit(bool b) { errexit_ = b; }
+		bool nounset() const  { return nounset_; }
+		void setNounset(bool b) { nounset_ = b; }
+		bool xtrace()  const  { return xtrace_; }
+		void setXtrace(bool b) { xtrace_ = b; }
+		bool pipefail() const { return pipefail_; }
+		void setPipefail(bool b) { pipefail_ = b; }
+		bool noglob()  const  { return noglob_; }
+		void setNoglob(bool b) { noglob_ = b; }
 
 		/// `shopt` flags. Defaults match bash's interactive defaults where
 		/// they line up with POSIX expectations.
-		bool nullglob()    const { return nullglob_; }    void setNullglob(bool b)    { nullglob_ = b; }
-		bool dotglob()     const { return dotglob_; }     void setDotglob(bool b)     { dotglob_ = b; }
-		bool extglob()     const { return extglob_; }     void setExtglob(bool b)     { extglob_ = b; }
-		bool nocaseglob()  const { return nocaseglob_; }  void setNocaseglob(bool b)  { nocaseglob_ = b; }
-		bool nocasematch() const { return nocasematch_; } void setNocasematch(bool b) { nocasematch_ = b; }
-		bool globstar()    const { return globstar_; }    void setGlobstar(bool b)    { globstar_ = b; }
-		bool lastpipe()    const { return lastpipe_; }    void setLastpipe(bool b)    { lastpipe_ = b; }
-		bool huponexit()   const { return huponexit_; }   void setHuponexit(bool b)   { huponexit_ = b; }
-		bool expand_aliases() const { return expand_aliases_; } void setExpandAliases(bool b) { expand_aliases_ = b; }
-		bool autocd()      const { return autocd_; }      void setAutocd(bool b)      { autocd_ = b; }
-		bool checkwinsize() const { return checkwinsize_; } void setCheckwinsize(bool b) { checkwinsize_ = b; }
+		bool nullglob()    const { return nullglob_; }
+		void setNullglob(bool b) { nullglob_ = b; }
+		bool dotglob()     const { return dotglob_; }
+		void setDotglob(bool b) { dotglob_ = b; }
+		bool extglob()     const { return extglob_; }
+		void setExtglob(bool b) { extglob_ = b; }
+		bool nocaseglob()  const { return nocaseglob_; }
+		void setNocaseglob(bool b) { nocaseglob_ = b; }
+		bool nocasematch() const { return nocasematch_; }
+		void setNocasematch(bool b) { nocasematch_ = b; }
+		bool globstar()    const { return globstar_; }
+		void setGlobstar(bool b) { globstar_ = b; }
+		bool lastpipe()    const { return lastpipe_; }
+		void setLastpipe(bool b) { lastpipe_ = b; }
+		bool huponexit()   const { return huponexit_; }
+		void setHuponexit(bool b) { huponexit_ = b; }
+		bool expand_aliases() const { return expand_aliases_; }
+		void setExpandAliases(bool b) { expand_aliases_ = b; }
+		bool autocd()      const { return autocd_; }
+		void setAutocd(bool b) { autocd_ = b; }
+		bool checkwinsize() const { return checkwinsize_; }
+		void setCheckwinsize(bool b) { checkwinsize_ = b; }
 
 		/// Set `$0` (the shell's own name).
 		void   setShellName(std::string s) { shell_name_ = std::move(s); }

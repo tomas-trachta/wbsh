@@ -1,0 +1,26 @@
+# Pin C/C++ sources and build/installer scripts to LF so autocrlf does not
+# re-introduce CRLF on checkout. Matches tests/.gitattributes for *.sh and
+# *.out fixtures. The style checker enforces LF at PR time, so this file
+# keeps the working tree consistent with that.
+
+*.cpp       text eol=lf
+*.cc        text eol=lf
+*.cxx       text eol=lf
+*.h         text eol=lf
+*.hpp       text eol=lf
+*.py        text eol=lf
+*.md        text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Windows-native scripts stay CRLF.
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Binary files — never touch.
+*.png       binary
+*.ico       binary
+*.exe       binary
+*.dll       binary

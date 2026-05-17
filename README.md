@@ -321,12 +321,15 @@ Major bets that are in progress or planned:
 
 ## Contributing
 
-Pull requests welcome. Please:
+Pull requests welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full
+architecture tour, the coding conventions, the test harness, and the PR
+checklist. The short version:
 
 1. Match the existing style (tabs for indentation in `src/`, 4-column tabs).
 2. Keep changes focused — one feature or fix per PR.
 3. Add or update a `tests/*.sh` script when changing executor behavior.
-4. Verify a clean Release build (`installer\build.ps1`) before opening the PR.
+4. Before opening the PR: clean Release build, `python tools/check_style.py`,
+   and `WBSH_GOLDEN=1 tests/run-all.sh` all green.
 
 Bug reports should include the wbsh version (`wbsh --help`'s banner line),
 Windows build, and the smallest script that reproduces the issue.

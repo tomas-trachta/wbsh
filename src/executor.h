@@ -89,9 +89,13 @@ namespace wbsh {
 
 		// ---- Aliases ----
 		/// Define / replace an alias. Used by the `alias` builtin.
-		void setAlias(const std::string& name, std::string value) { aliases_[name] = std::move(value); }
-		void unsetAlias(const std::string& name)                  { aliases_.erase(name); }
-		bool isAlias(const std::string& name) const               { return aliases_.count(name) != 0; }
+		void setAlias(const std::string& name, std::string value) {
+			aliases_[name] = std::move(value);
+		}
+		void unsetAlias(const std::string& name) { aliases_.erase(name); }
+		bool isAlias(const std::string& name) const {
+			return aliases_.count(name) != 0;
+		}
 		std::string aliasValue(const std::string& name) const {
 			auto it = aliases_.find(name);
 			return (it == aliases_.end()) ? std::string() : it->second;
@@ -141,14 +145,20 @@ namespace wbsh {
 		///
 		/// Only `EXIT` is currently fired by the REPL; signal-driven
 		/// traps need real signal plumbing on Windows (deferred).
-		void setTrap(const std::string& sig, std::string cmd) { trap_handlers_[sig] = std::move(cmd); }
-		void clearTrap(const std::string& sig)                { trap_handlers_.erase(sig); }
-		bool hasTrap(const std::string& sig) const            { return trap_handlers_.count(sig) != 0; }
+		void setTrap(const std::string& sig, std::string cmd) {
+			trap_handlers_[sig] = std::move(cmd);
+		}
+		void clearTrap(const std::string& sig) { trap_handlers_.erase(sig); }
+		bool hasTrap(const std::string& sig) const {
+			return trap_handlers_.count(sig) != 0;
+		}
 		std::string trapAction(const std::string& sig) const {
 			auto it = trap_handlers_.find(sig);
 			return it == trap_handlers_.end() ? std::string() : it->second;
 		}
-		const std::unordered_map<std::string, std::string>& trapHandlers() const { return trap_handlers_; }
+		const std::unordered_map<std::string, std::string>& trapHandlers() const {
+			return trap_handlers_;
+		}
 		// Fire (and clear so it doesn't loop) the EXIT trap, if any.
 		void fireExitTrap();
 
@@ -360,6 +370,12 @@ namespace wbsh {
 		int  execBareRedirsForExec(const std::vector<Redirection>& redirs);
 		// No-command form: just apply the assignments to the current shell.
 		void applyBareAssignmentsToShell(const SimpleCmdAssigns& a);
+		// No-argv path: just assignments + redirections, no command to run.
+		int  execSimpleCommandNoArgv(const SimpleCommand& sc, SimpleCmdAssigns& assigns_data);
+		// Dispatch a resolved argv to function/builtin/external.
+		int  runResolvedCommand(
+			const std::vector<std::string>& argv,
+			const std::vector<std::pair<std::string, std::string>>& assigns);
 		// `set -x` trace announcement to stderr.
 		void traceXtrace(const std::vector<std::string>& argv);
 

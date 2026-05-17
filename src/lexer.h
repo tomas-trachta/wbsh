@@ -173,6 +173,11 @@ namespace wbsh {
 		// ---- Top-level dispatch ----
 		void scanToken();
 		void scanOperator();                  // assumes current char starts an operator
+		void emitOperator(SourceLoc start, TokKind kind, const char* text);
+		void scanAmpRun(SourceLoc start);
+		void scanSemiRun(SourceLoc start);
+		void scanLessRun(SourceLoc start);
+		void scanGreatRun(SourceLoc start);
 		void scanWord();                      // builds a Word token from current position
 		void skipWhitespace();                // spaces / tabs (no newlines)
 		void skipComment();                   // from '#' to end of line (excl newline)
@@ -184,6 +189,8 @@ namespace wbsh {
 		void readSingleQuoted(WordSegment& seg);
 		void readDoubleQuoted(WordSegment& seg);
 		void readDollar(std::vector<WordSegment>& out);   // dispatch on $-form
+		void readDollarSingleQuoted(SourceLoc start, std::vector<WordSegment>& out);
+		void readSimpleDollarVar(char n1, std::vector<WordSegment>& out);
 		void readBacktick(WordSegment& seg);
 		void readDollarBrace(WordSegment& seg);           // ${...}
 		void readDollarParen(std::vector<WordSegment>& out); // $(...) or $((...))

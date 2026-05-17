@@ -72,8 +72,7 @@ static bool isInteractiveStdin() {
 // command line to UTF-8 and rewrite argv before anyone reads it.
 #ifdef _WIN32
 static void rewriteArgvAsUtf8(int& argc, char**& argv,
-                              std::vector<std::string>& storage,
-                              std::vector<char*>& ptrs) {
+		std::vector<std::string>& storage, std::vector<char*>& ptrs) {
 	int wargc = 0;
 	LPWSTR* wargv = ::CommandLineToArgvW(::GetCommandLineW(), &wargc);
 	if (!wargv) return;

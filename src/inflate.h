@@ -27,7 +27,6 @@ namespace wbsh {
  *
  * @return true on success, false on malformed input.
  */
-bool inflateRaw(const std::uint8_t* in, std::size_t in_len,
-                std::vector<std::uint8_t>& out);
+bool inflateRaw(const std::uint8_t* in, std::size_t in_len, std::vector<std::uint8_t>& out);
 
 }  // namespace wbsh

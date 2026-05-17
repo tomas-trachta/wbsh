@@ -269,7 +269,8 @@ namespace wbsh {
 		if (opts.reverse) std::reverse(items.begin(), items.end());
 	}
 
-	static void printColumns(const std::vector<LsEntry>& items, const LsOpts& opts, bool use_color) {
+	static void printColumns(const std::vector<LsEntry>& items, const LsOpts& opts,
+	                         bool use_color) {
 		if (items.empty()) return;
 		std::vector<std::string> labels;
 		labels.reserve(items.size());
@@ -309,7 +310,8 @@ namespace wbsh {
 		}
 	}
 
-	static void printLong(const std::vector<LsEntry>& items, const LsOpts& opts, bool use_color, Executor& exec) {
+	static void printLong(const std::vector<LsEntry>& items, const LsOpts& opts,
+	                      bool use_color, Executor& exec) {
 		std::string user = exec.env().get("USER");
 		if (user.empty()) user = exec.env().get("USERNAME");
 		if (user.empty()) user = "user";
@@ -448,85 +450,100 @@ namespace wbsh {
 
 	// ---- cat -------------------------------------------------------------
 
-	static int builtin_cat(Executor& exec, const std::vector<std::string>& args) {
+	struct CatOptions {
 		bool number = false;
 		bool number_nonblank = false;
 		std::vector<std::string> files;
+	};
+
+	struct CatEmitState {
+		bool at_line_start = true;
+		std::size_t lineno = 0;
+	};
+
+	static CatOptions parseCatArgs(const std::vector<std::string>& args) {
+		CatOptions o;
 		std::size_t i = 0;
 		while (i < args.size()) {
 			const std::string& a = args[i];
-			if (a == "--") { ++i; while (i < args.size()) files.push_back(args[i++]); break; }
-			if (a == "-n" || a == "--number") { number = true; ++i; continue; }
-			if (a == "-b" || a == "--number-nonblank") { number_nonblank = true; ++i; continue; }
-			if (a == "-") { files.push_back("-"); ++i; continue; }
+			if (a == "--") { ++i; while (i < args.size()) o.files.push_back(args[i++]); break; }
+			if (a == "-n" || a == "--number") { o.number = true; ++i; continue; }
+			if (a == "-b" || a == "--number-nonblank") { o.number_nonblank = true; ++i; continue; }
+			if (a == "-") { o.files.push_back("-"); ++i; continue; }
 			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 				bool ok = true;
 				for (std::size_t k = 1; k < a.size(); ++k) {
-					if (a[k] == 'n') number = true;
-					else if (a[k] == 'b') number_nonblank = true;
+					if (a[k] == 'n') o.number = true;
+					else if (a[k] == 'b') o.number_nonblank = true;
 					else { ok = false; break; }
 				}
 				if (ok) { ++i; continue; }
 			}
-			files.push_back(a);
+			o.files.push_back(a);
 			++i;
 		}
-		if (files.empty()) files.push_back("-");
+		if (o.files.empty()) o.files.push_back("-");
+		return o;
+	}
 
-		int rc = 0;
-		std::size_t lineno = 0;
-		auto emit_chunk = [&](const char* data, std::size_t n) {
-			if (!number && !number_nonblank) {
-				std::fwrite(data, 1, n, stdout);
-				return;
-			}
-			// Line-aware emit: track lines, prepend numbers when appropriate.
-			static thread_local bool at_line_start = true;
-			static thread_local std::string pending;
-			for (std::size_t p = 0; p < n; ++p) {
-				if (at_line_start) {
-					bool blank_line = (p < n && (data[p] == '\n'));
-					if (number_nonblank) {
-						if (!blank_line) {
-							++lineno;
-							std::fprintf(stdout, "%6zu\t", lineno);
-						}
-					}
-					else {
-						++lineno;
-						std::fprintf(stdout, "%6zu\t", lineno);
-					}
-					at_line_start = false;
+	// Write @p n bytes from @p data to stdout, prepending a line number on
+	// each new line when @p opts requests it. @p st carries the line counter
+	// and end-of-previous-chunk state across calls.
+	static void catEmitChunk(const char* data, std::size_t n,
+	                         const CatOptions& opts, CatEmitState& st) {
+		if (!opts.number && !opts.number_nonblank) {
+			std::fwrite(data, 1, n, stdout);
+			return;
+		}
+		for (std::size_t p = 0; p < n; ++p) {
+			if (st.at_line_start) {
+				bool blank_line = (data[p] == '\n');
+				if (!opts.number_nonblank || !blank_line) {
+					++st.lineno;
+					std::fprintf(stdout, "%6zu\t", st.lineno);
 				}
-				std::fputc(data[p], stdout);
-				if (data[p] == '\n') at_line_start = true;
+				st.at_line_start = false;
 			}
-			};
+			std::fputc(data[p], stdout);
+			if (data[p] == '\n') st.at_line_start = true;
+		}
+	}
 
-		for (const auto& f : files) {
-			if (f == "-") {
-				char buf[4096];
-				while (true) {
-					std::size_t got = std::fread(buf, 1, sizeof(buf), stdin);
-					if (got == 0) break;
-					emit_chunk(buf, got);
-				}
-				continue;
-			}
-			fs::path native = toNative(exec, f);
-			std::ifstream in(native, std::ios::binary);
-			if (!in) {
-				std::fprintf(stderr, "wbsh: cat: %s: %s\n",
-					f.c_str(), std::strerror(errno));
-				rc = 1;
-				continue;
-			}
+	// Stream one file (or stdin if @p name is "-") through catEmitChunk.
+	// Returns 0 on success, 1 if the file could not be opened.
+	static int catStreamFile(Executor& exec, const std::string& name,
+	                         const CatOptions& opts, CatEmitState& st) {
+		if (name == "-") {
 			char buf[4096];
-			while (in) {
-				in.read(buf, sizeof(buf));
-				std::streamsize got = in.gcount();
-				if (got > 0) emit_chunk(buf, static_cast<std::size_t>(got));
+			while (true) {
+				std::size_t got = std::fread(buf, 1, sizeof(buf), stdin);
+				if (got == 0) break;
+				catEmitChunk(buf, got, opts, st);
 			}
+			return 0;
+		}
+		fs::path native = toNative(exec, name);
+		std::ifstream in(native, std::ios::binary);
+		if (!in) {
+			std::fprintf(stderr, "wbsh: cat: %s: %s\n",
+				name.c_str(), std::strerror(errno));
+			return 1;
+		}
+		char buf[4096];
+		while (in) {
+			in.read(buf, sizeof(buf));
+			std::streamsize got = in.gcount();
+			if (got > 0) catEmitChunk(buf, static_cast<std::size_t>(got), opts, st);
+		}
+		return 0;
+	}
+
+	static int builtin_cat(Executor& exec, const std::vector<std::string>& args) {
+		CatOptions opts = parseCatArgs(args);
+		CatEmitState st;
+		int rc = 0;
+		for (const auto& f : opts.files) {
+			if (catStreamFile(exec, f, opts, st) != 0) rc = 1;
 		}
 		std::fflush(stdout);
 		return rc;
@@ -641,7 +658,9 @@ namespace wbsh {
 		for (const auto& a : args) {
 			if (a == "-r" || a == "-R" || a == "--recursive") recursive = true;
 			else if (a == "-f" || a == "--force") force = true;
-			else if (a == "-rf" || a == "-fr" || a == "-Rf" || a == "-fR") { recursive = true; force = true; }
+			else if (a == "-rf" || a == "-fr" || a == "-Rf" || a == "-fR") {
+				recursive = true; force = true;
+			}
 			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 				for (std::size_t k = 1; k < a.size(); ++k) {
 					if (a[k] == 'r' || a[k] == 'R') recursive = true;
@@ -716,7 +735,8 @@ namespace wbsh {
 		std::vector<std::string> paths;
 		for (const auto& a : args) {
 			if (a == "--") continue;
-			if (a.size() > 1 && a[0] == '-' && a[1] != '-' && a != "-") continue;   // ignore unknown flags
+			// Ignore unknown flags (mv has no informative ones we support).
+			if (a.size() > 1 && a[0] == '-' && a[1] != '-' && a != "-") continue;
 			paths.push_back(a);
 		}
 		if (paths.size() < 2) { perr("mv", "missing source/destination"); return 1; }
@@ -768,7 +788,8 @@ namespace wbsh {
 	static int parseNumFlag(const std::vector<std::string>& args, const char* short_flag,
 		std::size_t& i, long& out) {
 		const std::string& a = args[i];
-		if (a.size() > 2 && a[0] == '-' && a[1] == short_flag[0] && std::isdigit((unsigned char)a[2])) {
+		if (a.size() > 2 && a[0] == '-' && a[1] == short_flag[0]
+		    && std::isdigit((unsigned char)a[2])) {
 			try { out = std::stol(a.substr(2)); ++i; return 0; }
 			catch (...) { return -1; }
 		}
@@ -865,72 +886,98 @@ namespace wbsh {
 		return rc;
 	}
 
-	static int builtin_wc(Executor& exec, const std::vector<std::string>& args) {
+	// Append the decimal form of @p v to @p out, prepending a space if @p out
+	// already has content. Used by builtin_wc to format `-l/-w/-c/-m` counts.
+	static void appendWcCount(std::string& out, std::uintmax_t v) {
+		if (!out.empty()) out += " ";
+		char buf[64];
+		std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
+		out += buf;
+	}
+
+	struct WcOptions {
 		bool want_l = false, want_w = false, want_c = false, want_m = false;
 		std::vector<std::string> files;
+	};
+
+	struct WcCounts {
+		std::uintmax_t l = 0, w = 0, c = 0, m = 0;
+	};
+
+	static WcOptions parseWcArgs(const std::vector<std::string>& args) {
+		WcOptions o;
 		for (const auto& a : args) {
 			if (a == "--") continue;
-			if (a == "-l" || a == "--lines") { want_l = true; continue; }
-			if (a == "-w" || a == "--words") { want_w = true; continue; }
-			if (a == "-c" || a == "--bytes") { want_c = true; continue; }
-			if (a == "-m" || a == "--chars") { want_m = true; continue; }
+			if (a == "-l" || a == "--lines") { o.want_l = true; continue; }
+			if (a == "-w" || a == "--words") { o.want_w = true; continue; }
+			if (a == "-c" || a == "--bytes") { o.want_c = true; continue; }
+			if (a == "-m" || a == "--chars") { o.want_m = true; continue; }
 			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 				for (std::size_t k = 1; k < a.size(); ++k) {
-					if (a[k] == 'l') want_l = true;
-					else if (a[k] == 'w') want_w = true;
-					else if (a[k] == 'c') want_c = true;
-					else if (a[k] == 'm') want_m = true;
+					if (a[k] == 'l') o.want_l = true;
+					else if (a[k] == 'w') o.want_w = true;
+					else if (a[k] == 'c') o.want_c = true;
+					else if (a[k] == 'm') o.want_m = true;
 				}
 				continue;
 			}
-			files.push_back(a);
+			o.files.push_back(a);
 		}
-		bool any = want_l || want_w || want_c || want_m;
-		if (!any) { want_l = want_w = want_c = true; }
-		if (files.empty()) files.push_back("-");
+		if (!(o.want_l || o.want_w || o.want_c || o.want_m)) {
+			o.want_l = o.want_w = o.want_c = true;
+		}
+		if (o.files.empty()) o.files.push_back("-");
+		return o;
+	}
 
-		std::uintmax_t total_l = 0, total_w = 0, total_c = 0, total_m = 0;
+	// Count lines/words/chars/multibyte-chars in @p fp. Caller owns @p fp.
+	static WcCounts wcCountStream(FILE* fp) {
+		WcCounts r;
+		bool in_word = false;
+		int ch;
+		while ((ch = std::fgetc(fp)) != EOF) {
+			++r.c;
+			if (static_cast<unsigned char>(ch) < 0x80
+				|| (static_cast<unsigned char>(ch) & 0xC0) != 0x80) ++r.m;
+			if (ch == '\n') ++r.l;
+			if (std::isspace(static_cast<unsigned char>(ch))) {
+				in_word = false;
+			} else if (!in_word) {
+				in_word = true;
+				++r.w;
+			}
+		}
+		return r;
+	}
+
+	// Format one line of wc output. `label` is the trailing filename or
+	// "total"; pass an empty string to omit a trailing label (used for stdin).
+	static std::string formatWcLine(const WcOptions& opts, const WcCounts& cnt,
+	                                const std::string& label) {
+		std::string out;
+		if (opts.want_l) appendWcCount(out, cnt.l);
+		if (opts.want_w) appendWcCount(out, cnt.w);
+		if (opts.want_m && !opts.want_c) appendWcCount(out, cnt.m);
+		if (opts.want_c) appendWcCount(out, cnt.c);
+		if (!label.empty()) { out += " "; out += label; }
+		out.push_back('\n');
+		return out;
+	}
+
+	static int builtin_wc(Executor& exec, const std::vector<std::string>& args) {
+		WcOptions opts = parseWcArgs(args);
+		WcCounts totals;
 		int rc = 0;
-		for (const auto& f : files) {
+		for (const auto& f : opts.files) {
 			FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
 			if (!fp) { perr("wc", f + ": " + std::strerror(errno)); rc = 1; continue; }
-			std::uintmax_t l = 0, w = 0, c = 0, m = 0;
-			bool in_word = false;
-			int ch;
-			while ((ch = std::fgetc(fp)) != EOF) {
-				++c;
-				if (static_cast<unsigned char>(ch) < 0x80
-					|| (static_cast<unsigned char>(ch) & 0xC0) != 0x80) ++m;
-				if (ch == '\n') ++l;
-				if (std::isspace(static_cast<unsigned char>(ch))) {
-					in_word = false;
-				}
-				else if (!in_word) {
-					in_word = true;
-					++w;
-				}
-			}
+			WcCounts cnt = wcCountStream(fp);
 			if (fp != stdin) std::fclose(fp);
-			std::string out;
-			char buf[64];
-			if (want_l) { std::snprintf(buf, sizeof(buf), "%llu", (unsigned long long)l); out += buf; }
-			if (want_w) { if (!out.empty()) out += " "; std::snprintf(buf, sizeof(buf), "%llu", (unsigned long long)w); out += buf; }
-			if (want_m && !want_c) { if (!out.empty()) out += " "; std::snprintf(buf, sizeof(buf), "%llu", (unsigned long long)m); out += buf; }
-			if (want_c) { if (!out.empty()) out += " "; std::snprintf(buf, sizeof(buf), "%llu", (unsigned long long)c); out += buf; }
-			if (f != "-") { out += " "; out += f; }
-			out.push_back('\n');
-			std::fputs(out.c_str(), stdout);
-			total_l += l; total_w += w; total_c += c; total_m += m;
+			std::fputs(formatWcLine(opts, cnt, f == "-" ? "" : f).c_str(), stdout);
+			totals.l += cnt.l; totals.w += cnt.w; totals.c += cnt.c; totals.m += cnt.m;
 		}
-		if (files.size() > 1) {
-			std::string out;
-			char buf[64];
-			if (want_l) { std::snprintf(buf, sizeof(buf), "%llu", (unsigned long long)total_l); out += buf; }
-			if (want_w) { if (!out.empty()) out += " "; std::snprintf(buf, sizeof(buf), "%llu", (unsigned long long)total_w); out += buf; }
-			if (want_m && !want_c) { if (!out.empty()) out += " "; std::snprintf(buf, sizeof(buf), "%llu", (unsigned long long)total_m); out += buf; }
-			if (want_c) { if (!out.empty()) out += " "; std::snprintf(buf, sizeof(buf), "%llu", (unsigned long long)total_c); out += buf; }
-			out += " total\n";
-			std::fputs(out.c_str(), stdout);
+		if (opts.files.size() > 1) {
+			std::fputs(formatWcLine(opts, totals, "total").c_str(), stdout);
 		}
 		std::fflush(stdout);
 		return rc;
@@ -985,7 +1032,11 @@ namespace wbsh {
 			exec.env().vars().begin(), exec.env().vars().end());
 		for (const auto& s : sets) {
 			bool found = false;
-			for (auto& kv : all) if (kv.first == s.first) { kv.second = s.second; found = true; break; }
+			for (auto& kv : all) {
+				if (kv.first == s.first) {
+					kv.second = s.second; found = true; break;
+				}
+			}
 			if (!found) all.push_back(s);
 		}
 		std::sort(all.begin(), all.end());
@@ -1067,62 +1118,71 @@ namespace wbsh {
 
 	// ---- sort ------------------------------------------------------------
 
-	static int builtin_sort(Executor& exec, const std::vector<std::string>& args) {
+	struct SortOptions {
 		bool reverse = false, numeric = false, unique = false, fold = false;
 		std::vector<std::string> files;
+	};
+
+	// Returns 0 on success, 2 on bad flag (and prints the error).
+	static int parseSortArgs(const std::vector<std::string>& args, SortOptions& o) {
 		for (const auto& a : args) {
 			if (a == "--") continue;
-			if (a == "-r" || a == "--reverse") reverse = true;
-			else if (a == "-n" || a == "--numeric-sort") numeric = true;
-			else if (a == "-u" || a == "--unique") unique = true;
-			else if (a == "-f" || a == "--ignore-case") fold = true;
+			if (a == "-r" || a == "--reverse") o.reverse = true;
+			else if (a == "-n" || a == "--numeric-sort") o.numeric = true;
+			else if (a == "-u" || a == "--unique") o.unique = true;
+			else if (a == "-f" || a == "--ignore-case") o.fold = true;
 			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 				for (std::size_t k = 1; k < a.size(); ++k) {
 					switch (a[k]) {
-					case 'r': reverse = true; break;
-					case 'n': numeric = true; break;
-					case 'u': unique = true; break;
-					case 'f': fold = true; break;
+					case 'r': o.reverse = true; break;
+					case 'n': o.numeric = true; break;
+					case 'u': o.unique = true; break;
+					case 'f': o.fold = true; break;
 					default:
 						std::fprintf(stderr, "wbsh: sort: unknown -%c\n", a[k]);
 						return 2;
 					}
 				}
 			}
-			else files.push_back(a);
+			else o.files.push_back(a);
 		}
-		if (files.empty()) files.push_back("-");
+		if (o.files.empty()) o.files.push_back("-");
+		return 0;
+	}
+
+	static std::string asciiLower(std::string s) {
+		for (char& c : s) c = static_cast<char>(std::tolower((unsigned char)c));
+		return s;
+	}
+
+	static int builtin_sort(Executor& exec, const std::vector<std::string>& args) {
+		SortOptions opt;
+		if (int rc = parseSortArgs(args, opt); rc != 0) return rc;
+
 		std::vector<std::string> lines;
-		for (const auto& f : files) {
+		for (const auto& f : opt.files) {
 			if (!readAllLines(exec, f, lines)) {
 				perr("sort", f + ": " + std::strerror(errno));
 				return 2;
 			}
 		}
-		auto fold_lower = [](std::string s) {
-			for (char& c : s) c = static_cast<char>(std::tolower((unsigned char)c));
-			return s;
-			};
 		auto cmp = [&](const std::string& a, const std::string& b) {
-			if (numeric) {
+			if (opt.numeric) {
 				double da = 0, db = 0;
-				try { da = std::stod(a); }
-				catch (...) {}
-				try { db = std::stod(b); }
-				catch (...) {}
+				try { da = std::stod(a); } catch (...) {}
+				try { db = std::stod(b); } catch (...) {}
 				if (da != db) return da < db;
 				return a < b;
 			}
-			if (fold) return fold_lower(a) < fold_lower(b);
+			if (opt.fold) return asciiLower(a) < asciiLower(b);
 			return a < b;
-			};
+		};
 		std::sort(lines.begin(), lines.end(), cmp);
-		if (reverse) std::reverse(lines.begin(), lines.end());
-		if (unique) {
+		if (opt.reverse) std::reverse(lines.begin(), lines.end());
+		if (opt.unique) {
 			auto eq = [&](const std::string& a, const std::string& b) {
-				if (fold) return fold_lower(a) == fold_lower(b);
-				return a == b;
-				};
+				return opt.fold ? asciiLower(a) == asciiLower(b) : a == b;
+			};
 			lines.erase(std::unique(lines.begin(), lines.end(), eq), lines.end());
 		}
 		for (const auto& l : lines) {
@@ -1326,51 +1386,85 @@ namespace wbsh {
 		}
 	};
 
-	static int builtin_cut(Executor& exec, const std::vector<std::string>& args) {
+	struct CutOptions {
 		char delim = '\t';
 		std::string field_spec, char_spec;
 		bool only_delim_lines = false;
 		std::vector<std::string> files;
+	};
+
+	static CutOptions parseCutArgs(const std::vector<std::string>& args) {
+		CutOptions o;
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "-d" && i + 1 < args.size()) {
-				if (!args[i + 1].empty()) delim = args[i + 1][0];
+				if (!args[i + 1].empty()) o.delim = args[i + 1][0];
 				++i;
 			}
-			else if (a.size() > 2 && a.compare(0, 2, "-d") == 0) {
-				delim = a[2];
-			}
-			else if (a == "-f" && i + 1 < args.size()) {
-				field_spec = args[++i];
-			}
-			else if (a.size() > 2 && a.compare(0, 2, "-f") == 0) {
-				field_spec = a.substr(2);
-			}
-			else if (a == "-c" && i + 1 < args.size()) {
-				char_spec = args[++i];
-			}
-			else if (a.size() > 2 && a.compare(0, 2, "-c") == 0) {
-				char_spec = a.substr(2);
-			}
-			else if (a == "-s") only_delim_lines = true;
+			else if (a.size() > 2 && a.compare(0, 2, "-d") == 0) o.delim = a[2];
+			else if (a == "-f" && i + 1 < args.size()) o.field_spec = args[++i];
+			else if (a.size() > 2 && a.compare(0, 2, "-f") == 0) o.field_spec = a.substr(2);
+			else if (a == "-c" && i + 1 < args.size()) o.char_spec = args[++i];
+			else if (a.size() > 2 && a.compare(0, 2, "-c") == 0) o.char_spec = a.substr(2);
+			else if (a == "-s") o.only_delim_lines = true;
 			else if (a == "--") {
-				for (++i; i < args.size(); ++i) files.push_back(args[i]);
+				for (++i; i < args.size(); ++i) o.files.push_back(args[i]);
 			}
-			else if (!a.empty() && a[0] != '-') files.push_back(a);
+			else if (!a.empty() && a[0] != '-') o.files.push_back(a);
 		}
-		if (field_spec.empty() && char_spec.empty()) {
+		return o;
+	}
+
+	// Emit @p line as a field-selected slice using @p spec / @p delim.
+	static void cutEmitFieldLine(const std::string& line, char delim, bool only_delim_lines,
+	                             const CutSpec& spec) {
+		if (line.find(delim) == std::string::npos) {
+			if (!only_delim_lines) std::printf("%s\n", line.c_str());
+			return;
+		}
+		std::vector<std::string> fields;
+		std::string cur;
+		for (char c : line) {
+			if (c == delim) { fields.push_back(std::move(cur)); cur.clear(); }
+			else cur.push_back(c);
+		}
+		fields.push_back(std::move(cur));
+		std::string out;
+		bool first = true;
+		for (std::size_t k = 0; k < fields.size(); ++k) {
+			if (spec.contains(static_cast<int>(k + 1))) {
+				if (!first) out.push_back(delim);
+				out += fields[k];
+				first = false;
+			}
+		}
+		std::printf("%s\n", out.c_str());
+	}
+
+	// Emit @p line as a character-selected slice using @p spec.
+	static void cutEmitCharLine(const std::string& line, const CutSpec& spec) {
+		std::string out;
+		for (std::size_t k = 0; k < line.size(); ++k) {
+			if (spec.contains(static_cast<int>(k + 1))) out.push_back(line[k]);
+		}
+		std::printf("%s\n", out.c_str());
+	}
+
+	static int builtin_cut(Executor& exec, const std::vector<std::string>& args) {
+		CutOptions opt = parseCutArgs(args);
+		if (opt.field_spec.empty() && opt.char_spec.empty()) {
 			perr("cut", "specify -f or -c");
 			return 1;
 		}
 		CutSpec spec;
-		if (!spec.parse(field_spec.empty() ? char_spec : field_spec)) {
+		if (!spec.parse(opt.field_spec.empty() ? opt.char_spec : opt.field_spec)) {
 			perr("cut", "bad field/char spec");
 			return 1;
 		}
-		bool by_field = !field_spec.empty();
-		if (files.empty()) files.push_back("-");
+		bool by_field = !opt.field_spec.empty();
+		if (opt.files.empty()) opt.files.push_back("-");
 		int rc = 0;
-		for (const auto& f : files) {
+		for (const auto& f : opt.files) {
 			std::vector<std::string> lines;
 			if (!readAllLines(exec, f, lines)) {
 				perr("cut", f + ": " + std::strerror(errno));
@@ -1378,36 +1472,8 @@ namespace wbsh {
 				continue;
 			}
 			for (auto& line : lines) {
-				if (by_field) {
-					if (line.find(delim) == std::string::npos) {
-						if (!only_delim_lines) std::printf("%s\n", line.c_str());
-						continue;
-					}
-					std::vector<std::string> fields;
-					std::string cur;
-					for (char c : line) {
-						if (c == delim) { fields.push_back(std::move(cur)); cur.clear(); }
-						else cur.push_back(c);
-					}
-					fields.push_back(std::move(cur));
-					std::string out;
-					bool first = true;
-					for (std::size_t k = 0; k < fields.size(); ++k) {
-						if (spec.contains(static_cast<int>(k + 1))) {
-							if (!first) out.push_back(delim);
-							out += fields[k];
-							first = false;
-						}
-					}
-					std::printf("%s\n", out.c_str());
-				}
-				else {
-					std::string out;
-					for (std::size_t k = 0; k < line.size(); ++k) {
-						if (spec.contains(static_cast<int>(k + 1))) out.push_back(line[k]);
-					}
-					std::printf("%s\n", out.c_str());
-				}
+				if (by_field) cutEmitFieldLine(line, opt.delim, opt.only_delim_lines, spec);
+				else          cutEmitCharLine(line, spec);
 			}
 		}
 		std::fflush(stdout);
@@ -1601,12 +1667,15 @@ namespace wbsh {
 		try {
 			if (nums.size() == 1) { last = std::stod(nums[0]); }
 			else if (nums.size() == 2) { first = std::stod(nums[0]); last = std::stod(nums[1]); }
-			else if (nums.size() == 3) { first = std::stod(nums[0]); inc = std::stod(nums[1]); last = std::stod(nums[2]); }
+			else if (nums.size() == 3) {
+				first = std::stod(nums[0]); inc = std::stod(nums[1]); last = std::stod(nums[2]);
+			}
 			else { perr("seq", "usage: seq [LAST | FIRST LAST | FIRST INC LAST]"); return 1; }
 		}
 		catch (...) { perr("seq", "invalid number"); return 1; }
 		if (inc == 0) { perr("seq", "increment must be non-zero"); return 1; }
-		bool integer = std::floor(first) == first && std::floor(inc) == inc && std::floor(last) == last;
+		bool integer = std::floor(first) == first && std::floor(inc) == inc
+		    && std::floor(last) == last;
 		bool first_out = true;
 		auto emit = [&](double v) {
 			if (!first_out) std::fputs(sep.c_str(), stdout);
@@ -1755,6 +1824,46 @@ namespace wbsh {
 
 	// ---- expr (simple) ---------------------------------------------------
 
+	// 3-arg `expr L OP R` with integer-valued L and R. Returns the exit status,
+	// or -1 to indicate "operator wasn't recognised; caller should fall through".
+	static int exprBinaryIntOp(long long li, long long ri, const std::string& op) {
+		if (op == "+") { std::printf("%lld\n", li + ri); return 0; }
+		if (op == "-") { std::printf("%lld\n", li - ri); return 0; }
+		if (op == "*") { std::printf("%lld\n", li * ri); return 0; }
+		if (op == "/") {
+			if (ri == 0) return 2;
+			std::printf("%lld\n", li / ri); return 0;
+		}
+		if (op == "%") {
+			if (ri == 0) return 2;
+			std::printf("%lld\n", li % ri); return 0;
+		}
+		if (op == "<")  { std::printf("%d\n", li <  ri); return (li <  ri) ? 0 : 1; }
+		if (op == "<=") { std::printf("%d\n", li <= ri); return (li <= ri) ? 0 : 1; }
+		if (op == ">")  { std::printf("%d\n", li >  ri); return (li >  ri) ? 0 : 1; }
+		if (op == ">=") { std::printf("%d\n", li >= ri); return (li >= ri) ? 0 : 1; }
+		if (op == "=" || op == "==") {
+			std::printf("%d\n", li == ri); return (li == ri) ? 0 : 1;
+		}
+		if (op == "!=") {
+			std::printf("%d\n", li != ri); return (li != ri) ? 0 : 1;
+		}
+		return -1;
+	}
+
+	// `expr L OP R` string fallback when L or R isn't numeric. Returns the
+	// exit status, or -1 if the operator isn't one of the string-comparable ones.
+	static int exprBinaryStringOp(const std::string& l, const std::string& r,
+	                              const std::string& op) {
+		if (op == "=" || op == "==") {
+			std::printf("%d\n", l == r); return (l == r) ? 0 : 1;
+		}
+		if (op == "!=") {
+			std::printf("%d\n", l != r); return (l != r) ? 0 : 1;
+		}
+		return -1;
+	}
+
 	static int builtin_expr(Executor&, const std::vector<std::string>& args) {
 		// Tiny `expr`: integer arithmetic + string `length`, `substr`, `index`.
 		// Not full POSIX, but handles common scripts.
@@ -1776,24 +1885,17 @@ namespace wbsh {
 			catch (...) { return 2; }
 		}
 		if (args.size() == 3) {
-			const std::string& l = args[0]; const std::string& op = args[1]; const std::string& r = args[2];
+			const std::string& l  = args[0];
+			const std::string& op = args[1];
+			const std::string& r  = args[2];
 			try {
 				long long li = std::stoll(l), ri = std::stoll(r);
-				if (op == "+") { std::printf("%lld\n", li + ri); return 0; }
-				if (op == "-") { std::printf("%lld\n", li - ri); return 0; }
-				if (op == "*") { std::printf("%lld\n", li * ri); return 0; }
-				if (op == "/") { if (ri == 0) return 2; std::printf("%lld\n", li / ri); return 0; }
-				if (op == "%") { if (ri == 0) return 2; std::printf("%lld\n", li % ri); return 0; }
-				if (op == "<") { std::printf("%d\n", li < ri); return (li < ri) ? 0 : 1; }
-				if (op == "<=") { std::printf("%d\n", li <= ri); return (li <= ri) ? 0 : 1; }
-				if (op == ">") { std::printf("%d\n", li > ri); return (li > ri) ? 0 : 1; }
-				if (op == ">=") { std::printf("%d\n", li >= ri); return (li >= ri) ? 0 : 1; }
-				if (op == "=" || op == "==") { std::printf("%d\n", li == ri); return (li == ri) ? 0 : 1; }
-				if (op == "!=") { std::printf("%d\n", li != ri); return (li != ri) ? 0 : 1; }
+				int rc = exprBinaryIntOp(li, ri, op);
+				if (rc >= 0) return rc;
 			}
 			catch (...) {
-				if (op == "=" || op == "==") { std::printf("%d\n", l == r); return (l == r) ? 0 : 1; }
-				if (op == "!=") { std::printf("%d\n", l != r); return (l != r) ? 0 : 1; }
+				int rc = exprBinaryStringOp(l, r, op);
+				if (rc >= 0) return rc;
 			}
 		}
 		// Fallback: print joined with spaces.
@@ -1871,10 +1973,10 @@ namespace wbsh {
 			if (a == "-c" || a == "--count")           { o.count_only = true; continue; }
 			if (a == "-F" || a == "--fixed-strings")   { o.fixed      = true; continue; }
 			if (a == "-E" || a == "--extended-regexp") continue;
-			if (a == "-l")                                                 { o.list_only  = true; continue; }
-			if (a == "-q" || a == "--quiet" || a == "--silent")            { o.quiet      = true; continue; }
-			if (a == "-r" || a == "-R" || a == "--recursive")              { o.recursive  = true; continue; }
-			if (a == "-x" || a == "--line-regexp")                         { o.whole_line = true; continue; }
+			if (a == "-l") { o.list_only = true; continue; }
+			if (a == "-q" || a == "--quiet" || a == "--silent") { o.quiet = true; continue; }
+			if (a == "-r" || a == "-R" || a == "--recursive") { o.recursive = true; continue; }
+			if (a == "-x" || a == "--line-regexp") { o.whole_line = true; continue; }
 
 			// Short-flag cluster.
 			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
@@ -2316,7 +2418,8 @@ namespace wbsh {
 		return rc;
 	}
 
-	static int tarExtract(Executor& exec, const std::string& archive, bool verbose, bool list_only) {
+	static int tarExtract(Executor& exec, const std::string& archive,
+	                      bool verbose, bool list_only) {
 		FILE* in = fopenNative(exec, archive, "rb");
 		if (!in) { perr("tar", archive + ": " + std::strerror(errno)); return 1; }
 		int rc = 0;
@@ -2519,7 +2622,11 @@ namespace wbsh {
 		FILE* f1 = fopenNative(exec, files[0], "rb");
 		if (!f1) { if (!quiet) perr("cmp", files[0] + ": " + std::strerror(errno)); return 2; }
 		FILE* f2 = fopenNative(exec, files[1], "rb");
-		if (!f2) { std::fclose(f1); if (!quiet) perr("cmp", files[1] + ": " + std::strerror(errno)); return 2; }
+		if (!f2) {
+			std::fclose(f1);
+			if (!quiet) perr("cmp", files[1] + ": " + std::strerror(errno));
+			return 2;
+		}
 		long long byte = 0, line = 1;
 		int rc = 0;
 		while (true) {
@@ -2871,7 +2978,10 @@ namespace wbsh {
 			std::uintmax_t grand = 0;
 			fs::recursive_directory_iterator it(nat,
 				fs::directory_options::skip_permission_denied, ec);
-			if (ec) { std::fprintf(stderr, "wbsh: du: %s\n", ec.message().c_str()); rc = 1; continue; }
+			if (ec) {
+				std::fprintf(stderr, "wbsh: du: %s\n", ec.message().c_str());
+				rc = 1; continue;
+			}
 			for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
 				if (ec) break;
 				std::error_code fec;
@@ -3021,15 +3131,11 @@ namespace wbsh {
 		return out;
 	}
 
-	static bool sedParseSubst(const std::string& cmd, bool extended,
-	                          SedSubst& out, std::string& err) {
-		if (cmd.size() < 4 || cmd[0] != 's') {
-			err = "only s/PAT/REPL/[g] is supported";
-			return false;
-		}
-		char delim = cmd[1];
-		std::size_t i = 2;
-		std::string pat;
+	// Scan the pattern half of `s/PAT/REPL/...` up to (but not including) the
+	// closing delimiter. Backslash escapes are passed through unchanged so the
+	// regex engine sees them. Advances @p i past the delimiter on success.
+	static bool sedScanPattern(const std::string& cmd, char delim, std::size_t& i,
+	                           std::string& pat, std::string& err) {
 		while (i < cmd.size() && cmd[i] != delim) {
 			if (cmd[i] == '\\' && i + 1 < cmd.size()) {
 				pat.push_back(cmd[i]);
@@ -3041,17 +3147,20 @@ namespace wbsh {
 		}
 		if (i >= cmd.size()) { err = "missing closing delimiter"; return false; }
 		++i;   // skip delim
-		std::string rep;
+		return true;
+	}
+
+	// Scan the replacement half. Translates `\n`/`\t` to literals, `\N`
+	// backreferences to `$N` (std::regex syntax), and escapes bare `$` as `$$`.
+	static void sedScanReplacement(const std::string& cmd, char delim, std::size_t& i,
+	                               std::string& rep) {
 		while (i < cmd.size() && cmd[i] != delim) {
 			if (cmd[i] == '\\' && i + 1 < cmd.size()) {
 				char nx = cmd[i + 1];
-				// Interpret common backslash escapes in the replacement.
 				if (nx == 'n') { rep.push_back('\n'); i += 2; continue; }
 				if (nx == 't') { rep.push_back('\t'); i += 2; continue; }
 				if (nx >= '0' && nx <= '9') {
-					// Backreference \N -> std::regex uses $N.
-					rep.push_back('$');
-					rep.push_back(nx);
+					rep.push_back('$'); rep.push_back(nx);
 					i += 2;
 					continue;
 				}
@@ -3063,6 +3172,19 @@ namespace wbsh {
 			rep.push_back(cmd[i++]);
 		}
 		if (i < cmd.size()) ++i;   // skip closing delim
+	}
+
+	static bool sedParseSubst(const std::string& cmd, bool extended,
+	                          SedSubst& out, std::string& err) {
+		if (cmd.size() < 4 || cmd[0] != 's') {
+			err = "only s/PAT/REPL/[g] is supported";
+			return false;
+		}
+		char delim = cmd[1];
+		std::size_t i = 2;
+		std::string pat, rep;
+		if (!sedScanPattern(cmd, delim, i, pat, err)) return false;
+		sedScanReplacement(cmd, delim, i, rep);
 		std::string flags = (i < cmd.size()) ? cmd.substr(i) : std::string();
 		try {
 			// POSIX sed defaults to BRE; -E / -r selects ERE. We always
@@ -3070,11 +3192,8 @@ namespace wbsh {
 			// implementation has greediness bugs with back-to-back negated
 			// classes (`[^X]* [^X]*`). For BRE inputs we translate the
 			// pattern to ERE syntax first; the resulting regex behaves
-			// the same per POSIX semantics but rides on the working
-			// engine.
-			const std::string compiled_pat = extended
-				? pat
-				: translateBreToErePattern(pat);
+			// the same per POSIX semantics but rides on the working engine.
+			const std::string compiled_pat = extended ? pat : translateBreToErePattern(pat);
 			out.re = std::regex(compiled_pat, std::regex::extended);
 		}
 		catch (const std::regex_error& e) {
@@ -3551,87 +3670,110 @@ namespace wbsh {
 		for (int k = 0; k < 4; ++k) out.push_back((std::uint8_t)((isize >> (8 * k)) & 0xFF));
 	}
 
-	static int builtin_gzip(Executor& exec, const std::vector<std::string>& args) {
+	struct GzipOptions {
 		bool decompress = false;
 		bool to_stdout = false;
 		bool keep = false;
-		bool force = false;
 		std::vector<std::string> files;
+	};
+
+	static GzipOptions parseGzipArgs(const std::vector<std::string>& args) {
+		GzipOptions o;
 		for (const auto& a : args) {
-			if (a == "-d" || a == "--decompress") decompress = true;
-			else if (a == "-c" || a == "--stdout") to_stdout = true;
-			else if (a == "-k" || a == "--keep") keep = true;
-			else if (a == "-f" || a == "--force") force = true;
-			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore */ }
-			else files.push_back(a);
+			if (a == "-d" || a == "--decompress") o.decompress = true;
+			else if (a == "-c" || a == "--stdout") o.to_stdout = true;
+			else if (a == "-k" || a == "--keep") o.keep = true;
+			else if (a == "-f" || a == "--force") { /* accepted, no-op */ }
+			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore other flags */ }
+			else o.files.push_back(a);
 		}
-		(void)force;
-		auto runOne = [&](const std::string& fname) -> int {
-			std::vector<std::uint8_t> input;
-			if (fname == "-" || fname.empty()) {
-				input = readAllBytesFromFile(stdin);
+		return o;
+	}
+
+	// Read @p fname (or stdin if "-" / empty) into @p input. Returns true on
+	// success; on failure prints an error tagged @p tool and returns false.
+	static bool gzipLoadInput(Executor& exec, const std::string& tool, const std::string& fname,
+	                          std::vector<std::uint8_t>& input) {
+		if (fname == "-" || fname.empty()) {
+			input = readAllBytesFromFile(stdin);
+			return true;
+		}
+		FILE* f = fopenNative(exec, fname, "rb");
+		if (!f) {
+			perr(tool, fname, std::error_code(errno, std::system_category()));
+			return false;
+		}
+		input = readAllBytesFromFile(f);
+		std::fclose(f);
+		return true;
+	}
+
+	// Derive the output filename for compressing/decompressing @p fname.
+	static std::string gzipDeriveOutputPath(const std::string& fname, bool decompress) {
+		if (decompress) {
+			if (fname.size() > 3 && fname.substr(fname.size() - 3) == ".gz") {
+				return fname.substr(0, fname.size() - 3);
 			}
-			else {
-				FILE* f = fopenNative(exec, fname, "rb");
-				if (!f) {
-					perr(decompress ? "gunzip" : "gzip", fname,
-						std::error_code(errno, std::system_category()));
-					return 1;
-				}
-				input = readAllBytesFromFile(f);
-				std::fclose(f);
-			}
-			std::vector<std::uint8_t> output;
-			if (decompress) {
-				std::size_t s, e;
-				if (!gzipParseHeader(input, s, e)) {
-					std::fprintf(stderr,
-						"wbsh: gunzip: not in gzip format: %s\n", fname.c_str());
-					return 1;
-				}
-				if (!inflateRaw(input.data() + s, e - s, output)) {
-					std::fprintf(stderr,
-						"wbsh: gunzip: invalid compressed data: %s\n", fname.c_str());
-					return 1;
-				}
-			}
-			else {
-				gzipEncodeStored(input, output);
-			}
-			std::string out_path;
-			FILE* of = stdout;
-			if (!to_stdout && !fname.empty() && fname != "-") {
-				if (decompress) {
-					if (fname.size() > 3
-						&& fname.substr(fname.size() - 3) == ".gz")
-						out_path = fname.substr(0, fname.size() - 3);
-					else out_path = fname + ".out";
-				}
-				else {
-					out_path = fname + ".gz";
-				}
-				of = fopenNative(exec, out_path, "wb");
-				if (!of) {
-					perr(decompress ? "gunzip" : "gzip", out_path,
-						std::error_code(errno, std::system_category()));
-					return 1;
-				}
-			}
-			std::fwrite(output.data(), 1, output.size(), of);
-			if (of != stdout) std::fclose(of);
-			if (!to_stdout && !keep && !fname.empty() && fname != "-") {
-				std::error_code ec;
-				std::filesystem::remove(toNative(exec, fname), ec);
-			}
+			return fname + ".out";
+		}
+		return fname + ".gz";
+	}
+
+	// Encode (or decode) @p input into @p output. Returns 0 on success or 1
+	// on error (with a message printed). @p fname is only used for error text.
+	static int gzipTransform(const GzipOptions& opt, const std::string& fname,
+	                         const std::vector<std::uint8_t>& input,
+	                         std::vector<std::uint8_t>& output) {
+		if (!opt.decompress) {
+			gzipEncodeStored(input, output);
 			return 0;
-			};
-		if (files.empty()) {
-			to_stdout = true;
-			return runOne("");
+		}
+		std::size_t s, e;
+		if (!gzipParseHeader(input, s, e)) {
+			std::fprintf(stderr, "wbsh: gunzip: not in gzip format: %s\n", fname.c_str());
+			return 1;
+		}
+		if (!inflateRaw(input.data() + s, e - s, output)) {
+			std::fprintf(stderr, "wbsh: gunzip: invalid compressed data: %s\n", fname.c_str());
+			return 1;
+		}
+		return 0;
+	}
+
+	static int gzipProcessOne(Executor& exec, const GzipOptions& opt, const std::string& fname) {
+		const char* tool = opt.decompress ? "gunzip" : "gzip";
+		std::vector<std::uint8_t> input;
+		if (!gzipLoadInput(exec, tool, fname, input)) return 1;
+		std::vector<std::uint8_t> output;
+		if (int rc = gzipTransform(opt, fname, input, output); rc != 0) return rc;
+		FILE* of = stdout;
+		std::string out_path;
+		if (!opt.to_stdout && !fname.empty() && fname != "-") {
+			out_path = gzipDeriveOutputPath(fname, opt.decompress);
+			of = fopenNative(exec, out_path, "wb");
+			if (!of) {
+				perr(tool, out_path, std::error_code(errno, std::system_category()));
+				return 1;
+			}
+		}
+		std::fwrite(output.data(), 1, output.size(), of);
+		if (of != stdout) std::fclose(of);
+		if (!opt.to_stdout && !opt.keep && !fname.empty() && fname != "-") {
+			std::error_code ec;
+			std::filesystem::remove(toNative(exec, fname), ec);
+		}
+		return 0;
+	}
+
+	static int builtin_gzip(Executor& exec, const std::vector<std::string>& args) {
+		GzipOptions opt = parseGzipArgs(args);
+		if (opt.files.empty()) {
+			opt.to_stdout = true;
+			return gzipProcessOne(exec, opt, "");
 		}
 		int rc = 0;
-		for (const auto& f : files) {
-			int r = runOne(f);
+		for (const auto& f : opt.files) {
+			int r = gzipProcessOne(exec, opt, f);
 			if (r) rc = r;
 		}
 		return rc;
@@ -3796,21 +3938,55 @@ namespace wbsh {
 		return false;
 	}
 
+	// Read the archive at @p path into @p out. Returns false on open failure;
+	// caller has already validated the path is non-empty.
+	static bool unzipLoadArchive(Executor& exec, const std::string& path,
+	                             std::vector<std::uint8_t>& out) {
+		FILE* f = fopenNative(exec, path, "rb");
+		if (!f) {
+			perr("unzip", path, std::error_code(errno, std::system_category()));
+			return false;
+		}
+		out = readAllBytesFromFile(f);
+		std::fclose(f);
+		return true;
+	}
+
+	// Process one central-directory entry: skip if not selected, otherwise
+	// list it or extract it depending on @p o. @p total_bytes accumulates the
+	// sum for the listing footer.
+	static void unzipHandleEntry(Executor& exec, const unzip_internal::UnzipOptions& o,
+	                             const std::vector<std::uint8_t>& bytes,
+	                             const unzip_internal::CentralEntry& e,
+	                             std::size_t& total_bytes) {
+		if (o.list_only) {
+			std::printf("%9u  ----------- ------  %s\n",
+				static_cast<unsigned>(e.usize), e.name.c_str());
+			total_bytes += e.usize;
+			return;
+		}
+		std::vector<std::uint8_t> data;
+		if (!decompressZipEntry(bytes, e, data)) {
+			std::fprintf(stderr,
+				"wbsh: unzip: inflate / unsupported-method on %s\n", e.name.c_str());
+			return;
+		}
+		if (o.to_stdout) {
+			std::fwrite(data.data(), 1, data.size(), stdout);
+			return;
+		}
+		writeZipEntryToDisk(exec, o.outdir, e.name, data);
+		std::printf("  inflating: %s\n", e.name.c_str());
+	}
+
 	static int builtin_unzip(Executor& exec, const std::vector<std::string>& args) {
 		const unzip_internal::UnzipOptions o = parseUnzipArgs(args);
 		if (o.archive.empty()) {
 			perr("unzip", "missing archive name");
 			return 1;
 		}
-
-		FILE* f = fopenNative(exec, o.archive, "rb");
-		if (!f) {
-			perr("unzip", o.archive,
-				std::error_code(errno, std::system_category()));
-			return 1;
-		}
-		const auto bytes = readAllBytesFromFile(f);
-		std::fclose(f);
+		std::vector<std::uint8_t> bytes;
+		if (!unzipLoadArchive(exec, o.archive, bytes)) return 1;
 
 		std::size_t eocd = 0;
 		if (!zipFindEOCD(bytes, eocd)) {
@@ -3818,43 +3994,20 @@ namespace wbsh {
 			return 1;
 		}
 		const std::uint16_t total = zipR16(bytes.data() + eocd + 10);
-		std::size_t p = zipR32(bytes.data() + eocd + 16);   // cd_off
+		std::size_t p = zipR32(bytes.data() + eocd + 16);
 
 		if (o.list_only) {
 			std::printf("Archive:  %s\n", o.archive.c_str());
 			std::printf("  Length      Date    Time    Name\n");
 			std::printf("---------  ---------- -----   ----\n");
 		}
-
 		std::size_t total_bytes = 0;
 		for (std::size_t k = 0; k < total; ++k) {
 			unzip_internal::CentralEntry e;
 			if (!readZipCentralEntry(bytes, &p, e)) break;
 			if (!entryIsSelected(o.select, e.name)) continue;
-
-			if (o.list_only) {
-				std::printf("%9u  ----------- ------  %s\n",
-					static_cast<unsigned>(e.usize), e.name.c_str());
-				total_bytes += e.usize;
-				continue;
-			}
-
-			std::vector<std::uint8_t> data;
-			if (!decompressZipEntry(bytes, e, data)) {
-				std::fprintf(stderr,
-					"wbsh: unzip: inflate / unsupported-method on %s\n",
-					e.name.c_str());
-				continue;
-			}
-
-			if (o.to_stdout) {
-				std::fwrite(data.data(), 1, data.size(), stdout);
-				continue;
-			}
-			writeZipEntryToDisk(exec, o.outdir, e.name, data);
-			std::printf("  inflating: %s\n", e.name.c_str());
+			unzipHandleEntry(exec, o, bytes, e, total_bytes);
 		}
-
 		if (o.list_only) {
 			std::printf("---------                     -------\n");
 			std::printf("%9zu                     %u files\n",
@@ -4025,80 +4178,86 @@ namespace wbsh {
 
 	// ---- xxd ------------------------------------------------------------
 
-	static int builtin_xxd(Executor& exec, const std::vector<std::string>& args) {
-		bool plain = false, reverse = false;
+	struct XxdOptions {
+		bool plain = false;
+		bool reverse = false;
 		int cols = 16;
 		std::string path;
+	};
+
+	// Returns true if @p o was filled successfully; false (and prints error) on bad flag.
+	static bool parseXxdArgs(const std::vector<std::string>& args, XxdOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
-			if (a == "-p" || a == "--plain")    plain = true;
-			else if (a == "-r" || a == "--revert") reverse = true;
+			if (a == "-p" || a == "--plain")       o.plain = true;
+			else if (a == "-r" || a == "--revert") o.reverse = true;
 			else if (a == "-c" && i + 1 < args.size()) {
-				try { cols = std::stoi(args[++i]); }
-				catch (...) {}
+				try { o.cols = std::stoi(args[++i]); } catch (...) {}
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("xxd", "unknown option: " + a); return 1;
+				perr("xxd", "unknown option: " + a);
+				return false;
 			}
-			else if (path.empty()) path = a;
+			else if (o.path.empty()) o.path = a;
 		}
-		std::vector<unsigned char> bytes;
-		auto readAllBytes = [&](FILE* f) {
-			int c; while ((c = std::fgetc(f)) != EOF) bytes.push_back((unsigned char)c);
-			};
-		if (path.empty() || path == "-") readAllBytes(stdin);
-		else {
-			FILE* f = fopenNative(exec, path, "rb");
-			if (!f) { perr("xxd", path, std::error_code(errno, std::system_category())); return 1; }
-			readAllBytes(f);
-			std::fclose(f);
-		}
-		if (reverse) {
-			// Plain: just hex bytes back to binary (any whitespace allowed).
-			// Default xxd format: "<addr>: <hex pairs>  <ascii>" — we
-			// extract the hex pairs only.
-			std::vector<unsigned char> out;
-			std::string line;
-			auto flushLine = [&]() {
-				std::string hex;
-				if (plain) hex = line;
-				else {
-					auto colon = line.find(':');
-					auto start = (colon == std::string::npos) ? 0 : colon + 1;
-					auto two = line.find("  ", start);
-					hex = line.substr(start, (two == std::string::npos) ? std::string::npos : two - start);
-				}
-				unsigned cur = 0; int half = 0;
-				for (char c : hex) {
-					unsigned v;
-					if (c >= '0' && c <= '9') v = c - '0';
-					else if (c >= 'a' && c <= 'f') v = 10 + c - 'a';
-					else if (c >= 'A' && c <= 'F') v = 10 + c - 'A';
-					else continue;
-					cur = (cur << 4) | v; half++;
-					if (half == 2) { out.push_back((unsigned char)cur); cur = 0; half = 0; }
-				}
-				};
-			for (unsigned char c : bytes) {
-				if (c == '\n') { flushLine(); line.clear(); }
-				else line.push_back((char)c);
-			}
-			if (!line.empty()) flushLine();
-			std::fwrite(out.data(), 1, out.size(), stdout);
-			return 0;
-		}
-		// Forward dump.
+		return true;
+	}
+
+	// Convert one line of a default-format xxd dump back to bytes, appending
+	// to @p out. `plain` means the line is a raw hex stream (no addr/ascii).
+	static void xxdRevertLine(const std::string& line, bool plain,
+	                          std::vector<unsigned char>& out) {
+		std::string hex;
 		if (plain) {
-			int per_line = (cols > 0) ? cols * 2 : 60;
-			int n = 0;
-			for (unsigned char c : bytes) {
-				std::printf("%02x", c);
-				n += 2;
-				if (n >= per_line) { std::printf("\n"); n = 0; }
-			}
-			if (n) std::printf("\n");
-			return 0;
+			hex = line;
+		} else {
+			auto colon = line.find(':');
+			auto start = (colon == std::string::npos) ? 0 : colon + 1;
+			auto two = line.find("  ", start);
+			hex = line.substr(start, (two == std::string::npos) ? std::string::npos : two - start);
 		}
+		unsigned cur = 0;
+		int half = 0;
+		for (char c : hex) {
+			unsigned v;
+			if (c >= '0' && c <= '9') v = c - '0';
+			else if (c >= 'a' && c <= 'f') v = 10 + c - 'a';
+			else if (c >= 'A' && c <= 'F') v = 10 + c - 'A';
+			else continue;
+			cur = (cur << 4) | v;
+			half++;
+			if (half == 2) { out.push_back((unsigned char)cur); cur = 0; half = 0; }
+		}
+	}
+
+	// `-r`: parse @p bytes as an xxd dump and emit the recovered binary to stdout.
+	static int xxdEmitRevert(const std::vector<unsigned char>& bytes, bool plain) {
+		std::vector<unsigned char> out;
+		std::string line;
+		for (unsigned char c : bytes) {
+			if (c == '\n') { xxdRevertLine(line, plain, out); line.clear(); }
+			else line.push_back((char)c);
+		}
+		if (!line.empty()) xxdRevertLine(line, plain, out);
+		std::fwrite(out.data(), 1, out.size(), stdout);
+		return 0;
+	}
+
+	// Plain forward dump (`-p`): contiguous hex pairs, wrapped at cols*2 chars.
+	static int xxdEmitPlain(const std::vector<unsigned char>& bytes, int cols) {
+		int per_line = (cols > 0) ? cols * 2 : 60;
+		int n = 0;
+		for (unsigned char c : bytes) {
+			std::printf("%02x", c);
+			n += 2;
+			if (n >= per_line) { std::printf("\n"); n = 0; }
+		}
+		if (n) std::printf("\n");
+		return 0;
+	}
+
+	// Default forward dump: `<addr>: <hex pairs>  <ascii>`.
+	static int xxdEmitDefault(const std::vector<unsigned char>& bytes, int cols) {
 		std::size_t addr = 0;
 		while (addr < bytes.size()) {
 			std::size_t end = (std::min)(bytes.size(), addr + (std::size_t)cols);
@@ -4119,225 +4278,281 @@ namespace wbsh {
 		return 0;
 	}
 
+	static int builtin_xxd(Executor& exec, const std::vector<std::string>& args) {
+		XxdOptions o;
+		if (!parseXxdArgs(args, o)) return 1;
+
+		std::vector<unsigned char> bytes;
+		auto slurp = [&](FILE* f) {
+			int c;
+			while ((c = std::fgetc(f)) != EOF) bytes.push_back((unsigned char)c);
+		};
+		if (o.path.empty() || o.path == "-") slurp(stdin);
+		else {
+			FILE* f = fopenNative(exec, o.path, "rb");
+			if (!f) {
+				perr("xxd", o.path, std::error_code(errno, std::system_category()));
+				return 1;
+			}
+			slurp(f);
+			std::fclose(f);
+		}
+		if (o.reverse) return xxdEmitRevert(bytes, o.plain);
+		if (o.plain)   return xxdEmitPlain(bytes, o.cols);
+		return xxdEmitDefault(bytes, o.cols);
+	}
+
 	// ---- od -------------------------------------------------------------
 
-	static int builtin_od(Executor& exec, const std::vector<std::string>& args) {
-		char fmt = 'o';        // o (octal-bytes), x (hex-bytes), c (char), d (decimal)
+	struct OdOptions {
+		char fmt = 'o';        // o = octal-byte, x = hex-byte, c = char, d = decimal
 		char addr_fmt = 'o';
 		std::string path;
+	};
+
+	static bool parseOdArgs(const std::vector<std::string>& args, OdOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
-			if (a == "-c") fmt = 'c';
-			else if (a == "-x" || a == "-h") fmt = 'x';
-			else if (a == "-d") fmt = 'd';
-			else if (a == "-o") fmt = 'o';
+			if (a == "-c") o.fmt = 'c';
+			else if (a == "-x" || a == "-h") o.fmt = 'x';
+			else if (a == "-d") o.fmt = 'd';
+			else if (a == "-o") o.fmt = 'o';
 			else if (a == "-A" && i + 1 < args.size()) {
 				const std::string& w = args[++i];
-				if (!w.empty()) addr_fmt = w[0];
+				if (!w.empty()) o.addr_fmt = w[0];
 			}
 			else if (a == "-t" && i + 1 < args.size()) {
 				const std::string& t = args[++i];
 				if (!t.empty()) {
 					char c = t[0];
-					if (c == 'x' || c == 'd' || c == 'o' || c == 'c') fmt = c;
+					if (c == 'x' || c == 'd' || c == 'o' || c == 'c') o.fmt = c;
 				}
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("od", "unknown option: " + a); return 1;
+				perr("od", "unknown option: " + a);
+				return false;
 			}
-			else if (path.empty()) path = a;
+			else if (o.path.empty()) o.path = a;
 		}
+		return true;
+	}
+
+	static void odPrintAddr(std::size_t addr, char addr_fmt, bool with_newline) {
+		const char* nl = with_newline ? "\n" : "";
+		switch (addr_fmt) {
+		case 'd': std::printf("%07zu%s", addr, nl); return;
+		case 'x': std::printf("%07zx%s", addr, nl); return;
+		case 'n': return;
+		default:  std::printf("%07zo%s", addr, nl); return;
+		}
+	}
+
+	static void odEmitRow(const std::vector<unsigned char>& bytes,
+	                      std::size_t addr, std::size_t end, char fmt) {
+		if (fmt == 'c') {
+			for (std::size_t i = addr; i < end; ++i) {
+				unsigned char b = bytes[i];
+				const char* esc = nullptr;
+				switch (b) {
+				case '\0': esc = "\\0"; break;
+				case '\a': esc = "\\a"; break;
+				case '\b': esc = "\\b"; break;
+				case '\t': esc = "\\t"; break;
+				case '\n': esc = "\\n"; break;
+				case '\v': esc = "\\v"; break;
+				case '\f': esc = "\\f"; break;
+				case '\r': esc = "\\r"; break;
+				}
+				if (esc) std::printf("  %s", esc);
+				else if (b >= 32 && b < 127) std::printf("   %c", b);
+				else std::printf(" %03o", b);
+			}
+			return;
+		}
+		const char* spec = (fmt == 'x') ? " %02x" : (fmt == 'd') ? " %3u" : " %03o";
+		for (std::size_t i = addr; i < end; ++i) std::printf(spec, bytes[i]);
+	}
+
+	static int builtin_od(Executor& exec, const std::vector<std::string>& args) {
+		OdOptions o;
+		if (!parseOdArgs(args, o)) return 1;
+
 		std::vector<unsigned char> bytes;
-		if (path.empty() || path == "-") {
-			int c; while ((c = std::fgetc(stdin)) != EOF) bytes.push_back((unsigned char)c);
-		}
-		else {
-			FILE* f = fopenNative(exec, path, "rb");
-			if (!f) { perr("od", path, std::error_code(errno, std::system_category())); return 1; }
+		auto slurp = [&](FILE* f) {
 			int c; while ((c = std::fgetc(f)) != EOF) bytes.push_back((unsigned char)c);
+		};
+		if (o.path.empty() || o.path == "-") slurp(stdin);
+		else {
+			FILE* f = fopenNative(exec, o.path, "rb");
+			if (!f) {
+				perr("od", o.path, std::error_code(errno, std::system_category()));
+				return 1;
+			}
+			slurp(f);
 			std::fclose(f);
 		}
 		constexpr std::size_t per_row = 16;
 		std::size_t addr = 0;
 		while (addr < bytes.size()) {
-			switch (addr_fmt) {
-			case 'd': std::printf("%07zu", addr); break;
-			case 'x': std::printf("%07zx", addr); break;
-			case 'n': break;
-			default:  std::printf("%07zo", addr); break;
-			}
+			odPrintAddr(addr, o.addr_fmt, /*with_newline=*/false);
 			std::size_t end = (std::min)(bytes.size(), addr + per_row);
-			if (fmt == 'c') {
-				for (std::size_t i = addr; i < end; ++i) {
-					unsigned char b = bytes[i];
-					const char* esc = nullptr;
-					switch (b) {
-					case '\0': esc = "\\0"; break;
-					case '\a': esc = "\\a"; break;
-					case '\b': esc = "\\b"; break;
-					case '\t': esc = "\\t"; break;
-					case '\n': esc = "\\n"; break;
-					case '\v': esc = "\\v"; break;
-					case '\f': esc = "\\f"; break;
-					case '\r': esc = "\\r"; break;
-					}
-					if (esc) std::printf("  %s", esc);
-					else if (b >= 32 && b < 127) std::printf("   %c", b);
-					else std::printf(" %03o", b);
-				}
-			}
-			else if (fmt == 'x') {
-				for (std::size_t i = addr; i < end; ++i) std::printf(" %02x", bytes[i]);
-			}
-			else if (fmt == 'd') {
-				for (std::size_t i = addr; i < end; ++i) std::printf(" %3u", bytes[i]);
-			}
-			else { // octal
-				for (std::size_t i = addr; i < end; ++i) std::printf(" %03o", bytes[i]);
-			}
+			odEmitRow(bytes, addr, end, o.fmt);
 			std::printf("\n");
 			addr = end;
 		}
-		// Final address (GNU od convention).
-		switch (addr_fmt) {
-		case 'd': std::printf("%07zu\n", bytes.size()); break;
-		case 'x': std::printf("%07zx\n", bytes.size()); break;
-		case 'n': break;
-		default:  std::printf("%07zo\n", bytes.size()); break;
-		}
+		odPrintAddr(bytes.size(), o.addr_fmt, /*with_newline=*/true);
 		return 0;
 	}
 
 	// ---- fold -----------------------------------------------------------
 
-	static int builtin_fold(Executor& exec, const std::vector<std::string>& args) {
+	struct FoldOptions {
 		int width = 80;
-		bool by_bytes = true;
 		bool wrap_spaces = false;
 		std::vector<std::string> files;
+	};
+
+	static bool parseFoldArgs(const std::vector<std::string>& args, FoldOptions& o) {
+		bool by_bytes = true;   // -b vs -c: same in the ASCII path
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "-b" || a == "--bytes") by_bytes = true;
 			else if (a == "-c" || a == "--characters") by_bytes = false;
-			else if (a == "-s" || a == "--spaces") wrap_spaces = true;
+			else if (a == "-s" || a == "--spaces") o.wrap_spaces = true;
 			else if (a == "-w" && i + 1 < args.size()) {
-				try { width = std::stoi(args[++i]); }
-				catch (...) {}
+				try { o.width = std::stoi(args[++i]); } catch (...) {}
 			}
 			else if (a.size() > 2 && a.compare(0, 2, "-w") == 0) {
-				try { width = std::stoi(a.substr(2)); }
-				catch (...) {}
+				try { o.width = std::stoi(a.substr(2)); } catch (...) {}
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-" && std::isdigit((unsigned char)a[1])) {
-				try { width = std::stoi(a.substr(1)); }
-				catch (...) {}
+				try { o.width = std::stoi(a.substr(1)); } catch (...) {}
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("fold", "unknown option: " + a); return 1;
+				perr("fold", "unknown option: " + a);
+				return false;
 			}
-			else files.push_back(a);
+			else o.files.push_back(a);
 		}
-		(void)by_bytes;   // bytes vs chars: same in the ASCII path
-		if (width <= 0) { perr("fold", "width must be > 0"); return 1; }
-		auto wrapLine = [&](const std::string& line) {
-			std::size_t pos = 0;
-			while (pos < line.size()) {
-				std::size_t take = (std::min<std::size_t>)(width, line.size() - pos);
-				if (wrap_spaces && take < line.size() - pos) {
-					auto sp = line.rfind(' ', pos + take - 1);
-					if (sp != std::string::npos && sp >= pos) take = sp - pos + 1;
-				}
-				std::fwrite(line.data() + pos, 1, take, stdout);
-				std::putchar('\n');
-				pos += take;
+		(void)by_bytes;
+		if (o.width <= 0) { perr("fold", "width must be > 0"); return false; }
+		return true;
+	}
+
+	// Wrap one logical line and emit it. Honors @p wrap_spaces (`-s`): when
+	// the cut would land mid-token, back up to the last space within the chunk.
+	static void foldEmitLine(const std::string& line, int width, bool wrap_spaces) {
+		std::size_t pos = 0;
+		while (pos < line.size()) {
+			std::size_t take = (std::min<std::size_t>)(width, line.size() - pos);
+			if (wrap_spaces && take < line.size() - pos) {
+				auto sp = line.rfind(' ', pos + take - 1);
+				if (sp != std::string::npos && sp >= pos) take = sp - pos + 1;
 			}
-			if (line.empty()) std::putchar('\n');
-			};
-		auto runOn = [&](FILE* f) {
-			std::string buf;
-			int c;
-			while ((c = std::fgetc(f)) != EOF) {
-				if (c == '\n') { wrapLine(buf); buf.clear(); }
-				else buf.push_back((char)c);
-			}
-			if (!buf.empty()) wrapLine(buf);
-			};
-		if (files.empty() || files[0] == "-") runOn(stdin);
-		else {
-			for (const auto& p : files) {
-				FILE* f = fopenNative(exec, p, "rb");
-				if (!f) { perr("fold", p, std::error_code(errno, std::system_category())); return 1; }
-				runOn(f);
-				std::fclose(f);
-			}
+			std::fwrite(line.data() + pos, 1, take, stdout);
+			std::putchar('\n');
+			pos += take;
+		}
+		if (line.empty()) std::putchar('\n');
+	}
+
+	static void foldRunOnStream(FILE* f, int width, bool wrap_spaces) {
+		std::string buf;
+		int c;
+		while ((c = std::fgetc(f)) != EOF) {
+			if (c == '\n') { foldEmitLine(buf, width, wrap_spaces); buf.clear(); }
+			else buf.push_back((char)c);
+		}
+		if (!buf.empty()) foldEmitLine(buf, width, wrap_spaces);
+	}
+
+	static int builtin_fold(Executor& exec, const std::vector<std::string>& args) {
+		FoldOptions o;
+		if (!parseFoldArgs(args, o)) return 1;
+		if (o.files.empty() || o.files[0] == "-") {
+			foldRunOnStream(stdin, o.width, o.wrap_spaces);
+			return 0;
+		}
+		for (const auto& p : o.files) {
+			FILE* f = fopenNative(exec, p, "rb");
+			if (!f) { perr("fold", p, std::error_code(errno, std::system_category())); return 1; }
+			foldRunOnStream(f, o.width, o.wrap_spaces);
+			std::fclose(f);
 		}
 		return 0;
 	}
 
 	// ---- column ---------------------------------------------------------
 
-	static int builtin_column(Executor& exec, const std::vector<std::string>& args) {
+	struct ColumnOptions {
 		bool table = false;
 		std::string sep = " \t";
 		std::string out_sep = "  ";
 		std::vector<std::string> files;
+	};
+
+	static bool parseColumnArgs(const std::vector<std::string>& args, ColumnOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
-			if (a == "-t" || a == "--table") table = true;
-			else if ((a == "-s" || a == "--separator") && i + 1 < args.size()) sep = args[++i];
-			else if (a.size() > 2 && a.compare(0, 2, "-s") == 0) sep = a.substr(2);
-			else if ((a == "-o" || a == "--output-separator") && i + 1 < args.size()) out_sep = args[++i];
+			if (a == "-t" || a == "--table") o.table = true;
+			else if ((a == "-s" || a == "--separator") && i + 1 < args.size()) o.sep = args[++i];
+			else if (a.size() > 2 && a.compare(0, 2, "-s") == 0) o.sep = a.substr(2);
+			else if ((a == "-o" || a == "--output-separator") && i + 1 < args.size()) {
+				o.out_sep = args[++i];
+			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("column", "unknown option: " + a); return 1;
+				perr("column", "unknown option: " + a);
+				return false;
 			}
-			else files.push_back(a);
+			else o.files.push_back(a);
 		}
-		std::vector<std::vector<std::string>> rows;
-		auto splitFields = [&](const std::string& line) {
-			std::vector<std::string> fields;
-			std::string cur;
-			for (char c : line) {
-				if (sep.find(c) != std::string::npos) {
-					fields.push_back(std::move(cur)); cur.clear();
-					// Treat consecutive whitespace separators as one field break.
-					if (sep == " \t") {
-						while (!fields.empty() && fields.back().empty())
-							fields.pop_back();
-					}
+		return true;
+	}
+
+	static std::vector<std::string> columnSplitLine(const std::string& line,
+	                                                const std::string& sep) {
+		std::vector<std::string> fields;
+		std::string cur;
+		for (char c : line) {
+			if (sep.find(c) != std::string::npos) {
+				fields.push_back(std::move(cur)); cur.clear();
+				// Treat consecutive whitespace separators as one field break.
+				if (sep == " \t") {
+					while (!fields.empty() && fields.back().empty()) fields.pop_back();
 				}
-				else cur.push_back(c);
 			}
-			fields.push_back(std::move(cur));
-			return fields;
-			};
-		auto runOn = [&](FILE* f) {
-			std::string buf; int c;
-			while ((c = std::fgetc(f)) != EOF) {
-				if (c == '\n') { rows.push_back(splitFields(buf)); buf.clear(); }
-				else buf.push_back((char)c);
-			}
-			if (!buf.empty()) rows.push_back(splitFields(buf));
-			};
-		if (files.empty() || files[0] == "-") runOn(stdin);
-		else {
-			for (const auto& p : files) {
-				FILE* f = fopenNative(exec, p, "rb");
-				if (!f) { perr("column", p, std::error_code(errno, std::system_category())); return 1; }
-				runOn(f);
-				std::fclose(f);
-			}
+			else cur.push_back(c);
 		}
-		if (!table) {
-			for (const auto& row : rows) {
-				for (std::size_t i = 0; i < row.size(); ++i) {
-					if (i) std::fputs(" ", stdout);
-					std::fputs(row[i].c_str(), stdout);
-				}
-				std::putchar('\n');
-			}
-			return 0;
+		fields.push_back(std::move(cur));
+		return fields;
+	}
+
+	// Read every line from @p f, splitting into fields by @p sep. Appends to @p rows.
+	static void columnReadStream(FILE* f, const std::string& sep,
+	                             std::vector<std::vector<std::string>>& rows) {
+		std::string buf;
+		int c;
+		while ((c = std::fgetc(f)) != EOF) {
+			if (c == '\n') { rows.push_back(columnSplitLine(buf, sep)); buf.clear(); }
+			else buf.push_back((char)c);
 		}
-		// Table mode: pad each column to the widest entry.
+		if (!buf.empty()) rows.push_back(columnSplitLine(buf, sep));
+	}
+
+	// Emit rows space-joined (no padding) — used when `-t` is absent.
+	static void columnEmitPlain(const std::vector<std::vector<std::string>>& rows) {
+		for (const auto& row : rows) {
+			for (std::size_t i = 0; i < row.size(); ++i) {
+				if (i) std::fputs(" ", stdout);
+				std::fputs(row[i].c_str(), stdout);
+			}
+			std::putchar('\n');
+		}
+	}
+
+	// Emit rows aligned in a fixed-width table, padding each column to its widest entry.
+	static void columnEmitTable(const std::vector<std::vector<std::string>>& rows,
+	                            const std::string& out_sep) {
 		std::size_t cols = 0;
 		for (const auto& r : rows) cols = (std::max)(cols, r.size());
 		std::vector<std::size_t> widths(cols, 0);
@@ -4350,12 +4565,32 @@ namespace wbsh {
 				if (i) std::fputs(out_sep.c_str(), stdout);
 				std::fputs(r[i].c_str(), stdout);
 				if (i + 1 < r.size()) {
-					for (std::size_t k = r[i].size(); k < widths[i]; ++k)
-						std::putchar(' ');
+					for (std::size_t k = r[i].size(); k < widths[i]; ++k) std::putchar(' ');
 				}
 			}
 			std::putchar('\n');
 		}
+	}
+
+	static int builtin_column(Executor& exec, const std::vector<std::string>& args) {
+		ColumnOptions o;
+		if (!parseColumnArgs(args, o)) return 1;
+
+		std::vector<std::vector<std::string>> rows;
+		if (o.files.empty() || o.files[0] == "-") columnReadStream(stdin, o.sep, rows);
+		else {
+			for (const auto& p : o.files) {
+				FILE* f = fopenNative(exec, p, "rb");
+				if (!f) {
+					perr("column", p, std::error_code(errno, std::system_category()));
+					return 1;
+				}
+				columnReadStream(f, o.sep, rows);
+				std::fclose(f);
+			}
+		}
+		if (o.table) columnEmitTable(rows, o.out_sep);
+		else         columnEmitPlain(rows);
 		return 0;
 	}
 
@@ -4400,7 +4635,10 @@ namespace wbsh {
 		else {
 			for (const auto& p : files) {
 				FILE* f = fopenNative(exec, p, "rb");
-				if (!f) { perr("expand", p, std::error_code(errno, std::system_category())); return 1; }
+				if (!f) {
+					perr("expand", p, std::error_code(errno, std::system_category()));
+					return 1;
+				}
 				runOn(f);
 				std::fclose(f);
 			}
@@ -4408,76 +4646,90 @@ namespace wbsh {
 		return 0;
 	}
 
-	static int builtin_unexpand(Executor& exec, const std::vector<std::string>& args) {
+	struct UnexpandOptions {
 		int tabstop = 8;
 		bool all = false;
 		std::vector<std::string> files;
+	};
+
+	static bool parseUnexpandArgs(const std::vector<std::string>& args, UnexpandOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
-			if (a == "-a" || a == "--all") all = true;
+			if (a == "-a" || a == "--all") o.all = true;
 			else if ((a == "-t" || a == "--tabs") && i + 1 < args.size()) {
-				try { tabstop = std::stoi(args[++i]); }
-				catch (...) {}
+				try { o.tabstop = std::stoi(args[++i]); } catch (...) {}
 			}
 			else if (a.size() > 2 && a.compare(0, 2, "-t") == 0) {
-				try { tabstop = std::stoi(a.substr(2)); }
-				catch (...) {}
+				try { o.tabstop = std::stoi(a.substr(2)); } catch (...) {}
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("unexpand", "unknown option: " + a); return 1;
+				perr("unexpand", "unknown option: " + a);
+				return false;
 			}
-			else files.push_back(a);
+			else o.files.push_back(a);
 		}
-		if (tabstop <= 0) tabstop = 8;
-		auto runOn = [&](FILE* f) {
-			std::string buf; int c;
-			auto flush = [&]() {
-				// Compress runs of leading spaces (or, with -a, anywhere)
-				// into tabs at tabstop boundaries.
-				std::size_t i = 0;
-				int col = 0;
-				bool past_indent = false;
-				while (i < buf.size()) {
-					if (!past_indent || all) {
-						std::size_t run_start = i;
-						int run_col = col;
-						while (i < buf.size() && buf[i] == ' ') { ++i; ++col; }
-						int run_len = col - run_col;
-						if (run_len > 0) {
-							int next_tab = ((run_col / tabstop) + 1) * tabstop;
-							while (run_col + (next_tab - run_col) <= col) {
-								int gap = next_tab - run_col;
-								if (gap == 0) break;
-								std::putchar('\t');
-								run_col = next_tab;
-								next_tab += tabstop;
-							}
-							while (run_col < col) { std::putchar(' '); ++run_col; }
-							(void)run_start;
-							continue;
-						}
+		if (o.tabstop <= 0) o.tabstop = 8;
+		return true;
+	}
+
+	// Compress runs of spaces into tabs at @p tabstop boundaries and emit @p line.
+	// When @p all is false only the leading-whitespace run is folded.
+	static void unexpandEmitLine(const std::string& line, int tabstop, bool all) {
+		std::size_t i = 0;
+		int col = 0;
+		bool past_indent = false;
+		while (i < line.size()) {
+			if (!past_indent || all) {
+				int run_col = col;
+				while (i < line.size() && line[i] == ' ') { ++i; ++col; }
+				if (col > run_col) {
+					int next_tab = ((run_col / tabstop) + 1) * tabstop;
+					while (next_tab <= col) {
+						std::putchar('\t');
+						run_col = next_tab;
+						next_tab += tabstop;
 					}
-					char ch = buf[i++];
-					if (ch != ' ' && ch != '\t') past_indent = true;
-					std::putchar(ch);
-					if (ch == '\t') col = ((col / tabstop) + 1) * tabstop;
-					else ++col;
+					while (run_col < col) { std::putchar(' '); ++run_col; }
+					continue;
 				}
-				};
-			while ((c = std::fgetc(f)) != EOF) {
-				if (c == '\n') { flush(); std::putchar('\n'); buf.clear(); }
-				else buf.push_back((char)c);
 			}
-			if (!buf.empty()) flush();
-			};
-		if (files.empty() || files[0] == "-") runOn(stdin);
-		else {
-			for (const auto& p : files) {
-				FILE* f = fopenNative(exec, p, "rb");
-				if (!f) { perr("unexpand", p, std::error_code(errno, std::system_category())); return 1; }
-				runOn(f);
-				std::fclose(f);
+			char ch = line[i++];
+			if (ch != ' ' && ch != '\t') past_indent = true;
+			std::putchar(ch);
+			if (ch == '\t') col = ((col / tabstop) + 1) * tabstop;
+			else ++col;
+		}
+	}
+
+	static void unexpandRunOnStream(FILE* f, int tabstop, bool all) {
+		std::string buf;
+		int c;
+		while ((c = std::fgetc(f)) != EOF) {
+			if (c == '\n') {
+				unexpandEmitLine(buf, tabstop, all);
+				std::putchar('\n');
+				buf.clear();
 			}
+			else buf.push_back((char)c);
+		}
+		if (!buf.empty()) unexpandEmitLine(buf, tabstop, all);
+	}
+
+	static int builtin_unexpand(Executor& exec, const std::vector<std::string>& args) {
+		UnexpandOptions o;
+		if (!parseUnexpandArgs(args, o)) return 1;
+		if (o.files.empty() || o.files[0] == "-") {
+			unexpandRunOnStream(stdin, o.tabstop, o.all);
+			return 0;
+		}
+		for (const auto& p : o.files) {
+			FILE* f = fopenNative(exec, p, "rb");
+			if (!f) {
+				perr("unexpand", p, std::error_code(errno, std::system_category()));
+				return 1;
+			}
+			unexpandRunOnStream(f, o.tabstop, o.all);
+			std::fclose(f);
 		}
 		return 0;
 	}
@@ -4565,73 +4817,89 @@ namespace wbsh {
 
 	// ---- tput -----------------------------------------------------------
 
-	static int builtin_tput(Executor&, const std::vector<std::string>& args) {
-		if (args.empty()) return 0;
-		auto consoleSize = [](int& cols, int& lines) -> bool {
+	static void tputConsoleSize(int& cols, int& lines) {
 #ifdef _WIN32
-			HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-			CONSOLE_SCREEN_BUFFER_INFO info{};
-			if (h == INVALID_HANDLE_VALUE) return false;
-			if (!GetConsoleScreenBufferInfo(h, &info)) return false;
+		HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+		CONSOLE_SCREEN_BUFFER_INFO info{};
+		if (h != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(h, &info)) {
 			cols = info.srWindow.Right - info.srWindow.Left + 1;
 			lines = info.srWindow.Bottom - info.srWindow.Top + 1;
-			return true;
-#else
-			cols = 80; lines = 24;
-			return true;
+			return;
+		}
 #endif
-			};
-		const std::string& cap = args[0];
-		if (cap == "cols" || cap == "columns") {
-			int c = 80, l = 24;
-			consoleSize(c, l);
-			std::printf("%d\n", c);
-			return 0;
-		}
-		if (cap == "lines") {
-			int c = 80, l = 24;
-			consoleSize(c, l);
-			std::printf("%d\n", l);
-			return 0;
-		}
-		// VT-100 escape sequences for the common attributes / motions.
-		if (cap == "clear") { std::printf("\x1b[2J\x1b[H"); return 0; }
-		if (cap == "reset") { std::printf("\x1b" "c");       return 0; }
-		if (cap == "bold") { std::printf("\x1b[1m");        return 0; }
-		if (cap == "dim") { std::printf("\x1b[2m");        return 0; }
-		if (cap == "smul") { std::printf("\x1b[4m");        return 0; }
-		if (cap == "rmul") { std::printf("\x1b[24m");       return 0; }
-		if (cap == "rev") { std::printf("\x1b[7m");        return 0; }
-		if (cap == "blink") { std::printf("\x1b[5m");        return 0; }
-		if (cap == "sgr0" || cap == "op") { std::printf("\x1b[0m"); return 0; }
-		if (cap == "civis") { std::printf("\x1b[?25l");      return 0; }
-		if (cap == "cnorm") { std::printf("\x1b[?25h");      return 0; }
-		if (cap == "el") { std::printf("\x1b[K");         return 0; }
-		if (cap == "ed") { std::printf("\x1b[J");         return 0; }
-		if (cap == "home") { std::printf("\x1b[H");         return 0; }
+		cols = 80;
+		lines = 24;
+	}
+
+	// Static caps: name → literal escape sequence to print. Searched first.
+	static const char* tputStaticEscape(const std::string& cap) {
+		static const std::unordered_map<std::string, std::string> table = {
+			{ "clear", "\x1b[2J\x1b[H" },
+			{ "reset", "\033c"          },
+			{ "bold",  "\x1b[1m"        },
+			{ "dim",   "\x1b[2m"        },
+			{ "smul",  "\x1b[4m"        },
+			{ "rmul",  "\x1b[24m"       },
+			{ "rev",   "\x1b[7m"        },
+			{ "blink", "\x1b[5m"        },
+			{ "sgr0",  "\x1b[0m"        },
+			{ "op",    "\x1b[0m"        },
+			{ "civis", "\x1b[?25l"      },
+			{ "cnorm", "\x1b[?25h"      },
+			{ "el",    "\x1b[K"         },
+			{ "ed",    "\x1b[J"         },
+			{ "home",  "\x1b[H"         },
+		};
+		auto it = table.find(cap);
+		return (it == table.end()) ? nullptr : it->second.c_str();
+	}
+
+	// Caps that take arguments (cup, setaf, setab). Returns 0 on success,
+	// 1 on bad numeric arg, or -1 if @p cap is not one of these.
+	static int tputParameterizedCap(const std::string& cap, const std::vector<std::string>& args) {
 		if (cap == "cup" && args.size() >= 3) {
-			int row = 0, col = 0;
+			int row, col;
 			try { row = std::stoi(args[1]); col = std::stoi(args[2]); }
 			catch (...) { return 1; }
 			std::printf("\x1b[%d;%dH", row + 1, col + 1);
 			return 0;
 		}
 		if ((cap == "setaf" || cap == "setf") && args.size() >= 2) {
-			int n = 0;
-			try { n = std::stoi(args[1]); }
-			catch (...) { return 1; }
+			int n;
+			try { n = std::stoi(args[1]); } catch (...) { return 1; }
 			if (n >= 0 && n < 8) std::printf("\x1b[%dm", 30 + n);
-			else std::printf("\x1b[39m");
+			else                 std::printf("\x1b[39m");
 			return 0;
 		}
 		if ((cap == "setab" || cap == "setb") && args.size() >= 2) {
-			int n = 0;
-			try { n = std::stoi(args[1]); }
-			catch (...) { return 1; }
+			int n;
+			try { n = std::stoi(args[1]); } catch (...) { return 1; }
 			if (n >= 0 && n < 8) std::printf("\x1b[%dm", 40 + n);
-			else std::printf("\x1b[49m");
+			else                 std::printf("\x1b[49m");
 			return 0;
 		}
+		return -1;
+	}
+
+	static int builtin_tput(Executor&, const std::vector<std::string>& args) {
+		if (args.empty()) return 0;
+		const std::string& cap = args[0];
+		if (cap == "cols" || cap == "columns") {
+			int c, l; tputConsoleSize(c, l);
+			std::printf("%d\n", c);
+			return 0;
+		}
+		if (cap == "lines") {
+			int c, l; tputConsoleSize(c, l);
+			std::printf("%d\n", l);
+			return 0;
+		}
+		if (const char* esc = tputStaticEscape(cap); esc) {
+			std::fputs(esc, stdout);
+			return 0;
+		}
+		int rc = tputParameterizedCap(cap, args);
+		if (rc >= 0) return rc;
 		std::fprintf(stderr, "wbsh: tput: unknown capability: %s\n", cap.c_str());
 		return 1;
 	}
@@ -4833,27 +5101,30 @@ namespace wbsh {
 
 	// ---- xargs (minimal) ------------------------------------------------
 
-	static int builtin_xargs(Executor& exec, const std::vector<std::string>& args) {
-		int n_per = -1;   // -1 means "all in one batch"
-		std::vector<std::string> cmd;
+	// Returns true on success. On failure sets the caller's status and returns false.
+	static bool parseXargsArgs(const std::vector<std::string>& args,
+	                           int& n_per, std::vector<std::string>& cmd) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "-n" && i + 1 < args.size()) {
-				try { n_per = std::stoi(args[++i]); }
-				catch (...) { return 1; }
+				try { n_per = std::stoi(args[++i]); } catch (...) { return false; }
 				continue;
 			}
 			if (a.size() > 2 && a.compare(0, 2, "-n") == 0) {
-				try { n_per = std::stoi(a.substr(2)); }
-				catch (...) { return 1; }
+				try { n_per = std::stoi(a.substr(2)); } catch (...) { return false; }
 				continue;
 			}
-			if (a == "--") { for (++i; i < args.size(); ++i) cmd.push_back(args[i]); break; }
+			if (a == "--") {
+				for (++i; i < args.size(); ++i) cmd.push_back(args[i]);
+				break;
+			}
 			cmd.push_back(a);
 		}
-		if (cmd.empty()) cmd.push_back("echo");
+		return true;
+	}
 
-		// Split stdin on whitespace into items.
+	// Read whitespace-separated tokens from stdin.
+	static std::vector<std::string> xargsReadItems() {
 		std::vector<std::string> items;
 		std::string cur;
 		int c;
@@ -4864,127 +5135,163 @@ namespace wbsh {
 			else cur.push_back(static_cast<char>(c));
 		}
 		if (!cur.empty()) items.push_back(std::move(cur));
+		return items;
+	}
 
+	// Single-quote each arg (escaping inner ') and join with spaces — ready for executeText.
+	static std::string xargsQuoteArgv(const std::vector<std::string>& argv) {
+		std::string line;
+		for (std::size_t k = 0; k < argv.size(); ++k) {
+			if (k) line.push_back(' ');
+			line.push_back('\'');
+			for (char ch : argv[k]) {
+				if (ch == '\'') line += "'\\''";
+				else line.push_back(ch);
+			}
+			line.push_back('\'');
+		}
+		return line;
+	}
+
+	// Run one batch of items appended to `cmd`. Returns the child exit status.
+	static int xargsInvokeBatch(Executor& exec, const std::vector<std::string>& cmd,
+	                            std::vector<std::string> batch, bool skip_empty) {
+		if (batch.empty() && skip_empty) return 0;
+		std::vector<std::string> argv = cmd;
+		for (auto& it : batch) argv.push_back(std::move(it));
+		if (argv.empty()) return 0;
+		if (exec.isFunction(argv[0]) || exec.isBuiltin(argv[0])) {
+			std::vector<std::string> a(argv.begin() + 1, argv.end());
+			return exec.isBuiltin(argv[0])
+				? exec.callBuiltin(argv[0], a)
+				: exec.callFunction(argv[0], a);
+		}
+		return exec.executeText(xargsQuoteArgv(argv), "<xargs>");
+	}
+
+	static int builtin_xargs(Executor& exec, const std::vector<std::string>& args) {
+		int n_per = -1;   // -1 means "all in one batch"
+		std::vector<std::string> cmd;
+		if (!parseXargsArgs(args, n_per, cmd)) return 1;
+		if (cmd.empty()) cmd.push_back("echo");
+
+		std::vector<std::string> items = xargsReadItems();
 		int rc = 0;
-		auto invoke_batch = [&](std::vector<std::string> batch) {
-			if (batch.empty() && n_per < 0) return;   // empty in single-batch mode: no-op
-			std::vector<std::string> argv = cmd;
-			for (auto& it : batch) argv.push_back(std::move(it));
-			if (argv.empty()) return;
-			if (exec.isFunction(argv[0]) || exec.isBuiltin(argv[0])) {
-				std::vector<std::string> a(argv.begin() + 1, argv.end());
-				int r = exec.isBuiltin(argv[0])
-					? exec.callBuiltin(argv[0], a)
-					: exec.callFunction(argv[0], a);
-				if (r != 0) rc = r;
-			}
-			else {
-				// Re-run via wbsh's executeText: build a quoted string. Quote
-				// each arg conservatively (single-quote, escape inner ').
-				std::string line;
-				for (std::size_t k = 0; k < argv.size(); ++k) {
-					if (k) line.push_back(' ');
-					line.push_back('\'');
-					for (char ch : argv[k]) {
-						if (ch == '\'') line += "'\\''";
-						else line.push_back(ch);
-					}
-					line.push_back('\'');
-				}
-				int r = exec.executeText(line, "<xargs>");
-				if (r != 0) rc = r;
-			}
-			};
-
 		if (n_per > 0) {
 			for (std::size_t k = 0; k < items.size(); k += static_cast<std::size_t>(n_per)) {
 				std::vector<std::string> batch;
 				for (int j = 0; j < n_per && k + j < items.size(); ++j) {
 					batch.push_back(items[k + j]);
 				}
-				invoke_batch(std::move(batch));
+				int r = xargsInvokeBatch(exec, cmd, std::move(batch), /*skip_empty=*/false);
+				if (r != 0) rc = r;
 			}
-		}
-		else {
-			invoke_batch(items);
+		} else {
+			int r = xargsInvokeBatch(exec, cmd, items, /*skip_empty=*/true);
+			if (r != 0) rc = r;
 		}
 		return rc;
 	}
 
-	void registerCoreutils(Executor& exec) {
-		exec.registerBuiltin("ls", builtin_ls);
-		exec.registerBuiltin("cat", builtin_cat);
-		exec.registerBuiltin("clear", builtin_clear);
-		exec.registerBuiltin("which", builtin_which);
-		exec.registerBuiltin("mkdir", builtin_mkdir);
-		exec.registerBuiltin("rmdir", builtin_rmdir);
-		exec.registerBuiltin("rm", builtin_rm);
-		exec.registerBuiltin("cp", builtin_cp);
-		exec.registerBuiltin("mv", builtin_mv);
-		exec.registerBuiltin("touch", builtin_touch);
-		exec.registerBuiltin("head", builtin_head);
-		exec.registerBuiltin("tail", builtin_tail);
-		exec.registerBuiltin("wc", builtin_wc);
-		exec.registerBuiltin("whoami", builtin_whoami);
-		exec.registerBuiltin("hostname", builtin_hostname);
-		exec.registerBuiltin("env", builtin_env);
-		exec.registerBuiltin("sleep", builtin_sleep);
-		exec.registerBuiltin("basename", builtin_basename);
-		exec.registerBuiltin("dirname", builtin_dirname);
-		exec.registerBuiltin("sort", builtin_sort);
-		exec.registerBuiltin("uniq", builtin_uniq);
-		exec.registerBuiltin("tr", builtin_tr);
-		exec.registerBuiltin("cut", builtin_cut);
-		exec.registerBuiltin("tee", builtin_tee);
-		exec.registerBuiltin("paste", builtin_paste);
-		exec.registerBuiltin("tac", builtin_tac);
-		exec.registerBuiltin("rev", builtin_rev);
-		exec.registerBuiltin("nl", builtin_nl);
-		exec.registerBuiltin("date", builtin_date);
-		exec.registerBuiltin("seq", builtin_seq);
-		exec.registerBuiltin("uname", builtin_uname);
-		exec.registerBuiltin("id", builtin_id);
+	// File / directory operations: ls, cat, mkdir, mv, cp, rm, etc.
+	static void registerFileBuiltins(Executor& exec) {
+		exec.registerBuiltin("ls",       builtin_ls);
+		exec.registerBuiltin("cat",      builtin_cat);
+		exec.registerBuiltin("clear",    builtin_clear);
+		exec.registerBuiltin("which",    builtin_which);
+		exec.registerBuiltin("mkdir",    builtin_mkdir);
+		exec.registerBuiltin("rmdir",    builtin_rmdir);
+		exec.registerBuiltin("rm",       builtin_rm);
+		exec.registerBuiltin("cp",       builtin_cp);
+		exec.registerBuiltin("mv",       builtin_mv);
+		exec.registerBuiltin("touch",    builtin_touch);
+		exec.registerBuiltin("head",     builtin_head);
+		exec.registerBuiltin("tail",     builtin_tail);
+		exec.registerBuiltin("wc",       builtin_wc);
+		exec.registerBuiltin("stat",     builtin_stat);
+		exec.registerBuiltin("chmod",    builtin_chmod);
+		exec.registerBuiltin("ln",       builtin_ln);
+		exec.registerBuiltin("cmp",      builtin_cmp);
+		exec.registerBuiltin("diff",     builtin_diff);
+		exec.registerBuiltin("du",       builtin_du);
+		exec.registerBuiltin("df",       builtin_df);
 		exec.registerBuiltin("realpath", builtin_realpath);
 		exec.registerBuiltin("readlink", builtin_readlink);
-		exec.registerBuiltin("expr", builtin_expr);
-		exec.registerBuiltin("grep", builtin_grep);
-		exec.registerBuiltin("find", builtin_find);
-		exec.registerBuiltin("xargs", builtin_xargs);
-		exec.registerBuiltin("pushd", builtin_pushd);
-		exec.registerBuiltin("popd", builtin_popd);
-		exec.registerBuiltin("dirs", builtin_dirs);
-		exec.registerBuiltin("xxd", builtin_xxd);
-		exec.registerBuiltin("od", builtin_od);
-		exec.registerBuiltin("fold", builtin_fold);
-		exec.registerBuiltin("column", builtin_column);
-		exec.registerBuiltin("expand", builtin_expand);
+		exec.registerBuiltin("basename", builtin_basename);
+		exec.registerBuiltin("dirname",  builtin_dirname);
+		exec.registerBuiltin("pushd",    builtin_pushd);
+		exec.registerBuiltin("popd",     builtin_popd);
+		exec.registerBuiltin("dirs",     builtin_dirs);
+	}
+
+	// Text manipulation: sort, uniq, grep, find, sed, awk, etc.
+	static void registerTextBuiltins(Executor& exec) {
+		exec.registerBuiltin("sort",     builtin_sort);
+		exec.registerBuiltin("uniq",     builtin_uniq);
+		exec.registerBuiltin("tr",       builtin_tr);
+		exec.registerBuiltin("cut",      builtin_cut);
+		exec.registerBuiltin("tee",      builtin_tee);
+		exec.registerBuiltin("paste",    builtin_paste);
+		exec.registerBuiltin("tac",      builtin_tac);
+		exec.registerBuiltin("rev",      builtin_rev);
+		exec.registerBuiltin("nl",       builtin_nl);
+		exec.registerBuiltin("fold",     builtin_fold);
+		exec.registerBuiltin("column",   builtin_column);
+		exec.registerBuiltin("expand",   builtin_expand);
 		exec.registerBuiltin("unexpand", builtin_unexpand);
-		exec.registerBuiltin("comm", builtin_comm);
-		exec.registerBuiltin("yes", builtin_yes);
-		exec.registerBuiltin("nproc", builtin_nproc);
-		exec.registerBuiltin("tput", builtin_tput);
-		exec.registerBuiltin("mktemp", builtin_mktemp);
-		exec.registerBuiltin("kill", builtin_kill);
-		exec.registerBuiltin("sed", builtin_sed);
-		exec.registerBuiltin("awk", builtin_awk);
-		exec.registerBuiltin("gawk", builtin_awk);
-		registerBcBuiltin(exec);   // defined in coreutils_bc.cpp
-		exec.registerBuiltin("gzip", builtin_gzip);
-		exec.registerBuiltin("gunzip", builtin_gunzip);
-		exec.registerBuiltin("zcat", builtin_zcat);
-		exec.registerBuiltin("zip", builtin_zip);
-		exec.registerBuiltin("unzip", builtin_unzip);
-		exec.registerBuiltin("stat", builtin_stat);
-		exec.registerBuiltin("chmod", builtin_chmod);
-		exec.registerBuiltin("ln", builtin_ln);
-		exec.registerBuiltin("cmp", builtin_cmp);
-		exec.registerBuiltin("diff", builtin_diff);
-		exec.registerBuiltin("du", builtin_du);
-		exec.registerBuiltin("df", builtin_df);
-		registerHashBuiltins(exec);   // defined in coreutils_hash.cpp
+		exec.registerBuiltin("comm",     builtin_comm);
+		exec.registerBuiltin("grep",     builtin_grep);
+		exec.registerBuiltin("find",     builtin_find);
+		exec.registerBuiltin("xargs",    builtin_xargs);
+		exec.registerBuiltin("sed",      builtin_sed);
+		exec.registerBuiltin("awk",      builtin_awk);
+		exec.registerBuiltin("gawk",     builtin_awk);
+	}
+
+	// Display / encoding: xxd, od, base64.
+	static void registerEncodingBuiltins(Executor& exec) {
+		exec.registerBuiltin("xxd",    builtin_xxd);
+		exec.registerBuiltin("od",     builtin_od);
 		exec.registerBuiltin("base64", builtin_base64);
-		registerCurlBuiltin(exec);   // defined in coreutils_curl.cpp
-		exec.registerBuiltin("tar", builtin_tar);
+	}
+
+	// Archive / compression: gzip, zip, tar.
+	static void registerArchiveBuiltins(Executor& exec) {
+		exec.registerBuiltin("gzip",   builtin_gzip);
+		exec.registerBuiltin("gunzip", builtin_gunzip);
+		exec.registerBuiltin("zcat",   builtin_zcat);
+		exec.registerBuiltin("zip",    builtin_zip);
+		exec.registerBuiltin("unzip",  builtin_unzip);
+		exec.registerBuiltin("tar",    builtin_tar);
+	}
+
+	// System info / misc: whoami, hostname, env, date, seq, etc.
+	static void registerSystemBuiltins(Executor& exec) {
+		exec.registerBuiltin("whoami",   builtin_whoami);
+		exec.registerBuiltin("hostname", builtin_hostname);
+		exec.registerBuiltin("env",      builtin_env);
+		exec.registerBuiltin("sleep",    builtin_sleep);
+		exec.registerBuiltin("date",     builtin_date);
+		exec.registerBuiltin("seq",      builtin_seq);
+		exec.registerBuiltin("uname",    builtin_uname);
+		exec.registerBuiltin("id",       builtin_id);
+		exec.registerBuiltin("expr",     builtin_expr);
+		exec.registerBuiltin("yes",      builtin_yes);
+		exec.registerBuiltin("nproc",    builtin_nproc);
+		exec.registerBuiltin("tput",     builtin_tput);
+		exec.registerBuiltin("mktemp",   builtin_mktemp);
+		exec.registerBuiltin("kill",     builtin_kill);
+	}
+
+	void registerCoreutils(Executor& exec) {
+		registerFileBuiltins(exec);
+		registerTextBuiltins(exec);
+		registerEncodingBuiltins(exec);
+		registerArchiveBuiltins(exec);
+		registerSystemBuiltins(exec);
+		registerBcBuiltin(exec);       // defined in coreutils_bc.cpp
+		registerHashBuiltins(exec);    // defined in coreutils_hash.cpp
+		registerCurlBuiltin(exec);     // defined in coreutils_curl.cpp
 	}
 
 }  // namespace wbsh

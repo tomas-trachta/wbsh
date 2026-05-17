@@ -195,6 +195,17 @@ namespace wbsh {
 		std::string evalArraySlice(const std::string& name, const std::string& args);
 		std::string evalParamReplace(const std::string& cur,
 		                             const std::string& args, bool all);
+		// State for expandParamApplyOp — bundled so the operator-dispatch
+		// helper doesn't need 5+ parameters.
+		struct ParamOpCtx {
+			const std::string& name;
+			const std::string& subscript;
+			bool has_subscript;
+			const std::string& body;       // for ${name:OFF:LEN} / pattern args
+			std::string named_value;       // resolved scalar value
+		};
+		std::string expandParamApplyOp(char op, bool colon, std::size_t op_pos,
+		                               ParamOpCtx& ctx);
 
 		std::string runCmdSubst(const std::string& body);
 		std::string interpretAnsiC(const std::string& body);

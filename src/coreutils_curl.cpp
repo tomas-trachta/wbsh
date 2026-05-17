@@ -114,9 +114,15 @@ namespace wbsh {
 				if (a == "--head")         { o.head_only = true; o.method = "HEAD"; continue; }
 				if (a == "--location")     continue;
 				if (a == "--remote-name")  { o.save_remote = true; continue; }
-				if (a == "--output"  && i + 1 < args.size()) { o.output_file = args[++i]; continue; }
-				if (a == "--request" && i + 1 < args.size()) { o.method      = args[++i]; continue; }
-				if (a == "--header"  && i + 1 < args.size()) { o.headers.push_back(args[++i]); continue; }
+				if (a == "--output"  && i + 1 < args.size()) {
+					o.output_file = args[++i]; continue;
+				}
+				if (a == "--request" && i + 1 < args.size()) {
+					o.method = args[++i]; continue;
+				}
+				if (a == "--header"  && i + 1 < args.size()) {
+					o.headers.push_back(args[++i]); continue;
+				}
 				if (a == "--data"    && i + 1 < args.size()) {
 					o.body_data = args[++i];
 					if (o.method == "GET") o.method = "POST";

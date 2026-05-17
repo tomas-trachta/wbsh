@@ -126,113 +126,122 @@ namespace wbsh {
 			}
 		}
 
+	static void walkExpandIf(const IfClause& ic, Expander& exp, Environment& env,
+	                         std::ostream& os, int depth) {
+		indent(os, depth); os << "If\n";
+		for (std::size_t i = 0; i < ic.branches.size(); ++i) {
+			indent(os, depth + 1);
+			os << (i == 0 ? "if-cond:" : "elif-cond:") << "\n";
+			if (ic.branches[i].cond) walkAndExpand(*ic.branches[i].cond, exp, env, os, depth + 2);
+			indent(os, depth + 1); os << "then:\n";
+			if (ic.branches[i].body) walkAndExpand(*ic.branches[i].body, exp, env, os, depth + 2);
+		}
+		if (ic.else_body) {
+			indent(os, depth + 1); os << "else:\n";
+			walkAndExpand(*ic.else_body, exp, env, os, depth + 2);
+		}
+	}
+
+	static void walkExpandFor(const ForClause& f, Expander& exp, Environment& env,
+	                          std::ostream& os, int depth) {
+		indent(os, depth); os << "For " << f.var << "\n";
+		if (f.has_in) {
+			indent(os, depth + 1); os << "items:";
+			for (const auto& w : f.items) {
+				try {
+					auto fields = exp.expandWord(w);
+					for (const auto& s : fields) { os << ' '; escape(os, s); }
+				} catch (const ExpandError& e) {
+					os << " <error: " << e.what() << ">";
+				}
+			}
+			os << "\n";
+		}
+		indent(os, depth + 1); os << "do:\n";
+		if (f.body) walkAndExpand(*f.body, exp, env, os, depth + 2);
+	}
+
+	static void walkExpandCase(const CaseClause& c, Expander& exp, Environment& env,
+	                           std::ostream& os, int depth) {
+		indent(os, depth); os << "Case subject=";
+		try { escape(os, exp.expandStringValue(c.subject)); }
+		catch (const ExpandError& e) { os << "<error: " << e.what() << ">"; }
+		os << "\n";
+		for (const auto& it : c.items) {
+			indent(os, depth + 1); os << "patterns:";
+			for (const auto& p : it.patterns) {
+				try { os << ' '; escape(os, exp.expandStringValue(p)); }
+				catch (const ExpandError&) { os << " <err>"; }
+			}
+			os << "\n";
+			if (it.body) {
+				indent(os, depth + 2); os << "body:\n";
+				walkAndExpand(*it.body, exp, env, os, depth + 3);
+			}
+		}
+	}
+
 	static void walkAndExpand(const Node& n, Expander& exp, Environment& env,
 	                          std::ostream& os, int depth) {
 		switch (n.kind) {
-			case Node::Kind::SimpleCommand:
-				expandSimpleCommand(static_cast<const SimpleCommand&>(n), exp, env, os, depth);
-				break;
-			case Node::Kind::Pipeline: {
-				const auto& p = static_cast<const Pipeline&>(n);
-				indent(os, depth); os << "Pipeline" << (p.bang ? " (bang)" : "") << "\n";
-				for (const auto& c : p.commands) walkAndExpand(*c, exp, env, os, depth + 1);
-				break;
-			}
-			case Node::Kind::AndOr: {
-				const auto& a = static_cast<const AndOr&>(n);
-				indent(os, depth); os << (a.op == AndOr::Op::AndIf ? "&&" : "||") << "\n";
-				walkAndExpand(*a.left, exp, env, os, depth + 1);
-				walkAndExpand(*a.right, exp, env, os, depth + 1);
-				break;
-			}
-			case Node::Kind::List: {
-				const auto& l = static_cast<const List&>(n);
-				for (const auto& it : l.items) walkAndExpand(*it.command, exp, env, os, depth);
-				break;
-			}
-			case Node::Kind::BraceGroup: {
-				const auto& bg = static_cast<const BraceGroup&>(n);
-				indent(os, depth); os << "BraceGroup\n";
-				if (bg.body) walkAndExpand(*bg.body, exp, env, os, depth + 1);
-				break;
-			}
-			case Node::Kind::Subshell: {
-				const auto& ss = static_cast<const Subshell&>(n);
-				indent(os, depth); os << "Subshell\n";
-				if (ss.body) walkAndExpand(*ss.body, exp, env, os, depth + 1);
-				break;
-			}
-			case Node::Kind::IfClause: {
-				const auto& ic = static_cast<const IfClause&>(n);
-				indent(os, depth); os << "If\n";
-				for (std::size_t i = 0; i < ic.branches.size(); ++i) {
-					indent(os, depth + 1);
-					os << (i == 0 ? "if-cond:" : "elif-cond:") << "\n";
-					if (ic.branches[i].cond) walkAndExpand(*ic.branches[i].cond, exp, env, os, depth + 2);
-					indent(os, depth + 1); os << "then:\n";
-					if (ic.branches[i].body) walkAndExpand(*ic.branches[i].body, exp, env, os, depth + 2);
-				}
-				if (ic.else_body) {
-					indent(os, depth + 1); os << "else:\n";
-					walkAndExpand(*ic.else_body, exp, env, os, depth + 2);
-				}
-				break;
-			}
-			case Node::Kind::WhileClause: {
-				const auto& w = static_cast<const WhileClause&>(n);
-				indent(os, depth); os << (w.until ? "Until\n" : "While\n");
-				indent(os, depth + 1); os << "cond:\n";
-				if (w.cond) walkAndExpand(*w.cond, exp, env, os, depth + 2);
-				indent(os, depth + 1); os << "do:\n";
-				if (w.body) walkAndExpand(*w.body, exp, env, os, depth + 2);
-				break;
-			}
-			case Node::Kind::ForClause: {
-				const auto& f = static_cast<const ForClause&>(n);
-				indent(os, depth); os << "For " << f.var << "\n";
-				if (f.has_in) {
-					indent(os, depth + 1); os << "items:";
-					for (const auto& w : f.items) {
-						try {
-							auto fields = exp.expandWord(w);
-							for (const auto& s : fields) { os << ' '; escape(os, s); }
-						} catch (const ExpandError& e) {
-							os << " <error: " << e.what() << ">";
-						}
-					}
-					os << "\n";
-				}
-				indent(os, depth + 1); os << "do:\n";
-				if (f.body) walkAndExpand(*f.body, exp, env, os, depth + 2);
-				break;
-			}
-			case Node::Kind::CaseClause: {
-				const auto& c = static_cast<const CaseClause&>(n);
-				indent(os, depth); os << "Case subject=";
-				try { escape(os, exp.expandStringValue(c.subject)); }
-				catch (const ExpandError& e) { os << "<error: " << e.what() << ">"; }
-				os << "\n";
-				for (const auto& it : c.items) {
-					indent(os, depth + 1); os << "patterns:";
-					for (const auto& p : it.patterns) {
-						try { os << ' '; escape(os, exp.expandStringValue(p)); }
-						catch (const ExpandError&) { os << " <err>"; }
-					}
-					os << "\n";
-					if (it.body) {
-						indent(os, depth + 2); os << "body:\n";
-						walkAndExpand(*it.body, exp, env, os, depth + 3);
-					}
-				}
-				break;
-			}
-			case Node::Kind::FunctionDef: {
-				const auto& f = static_cast<const FunctionDef&>(n);
-				indent(os, depth); os << "FunctionDef " << f.name << "\n";
-				if (f.body) walkAndExpand(*f.body, exp, env, os, depth + 1);
-				break;
-			}
-			}
+		case Node::Kind::SimpleCommand:
+			expandSimpleCommand(static_cast<const SimpleCommand&>(n), exp, env, os, depth);
+			return;
+		case Node::Kind::Pipeline: {
+			const auto& p = static_cast<const Pipeline&>(n);
+			indent(os, depth); os << "Pipeline" << (p.bang ? " (bang)" : "") << "\n";
+			for (const auto& c : p.commands) walkAndExpand(*c, exp, env, os, depth + 1);
+			return;
+		}
+		case Node::Kind::AndOr: {
+			const auto& a = static_cast<const AndOr&>(n);
+			indent(os, depth); os << (a.op == AndOr::Op::AndIf ? "&&" : "||") << "\n";
+			walkAndExpand(*a.left, exp, env, os, depth + 1);
+			walkAndExpand(*a.right, exp, env, os, depth + 1);
+			return;
+		}
+		case Node::Kind::List: {
+			const auto& l = static_cast<const List&>(n);
+			for (const auto& it : l.items) walkAndExpand(*it.command, exp, env, os, depth);
+			return;
+		}
+		case Node::Kind::BraceGroup: {
+			const auto& bg = static_cast<const BraceGroup&>(n);
+			indent(os, depth); os << "BraceGroup\n";
+			if (bg.body) walkAndExpand(*bg.body, exp, env, os, depth + 1);
+			return;
+		}
+		case Node::Kind::Subshell: {
+			const auto& ss = static_cast<const Subshell&>(n);
+			indent(os, depth); os << "Subshell\n";
+			if (ss.body) walkAndExpand(*ss.body, exp, env, os, depth + 1);
+			return;
+		}
+		case Node::Kind::IfClause:
+			walkExpandIf(static_cast<const IfClause&>(n), exp, env, os, depth);
+			return;
+		case Node::Kind::WhileClause: {
+			const auto& w = static_cast<const WhileClause&>(n);
+			indent(os, depth); os << (w.until ? "Until\n" : "While\n");
+			indent(os, depth + 1); os << "cond:\n";
+			if (w.cond) walkAndExpand(*w.cond, exp, env, os, depth + 2);
+			indent(os, depth + 1); os << "do:\n";
+			if (w.body) walkAndExpand(*w.body, exp, env, os, depth + 2);
+			return;
+		}
+		case Node::Kind::ForClause:
+			walkExpandFor(static_cast<const ForClause&>(n), exp, env, os, depth);
+			return;
+		case Node::Kind::CaseClause:
+			walkExpandCase(static_cast<const CaseClause&>(n), exp, env, os, depth);
+			return;
+		case Node::Kind::FunctionDef: {
+			const auto& f = static_cast<const FunctionDef&>(n);
+			indent(os, depth); os << "FunctionDef " << f.name << "\n";
+			if (f.body) walkAndExpand(*f.body, exp, env, os, depth + 1);
+			return;
+		}
+		}
 	}
 
 	int runOnSource(const std::string& src, bool show_tokens, bool show_ast,

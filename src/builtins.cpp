@@ -101,7 +101,8 @@ namespace wbsh {
 			}
 			case 'x': {
 				int val = 0, cnt = 0;
-				while (cnt < 2 && i + 1 < s.size() && std::isxdigit(static_cast<unsigned char>(s[i + 1]))) {
+				while (cnt < 2 && i + 1 < s.size()
+				    && std::isxdigit(static_cast<unsigned char>(s[i + 1]))) {
 					char h = s[++i];
 					int d = std::isdigit(static_cast<unsigned char>(h))
 					          ? h - '0'

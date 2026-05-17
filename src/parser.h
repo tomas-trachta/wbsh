@@ -105,6 +105,7 @@ namespace wbsh {
 		std::unique_ptr<DBracketCond::Expr> parseDBracketAnd();
 		std::unique_ptr<DBracketCond::Expr> parseDBracketUnary();
 		std::unique_ptr<DBracketCond::Expr> parseDBracketPrimary();
+		bool tryParseDBracketUnary(DBracketCond::Expr& e);
 		bool atDBracketEnd() const;
 		NodePtr parseCompoundListUntilReserved(std::initializer_list<const char*> stops);
 

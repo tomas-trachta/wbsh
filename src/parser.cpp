@@ -516,7 +516,7 @@ namespace wbsh {
 			if (match(TokKind::DSemi))         item.term = CaseClause::Term::DSemi;
 			else if (match(TokKind::SemiAmp))  item.term = CaseClause::Term::SemiAmp;
 			else if (match(TokKind::DSemiAmp)) item.term = CaseClause::Term::DSemiAmp;
-			else                               item.term = CaseClause::Term::DSemi;   // implicit at esac
+			else                               item.term = CaseClause::Term::DSemi;   // implicit
 			skipNewlines();
 			node->items.push_back(std::move(item));
 		}
@@ -572,8 +572,65 @@ namespace wbsh {
 		return parseDBracketPrimary();
 	}
 
+	// `-X` unary file-test / string-test operator inside `[[ ... ]]`.
+	static bool isDBracketUnaryOp(const std::string& s) {
+		if (s.size() != 2 || s[0] != '-') return false;
+		static const char ops[] = "abcdefghknoprstuwxzGLNOSU";
+		for (char c : ops) if (c == s[1]) return true;
+		return false;
+	}
+
+	// Binary operators usable inside `[[ ... ]]` other than `<` / `>` (which
+	// arrive as their own token kinds).
+	static bool isDBracketBinaryOp(const std::string& s) {
+		return s == "==" || s == "!=" || s == "=" || s == "=~"
+		    || s == "-eq" || s == "-ne" || s == "-lt" || s == "-le"
+		    || s == "-gt" || s == "-ge"
+		    || s == "-ef" || s == "-nt" || s == "-ot";
+	}
+
+	// Render a token as its operator string ("<" / ">" / a literal word), or
+	// empty if it can't be one.
+	static std::string dBracketOpAsString(const Token& t) {
+		if (t.kind == TokKind::Less)  return "<";
+		if (t.kind == TokKind::Great) return ">";
+		if (t.kind == TokKind::Word
+		    && t.segments.size() == 1
+		    && t.segments[0].kind == WordSegment::Kind::Literal) {
+			return t.segments[0].text;
+		}
+		return {};
+	}
+
+	// Try to parse a leading `-X OPERAND` unary primary, when the token after
+	// OPERAND is a connective or closer. Returns true (with @p e populated)
+	// when consumed; returns false when no unary form applies — the caller
+	// then falls back to the binary / single-operand parse.
+	bool Parser::tryParseDBracketUnary(DBracketCond::Expr& e) {
+		if (peek().kind != TokKind::Word
+		    || peek().segments.size() != 1
+		    || peek().segments[0].kind != WordSegment::Kind::Literal
+		    || !isDBracketUnaryOp(peek().segments[0].text)
+		    || peek(1).kind != TokKind::Word
+		    || isReserved(peek(1), "]]"))
+		{
+			return false;
+		}
+		// `-f && X` — only treat as unary if the operand is followed by a
+		// connective / closer; otherwise fall back to single-operand truthiness.
+		const Token& after = peek(2);
+		bool ok = isReserved(after, "]]")
+		    || after.kind == TokKind::AndIf
+		    || after.kind == TokKind::OrIf
+		    || after.kind == TokKind::RParen;
+		if (!ok) return false;
+		e.op = peek().segments[0].text;
+		advance();
+		e.lhs = tokenToWord(advance());
+		return true;
+	}
+
 	std::unique_ptr<DBracketCond::Expr> Parser::parseDBracketPrimary() {
-		// Parenthesised sub-expression.
 		if (check(TokKind::LParen)) {
 			advance();
 			auto inner = parseDBracketExpr();
@@ -585,43 +642,7 @@ namespace wbsh {
 		auto e = std::make_unique<DBracketCond::Expr>();
 		e->k = DBracketCond::Expr::K::Prim;
 
-		// Helper: lookahead to detect a unary operator like -f / -d / ...
-		auto isUnaryOp = [](const std::string& s) {
-			if (s.size() != 2 || s[0] != '-') return false;
-			static const char ops[] = "abcdefghknoprstuwxzGLNOSU";
-			for (char c : ops) if (c == s[1]) return true;
-			return false;
-		};
-		auto isBinaryOp = [](const std::string& s) {
-			return s == "==" || s == "!=" || s == "=" || s == "=~"
-			    || s == "-eq" || s == "-ne" || s == "-lt" || s == "-le"
-			    || s == "-gt" || s == "-ge"
-			    || s == "-ef" || s == "-nt" || s == "-ot";
-		};
-
-		// Unary prefix?
-		if (peek().kind == TokKind::Word
-		    && peek().segments.size() == 1
-		    && peek().segments[0].kind == WordSegment::Kind::Literal
-		    && isUnaryOp(peek().segments[0].text)
-		    && peek(1).kind == TokKind::Word
-		    && !isReserved(peek(1), "]]"))
-		{
-			// But beware: `-f && something` — the next token is the operand,
-			// only treat as unary if the token AFTER the operand is a
-			// connective / closer.
-			const Token& after = peek(2);
-			bool ok = isReserved(after, "]]")
-			    || after.kind == TokKind::AndIf
-			    || after.kind == TokKind::OrIf
-			    || after.kind == TokKind::RParen;
-			if (ok) {
-				e->op = peek().segments[0].text;
-				advance();
-				e->lhs = tokenToWord(advance());
-				return e;
-			}
-		}
+		if (tryParseDBracketUnary(*e)) return e;
 
 		if (peek().kind != TokKind::Word) {
 			error(peek(), "expected operand in [[ ... ]]");
@@ -629,19 +650,9 @@ namespace wbsh {
 		}
 		e->lhs = tokenToWord(advance());
 
-		// Binary operator?
-		auto opAsString = [](const Token& t) -> std::string {
-			if (t.kind == TokKind::Less)  return "<";
-			if (t.kind == TokKind::Great) return ">";
-			if (t.kind == TokKind::Word
-			    && t.segments.size() == 1
-			    && t.segments[0].kind == WordSegment::Kind::Literal) {
-				return t.segments[0].text;
-			}
-			return {};
-		};
-		std::string opstr = opAsString(peek());
-		if (!opstr.empty() && (opstr == "<" || opstr == ">" || isBinaryOp(opstr))
+		const std::string opstr = dBracketOpAsString(peek());
+		if (!opstr.empty()
+		    && (opstr == "<" || opstr == ">" || isDBracketBinaryOp(opstr))
 		    && !isReserved(peek(), "]]"))
 		{
 			e->op = opstr;
