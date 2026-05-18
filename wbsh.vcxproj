@@ -26,6 +26,17 @@
     <RootNamespace>wbsh</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
+  <!-- Single source of truth for the wbsh version. installer/build.ps1
+       reads WbshVersion from this file; the C++ and RC compilers receive
+       it as preprocessor defines (see ClCompile / ResourceCompile blocks
+       below). Bumping the version means editing only the three lines
+       below. -->
+  <PropertyGroup Label="Version">
+    <WbshVersionMajor>1</WbshVersionMajor>
+    <WbshVersionMinor>0</WbshVersionMinor>
+    <WbshVersionPatch>6</WbshVersionPatch>
+    <WbshVersion>$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)</WbshVersion>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
@@ -78,7 +89,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -93,7 +104,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -106,7 +117,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -121,7 +132,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -129,6 +140,16 @@
       <SubSystem>Console</SubSystem>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+  </ItemDefinitionGroup>
+
+  <!-- Version macros for src\wbsh.rc. Defined once (not per-config)
+       because the version doesn't vary between Debug / Release / x64 /
+       Win32 builds. wbsh.rc stringifies the three numeric defines into
+       a "M.m.p" literal for the StringFileInfo block. -->
+  <ItemDefinitionGroup>
+    <ResourceCompile>
+      <PreprocessorDefinitions>WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
   </ItemDefinitionGroup>
 
   <ItemGroup>

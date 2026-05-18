@@ -601,17 +601,29 @@ namespace wbsh {
 		if (env.get("PS2").empty()) env.set("PS2", "> ");
 	}
 
+#if !defined(WBSH_VERSION_MAJOR) || !defined(WBSH_VERSION_MINOR) || !defined(WBSH_VERSION_PATCH)
+#define WBSH_VERSION_MAJOR 0
+#define WBSH_VERSION_MINOR 0
+#define WBSH_VERSION_PATCH 0
+#endif
+#define WBSH_VSTR_(x) #x
+#define WBSH_VSTR(x)  WBSH_VSTR_(x)
+#define WBSH_VERSION_STR \
+	WBSH_VSTR(WBSH_VERSION_MAJOR) "." \
+	WBSH_VSTR(WBSH_VERSION_MINOR) "." \
+	WBSH_VSTR(WBSH_VERSION_PATCH)
+
 	static void printBanner(const ReplState& s) {
 		if (s.color_ok) {
 			std::fputs(
-				"\x1b[36;1m wbsh \x1b[0m"
-				"\x1b[2m— bash front-end + executor (Windows)\x1b[0m\n"
+				"\x1b[36;1m wbsh " WBSH_VERSION_STR " \x1b[0m"
+				"\x1b[2m— a Bash-compatible shell for Windows\x1b[0m\n"
 				"\x1b[2m   type `\x1b[0;33mexit\x1b[2m` or press "
 				"`\x1b[0;33mCtrl-D\x1b[2m` to quit\x1b[0m\n",
 				stdout);
 		} else {
 			std::fputs(
-				"wbsh -- bash front-end + executor (Windows)\n"
+				"wbsh " WBSH_VERSION_STR " -- a Bash-compatible shell for Windows\n"
 				"   type `exit` or press Ctrl-D to quit\n",
 				stdout);
 		}

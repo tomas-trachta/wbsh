@@ -219,8 +219,8 @@ Debug VC++ runtime (`/MDd`) and is not redistributable.
 ### Build the installer + portable ZIP
 
 ```powershell
-.\installer\build.ps1                        # default: 0.1.0
-.\installer\build.ps1 -Version 0.2.0         # versioned
+.\installer\build.ps1                        # reads WbshVersion from wbsh.vcxproj
+.\installer\build.ps1 -Version 0.2.0         # one-off override
 ```
 
 This builds Release|x64, stages `wbsh.exe` plus the VC++ runtime DLLs,

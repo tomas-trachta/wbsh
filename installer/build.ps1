@@ -11,12 +11,27 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [string]$Platform      = 'x64',
-    [string]$Version       = '1.0.6'
+    # Defaults to the WbshVersion property in wbsh.vcxproj (the single
+    # source of truth). Pass -Version X.Y.Z to override for a one-off
+    # build without editing the project file.
+    [string]$Version       = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..')
+
+# Read the version from wbsh.vcxproj if the caller didn't override.
+if (-not $Version) {
+    $projPath = Join-Path $RepoRoot 'wbsh.vcxproj'
+    $projXml  = [xml](Get-Content $projPath)
+    foreach ($pg in $projXml.Project.PropertyGroup) {
+        if ($pg.WbshVersion) { $Version = $pg.WbshVersion.Trim(); break }
+    }
+    if (-not $Version) {
+        throw "Could not locate <WbshVersion> in $projPath. Either set it there or pass -Version."
+    }
+}
 
 # --- Locate MSBuild via vswhere -------------------------------------------
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -50,9 +65,22 @@ if (-not $iscc) {
 }
 
 # --- Build ----------------------------------------------------------------
-Write-Host "==> Building wbsh ($Configuration|$Platform)" -ForegroundColor Cyan
+Write-Host "==> Building wbsh $Version ($Configuration|$Platform)" -ForegroundColor Cyan
+
+# Split version into major.minor.patch so the VERSIONINFO numeric tuple
+# (FILEVERSION / PRODUCTVERSION in wbsh.rc) matches the string form.
+# Passing all four properties as /p: overrides keeps them in lockstep
+# regardless of what's in the vcxproj when -Version was supplied.
+$parts = $Version.Split('.')
+if ($parts.Count -lt 3) { throw "Version must be major.minor.patch, got: $Version" }
+$VerMajor = $parts[0]; $VerMinor = $parts[1]; $VerPatch = $parts[2]
+
 & $msbuild (Join-Path $RepoRoot 'wbsh.vcxproj') `
     -nologo "-p:Configuration=$Configuration" "-p:Platform=$Platform" `
+    "-p:WbshVersion=$Version" `
+    "-p:WbshVersionMajor=$VerMajor" `
+    "-p:WbshVersionMinor=$VerMinor" `
+    "-p:WbshVersionPatch=$VerPatch" `
     -v:minimal
 if ($LASTEXITCODE -ne 0) { throw "MSBuild failed (exit $LASTEXITCODE)." }
 

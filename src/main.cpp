@@ -32,9 +32,27 @@
 
 using namespace wbsh;
 
+// The major/minor/patch are passed as numeric preprocessor defines from
+// wbsh.vcxproj (which derives them from <WbshVersionMajor> et al). The
+// stringification dance below turns them into a single string literal
+// usable for adjacent-literal concatenation. Quoting the version
+// directly via /D would force MSBuild to escape the quotes, which it
+// double-escapes — sidestep that entirely by passing bare digits.
+#if !defined(WBSH_VERSION_MAJOR) || !defined(WBSH_VERSION_MINOR) || !defined(WBSH_VERSION_PATCH)
+#define WBSH_VERSION_MAJOR 0
+#define WBSH_VERSION_MINOR 0
+#define WBSH_VERSION_PATCH 0
+#endif
+#define WBSH_VSTR_(x) #x
+#define WBSH_VSTR(x)  WBSH_VSTR_(x)
+#define WBSH_VERSION_STR \
+	WBSH_VSTR(WBSH_VERSION_MAJOR) "." \
+	WBSH_VSTR(WBSH_VERSION_MINOR) "." \
+	WBSH_VSTR(WBSH_VERSION_PATCH)
+
 static void printHelp() {
 	std::cout <<
-		"wbsh -- bash front-end + executor (Windows)\n"
+		"wbsh " WBSH_VERSION_STR " -- a Bash-compatible shell for Windows\n"
 		"\n"
 		"usage:\n"
 		"  wbsh                          interactive shell (TTY auto-detect)\n"

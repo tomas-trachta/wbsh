@@ -1,3 +1,53 @@
 // Application icon. The lowest-numbered ICON resource in an EXE is what
 // Explorer, the taskbar, and Alt-Tab pick up, so this stays as id 1.
 1 ICON "..\\installer\\wbsh.ico"
+
+// Standard Windows VERSIONINFO block — surfaces in Explorer's file-
+// properties dialog ("Details" tab) and to any tool that reads
+// GetFileVersionInfoW. The numeric tuple and string both come from the
+// WBSH_VERSION_MAJOR / MINOR / PATCH preprocessor defines, which
+// wbsh.vcxproj derives from its single WbshVersion property. Bumping
+// the version in the vcxproj flows through here automatically.
+//
+// The stringification dance below turns the three numeric defines into
+// a single "M.m.p" string literal. We can't pass the string directly
+// via /D because MSBuild double-escapes the quotes; passing bare
+// digits and stringifying here avoids that entirely.
+#include <winver.h>
+
+#define WBSH_VSTR_(x) #x
+#define WBSH_VSTR(x)  WBSH_VSTR_(x)
+#define WBSH_VERSION_STR \
+    WBSH_VSTR(WBSH_VERSION_MAJOR) "." \
+    WBSH_VSTR(WBSH_VERSION_MINOR) "." \
+    WBSH_VSTR(WBSH_VERSION_PATCH)
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    WBSH_VERSION_MAJOR,WBSH_VERSION_MINOR,WBSH_VERSION_PATCH,0
+PRODUCTVERSION WBSH_VERSION_MAJOR,WBSH_VERSION_MINOR,WBSH_VERSION_PATCH,0
+FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+FILEFLAGS      0x0L
+FILEOS         VOS__WINDOWS32
+FILETYPE       VFT_APP
+FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 040904b0 = lang 0x0409 (en-US), charset 0x04b0 (Unicode).
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "Tomas Trachta"
+            VALUE "FileDescription",  "Bash-compatible shell for Windows"
+            VALUE "FileVersion",      WBSH_VERSION_STR
+            VALUE "InternalName",     "wbsh"
+            VALUE "LegalCopyright",   "MIT License (c) 2026 Tomas Trachta"
+            VALUE "OriginalFilename", "wbsh.exe"
+            VALUE "ProductName",      "wbsh"
+            VALUE "ProductVersion",   WBSH_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04b0
+    END
+END
