@@ -413,10 +413,12 @@ namespace wbsh {
 #ifdef _WIN32
 		// Build the argv passed to CreateProcess: replaces argv[0] with the
 		// resolved exec_path and POSIX-to-Win32-translates each arg unless
-		// the callee is an MSYS binary or WBSH_NO_PATHCONV is set.
+		// the callee is an MSYS binary, or WBSH_NO_PATHCONV / MSYS_NO_PATHCONV
+		// is set (in the shell env OR in @p temp_env's prefix assignments).
 		std::vector<std::string>
 		prepareExternalArgv(const std::vector<std::string>& argv,
-		                    const std::string& exec_path);
+		                    const std::string& exec_path,
+		                    const std::vector<std::pair<std::string, std::string>>& temp_env);
 		// Build env overrides for a Win32 child, layered on top of `temp_env`.
 		// Translates PATH to `;`-separated Win32 form and adds HOME in Win32
 		// 8.3 short form so MinGW tools with diacritics in profile paths work.

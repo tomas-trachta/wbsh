@@ -19,7 +19,7 @@ EXIT_NONZERO_OK=""
 # tests whose output is non-deterministic across machines and so are NOT
 # golden-checked even in WBSH_GOLDEN=1 mode (dates, host id, mounted-disk
 # numbers, native-cmd output, etc.).
-NO_GOLDEN="run.sh smoke.sh native.sh paths.sh batch3.sh batch5.sh batch6.sh batch7.sh batch8.sh coreutils2.sh hello.sh"
+NO_GOLDEN="run.sh smoke.sh native.sh no_pathconv.sh paths.sh batch3.sh batch5.sh batch6.sh batch7.sh batch8.sh coreutils2.sh hello.sh"
 
 GOLDEN_DIR=expected
 TMP_DIR=_run_tmp

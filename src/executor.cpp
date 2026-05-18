@@ -281,6 +281,28 @@ namespace wbsh {
 		return false;
 	}
 
+	// True if argv path translation should be suppressed for the child.
+	// Honours both the wbsh-native `WBSH_NO_PATHCONV` and the de-facto
+	// MSYS / Git-for-Windows `MSYS_NO_PATHCONV`. The MSYS variable is the
+	// one cross-shell scripts use as a `VAR=1 cmd ...` prefix to keep
+	// docker volume specs (`-v /c/foo:/bar`) and other colon-bearing
+	// args from being rewritten — wbsh has to recognise it or those
+	// scripts misbehave only when run here. Prefix assignments shadow
+	// the shell env (so `MSYS_NO_PATHCONV= cmd` re-enables conversion
+	// for a single command, matching bash's "unset for one command" idiom).
+	static bool noPathConvSet(
+		const std::vector<std::pair<std::string, std::string>>& overrides,
+		const Environment& env) {
+		auto effective = [&](const char* name) -> std::string {
+			for (const auto& kv : overrides) {
+				if (kv.first == name) return kv.second;
+			}
+			return env.get(name);
+		};
+		return !effective("WBSH_NO_PATHCONV").empty()
+			|| !effective("MSYS_NO_PATHCONV").empty();
+	}
+
 	// Allocate and initialise an empty PROC_THREAD_ATTRIBUTE_LIST sized for one
 	// attribute. Returns nullptr on failure. Caller owns the returned list and
 	// must call DeleteProcThreadAttributeList + HeapFree to release it.
@@ -794,24 +816,28 @@ namespace wbsh {
 	                                       const std::vector<std::string>& argv,
 	                                       const std::string& exec_path,
 	                                       HANDLE h_in, HANDLE h_out, HANDLE h_err) {
+		// Expand the per-command prefix assignments first — the no-pathconv
+		// decision needs to see them (a script that prefixes
+		// `MSYS_NO_PATHCONV=1 docker ...` is asking us to skip translation
+		// for THIS command, not for the surrounding shell).
+		std::vector<std::pair<std::string, std::string>> overrides;
+		for (const auto& as : sc.assignments) {
+			try { overrides.emplace_back(as.name, expander_.expandStringValue(as.value)); }
+			catch (const ExpandError&) { /* skip */ }
+		}
+
 		// Apply optional path-conversion to argv (skip for MSYS callees).
 		std::vector<std::string> a = argv;
 		a[0] = exec_path;
 		const bool translate_args =
 			!isMsysBinary(exec_path)
-			&& env_.get("WBSH_NO_PATHCONV").empty();
+			&& !noPathConvSet(overrides, env_);
 		if (translate_args) {
 			for (std::size_t i = 1; i < a.size(); ++i) {
 				a[i] = path_conv_.translateArg(a[i]);
 			}
 		}
 
-		// Build env: prefix assignments + PATH translated to Win32.
-		std::vector<std::pair<std::string, std::string>> overrides;
-		for (const auto& as : sc.assignments) {
-			try { overrides.emplace_back(as.name, expander_.expandStringValue(as.value)); }
-			catch (const ExpandError&) { /* skip */ }
-		}
 		bool path_set = false;
 		bool home_set = false;
 		for (auto& kv : overrides) {
@@ -1614,7 +1640,7 @@ namespace wbsh {
 		}
 
 #ifdef _WIN32
-		std::vector<std::string> a = prepareExternalArgv(argv, exec_path);
+		std::vector<std::string> a = prepareExternalArgv(argv, exec_path, temp_env);
 		std::vector<std::pair<std::string, std::string>> child_env =
 			prepareExternalEnvOverrides(temp_env);
 
@@ -1651,14 +1677,15 @@ namespace wbsh {
 #ifdef _WIN32
 	std::vector<std::string>
 	Executor::prepareExternalArgv(const std::vector<std::string>& argv,
-	                              const std::string& exec_path) {
+	                              const std::string& exec_path,
+	                              const std::vector<std::pair<std::string, std::string>>& temp_env) {
 		// MSYS / Cygwin binaries already do their own POSIX path translation
 		// internally — translating on our side would corrupt args
 		// (`/dev/null` → `NUL`, which MSYS cat does not recognise). Native
 		// Win32 binaries get the full POSIX-to-Win32 translation.
 		const bool translate =
 			!isMsysBinary(exec_path)
-			&& env_.get("WBSH_NO_PATHCONV").empty();
+			&& !noPathConvSet(temp_env, env_);
 
 		std::vector<std::string> a = argv;
 		a[0] = exec_path;
