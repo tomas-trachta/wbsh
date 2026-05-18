@@ -22,15 +22,24 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..')
 
 # Read the version from wbsh.vcxproj if the caller didn't override.
+# We read the three leaf properties rather than the composite
+# WbshVersion: the composite is stored in XML as the literal string
+# "$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)" — those
+# macro references are evaluated by MSBuild at build time, not by
+# PowerShell when it parses the XML.
 if (-not $Version) {
     $projPath = Join-Path $RepoRoot 'wbsh.vcxproj'
     $projXml  = [xml](Get-Content $projPath)
+    $vMajor = $null; $vMinor = $null; $vPatch = $null
     foreach ($pg in $projXml.Project.PropertyGroup) {
-        if ($pg.WbshVersion) { $Version = $pg.WbshVersion.Trim(); break }
+        if ($pg.WbshVersionMajor) { $vMajor = $pg.WbshVersionMajor.Trim() }
+        if ($pg.WbshVersionMinor) { $vMinor = $pg.WbshVersionMinor.Trim() }
+        if ($pg.WbshVersionPatch) { $vPatch = $pg.WbshVersionPatch.Trim() }
     }
-    if (-not $Version) {
-        throw "Could not locate <WbshVersion> in $projPath. Either set it there or pass -Version."
+    if ($null -eq $vMajor -or $null -eq $vMinor -or $null -eq $vPatch) {
+        throw "Could not locate WbshVersionMajor/Minor/Patch in $projPath. Either set them there or pass -Version."
     }
+    $Version = "$vMajor.$vMinor.$vPatch"
 }
 
 # --- Locate MSBuild via vswhere -------------------------------------------
