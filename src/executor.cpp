@@ -820,56 +820,15 @@ namespace wbsh {
 		// decision needs to see them (a script that prefixes
 		// `MSYS_NO_PATHCONV=1 docker ...` is asking us to skip translation
 		// for THIS command, not for the surrounding shell).
-		std::vector<std::pair<std::string, std::string>> overrides;
+		std::vector<std::pair<std::string, std::string>> temp_env;
 		for (const auto& as : sc.assignments) {
-			try { overrides.emplace_back(as.name, expander_.expandStringValue(as.value)); }
+			try { temp_env.emplace_back(as.name, expander_.expandStringValue(as.value)); }
 			catch (const ExpandError&) { /* skip */ }
 		}
 
-		// Apply optional path-conversion to argv (skip for MSYS callees).
-		std::vector<std::string> a = argv;
-		a[0] = exec_path;
-		const bool translate_args =
-			!isMsysBinary(exec_path)
-			&& !noPathConvSet(overrides, env_);
-		if (translate_args) {
-			for (std::size_t i = 1; i < a.size(); ++i) {
-				a[i] = path_conv_.translateArg(a[i]);
-			}
-		}
-
-		bool path_set = false;
-		bool home_set = false;
-		for (auto& kv : overrides) {
-			if (kv.first == "PATH") {
-				kv.second = path_conv_.pathListPosixToWin32(kv.second);
-				path_set = true;
-			} else if (kv.first == "HOME") {
-				home_set = true;
-			}
-		}
-		if (!path_set) {
-			std::string p = env_.get("PATH");
-			if (!p.empty()) overrides.emplace_back("PATH",
-				path_conv_.pathListPosixToWin32(p));
-		}
-		// HOME goes out in Win32 form for every external child. Native
-		// binaries read HOME as a literal Windows path; MinGW-built tools
-		// (Git-for-Windows mingw64\bin\git.exe, etc.) also want Win32 HOME
-		// even though they tolerate POSIX-style argv. True cygwin1.dll-
-		// linked binaries are rare on Windows and their runtime auto-
-		// translates either form, so a Win32 HOME is safe across the board.
-		// Without this, `git config --global` reads `/c/Users/...` as a
-		// literal path and fails with "Author identity unknown".
-		// `toWin32Short` collapses to the 8.3 form for users with diacritics
-		// in their profile path (`C:\Users\Tomáš` -> `C:\Users\TOMA~1`):
-		// MinGW's ANSI getenv reads the env block via CP_ACP and would
-		// otherwise hand git a path with `?` where the diacritics were.
-		if (!home_set) {
-			std::string h = env_.get("HOME");
-			if (!h.empty()) overrides.emplace_back("HOME",
-				path_conv_.toWin32Short(h));
-		}
+		std::vector<std::string> a = prepareExternalArgv(argv, exec_path, temp_env);
+		std::vector<std::pair<std::string, std::string>> overrides =
+			prepareExternalEnvOverrides(temp_env);
 
 		std::wstring exe_w     = utf8ToWide(exec_path);
 		std::wstring cmdline_w = buildCommandLine(a);
@@ -1676,9 +1635,10 @@ namespace wbsh {
 
 #ifdef _WIN32
 	std::vector<std::string>
-	Executor::prepareExternalArgv(const std::vector<std::string>& argv,
-	                              const std::string& exec_path,
-	                              const std::vector<std::pair<std::string, std::string>>& temp_env) {
+	Executor::prepareExternalArgv(
+		const std::vector<std::string>& argv,
+		const std::string& exec_path,
+		const std::vector<std::pair<std::string, std::string>>& temp_env) {
 		// MSYS / Cygwin binaries already do their own POSIX path translation
 		// internally — translating on our side would corrupt args
 		// (`/dev/null` → `NUL`, which MSYS cat does not recognise). Native
