@@ -112,6 +112,37 @@ when developing wbsh itself. Pass `-r` to actually execute scripts.
 
 ---
 
+## Line editing
+
+Interactive sessions run through a raw-mode line editor with persistent
+history, kill ring, programmable + filename + per-tool tab completion, and
+reverse-incremental search. The key bindings follow readline / bash:
+
+| Keys | Action |
+|------|--------|
+| `Enter`                              | submit the current line |
+| `Backspace` / `Delete`               | delete left / right |
+| `Tab`                                | complete; second `Tab` lists candidates |
+| `← / →` or `Ctrl-B / Ctrl-F`         | move cursor by one character |
+| `Home / End` or `Ctrl-A / Ctrl-E`    | jump to start / end of line |
+| `↑ / ↓` or `Ctrl-P / Ctrl-N`         | walk history |
+| `Ctrl-R`                             | reverse-incremental history search |
+| `Ctrl-S`                             | step forward through search matches |
+| `Esc` / `Ctrl-G`                     | cancel the search and restore the line |
+| `Ctrl-U / Ctrl-K`                    | kill to start / end of line |
+| `Ctrl-W`                             | kill the word before the cursor |
+| `Ctrl-V`                             | paste from the system clipboard |
+| `Ctrl-L`                             | clear the screen |
+| `Ctrl-C`                             | abandon the current line, fresh prompt |
+| `Ctrl-D` (empty line)                | exit the shell |
+
+Inside `Ctrl-R`, printable characters extend the query, `Backspace` shrinks
+it, `Ctrl-R` / `Ctrl-S` cycle to the next older / newer match, `Enter`
+accepts and submits the matched line, and any other editing key accepts
+the match without submitting.
+
+---
+
 ## Configuration
 
 ### `~/.wbshrc`
@@ -311,7 +342,6 @@ Major bets that are in progress or planned:
 
 - True ConPTY for child processes (real PTY semantics, not just inherited console).
 - Tab completion (programmable + filename + command + variable).
-- Reverse-incremental search (`Ctrl-R`).
 - Full job control (`Ctrl-Z`, `fg`, `bg`).
 - Process substitution (`<(...)`, `>(...)`).
 - Optional package manager for adding tools.

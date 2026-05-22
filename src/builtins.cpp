@@ -30,6 +30,7 @@
 
 #include "executor.h"
 #include "lexer.h"
+#include "lineedit.h"
 #include "parser.h"
 
 namespace wbsh {
@@ -1554,6 +1555,18 @@ namespace wbsh {
 				}
 				return 0;
 			}
+			if (args[0] == "-s") {
+				// Push the remaining args as a single history entry,
+				// matching bash. `history -s` with no args is a no-op.
+				if (args.size() < 2) return 0;
+				std::string entry = args[1];
+				for (std::size_t i = 2; i < args.size(); ++i) {
+					entry.push_back(' ');
+					entry += args[i];
+				}
+				exec.addHistoryEntry(std::move(entry));
+				return 0;
+			}
 		}
 		long n = -1;
 		if (!args.empty()) {
@@ -1566,6 +1579,56 @@ namespace wbsh {
 		for (std::size_t i = start; i < h.size(); ++i) {
 			std::printf("%5zu  %s\n", i + 1, h[i].c_str());
 		}
+		return 0;
+	}
+
+	// Test hook for the reverse-incremental-search matcher. Wraps the pure
+	// `findReverseSearchMatch` helper so a shell script can drive it
+	// without needing a real TTY. Usage:
+	//
+	//     __revsearch [-c N] [-f] QUERY
+	//
+	// `-c N`   start searching from 1-based history index N (default: the
+	//          last entry, matching the initial state of Ctrl-R).
+	// `-f`     scan toward newer entries (default: backward toward older).
+	//
+	// Prints "INDEX MATCHED_LINE" on success (1-based index, to align with
+	// the user-visible `history` output) or "no match" otherwise. Exit
+	// status 0 on match, 1 on no-match, 2 on bad usage.
+	static int builtin_revsearch(Executor& exec, const std::vector<std::string>& args) {
+		bool forward = false;
+		long long start_one_based = -1;
+		std::string query;
+		for (std::size_t i = 0; i < args.size(); ++i) {
+			const std::string& a = args[i];
+			if (a == "-f") { forward = true; continue; }
+			if (a == "-c") {
+				if (i + 1 >= args.size()) {
+					printerr("__revsearch: -c requires an argument");
+					return 2;
+				}
+				bool ok = false;
+				start_one_based = toIntSafe(args[++i], ok);
+				if (!ok || start_one_based < 1) {
+					printerr("__revsearch: -c expects a positive integer");
+					return 2;
+				}
+				continue;
+			}
+			query = a;
+		}
+		const auto& history = exec.history();
+		std::size_t start = history.empty()
+			? 0
+			: (start_one_based < 0
+				? history.size() - 1
+				: static_cast<std::size_t>(start_one_based) - 1);
+		std::size_t idx = findReverseSearchMatch(history, query, start, forward);
+		if (idx >= history.size()) {
+			std::printf("no match\n");
+			return 1;
+		}
+		std::printf("%zu %s\n", idx + 1, history[idx].c_str());
 		return 0;
 	}
 
@@ -2089,6 +2152,7 @@ namespace wbsh {
 		exec.registerBuiltin("alias",    builtin_alias);
 		exec.registerBuiltin("unalias",  builtin_unalias);
 		exec.registerBuiltin("history",  builtin_history);
+		exec.registerBuiltin("__revsearch", builtin_revsearch);
 		exec.registerBuiltin("trap",     builtin_trap);
 		exec.registerBuiltin("getopts",  builtin_getopts);
 		exec.registerBuiltin("declare",  builtin_declare);

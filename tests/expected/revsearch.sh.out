@@ -1,0 +1,32 @@
+=== default (latest) match
+4 echo three
+2 ls -la
+5 grep foo
+=== continue backward via -c
+3 echo two
+1 echo one
+1 echo one
+=== forward (-f) selects the earliest match at or after -c
+1 echo one
+3 echo two
+3 echo two
+4 echo three
+=== misses
+no match
+no match
+no match
+=== substring (not prefix) and entry boundaries
+3 bar baz
+2 foobar
+1 foo bar
+3 bar baz
+=== empty history
+no match
+=== exit status
+1 alpha
+hit rc=0
+no match
+miss rc=1
+=== history -s joins extra args with a space
+1 echo combined args
+=== done

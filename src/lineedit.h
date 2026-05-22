@@ -21,10 +21,33 @@
 #  include <windows.h>
 #endif
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
 namespace wbsh {
+
+	/**
+	 * @brief Substring search over shell history, used by reverse-i-search.
+	 *
+	 * Scans `history` either backward from `start_index` toward 0 (when
+	 * `forward` is false) or forward from `start_index` toward the end,
+	 * inclusive at the starting position, and returns the index of the
+	 * first entry that contains `query` as a substring.
+	 *
+	 * @param history     History entries, oldest first.
+	 * @param query       Substring to look for. An empty query never matches.
+	 * @param start_index Index to begin scanning from, inclusive. Values
+	 *                    past the end are clamped to the last entry.
+	 * @param forward     true to scan toward newer entries, false toward older.
+	 *
+	 * @return Index of the matching entry, or `history.size()` when no
+	 *         entry matches (also when `history` is empty or `query` is empty).
+	 */
+	std::size_t findReverseSearchMatch(const std::vector<std::string>& history,
+	                                   const std::string& query,
+	                                   std::size_t start_index,
+	                                   bool forward);
 
 	/**
 	 * @brief Interactive line editor.
@@ -69,6 +92,12 @@ namespace wbsh {
 		bool handleNavigationKey(const ::KEY_EVENT_RECORD& k,
 		                         std::string& out, bool& done, bool& was_tab);
 		void insertReceivedChar(wchar_t ch);
+		// One keystroke inside the reverse-search modal. Returns true to
+		// keep looping, false to exit. Sets `cancel` on Esc / Ctrl-G /
+		// Ctrl-C (restore the pre-search buffer) and `submit` on Enter.
+		bool revsearchHandleKey(const ::KEY_EVENT_RECORD& k,
+		                        std::string& query, std::size_t& match_index,
+		                        bool& cancel, bool& submit);
 #endif
 
 		// ---- Helpers used by the raw path ----
@@ -85,6 +114,16 @@ namespace wbsh {
 		void handleKillWordBack();
 		void handleClearScreen();
 		void insertChars(const std::string& s);
+
+		// Ctrl-R: enter the reverse-incremental-search modal loop. The
+		// search prompt replaces the normal prompt; printable chars extend
+		// the query, Ctrl-R/Ctrl-S iterate matches, Enter accepts and
+		// submits, Esc/Ctrl-G cancels, any other editing key accepts the
+		// match and falls through to normal editing. Windows-only; a no-op
+		// stub on other platforms.
+		void runReverseSearch(std::string& out, bool& done, bool& eof);
+		// Repaint the search prompt and the (possibly empty) matched line.
+		void revsearchRefresh(const std::string& query, std::size_t match_index);
 
 		// Ctrl-V: pull CF_UNICODETEXT off the clipboard, strip newlines,
 		// insert at cursor. Windows-only; a no-op stub on other platforms.

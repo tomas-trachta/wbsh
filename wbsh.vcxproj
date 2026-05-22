@@ -116,6 +116,10 @@
       <SubSystem>Console</SubSystem>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PreBuildEvent>
+      <Command>python "$(ProjectDir)tools\check_style.py"</Command>
+      <Message>Running style checker (tools\check_style.py)...</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -148,6 +152,10 @@
       <SubSystem>Console</SubSystem>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PreBuildEvent>
+      <Command>python "$(ProjectDir)tools\check_style.py"</Command>
+      <Message>Running style checker (tools\check_style.py)...</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
 
   <!-- Version macros for src\wbsh.rc. Defined once (not per-config)

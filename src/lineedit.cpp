@@ -77,6 +77,29 @@ namespace wbsh {
 		    || c == '(' || c == ')';
 	}
 
+	std::size_t findReverseSearchMatch(const std::vector<std::string>& history,
+	                                   const std::string& query,
+	                                   std::size_t start_index,
+	                                   bool forward) {
+		if (query.empty() || history.empty()) return history.size();
+		std::size_t start = start_index < history.size()
+			? start_index : history.size() - 1;
+		if (forward) {
+			for (std::size_t i = start; i < history.size(); ++i) {
+				if (history[i].find(query) != std::string::npos) return i;
+			}
+			return history.size();
+		}
+		// Backward (toward older entries). i is unsigned, so guard the
+		// underflow by walking until i hits 0 and then breaking after the
+		// final compare. The loop body runs for i == 0 too.
+		for (std::size_t i = start;; --i) {
+			if (history[i].find(query) != std::string::npos) return i;
+			if (i == 0) break;
+		}
+		return history.size();
+	}
+
 	LineEditor::LineEditor(Environment& env, Executor& exec)
 		: env_(env), exec_(exec) {}
 
@@ -927,6 +950,135 @@ namespace wbsh {
 		}
 	}
 
+	// Forward declaration: AltGr (Czech / EU layouts) detection lives further
+	// down with the rest of the raw-input helpers. The reverse-search modal
+	// is alphabetically higher in this file but needs the same predicate.
+	static bool isAltGrActive(const KEY_EVENT_RECORD& k);
+
+	void LineEditor::revsearchRefresh(const std::string& query,
+	                                  std::size_t match_index) {
+		std::string p = "(reverse-i-search)`" + query + "': ";
+		prompt_raw_ = p;
+		prompt_visible_len_ = visibleLen(p);
+		const auto& history = exec_.history();
+		if (match_index < history.size()) {
+			buffer_ = history[match_index];
+			std::size_t pos = buffer_.find(query);
+			cursor_ = (pos == std::string::npos)
+				? buffer_.size()
+				: pos + query.size();
+		} else {
+			buffer_.clear();
+			cursor_ = 0;
+		}
+		last_cursor_row_ = 0;
+		emit("\r\x1b[J");
+		redraw();
+	}
+
+	bool LineEditor::revsearchHandleKey(const KEY_EVENT_RECORD& k,
+	                                    std::string& query,
+	                                    std::size_t& match_index,
+	                                    bool& cancel, bool& submit) {
+		const bool altgr = isAltGrActive(k);
+		const bool is_ctrl = !altgr
+			&& (k.dwControlKeyState
+			    & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+		const WCHAR ch = k.uChar.UnicodeChar;
+		const auto& history = exec_.history();
+
+		if (k.wVirtualKeyCode == VK_RETURN) { submit = true; return false; }
+		if (k.wVirtualKeyCode == VK_ESCAPE) { cancel = true; return false; }
+		if (k.wVirtualKeyCode == VK_BACK) {
+			if (query.empty()) { emit("\a"); return true; }
+			query.pop_back();
+			std::size_t start = history.empty() ? 0 : history.size() - 1;
+			match_index = findReverseSearchMatch(history, query, start, false);
+			revsearchRefresh(query, match_index);
+			return true;
+		}
+		if (is_ctrl && k.wVirtualKeyCode == 'R') {
+			if (match_index == 0) { emit("\a"); return true; }
+			std::size_t start = (match_index < history.size())
+				? match_index - 1
+				: (history.empty() ? 0 : history.size() - 1);
+			std::size_t next = findReverseSearchMatch(history, query, start, false);
+			if (next == history.size()) { emit("\a"); return true; }
+			match_index = next;
+			revsearchRefresh(query, match_index);
+			return true;
+		}
+		if (is_ctrl && k.wVirtualKeyCode == 'S') {
+			if (match_index >= history.size()
+			    || match_index + 1 >= history.size()) {
+				emit("\a"); return true;
+			}
+			std::size_t next = findReverseSearchMatch(history, query,
+			                                          match_index + 1, true);
+			if (next == history.size()) { emit("\a"); return true; }
+			match_index = next;
+			revsearchRefresh(query, match_index);
+			return true;
+		}
+		if (is_ctrl && (k.wVirtualKeyCode == 'G' || k.wVirtualKeyCode == 'C')) {
+			cancel = true;
+			return false;
+		}
+		if (is_ctrl) return false;
+		if (ch >= 0x20 && ch < 0x7F) {
+			query.push_back(static_cast<char>(ch));
+			std::size_t start = (match_index < history.size())
+				? match_index
+				: (history.empty() ? 0 : history.size() - 1);
+			match_index = findReverseSearchMatch(history, query, start, false);
+			revsearchRefresh(query, match_index);
+			return true;
+		}
+		return false;
+	}
+
+	void LineEditor::runReverseSearch(std::string& out, bool& done, bool& eof) {
+		std::string saved_buffer = buffer_;
+		std::size_t saved_cursor = cursor_;
+		std::string saved_prompt = prompt_raw_;
+		std::size_t saved_visible = prompt_visible_len_;
+
+		std::string query;
+		std::size_t match_index = exec_.history().size();
+		revsearchRefresh(query, match_index);
+
+		HANDLE h_in = GetStdHandle(STD_INPUT_HANDLE);
+		bool cancel = false;
+		bool submit = false;
+		bool looping = true;
+		while (looping) {
+			INPUT_RECORD rec;
+			DWORD nread = 0;
+			if (h_in == INVALID_HANDLE_VALUE
+			    || !ReadConsoleInputW(h_in, &rec, 1, &nread)
+			    || nread == 0) {
+				cancel = true; eof = true; break;
+			}
+			if (rec.EventType != KEY_EVENT) continue;
+			KEY_EVENT_RECORD& k = rec.Event.KeyEvent;
+			if (!k.bKeyDown) { handleAltKeyUp(k); continue; }
+			looping = revsearchHandleKey(k, query, match_index, cancel, submit);
+		}
+
+		prompt_raw_ = saved_prompt;
+		prompt_visible_len_ = saved_visible;
+		if (cancel) { buffer_ = saved_buffer; cursor_ = saved_cursor; }
+		last_cursor_row_ = 0;
+		emit("\r\x1b[J");
+		emit(prompt_raw_);
+		redraw();
+		if (submit) {
+			emit("\r\n");
+			out = buffer_;
+			done = true;
+		}
+	}
+
 	// Configure stdin for raw key-by-key input. Returns the prior mode bits
 	// so the caller can restore them on exit.
 	static DWORD enterRawInputMode(HANDLE h_in) {
@@ -979,7 +1131,6 @@ namespace wbsh {
 	bool LineEditor::handleCtrlKey(const KEY_EVENT_RECORD& k,
 	                               const std::string& prompt,
 	                               std::string& out, bool& done, bool& eof) {
-		(void)out;
 		switch (k.wVirtualKeyCode) {
 		case 'C':
 			emit("^C\r\n");
@@ -1004,6 +1155,7 @@ namespace wbsh {
 		case 'P': handleHistoryUp();        redraw(); return true;
 		case 'N': handleHistoryDown();      redraw(); return true;
 		case 'V': pasteFromClipboard();               return true;
+		case 'R': runReverseSearch(out, done, eof);   return true;
 		default:  return false;
 		}
 	}
@@ -1118,6 +1270,8 @@ namespace wbsh {
 	void LineEditor::applyCompletion(const Tok&, const std::vector<std::string>&) {}
 	void LineEditor::pasteFromClipboard() {}
 	void LineEditor::insertWideCharFromConsole(wchar_t) {}
+	void LineEditor::runReverseSearch(std::string&, bool&, bool&) {}
+	void LineEditor::revsearchRefresh(const std::string&, std::size_t) {}
 
 #endif /* _WIN32 */
 
