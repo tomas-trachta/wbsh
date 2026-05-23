@@ -103,9 +103,16 @@ namespace wbsh {
 		const std::unordered_map<std::string, std::string>& aliases() const { return aliases_; }
 
 		// ---- History ----
+		// history_ and history_status_ are strictly parallel: same size,
+		// same indexing. history_status_[i] is the exit code of the most
+		// recent execution of history_[i] (0 = success, anything else =
+		// failure). Entries loaded from legacy on-disk format default to 0.
 		const std::vector<std::string>& history() const { return history_; }
+		const std::vector<int>& historyStatus() const { return history_status_; }
 		void  addHistoryEntry(std::string line);
-		void  clearHistory() { history_.clear(); }
+		void  markLastHistoryStatus(int status);
+		void  setHistoryEntryStatus(std::size_t index, int status);
+		void  clearHistory() { history_.clear(); history_status_.clear(); }
 		bool  loadHistoryFromFile(const std::string& path);
 		bool  saveHistoryToFile(const std::string& path) const;
 
@@ -511,6 +518,7 @@ namespace wbsh {
 		std::unordered_map<std::string, const FunctionDef*> functions_;
 		std::unordered_map<std::string, std::string> aliases_;
 		std::vector<std::string> history_;
+		std::vector<int>         history_status_;
 		std::vector<std::string> dir_stack_;
 		std::unordered_map<std::string, std::string> trap_handlers_;
 		std::unordered_map<std::string, CompletionSpec> completion_specs_;

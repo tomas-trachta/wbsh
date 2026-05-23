@@ -1,0 +1,26 @@
+=== suggests latest matching entry's suffix
+ --dangerously-skip-permissions
+ -la
+ one
+=== empty prefix yields no prediction
+no prediction
+=== exact match yields no prediction (no strict extension)
+no prediction
+=== prefix nobody starts with
+no prediction
+=== ties resolve to the newest entry
+ /var
+=== empty history
+no prediction
+=== exit status
+ beta
+hit rc=0
+no prediction
+miss rc=1
+=== failed entries are filtered out
+ test
+ test
+no prediction
+=== filter only hides matches that strictly fail
+ --foo
+=== done

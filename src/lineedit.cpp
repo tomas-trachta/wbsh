@@ -100,6 +100,25 @@ namespace wbsh {
 		return history.size();
 	}
 
+	std::string findInlinePrediction(const std::vector<std::string>& history,
+	                                 const std::vector<int>& history_status,
+	                                 const std::string& prefix) {
+		if (prefix.empty()) return {};
+		for (std::size_t i = history.size(); i > 0; --i) {
+			const std::size_t idx = i - 1;
+			// Treat out-of-range indices as status 0 ("ok"): callers may
+			// pass an empty status vector to disable filtering, and entries
+			// loaded from a legacy history file lack a recorded status.
+			if (idx < history_status.size() && history_status[idx] != 0) continue;
+			const std::string& entry = history[idx];
+			if (entry.size() > prefix.size()
+			    && entry.compare(0, prefix.size(), prefix) == 0) {
+				return entry.substr(prefix.size());
+			}
+		}
+		return {};
+	}
+
 	LineEditor::LineEditor(Environment& env, Executor& exec)
 		: env_(env), exec_(exec) {}
 
@@ -111,6 +130,8 @@ namespace wbsh {
 		last_was_tab_ = false;
 		last_tab_word_.clear();
 		last_cursor_row_ = 0;
+		suggestion_.clear();
+		revsearch_active_ = false;
 		prompt_raw_ = prompt;
 #ifdef _WIN32
 		prompt_visible_len_ = visibleLen(prompt);
@@ -156,6 +177,8 @@ namespace wbsh {
 			if (w > 0) width = static_cast<std::size_t>(w);
 		}
 
+		refreshSuggestion();
+
 		std::string out;
 		if (last_cursor_row_ > 0) {
 			out += "\x1b[" + std::to_string(last_cursor_row_) + "A";
@@ -164,15 +187,25 @@ namespace wbsh {
 		out += "\x1b[J";
 		out += prompt_raw_;
 		out += buffer_;
+		// Ghost text: bright-black (dim grey) suffix past the cursor.
+		// The SGR escapes do not advance the cursor, so they are excluded
+		// from the column math below.
+		if (!suggestion_.empty()) {
+			out += "\x1b[90m";
+			out += suggestion_;
+			out += "\x1b[0m";
+		}
 
-		// After emitting buffer, the cursor sits at column
-		// (prompt_visible_len_ + buffer_.size()) modulo width, on a row
-		// that many rows below the prompt's first row -- except for the
-		// "deferred wrap" case where the content fills exactly to the
-		// right edge: in VT mode the cursor stays at the boundary column
-		// until the next char arrives, so we emit \r\n to materialise the
-		// wrap and land on a fresh row.
-		std::size_t end_cols  = prompt_visible_len_ + utf8Cols(buffer_, buffer_.size());
+		// After emitting buffer + suggestion, the cursor sits at column
+		// (prompt_visible_len_ + buffer.cols + suggestion.cols) modulo
+		// width, on a row that many rows below the prompt's first row --
+		// except for the "deferred wrap" case where the content fills
+		// exactly to the right edge: in VT mode the cursor stays at the
+		// boundary column until the next char arrives, so we emit \r\n
+		// to materialise the wrap and land on a fresh row.
+		std::size_t buf_cols  = utf8Cols(buffer_, buffer_.size());
+		std::size_t sugg_cols = utf8Cols(suggestion_, suggestion_.size());
+		std::size_t end_cols  = prompt_visible_len_ + buf_cols + sugg_cols;
 		std::size_t want_cols = prompt_visible_len_ + utf8Cols(buffer_, cursor_);
 		std::size_t end_row   = end_cols / width;
 		std::size_t want_row  = want_cols / width;
@@ -190,6 +223,42 @@ namespace wbsh {
 		}
 		last_cursor_row_ = want_row;
 		emit(out);
+	}
+
+	void LineEditor::refreshSuggestion() {
+		// Inline prediction is hidden while the reverse-search modal owns
+		// the prompt: buffer_ then mirrors a matched history entry, and a
+		// ghost-text overlay would compete with the search rendering.
+		// Otherwise we only show a prediction at end-of-buffer, which is
+		// PowerShell's behaviour and avoids painting text the user is
+		// already editing past.
+		suggestion_.clear();
+		if (revsearch_active_) return;
+		if (buffer_.empty() || cursor_ != buffer_.size()) return;
+		suggestion_ = findInlinePrediction(exec_.history(),
+		                                   exec_.historyStatus(),
+		                                   buffer_);
+	}
+
+	bool LineEditor::acceptInlineSuggestion() {
+		if (suggestion_.empty()) return false;
+		// insertChars splices at cursor_ and advances it; since the
+		// suggestion is only ever computed when cursor_ == buffer_.size(),
+		// this appends the ghost text and parks the cursor at end-of-line.
+		insertChars(suggestion_);
+		suggestion_.clear();
+		return true;
+	}
+
+	void LineEditor::handleRightArrow() {
+		if (cursor_ < buffer_.size()) {
+			++cursor_;
+			redraw();
+			return;
+		}
+		if (acceptInlineSuggestion()) {
+			redraw();
+		}
 	}
 
 	void LineEditor::insertChars(const std::string& s) {
@@ -1043,6 +1112,7 @@ namespace wbsh {
 		std::string saved_prompt = prompt_raw_;
 		std::size_t saved_visible = prompt_visible_len_;
 
+		revsearch_active_ = true;
 		std::string query;
 		std::size_t match_index = exec_.history().size();
 		revsearchRefresh(query, match_index);
@@ -1069,6 +1139,7 @@ namespace wbsh {
 		prompt_visible_len_ = saved_visible;
 		if (cancel) { buffer_ = saved_buffer; cursor_ = saved_cursor; }
 		last_cursor_row_ = 0;
+		revsearch_active_ = false;
 		emit("\r\x1b[J");
 		emit(prompt_raw_);
 		redraw();
@@ -1171,7 +1242,7 @@ namespace wbsh {
 		case VK_DELETE:  handleDelete();    redraw();                                 return true;
 		case VK_TAB:     handleTab();       redraw(); was_tab = true;                 return true;
 		case VK_LEFT:    if (cursor_ > 0)              { --cursor_; redraw(); }      return true;
-		case VK_RIGHT:   if (cursor_ < buffer_.size()) { ++cursor_; redraw(); }      return true;
+		case VK_RIGHT:   handleRightArrow();                                          return true;
 		case VK_UP:      handleHistoryUp();   redraw();                              return true;
 		case VK_DOWN:    handleHistoryDown(); redraw();                              return true;
 		case VK_HOME:    cursor_ = 0;              redraw();                         return true;
@@ -1272,6 +1343,9 @@ namespace wbsh {
 	void LineEditor::insertWideCharFromConsole(wchar_t) {}
 	void LineEditor::runReverseSearch(std::string&, bool&, bool&) {}
 	void LineEditor::revsearchRefresh(const std::string&, std::size_t) {}
+	void LineEditor::refreshSuggestion() {}
+	bool LineEditor::acceptInlineSuggestion() { return false; }
+	void LineEditor::handleRightArrow() {}
 
 #endif /* _WIN32 */
 

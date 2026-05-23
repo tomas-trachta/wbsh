@@ -34,7 +34,7 @@
   <PropertyGroup Label="Version">
     <WbshVersionMajor>1</WbshVersionMajor>
     <WbshVersionMinor>0</WbshVersionMinor>
-    <WbshVersionPatch>7</WbshVersionPatch>
+    <WbshVersionPatch>8</WbshVersionPatch>
     <WbshVersion>$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)</WbshVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

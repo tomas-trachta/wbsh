@@ -837,6 +837,13 @@ namespace wbsh {
 
 			try {
 				parseAndMaybeExecute(exec, state);
+				// When the buffer became a complete statement and ran,
+				// attribute the resulting exit status to the entry just
+				// typed so the inline-prediction filter can hide failed
+				// commands on the next prompt (and across sessions).
+				if (!state.waiting_for_more && !line.empty()) {
+					exec.markLastHistoryStatus(exec.lastStatus());
+				}
 			} catch (ShellExit& e) {
 				exec.fireExitTrap();
 				saveHistory(exec, state);

@@ -1632,6 +1632,58 @@ namespace wbsh {
 		return 0;
 	}
 
+	// Test hook for the inline-prediction matcher. Wraps the pure
+	// `findInlinePrediction` helper so a shell script can drive the
+	// PowerShell-style ghost-text feature without needing a real TTY.
+	// Usage:
+	//
+	//     __predict PREFIX
+	//
+	// Prints the predicted suffix verbatim (which may begin with a
+	// space) on success, or "no prediction" otherwise. Exit status 0
+	// on hit, 1 on miss. The prediction filter automatically skips
+	// any history entry whose status was recorded as non-zero (see
+	// `__histstat`).
+	static int builtin_predict(Executor& exec, const std::vector<std::string>& args) {
+		std::string prefix = args.empty() ? std::string() : args.front();
+		std::string suffix = findInlinePrediction(exec.history(),
+		                                          exec.historyStatus(),
+		                                          prefix);
+		if (suffix.empty()) {
+			std::printf("no prediction\n");
+			return 1;
+		}
+		std::printf("%s\n", suffix.c_str());
+		return 0;
+	}
+
+	// Test hook for marking the recorded exit status of a history entry.
+	// The interactive REPL writes this from `lastStatus()` after each
+	// top-level command; this hook lets non-interactive test scripts do
+	// the same so the `__predict` filter can be exercised.
+	//
+	//     __histstat INDEX STATUS    (INDEX is 1-based, matching `history`)
+	static int builtin_histstat(Executor& exec, const std::vector<std::string>& args) {
+		if (args.size() != 2) {
+			printerr("__histstat: usage: __histstat INDEX STATUS");
+			return 2;
+		}
+		bool ok = false;
+		long long idx = toIntSafe(args[0], ok);
+		if (!ok || idx < 1) {
+			printerr("__histstat: INDEX must be a positive integer");
+			return 2;
+		}
+		long long status = toIntSafe(args[1], ok);
+		if (!ok) {
+			printerr("__histstat: STATUS must be an integer");
+			return 2;
+		}
+		exec.setHistoryEntryStatus(static_cast<std::size_t>(idx - 1),
+		                           static_cast<int>(status));
+		return 0;
+	}
+
 	// Append all PATH-resolvable executables to `out`. Paths are walked
 	// in order; duplicates dropped.
 	static void collectCommandsFromPath(Executor& exec, std::vector<std::string>& out) {
@@ -2153,6 +2205,8 @@ namespace wbsh {
 		exec.registerBuiltin("unalias",  builtin_unalias);
 		exec.registerBuiltin("history",  builtin_history);
 		exec.registerBuiltin("__revsearch", builtin_revsearch);
+		exec.registerBuiltin("__predict",   builtin_predict);
+		exec.registerBuiltin("__histstat",  builtin_histstat);
 		exec.registerBuiltin("trap",     builtin_trap);
 		exec.registerBuiltin("getopts",  builtin_getopts);
 		exec.registerBuiltin("declare",  builtin_declare);

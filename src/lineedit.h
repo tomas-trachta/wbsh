@@ -50,6 +50,32 @@ namespace wbsh {
 	                                   bool forward);
 
 	/**
+	 * @brief Compute the ghost-text inline prediction for a typed prefix.
+	 *
+	 * Scans @p history newest-first for the first entry that begins with
+	 * @p prefix and is strictly longer than it; returns just the trailing
+	 * portion that the editor should render in dim text past the cursor
+	 * (PowerShell-style inline prediction). Entries whose last execution
+	 * exited non-zero (as reported via @p history_status) are skipped, so
+	 * typos and previously-failed commands never get suggested. Empty
+	 * prefix never predicts.
+	 *
+	 * @param history        Shell history, oldest first (same vector
+	 *                       layout as Executor::history()).
+	 * @param history_status Parallel exit-status vector (0 = OK). Indices
+	 *                       past the end are treated as 0; pass an empty
+	 *                       vector to disable filtering entirely.
+	 * @param prefix         The buffer typed so far. An empty string
+	 *                       returns "".
+	 *
+	 * @return The suggested suffix to display after the cursor, or an
+	 *         empty string when no entry matches or @p prefix is empty.
+	 */
+	std::string findInlinePrediction(const std::vector<std::string>& history,
+	                                 const std::vector<int>& history_status,
+	                                 const std::string& prefix);
+
+	/**
 	 * @brief Interactive line editor.
 	 *
 	 * Stateful object — one instance per REPL session. Keeps the
@@ -114,6 +140,17 @@ namespace wbsh {
 		void handleKillWordBack();
 		void handleClearScreen();
 		void insertChars(const std::string& s);
+
+		// PowerShell-style inline prediction. refreshSuggestion() is
+		// called at the top of redraw() and populates suggestion_ from
+		// history when the cursor sits at end-of-buffer and we aren't in
+		// the reverse-search modal. handleRightArrow() folds in
+		// suggestion-accept at end-of-line: ordinary right-arrow moves
+		// one char forward, but when the cursor is already at the end
+		// and a suggestion is shown, it absorbs the suggestion instead.
+		void refreshSuggestion();
+		bool acceptInlineSuggestion();
+		void handleRightArrow();
 
 		// Ctrl-R: enter the reverse-incremental-search modal loop. The
 		// search prompt replaces the normal prompt; printable chars extend
@@ -191,6 +228,13 @@ namespace wbsh {
 		// progress means "show me all matches".
 		bool last_was_tab_ = false;
 		std::string last_tab_word_;
+
+		// Current ghost-text inline prediction (the tail past the
+		// cursor), rendered in dim style by redraw(). Empty when no
+		// prediction applies — including while the reverse-search
+		// modal owns the prompt, gated by revsearch_active_.
+		std::string suggestion_;
+		bool revsearch_active_ = false;
 	};
 
 }  // namespace wbsh

@@ -2432,38 +2432,92 @@ namespace wbsh {
 		catch (...) {}
 	}
 
+	// Maximum kept history entries. Applied after every mutation that can
+	// grow the vectors so they don't drift apart from each other (the rest
+	// of the codebase assumes history_ and history_status_ are parallel).
+	static constexpr std::size_t kMaxHistory = 5000;
+
+	static void trimToMaxHistory(std::vector<std::string>& cmds,
+	                             std::vector<int>& statuses) {
+		if (cmds.size() <= kMaxHistory) return;
+		const std::size_t drop = cmds.size() - kMaxHistory;
+		cmds.erase(cmds.begin(), cmds.begin() + drop);
+		if (statuses.size() >= drop) {
+			statuses.erase(statuses.begin(), statuses.begin() + drop);
+		} else {
+			statuses.clear();
+		}
+	}
+
 	void Executor::addHistoryEntry(std::string line) {
 		if (line.empty()) return;
 		if (!history_.empty() && history_.back() == line) return;
 		history_.push_back(std::move(line));
-		const std::size_t kMax = 5000;
-		if (history_.size() > kMax) {
-			history_.erase(history_.begin(),
-				history_.begin() + (history_.size() - kMax));
-		}
+		history_status_.push_back(0);
+		trimToMaxHistory(history_, history_status_);
 	}
+
+	void Executor::markLastHistoryStatus(int status) {
+		if (history_status_.empty()) return;
+		history_status_.back() = status;
+	}
+
+	void Executor::setHistoryEntryStatus(std::size_t index, int status) {
+		if (index >= history_status_.size()) return;
+		history_status_[index] = status;
+	}
+
+	// On-disk format:
+	//
+	//   #!wbsh-history-v2
+	//   <status>\t<command>
+	//   <status>\t<command>
+	//   ...
+	//
+	// Legacy files (no header, one command per line) still load: each line
+	// becomes an entry with status 0 ("treat as OK"). This keeps existing
+	// ~/.wbsh_history files working across the upgrade.
+	static constexpr const char* kHistoryV2Header = "#!wbsh-history-v2";
 
 	bool Executor::loadHistoryFromFile(const std::string& path) {
 		std::ifstream f(utf8ToPath(path));
 		if (!f) return false;
 		std::string line;
+		bool header_checked = false;
+		bool v2 = false;
 		while (std::getline(f, line)) {
 			while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
 				line.pop_back();
-			if (!line.empty()) history_.push_back(line);
+			if (!header_checked) {
+				header_checked = true;
+				if (line == kHistoryV2Header) { v2 = true; continue; }
+			}
+			if (line.empty()) continue;
+			int status = 0;
+			std::string cmd = line;
+			if (v2) {
+				const std::size_t tab = line.find('\t');
+				if (tab == std::string::npos) continue;
+				try { status = std::stoi(line.substr(0, tab)); }
+				catch (...) { continue; }
+				cmd = line.substr(tab + 1);
+				if (cmd.empty()) continue;
+			}
+			history_.push_back(std::move(cmd));
+			history_status_.push_back(status);
 		}
-		const std::size_t kMax = 5000;
-		if (history_.size() > kMax) {
-			history_.erase(history_.begin(),
-				history_.begin() + (history_.size() - kMax));
-		}
+		trimToMaxHistory(history_, history_status_);
 		return true;
 	}
 
 	bool Executor::saveHistoryToFile(const std::string& path) const {
 		std::ofstream f(utf8ToPath(path), std::ios::trunc);
 		if (!f) return false;
-		for (const auto& line : history_) f << line << '\n';
+		f << kHistoryV2Header << '\n';
+		for (std::size_t i = 0; i < history_.size(); ++i) {
+			const int s = (i < history_status_.size()) ? history_status_[i] : 0;
+			f << s << '\t' << history_[i] << '\n';
+		}
 		return true;
 	}
 
