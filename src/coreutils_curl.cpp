@@ -6,10 +6,6 @@
  * scripts: -X, -H, -d, -o, -O, -L, -I, -i, -s and their `--long` aliases.
  * Uses WinHTTP on Windows; on other platforms the builtin returns an
  * error.
- *
- * Split out of coreutils.cpp so the WinHTTP-heavy implementation is not
- * mixed into the generic file-handling code. The single public entry
- * point is registerCurlBuiltin().
  */
 
 #include "coreutils_internal.h"
@@ -71,9 +67,6 @@ namespace wbsh {
 			}
 		};
 
-		// Apply one short-flag char from a `-XYZ` cluster. Value-taking flags
-		// (`-o`, `-X`, `-H`, `-d`) must be the last char in the cluster; if
-		// so, they consume `args[*i + 1]` and bump `*i`.
 		static void parseShortFlag(char c, bool last,
 		                           const std::vector<std::string>& args,
 		                           std::size_t* i, CurlOptions& o)
@@ -108,7 +101,6 @@ namespace wbsh {
 			CurlOptions o;
 			for (std::size_t i = 0; i < args.size(); ++i) {
 				const std::string& a = args[i];
-				// Long forms.
 				if (a == "--silent")       { o.silent          = true; continue; }
 				if (a == "--include")      { o.include_headers = true; continue; }
 				if (a == "--head")         { o.head_only = true; o.method = "HEAD"; continue; }
@@ -117,32 +109,34 @@ namespace wbsh {
 				if (a == "--output"  && i + 1 < args.size()) {
 					o.output_file = args[++i]; continue;
 				}
+
 				if (a == "--request" && i + 1 < args.size()) {
 					o.method = args[++i]; continue;
 				}
+
 				if (a == "--header"  && i + 1 < args.size()) {
 					o.headers.push_back(args[++i]); continue;
 				}
+
 				if (a == "--data"    && i + 1 < args.size()) {
 					o.body_data = args[++i];
 					if (o.method == "GET") o.method = "POST";
 					continue;
 				}
-				// Short-flag cluster.
+
 				if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 					for (std::size_t k = 1; k < a.size(); ++k) {
 						parseShortFlag(a[k], k + 1 == a.size(), args, &i, o);
 					}
 					continue;
 				}
-				// Positional URL.
+
 				if (!a.empty() && a[0] != '-') o.url = a;
 			}
+
 			return o;
 		}
 
-		// Crack `url` into host buffer and request path. Returns false on
-		// parse failure; on true, `*is_https` and `*path` are filled.
 		static bool crackHttpUrl(const std::string& url,
 		                         wchar_t* host_buf, std::size_t host_buf_n,
 		                         INTERNET_PORT* out_port, bool* is_https,
@@ -167,9 +161,6 @@ namespace wbsh {
 			return true;
 		}
 
-		// Open the WinHTTP session / connection / request handles and apply
-		// custom headers from `o`. On failure prints a diagnostic (when not
-		// silent) and returns false.
 		static bool openRequest(const CurlOptions& o, WinHttpHandles& h) {
 			wchar_t host_buf[256] = {};
 			INTERNET_PORT port = 0;
@@ -190,11 +181,13 @@ namespace wbsh {
 				if (!o.silent) curlPerr("WinHttpOpen failed");
 				return false;
 			}
+
 			h.connect = WinHttpConnect(h.session, host_buf, port, 0);
 			if (!h.connect) {
 				if (!o.silent) curlPerr("connect failed");
 				return false;
 			}
+
 			const std::wstring wmethod = utf8ToWideLocal(o.method);
 			h.request = WinHttpOpenRequest(h.connect, wmethod.c_str(),
 				path.c_str(), nullptr, WINHTTP_NO_REFERER,
@@ -204,16 +197,16 @@ namespace wbsh {
 				if (!o.silent) curlPerr("open request failed");
 				return false;
 			}
+
 			for (const auto& hv : o.headers) {
 				const std::wstring wh = utf8ToWideLocal(hv + "\r\n");
 				WinHttpAddRequestHeaders(h.request, wh.c_str(),
 					static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
 			}
+
 			return true;
 		}
 
-		// Send the prepared request. On failure prints a diagnostic (if not
-		// silent) and returns false.
 		static bool sendRequest(HINTERNET request, const CurlOptions& o) {
 			const BOOL r = WinHttpSendRequest(request,
 				WINHTTP_NO_ADDITIONAL_HEADERS, 0,
@@ -228,8 +221,10 @@ namespace wbsh {
 					std::fprintf(stderr,
 						"wbsh: curl: request failed (err=%lu)\n", err);
 				}
+
 				return false;
 			}
+
 			return true;
 		}
 
@@ -243,26 +238,23 @@ namespace wbsh {
 			return status_code;
 		}
 
-		// Decide where to write the response body. Honours `--remote-name` (-O),
-		// `--output` (-o), or stdout. On a remote-name save with no usable
-		// basename, falls back to "index.html".
 		static FILE* openOutputSink(Executor& exec, CurlOptions& o,
 		                            const std::wstring& url_path)
 		{
 			if (o.save_remote) {
-				std::string p(url_path.begin(), url_path.end());
+				const std::string p = wideToUtf8(url_path);
 				const auto slash = p.find_last_of('/');
 				std::string name = (slash == std::string::npos) ? p : p.substr(slash + 1);
 				if (name.empty() || name == "/") name = "index.html";
 				o.output_file = std::move(name);
 			}
+
 			if (o.output_file.empty()) return stdout;
 			FILE* out = openUtf8(exec.pathConv().toWin32(o.output_file), "wb");
 			if (!out && !o.silent) curlPerr(o.output_file + ": cannot open");
 			return out;
 		}
 
-		// Print the response's raw header block to `out` as UTF-8.
 		static void writeResponseHeaders(HINTERNET request, FILE* out) {
 			DWORD hdr_size = 0;
 			WinHttpQueryHeaders(request, WINHTTP_QUERY_RAW_HEADERS_CRLF,
@@ -276,6 +268,7 @@ namespace wbsh {
 			{
 				return;
 			}
+
 			const int n = WideCharToMultiByte(CP_UTF8, 0, hbuf.data(), -1,
 				nullptr, 0, nullptr, nullptr);
 			std::string utf(n, '\0');
@@ -284,7 +277,6 @@ namespace wbsh {
 			std::fwrite(utf.data(), 1, utf.size() ? utf.size() - 1 : 0, out);
 		}
 
-		// Stream the response body to `out`, chunk by chunk.
 		static void streamResponseBody(HINTERNET request, FILE* out) {
 			while (true) {
 				DWORD avail = 0;
@@ -310,7 +302,7 @@ namespace wbsh {
 				if (!o.silent) curlPerr("no URL specified");
 				return 2;
 			}
-			// Default to https:// if no scheme.
+
 			if (o.url.find("://") == std::string::npos) o.url = "https://" + o.url;
 
 			WinHttpHandles h;
@@ -319,8 +311,6 @@ namespace wbsh {
 
 			const DWORD status_code = readStatusCode(h.request);
 
-			// Re-crack the URL to get the path for `-O` (we don't keep the
-			// cracked path past openRequest()).
 			std::wstring path = L"/";
 			{
 				wchar_t host_buf[256] = {};
@@ -337,6 +327,7 @@ namespace wbsh {
 			if (o.include_headers || o.head_only) {
 				writeResponseHeaders(h.request, out);
 			}
+
 			if (!o.head_only) {
 				streamResponseBody(h.request, out);
 			}

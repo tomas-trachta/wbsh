@@ -26,11 +26,7 @@
 
 namespace wbsh {
 
-	// ---- UTF-8 <-> native (wide / fs::path) conversion utilities ----
-
-	/// Convert a UTF-8 string to a UTF-16 wide string.
 	std::wstring utf8ToWide(const std::string& s);
-	/// Convert a UTF-16 wide string to a UTF-8 string.
 	std::string  wideToUtf8(const std::wstring& w);
 
 	/**
@@ -56,9 +52,6 @@ namespace wbsh {
 	 *
 	 * On Windows uses `_wfopen` on the wide form so non-ASCII
 	 * filenames don't get downgraded through the active codepage.
-	 *
-	 * @param utf8_path UTF-8 encoded file path.
-	 * @param mode      ASCII fopen mode string (e.g. "rb", "wb", "ab").
 	 */
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode);
 
@@ -108,21 +101,11 @@ namespace wbsh {
 		 */
 		std::string toWin32Short(const std::string& p) const;
 
-		/// True iff @p p starts with a drive letter (`X:`) or `\\` UNC prefix.
 		static bool isWin32Absolute(const std::string& p);
-		/// True iff @p p starts with `/`.
 		static bool isPosixAbsolute(const std::string& p);
-		/// True iff @p s contains a backslash or looks like `X:`.
 		static bool looksLikeWin32(const std::string& s);
 
-		/**
-		 * @brief Translate every entry of a Windows-style PATH list to POSIX.
-		 *
-		 * Entries are separated by `;` on input and `:` on output;
-		 * each is independently translated.
-		 */
 		std::string pathListWin32ToPosix(const std::string& list) const;
-		/// Reverse of pathListWin32ToPosix(): POSIX `:` list → Windows `;` list.
 		std::string pathListPosixToWin32(const std::string& list) const;
 
 		/**
@@ -145,7 +128,6 @@ namespace wbsh {
 		std::string translateArg(const std::string& arg) const;
 
 	private:
-		/// One row of the mount table.
 		struct Mount {
 			std::string posix;      ///< Exact (e.g. `/dev/null`) or prefix (e.g. `/c`).
 			std::string win32;      ///< Native counterpart.

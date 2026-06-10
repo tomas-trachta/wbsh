@@ -17,12 +17,8 @@
 
 namespace wbsh {
 
-	/**
-	 * @brief Compile @p pat into @p out.
-	 *
-	 * @return true on success; false when the pattern is invalid
-	 *         (@p out is left in an unspecified valid state).
-	 */
+	/// False when the pattern is invalid; @p out is then left in an
+	/// unspecified valid state.
 	inline bool compileRegex(std::regex& out, const std::string& pat,
 	                         std::regex::flag_type flags = std::regex::ECMAScript) {
 		try {
@@ -39,14 +35,28 @@ namespace wbsh {
 	 * MSVC's matcher throws regex_error on backtracking complexity /
 	 * stack limits for adversarial pattern+input pairs; callers here
 	 * want "no match" rather than a crash in that case.
-	 *
-	 * @param m Optional: receives the match results on a hit.
 	 */
 	inline bool searchRegex(const std::string& s, const std::regex& re,
 	                        std::smatch* m = nullptr) {
 		try {
 			if (m) return std::regex_search(s, *m, re);
 			return std::regex_search(s, re);
+		} catch (const std::regex_error&) {
+			return false;
+		}
+	}
+
+	/**
+	 * @brief searchRegex over the [first, last) range of a string.
+	 *
+	 * Lets scanning loops advance through a subject without copying the
+	 * tail on every step. Positions in @p m are relative to @p first.
+	 */
+	inline bool searchRegex(std::string::const_iterator first,
+	                        std::string::const_iterator last,
+	                        const std::regex& re, std::smatch* m) {
+		try {
+			return std::regex_search(first, last, *m, re);
 		} catch (const std::regex_error&) {
 			return false;
 		}

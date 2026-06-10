@@ -5,10 +5,6 @@
  * Parses arithmetic expressions, assignments, and simple control flow.
  * Uses double precision; `scale` controls fraction display. Math
  * library (`-l`) provides sqrt, s, c, e, l, a.
- *
- * Split out of coreutils.cpp for IDE friendliness and to keep the main
- * coreutils file focused on shell-style utilities. The single public
- * entry point is registerBcBuiltin().
  */
 
 #include "coreutils_internal.h"
@@ -52,12 +48,14 @@ namespace wbsh {
 					while (i < src.size() && src[i] != '\n') ++i;
 				}
 			}
+
 			std::string next() {
 				if (!pushback.empty()) {
 					std::string t = pushback.back();
 					pushback.pop_back();
 					return t;
 				}
+
 				skip();
 				if (i >= src.size()) return "";
 				char c = src[i];
@@ -68,6 +66,7 @@ namespace wbsh {
 						++i;
 					return src.substr(s, i - s);
 				}
+
 				if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
 					std::size_t s = i;
 					while (i < src.size()
@@ -75,25 +74,39 @@ namespace wbsh {
 						++i;
 					return src.substr(s, i - s);
 				}
-				if (c == '<' || c == '>' || c == '=' || c == '!') {
+
+				if (c == '<' || c == '>' || c == '=' || c == '!'
+				    || c == '+' || c == '-' || c == '*' || c == '/'
+				    || c == '%' || c == '^') {
 					if (i + 1 < src.size() && src[i + 1] == '=') {
 						std::string r = src.substr(i, 2);
 						i += 2;
 						return r;
 					}
 				}
+
+				if ((c == '&' || c == '|' || c == '+' || c == '-')
+				    && i + 1 < src.size() && src[i + 1] == c) {
+					std::string r = src.substr(i, 2);
+					i += 2;
+					return r;
+				}
+
 				if (c == '\n') { ++i; return ";"; }
 				char r = src[i++];
 				return std::string(1, r);
 			}
+
 			std::string peek() {
 				if (pushback.empty()) {
 					std::string t = next();
 					if (t.empty()) return t;
 					pushback.push_back(t);
 				}
+
 				return pushback.back();
 			}
+
 			void unread(std::string t) { pushback.push_back(std::move(t)); }
 		};
 
@@ -104,27 +117,32 @@ namespace wbsh {
 			for (char x : t) {
 				if (!std::isalnum(static_cast<unsigned char>(x)) && x != '_') return false;
 			}
+
 			return true;
 		}
+
 		static bool isNumber(const std::string& t) {
 			if (t.empty()) return false;
 			for (char c : t) {
 				if (!std::isdigit(static_cast<unsigned char>(c)) && c != '.') return false;
 			}
+
 			return true;
 		}
 
-		// Recursive-descent expression parser/evaluator. Operates directly
-		// on the lexer stream and BcState.
 		struct BcEval {
 			BcLex& lex;
 			BcState& st;
 			BcEval(BcLex& l, BcState& s) : lex(l), st(s) {}
 
+			double varOrZero(const std::string& n) const {
+				const auto it = st.vars.find(n);
+				return it == st.vars.end() ? 0.0 : it->second;
+			}
+
 			double parseExpr() { return parseAssign(); }
 
 			double parseAssign() {
-				// lookahead: NAME = expr (or any compound assignment)
 				const std::string t = lex.peek();
 				if (isName(t)) {
 					std::string n = lex.next();
@@ -134,7 +152,7 @@ namespace wbsh {
 					{
 						lex.next();
 						const double rhs = parseAssign();
-						const double cur = st.vars.count(n) ? st.vars[n] : 0.0;
+						const double cur = varOrZero(n);
 						double v = rhs;
 						if      (op == "+=") v = cur + rhs;
 						else if (op == "-=") v = cur - rhs;
@@ -146,10 +164,13 @@ namespace wbsh {
 						else              st.vars[n] = v;
 						return v;
 					}
+
 					lex.unread(std::move(n));
 				}
+
 				return parseOr();
 			}
+
 			double parseOr() {
 				double a = parseAnd();
 				while (lex.peek() == "||") {
@@ -157,8 +178,10 @@ namespace wbsh {
 					const double b = parseAnd();
 					a = (a != 0 || b != 0) ? 1 : 0;
 				}
+
 				return a;
 			}
+
 			double parseAnd() {
 				double a = parseCmp();
 				while (lex.peek() == "&&") {
@@ -166,8 +189,10 @@ namespace wbsh {
 					const double b = parseCmp();
 					a = (a != 0 && b != 0) ? 1 : 0;
 				}
+
 				return a;
 			}
+
 			double parseCmp() {
 				double a = parseAddSub();
 				while (true) {
@@ -189,8 +214,10 @@ namespace wbsh {
 						break;
 					}
 				}
+
 				return a;
 			}
+
 			double parseAddSub() {
 				double a = parseMul();
 				while (true) {
@@ -199,8 +226,10 @@ namespace wbsh {
 					else if (p == "-") { lex.next(); a -= parseMul(); }
 					else break;
 				}
+
 				return a;
 			}
+
 			double parseMul() {
 				double a = parseExp();
 				while (true) {
@@ -218,16 +247,20 @@ namespace wbsh {
 						break;
 					}
 				}
+
 				return a;
 			}
+
 			double parseExp() {
 				double a = parseUnary();
 				if (lex.peek() == "^") {
 					lex.next();
 					a = std::pow(a, parseExp());
 				}
+
 				return a;
 			}
+
 			double parseUnary() {
 				const std::string p = lex.peek();
 				if (p == "-")  { lex.next(); return -parseUnary(); }
@@ -236,19 +269,22 @@ namespace wbsh {
 				if (p == "++") {
 					lex.next();
 					const std::string n = lex.next();
-					const double v = (st.vars.count(n) ? st.vars[n] : 0.0) + 1;
+					const double v = varOrZero(n) + 1;
 					st.vars[n] = v;
 					return v;
 				}
+
 				if (p == "--") {
 					lex.next();
 					const std::string n = lex.next();
-					const double v = (st.vars.count(n) ? st.vars[n] : 0.0) - 1;
+					const double v = varOrZero(n) - 1;
 					st.vars[n] = v;
 					return v;
 				}
+
 				return parsePrimary();
 			}
+
 			double parsePrimary() {
 				const std::string t = lex.next();
 				if (t.empty()) return 0;
@@ -257,14 +293,15 @@ namespace wbsh {
 					if (lex.peek() == ")") lex.next();
 					return v;
 				}
+
 				if (isNumber(t)) {
 					double v = 0;
 					parseDouble(t, v);
 					return v;
 				}
+
 				if (isName(t)) {
 					if (lex.peek() == "(") {
-						// Function call
 						lex.next();
 						std::vector<double> args;
 						if (lex.peek() != ")") {
@@ -274,21 +311,25 @@ namespace wbsh {
 								args.push_back(parseExpr());
 							}
 						}
+
 						if (lex.peek() == ")") lex.next();
 						return callFunc(t, args);
 					}
-					// Postfix ++/-- — captures the value before the bump.
+
 					if (lex.peek() == "++" || lex.peek() == "--") {
-						const double cur = st.vars.count(t) ? st.vars[t] : 0.0;
+						const double cur = varOrZero(t);
 						const double nv = (lex.next() == "++") ? cur + 1 : cur - 1;
 						st.vars[t] = nv;
 						return cur;
 					}
+
 					if (t == "scale") return st.scale;
-					return st.vars.count(t) ? st.vars[t] : 0.0;
+					return varOrZero(t);
 				}
+
 				return 0;
 			}
+
 			double callFunc(const std::string& n, const std::vector<double>& a) {
 				auto get0 = [&]() { return a.empty() ? 0 : a[0]; };
 				if (n == "sqrt") return std::sqrt(get0());
@@ -299,6 +340,7 @@ namespace wbsh {
 					if (n == "l") return std::log(get0());
 					if (n == "a") return std::atan(get0());
 				}
+
 				if (n == "length") {
 					char buf[64];
 					std::snprintf(buf, sizeof(buf), "%.20g", get0());
@@ -307,15 +349,14 @@ namespace wbsh {
 					for (char x : s) {
 						if (std::isdigit(static_cast<unsigned char>(x))) ++c;
 					}
+
 					return static_cast<double>(c);
 				}
+
 				return 0;
 			}
 		};
 
-		// Suppress-output check: an expression starting with `NAME = ...`
-		// (or `NAME op= ...`, or `++NAME` / `--NAME`) is an assignment and
-		// bc does not print its value. Cheap two-token lookahead before eval.
 		static bool startsAssign(BcLex& lex) {
 			std::string t1 = lex.next();
 			if (t1.empty()) return false;
@@ -328,9 +369,6 @@ namespace wbsh {
 			    || t2 == "/=" || t2 == "%=" || t2 == "^=";
 		}
 
-		// Skip the controlled statement of an `if (cond) STMT` whose cond
-		// was false. STMT may be a `{ ... }` block (count braces) or a
-		// single statement (run to next `;` / `\n`).
 		static void skipControlledStmt(BcLex& lex) {
 			std::string nx = lex.next();
 			if (nx == "{") {
@@ -341,14 +379,15 @@ namespace wbsh {
 					if      (t == "{") ++d;
 					else if (t == "}") --d;
 				}
+
 				return;
 			}
+
 			while (!nx.empty() && nx != ";" && nx != "\n") nx = lex.next();
 		}
 
 		static void evalLine(BcLex& lex, BcState& st);
 
-		// Print one bc expression result; honours `scale`.
 		static void printBcResult(double v, const BcState& st) {
 			if (st.scale == 0) std::printf("%lld\n", static_cast<long long>(v));
 			else               std::printf("%.*f\n", st.scale, v);
@@ -364,6 +403,7 @@ namespace wbsh {
 					st.exit_now = true;
 					return;
 				}
+
 				if (p == "if") {
 					lex.next();
 					if (lex.peek() == "(") lex.next();
@@ -374,12 +414,14 @@ namespace wbsh {
 					else      skipControlledStmt(lex);
 					continue;
 				}
+
 				if (p == "{") {
 					lex.next();
 					while (lex.peek() != "}" && !lex.peek().empty()) evalLine(lex, st);
 					if (lex.peek() == "}") lex.next();
 					continue;
 				}
+
 				if (p == "}") return;
 
 				const bool suppress = startsAssign(lex);
@@ -391,8 +433,6 @@ namespace wbsh {
 			}
 		}
 
-		// Read `f` line-by-line and feed each line through the bc evaluator.
-		// Final partial line (no trailing newline) is also evaluated.
 		static void runStream(FILE* f, BcState& st) {
 			std::string buf;
 			int c;
@@ -404,6 +444,7 @@ namespace wbsh {
 					buf.clear();
 				}
 			}
+
 			if (!buf.empty() && !st.exit_now) {
 				BcLex lex(buf);
 				while (!lex.peek().empty() && !st.exit_now) evalLine(lex, st);
@@ -439,15 +480,18 @@ namespace wbsh {
 				runStream(stdin, st);
 				return 0;
 			}
+
 			for (const auto& fn : files) {
 				FILE* f = openUtf8(exec.pathConv().toWin32(fn), "rb");
 				if (!f) {
 					diagnoseFileError("bc", fn);
 					continue;
 				}
+
 				runStream(f, st);
 				std::fclose(f);
 			}
+
 			return 0;
 		}
 

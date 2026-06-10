@@ -1,6 +1,6 @@
 # Contributing to wbsh
 
-Thanks for being here. wbsh is in alpha; the surface area is large and almost
+Thanks for being here. wbsh is young; the surface area is large and almost
 every part has room for improvement, so contributions are genuinely welcome.
 This document is the map: how the codebase fits together, the conventions
 that keep it readable, and what a PR needs to look like to land.
@@ -22,14 +22,11 @@ open an issue or a PR against this file.
   blow past that, extract a named helper.
 - No commented-out code. Delete it; git remembers.
 
-The longer-form C++ conventions wbsh uses are an adaptation of
-[`coding_standards/c_coding_standards.md`][cs] — tabs, `#pragma once`,
-`camelCase`. One deliberate deviation: wbsh reports errors as values
-(status returns, error flags, `std::error_code`), not exceptions — see
-the "Errors" bullet in the style cheatsheet. Project conventions win
-over the standard when they conflict.
-
-[cs]: https://github.com/trachtot/coding_standards
+wbsh deliberately reads like C with namespaces: plain functions and
+structs, classes only where state demands them, no exceptions (errors are
+values — see the "Errors" bullet in the style cheatsheet), no template
+metaprogramming. The style cheatsheet below is the project standard;
+where it doesn't cover something, match the file you're editing.
 
 ---
 
@@ -51,10 +48,12 @@ get the shape of the codebase:
 | Builtins | `src/builtins.cpp` | Shell builtins (`cd`, `export`, `declare`, `read`, `trap`, `getopts`, `complete`, …). |
 | Coreutils | `src/coreutils.cpp` + `coreutils_*.cpp` | Bundled `ls`/`grep`/`sed`/`awk`/`tar`/… Split per family; see "The coreutils split pattern" below. |
 | Awk | `src/awk.cpp/h` | Self-contained awk implementation invoked by the `awk` coreutil. |
-| Inflate | `src/inflate.cpp/h` | gzip / zip decoder used by `gunzip`, `zcat`, `unzip`, `tar -xz`. |
-| REPL | `src/main.cpp`, `src/repl.cpp`, `src/lineedit.cpp` | CLI dispatch, console mode setup, prompt expansion, line editor with history + completion. |
-| Setup | `src/setup.cpp` | One-time runtime bootstrap: PATH discovery, locating `git`, console / VT mode. |
+| Inflate | `src/inflate.cpp/h` | DEFLATE decoder used by `gunzip`, `zcat`, `unzip`. |
+| CLI | `src/main.cpp`, `src/script.cpp` | Entry point: UTF-8 argv decoding, flag dispatch, the non-interactive run / dump driver. |
+| REPL | `src/repl.cpp`, `src/lineedit.cpp` | Interactive loop: console / VT mode setup, prompt expansion, raw-mode line editor (history, completion, `Ctrl-R`, inline predictions). |
+| Setup | `src/setup.cpp` | Startup environment seeding: registry PATH merge, git / docker install discovery, `WBSH_*` state inheritance from a parent wbsh. |
 | Debug | `src/printer.cpp` | Token / AST pretty-printer for the `-t` and default (no-`-r`) dump modes. |
+| Support | `src/fnmatch.h`, `src/numparse.h`, `src/regexutil.h`, `src/source.h` | Leaf headers: glob matcher, error-as-value numeric parsing, error-as-value regex adapters, source locations. |
 
 Two cross-cutting interfaces are worth knowing about up-front:
 
@@ -71,10 +70,11 @@ Two cross-cutting interfaces are worth knowing about up-front:
 
 ## The coreutils split pattern
 
-`coreutils.cpp` is the dumping ground for bundled utilities and tends to get
-big. The pattern for splitting a related group off into its own file is
-already established (see `coreutils_bc.cpp`, `coreutils_curl.cpp`,
-`coreutils_hash.cpp`) and you should follow it when adding a new group:
+Bundled utilities live in per-family files: `coreutils.cpp` (file /
+system utilities plus the shared helpers), `coreutils_text.cpp`,
+`coreutils_archive.cpp`, `coreutils_encoding.cpp`, `coreutils_bc.cpp`,
+`coreutils_curl.cpp`, `coreutils_hash.cpp`. Follow the same pattern when
+adding a new group:
 
 1. New file `src/coreutils_<group>.cpp`. Put its file-local helpers in a
    named sub-namespace: `namespace wbsh::<group>_detail { ... }`. No
@@ -84,19 +84,12 @@ already established (see `coreutils_bc.cpp`, `coreutils_curl.cpp`,
    `src/coreutils_internal.h` so `registerCoreutils()` can call it.
 3. Call your `register…` function from `registerCoreutils()` in
    `coreutils.cpp` and delete the moved code from there.
-4. Add the new file to `wbsh.vcxproj` (`<ClCompile Include="src/coreutils_<group>.cpp" />`).
+4. Add the new file to `wbsh.vcxproj` (`<ClCompile ... />`) and
+   `wbsh.vcxproj.filters`.
 5. Run the full test suite in golden mode before opening the PR.
 
-Documented future splits, in roughly decreasing payoff:
-
-- `coreutils_text.cpp` — `grep`, `find`, `sed`, `sort`, `uniq`, `tr`, `cut`,
-  `paste`, etc. (~1200 lines; the biggest split available).
-- `coreutils_archive.cpp` — `tar`, `gzip`, `gunzip`, `zcat`, `zip`, `unzip`
-  (~700 lines; all share `readAllBytesFromFile` and `crc32Update`).
-- `coreutils_encoding.cpp` — `base64`, `xxd`, `od` (~280 lines).
-
-The same pattern can be applied to `executor.cpp` once it grows further —
-the natural split is `executor_redirection.cpp` (fd plumbing) and
+The same pattern is the plan for `executor.cpp` if it grows further — the
+natural split is `executor_redirection.cpp` (fd plumbing) and
 `executor_process.cpp` (Win32-specific spawn helpers).
 
 ---
@@ -116,7 +109,7 @@ The full release pipeline (binary + portable ZIP + Inno Setup installer):
 
 ```powershell
 .\installer\build.ps1                  # default version
-.\installer\build.ps1 -Version 1.0.6   # explicit
+.\installer\build.ps1 -Version 1.0.8   # explicit
 ```
 
 You only need to run `build.ps1` when touching the installer, the bundled
@@ -173,8 +166,7 @@ gate — so run it.
 
 ## Style cheatsheet
 
-The full standard is `coding_standards/c_coding_standards.md`, adapted for
-C++. The points you'll bump into most often:
+The points you'll bump into most often:
 
 - **Includes.** Source file's own header first, blank line, then groups
   (system `<...>` headers, then project `"..."` headers). Alphabetical
@@ -189,10 +181,19 @@ C++. The points you'll bump into most often:
   comment; always include a `default`.
 - **Declarations.** Declare variables at first use, one per line, `const`
   what doesn't change.
-- **Comments.** Doxygen-style `/** ... */` on every public function and
-  type (we publish generated API docs from `docs/Doxyfile`). Don't restate
-  what the code obviously says; comment the *why* — invariants,
-  workarounds, hidden constraints.
+- **Vertical whitespace.** A blank line between every function definition
+  and after every closing brace that's followed by a same-indent
+  statement — steps inside a function are separated by blank lines, not
+  comments. Uniform constructs (a switch dispatch, a registration table,
+  an argument-parse loop) are one step and stay compact.
+- **Comments.** A comment must say something the code cannot: the *why*,
+  an invariant, a contract the signature doesn't show, a platform
+  workaround, a wire-format field. If a comment is only needed because a
+  name is unclear or a function does too much, rename or split instead of
+  commenting. In `.cpp` files this means almost no comments at all — the
+  whole codebase carries only a handful. Comments that survive this bar
+  on public functions / types use Doxygen `/** ... */` or `///` style
+  (API docs are generated from `docs/Doxyfile`).
 - **No "what" comments.** `i++;  // increment i` is noise. `// MSVC's
   isspace asserts on negative chars, so cast to unsigned char first` is a
   comment.
@@ -256,7 +257,8 @@ Before opening the PR:
       code added.
 - [ ] Touched headers still self-contain (try compiling a TU that includes
       only the changed header).
-- [ ] Public functions / types have Doxygen comments.
+- [ ] Every comment says something the code cannot (why / invariant /
+      contract); none restate names or signatures.
 
 PR description should call out:
 
@@ -290,17 +292,17 @@ worth several rounds of guessing.
 The roadmap in the README lists the major bets. Smaller things that would
 land cleanly today:
 
-- Continue the `coreutils.cpp` file-split (see above) — pure mechanical
-  refactor, well-bounded, useful exercise for getting familiar with the
-  codebase.
-- Tab completion: the plumbing is there (`complete`, `compgen`, completion
-  specs in `Executor`) but most built-in completions are stubs.
-- Reverse-incremental search (`Ctrl-R`) in `lineedit.cpp`.
 - A real CI workflow — even just "build Release and run `WBSH_GOLDEN=1
   run-all.sh`" on every push would be a meaningful upgrade.
-- Filling in `tests/` coverage for areas that currently rely on smoke
-  tests alone (job control, traps, `read -t`, here-strings in pipelines).
+- Test coverage for behavior that currently has none: bc's compound
+  assignment / `&&` / `||` / `++`, awk's BEGIN-only no-stdin rule, traps,
+  job control.
+- Output process substitution `>(...)` (the input side `<(...)` works).
+- The `executor.cpp` split (see above) — pure mechanical refactor,
+  well-bounded, a good way to get familiar with the codebase.
+- More per-tool tab completions in `lineedit.cpp` (the git / docker /
+  npm / cargo / kubectl tables are easy to extend).
 
-If you want to take on one of the roadmap items (ConPTY, process
-substitution, package manager), open an issue first so we can align on
-scope before you sink time into it.
+If you want to take on one of the roadmap items (ConPTY, `Ctrl-Z` job
+control), open an issue first so we can align on scope before you sink
+time into it.

@@ -1,10 +1,3 @@
-/**
- * @file expander.cpp
- * @brief Word-expansion pipeline implementation: brace, tilde,
- *        parameter, command, arithmetic, ANSI-C, splitting, globbing,
- *        quote removal.
- */
-
 #include "expander.h"
 
 #ifdef _WIN32
@@ -25,92 +18,20 @@
 #include <utility>
 #include <vector>
 
+#include "fnmatch.h"
 #include "lexer.h"
 #include "numparse.h"
+#include "strscan.h"
 
 namespace wbsh {
-
-	// ---------------------------------------------------------------------
-	// fnmatch-like glob pattern matcher. Supports * ? [...].
-	// ---------------------------------------------------------------------
-
-	static bool matchHere(const std::string& p, std::size_t pi,
-	               const std::string& s, std::size_t si);
-
-	static bool matchBracket(const std::string& p, std::size_t& pi, char c) {
-		std::size_t k = pi + 1;
-		bool negate = false;
-		if (k < p.size() && (p[k] == '!' || p[k] == '^')) { negate = true; ++k; }
-		bool match = false;
-		bool first = true;
-		while (k < p.size() && (first || p[k] != ']')) {
-			char a = p[k++];
-			if (a == '\\' && k < p.size()) a = p[k++];
-			if (k < p.size() && p[k] == '-' && k + 1 < p.size() && p[k + 1] != ']') {
-				++k;                        // consume '-'
-				char b = p[k++];
-				if (b == '\\' && k < p.size()) b = p[k++];
-				if (c >= a && c <= b) match = true;
-			} else {
-				if (c == a) match = true;
-			}
-			first = false;
-		}
-		if (k < p.size() && p[k] == ']') ++k;
-		pi = k;
-		return match != negate;
-	}
-
-	static bool matchHere(const std::string& p, std::size_t pi,
-	               const std::string& s, std::size_t si) {
-		while (pi < p.size()) {
-			char pc = p[pi];
-			if (pc == '*') {
-				while (pi < p.size() && p[pi] == '*') ++pi;
-				if (pi >= p.size()) return true;
-				for (std::size_t k = si; k <= s.size(); ++k) {
-					if (matchHere(p, pi, s, k)) return true;
-				}
-				return false;
-			}
-			if (si >= s.size()) return false;
-			if (pc == '?') { ++pi; ++si; continue; }
-			if (pc == '[') {
-				std::size_t newpi = pi;
-				if (!matchBracket(p, newpi, s[si])) return false;
-				pi = newpi; ++si; continue;
-			}
-			if (pc == '\\' && pi + 1 < p.size()) {
-				++pi;
-				if (p[pi] != s[si]) return false;
-				++pi; ++si; continue;
-			}
-			if (pc != s[si]) return false;
-			++pi; ++si;
-		}
-		return si == s.size();
-	}
-
-	static bool fnmatchFull(const std::string& p, const std::string& s) {
-		return matchHere(p, 0, s, 0);
-	}
-
-	// ---------------------------------------------------------------------
-	// Inline $-expansion for heredoc bodies and ${param-default} defaults.
-	// Performs $name, ${...}, $(...), $((...)), `...`, and backslash
-	// escapes (\$ \\ \` \"). Tilde, splitting, globbing are NOT applied.
-	// ---------------------------------------------------------------------
 
 	static bool isNameStart(char c) {
 		return c == '_' || std::isalpha(static_cast<unsigned char>(c));
 	}
+
 	static bool isNameCont(char c) {
 		return c == '_' || std::isalnum(static_cast<unsigned char>(c));
 	}
-
-	// ---------------------------------------------------------------------
-	// Arithmetic evaluator (recursive descent).
-	// ---------------------------------------------------------------------
 
 	class ArithEval {
 	public:
@@ -129,6 +50,7 @@ namespace wbsh {
 			while (consume(',')) r = parseAssign();
 			return r;
 		}
+
 		long long parseAssign() {
 			std::size_t save = pos_;
 			skipWs();
@@ -165,14 +87,18 @@ namespace wbsh {
 					case '<': val = lhs << rhs; break;
 					case '>': val = lhs >> rhs; break;
 					}
+
 					env_.set(name, std::to_string(val));
 					return val;
 				}
+
 				pos_ = saved2;
 			}
+
 			pos_ = save;
 			return parseTernary();
 		}
+
 		long long parseTernary() {
 			long long c = parseLogOr();
 			if (consume('?')) {
@@ -181,24 +107,30 @@ namespace wbsh {
 				long long b = parseAssign();
 				return c ? a : b;
 			}
+
 			return c;
 		}
+
 		long long parseLogOr() {
 			long long l = parseLogAnd();
 			while (consume("||")) {
 				long long r = parseLogAnd();
 				l = (l || r) ? 1 : 0;
 			}
+
 			return l;
 		}
+
 		long long parseLogAnd() {
 			long long l = parseBitOr();
 			while (consume("&&")) {
 				long long r = parseBitOr();
 				l = (l && r) ? 1 : 0;
 			}
+
 			return l;
 		}
+
 		long long parseBitOr() {
 			long long l = parseBitXor();
 			while (true) {
@@ -209,8 +141,10 @@ namespace wbsh {
 					l |= r;
 				} else break;
 			}
+
 			return l;
 		}
+
 		long long parseBitXor() {
 			long long l = parseBitAnd();
 			while (true) {
@@ -221,8 +155,10 @@ namespace wbsh {
 					l ^= r;
 				} else break;
 			}
+
 			return l;
 		}
+
 		long long parseBitAnd() {
 			long long l = parseEq();
 			while (true) {
@@ -233,8 +169,10 @@ namespace wbsh {
 					l &= r;
 				} else break;
 			}
+
 			return l;
 		}
+
 		long long parseEq() {
 			long long l = parseRel();
 			while (true) {
@@ -243,8 +181,10 @@ namespace wbsh {
 				else if (consume("!=")) { long long r = parseRel(); l = (l != r) ? 1 : 0; }
 				else break;
 			}
+
 			return l;
 		}
+
 		long long parseRel() {
 			long long l = parseShift();
 			while (true) {
@@ -257,8 +197,10 @@ namespace wbsh {
 					++pos_; long long r = parseShift(); l = (l > r) ? 1 : 0;
 				} else break;
 			}
+
 			return l;
 		}
+
 		long long parseShift() {
 			long long l = parseAdd();
 			while (true) {
@@ -271,8 +213,10 @@ namespace wbsh {
 					long long r = parseAdd(); l = l >> r;
 				} else break;
 			}
+
 			return l;
 		}
+
 		long long parseAdd() {
 			long long l = parseMul();
 			while (true) {
@@ -283,8 +227,10 @@ namespace wbsh {
 					++pos_; long long r = parseMul(); l = l - r;
 				} else break;
 			}
+
 			return l;
 		}
+
 		long long parseMul() {
 			long long l = parsePow();
 			while (true) {
@@ -297,20 +243,24 @@ namespace wbsh {
 					++pos_; long long r = parsePow(); l = r ? l % r : 0;
 				} else break;
 			}
+
 			return l;
 		}
+
 		long long parsePow() {
 			long long l = parseUnary();
 			skipWs();
 			if (consume("**")) {
-				long long r = parsePow();   // right-assoc
+				long long r = parsePow();
 				long long res = 1;
 				if (r < 0) return 0;
 				for (long long k = 0; k < r; ++k) res *= l;
 				return res;
 			}
+
 			return l;
 		}
+
 		long long parseUnary() {
 			skipWs();
 			if (consume("++")) {
@@ -319,18 +269,21 @@ namespace wbsh {
 				env_.set(n, std::to_string(v));
 				return v;
 			}
+
 			if (consume("--")) {
 				std::string n = readIdent();
 				long long v = env_get(n) - 1;
 				env_.set(n, std::to_string(v));
 				return v;
 			}
+
 			if (consume('+')) return parseUnary();
 			if (consume('-')) return -parseUnary();
 			if (consume('!')) return parseUnary() ? 0 : 1;
 			if (consume('~')) return ~parseUnary();
 			return parsePrimary();
 		}
+
 		long long parsePrimary() {
 			skipWs();
 			if (eof()) return 0;
@@ -339,9 +292,11 @@ namespace wbsh {
 				consume(')');
 				return v;
 			}
+
 			if (std::isdigit(static_cast<unsigned char>(peek()))) {
 				return readNumber();
 			}
+
 			if (isNameStart(peek())) {
 				std::string n = readIdent();
 				skipWs();
@@ -350,28 +305,35 @@ namespace wbsh {
 					env_.set(n, std::to_string(v + 1));
 					return v;
 				}
+
 				if (consume("--")) {
 					long long v = env_get(n);
 					env_.set(n, std::to_string(v - 1));
 					return v;
 				}
+
 				return env_get(n);
 			}
+
 			if (consume('$')) {
 				if (isNameStart(peek())) {
 					std::string n = readIdent();
 					return env_get(n);
 				}
+
 				if (std::isdigit(static_cast<unsigned char>(peek()))) {
 					std::string num;
 					while (std::isdigit(static_cast<unsigned char>(peek()))) {
 						num.push_back(advance());
 					}
+
 					return env_get(num);
 				}
+
 				return 0;
 			}
-			++pos_;   // skip unrecognized char
+
+			++pos_;
 			return 0;
 		}
 
@@ -382,7 +344,7 @@ namespace wbsh {
 			long long iv = 0;
 			std::size_t idx = 0;
 			if (parseLL(v, iv, 0, &idx) && idx == v.size()) return iv;
-			if (depth_ > 16) return 0;   // recursion guard
+			if (depth_ > 16) return 0;
 			ArithEval inner(v, env_, outer_, depth_ + 1);
 			return inner.run();
 		}
@@ -398,20 +360,25 @@ namespace wbsh {
 					        : std::tolower(static_cast<unsigned char>(c)) - 'a' + 10;
 					v = v * 16 + d;
 				}
+
 				return v;
 			}
+
 			if (peek() == '0' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
-				++pos_;   // leading 0 → octal
+				++pos_;
 				long long v = 0;
 				while (peek() >= '0' && peek() <= '7') {
 					v = v * 8 + (advance() - '0');
 				}
+
 				return v;
 			}
+
 			long long v = 0;
 			while (std::isdigit(static_cast<unsigned char>(peek()))) {
 				v = v * 10 + (advance() - '0');
 			}
+
 			if (peek() == '#') {
 				++pos_;
 				int base = static_cast<int>(v);
@@ -431,6 +398,7 @@ namespace wbsh {
 					advance();
 				}
 			}
+
 			return v;
 		}
 
@@ -441,22 +409,26 @@ namespace wbsh {
 				advance();
 				while (!eof() && isNameCont(peek())) advance();
 			}
+
 			return src_.substr(start, pos_ - start);
 		}
 
 		void skipWs() {
 			while (!eof() && std::isspace(static_cast<unsigned char>(peek()))) ++pos_;
 		}
+
 		bool eof() const { return pos_ >= src_.size(); }
 		char peek(std::size_t n = 0) const {
 			return pos_ + n < src_.size() ? src_[pos_ + n] : '\0';
 		}
+
 		char advance() { return src_[pos_++]; }
 		bool consume(char c) {
 			skipWs();
 			if (peek() == c) { ++pos_; return true; }
 			return false;
 		}
+
 		bool consume(const char* s) {
 			skipWs();
 			std::size_t L = std::strlen(s);
@@ -473,27 +445,16 @@ namespace wbsh {
 		int depth_;
 	};
 
-	// ---------------------------------------------------------------------------
-	// Expander construction & arithmetic facade
-	// ---------------------------------------------------------------------------
-
 	Expander::Expander(Environment& env, CommandSubstitutor* sub)
 		: env_(env), sub_(sub) {}
 
 	long long Expander::evalArith(const std::string& body) {
-		// Pre-pass: expand $-forms inside the body (bash recurses into $((...)) bodies).
 		std::string expanded = expandHeredoc(body, /*quoted=*/false);
-		if (aborting()) return 0;   // error / control flow pending — caller checks
+		if (aborting()) return 0;
 		ArithEval ev(expanded, env_, this, 0);
 		return ev.run();
 	}
 
-	// ---------------------------------------------------------------------------
-	// Inline $-substitution (used for heredocs, default-values, arith pre-pass)
-	// ---------------------------------------------------------------------------
-
-	// Find the index just past the matching `}` for `${...}` starting at `i+2`.
-	// `i` points at the `$`; `body[i+1]` must be `{`. Counts nested braces.
 	static std::size_t scanBalancedBraces(const std::string& body, std::size_t after_open) {
 		std::size_t k = after_open;
 		int depth = 1;
@@ -502,11 +463,10 @@ namespace wbsh {
 			else if (body[k] == '}') --depth;
 			if (depth > 0) ++k;
 		}
+
 		return k;
 	}
 
-	// Find the index of the matching `)` for `$(...)` starting at `after_open`.
-	// `start_depth` is the nesting depth on entry (1 for `$(...)`, 2 for `$((...))`).
 	static std::size_t scanBalancedParens(const std::string& body, std::size_t after_open,
 	                                      int start_depth) {
 		std::size_t k = after_open;
@@ -516,11 +476,10 @@ namespace wbsh {
 			else if (body[k] == ')') --depth;
 			if (depth > 0) ++k;
 		}
+
 		return k;
 	}
 
-	// Find the index of the matching `]` for `$[...]` starting at `after_open`.
-	// Mirror of scanBalancedParens: nested `[` increments the depth.
 	static std::size_t scanBalancedBrackets(const std::string& body,
 	                                        std::size_t after_open) {
 		std::size_t k = after_open;
@@ -530,13 +489,10 @@ namespace wbsh {
 			else if (body[k] == ']') --depth;
 			if (depth > 0) ++k;
 		}
+
 		return k;
 	}
 
-	// Apply backslash-escape rules used in unquoted heredoc bodies (and the
-	// inside of double-quoted strings). Returns true if `body[i]` was a
-	// recognised escape; on true, `i` is advanced and characters may be
-	// appended to `out`.
 	static bool consumeHeredocBackslash(const std::string& body, std::size_t& i,
 	                                    std::string& out) {
 		if (body[i] != '\\' || i + 1 >= body.size()) return false;
@@ -546,21 +502,17 @@ namespace wbsh {
 			i += 2;
 			return true;
 		}
+
 		if (nx == '\n') {
-			// Line continuation — drop both bytes.
 			i += 2;
 			return true;
 		}
-		// Other backslash sequences pass through literally; consume only
-		// the backslash itself so the next character is reprocessed.
+
 		out.push_back('\\');
 		++i;
 		return true;
 	}
 
-	// `$(...)` plain command substitution: capture stdout, strip trailing
-	// newlines, append. `i` is at `$`; body[i+1] must be `(` and body[i+2]
-	// must NOT be `(` (use the arith-exp branch for `$((...))`).
 	void Expander::expandHeredocCmdSubst(const std::string& body, std::size_t& i,
 	                                     std::string& out)
 	{
@@ -573,13 +525,11 @@ namespace wbsh {
 		i = (k < end) ? k + 1 : k;
 	}
 
-	// `$((...))` arithmetic expansion. Caller has verified body[i+2]=='('.
 	void Expander::expandHeredocArith(const std::string& body, std::size_t& i,
 	                                  std::string& out)
 	{
 		const std::size_t end = body.size();
 		const std::size_t k = scanBalancedParens(body, i + 3, /*start_depth=*/2);
-		// k is at the second ')'. The inner expression ends one before that.
 		const std::size_t inner_end = (k > 0) ? k - 1 : 0;
 		const std::string inner = body.substr(i + 3, inner_end - (i + 3));
 		const long long v = evalArith(inner);
@@ -587,8 +537,6 @@ namespace wbsh {
 		i = (k < end) ? k + 1 : end;
 	}
 
-	// `$[...]` legacy arithmetic expansion. Sibling of expandHeredocArith
-	// for the bracketed form. Caller has verified body[i+1]=='['.
 	void Expander::expandHeredocArithBracket(const std::string& body, std::size_t& i,
 	                                         std::string& out)
 	{
@@ -600,7 +548,6 @@ namespace wbsh {
 		i = (k < end) ? k + 1 : end;
 	}
 
-	// `${...}` parameter expansion in a heredoc body.
 	void Expander::expandHeredocParamBraces(const std::string& body, std::size_t& i,
 	                                        std::string& out)
 	{
@@ -611,7 +558,6 @@ namespace wbsh {
 		i = (k < end) ? k + 1 : k;
 	}
 
-	// `$NAME`, `$1`, `$@`, etc. — bare-name parameter reference.
 	void Expander::expandHeredocSimpleParam(const std::string& body, std::size_t& i,
 	                                        std::string& out)
 	{
@@ -624,12 +570,12 @@ namespace wbsh {
 		} else {
 			++k;
 		}
+
 		const std::string name = body.substr(i + 1, k - (i + 1));
 		out += lookupParam(name);
 		i = k;
 	}
 
-	// Backquote command substitution. `i` points to the opening `` ` ``.
 	void Expander::expandHeredocBackquote(const std::string& body, std::size_t& i,
 	                                      std::string& out)
 	{
@@ -645,9 +591,11 @@ namespace wbsh {
 					continue;
 				}
 			}
+
 			inner.push_back(body[k]);
 			++k;
 		}
+
 		std::string r = runCmdSubst(inner);
 		while (!r.empty() && r.back() == '\n') r.pop_back();
 		out += r;
@@ -678,12 +626,14 @@ namespace wbsh {
 						expandHeredocCmdSubst(body, i, out);
 					continue;
 				}
+
 				if (n1 == '[') { expandHeredocArithBracket(body, i, out); continue; }
 				if (isNameStart(n1) || std::isdigit(static_cast<unsigned char>(n1))
 				    || isSpecialParam1(n1)) {
 					expandHeredocSimpleParam(body, i, out);
 					continue;
 				}
+
 				out.push_back('$');
 				++i;
 				continue;
@@ -697,6 +647,7 @@ namespace wbsh {
 			out.push_back(c);
 			++i;
 		}
+
 		return out;
 	}
 
@@ -705,12 +656,6 @@ namespace wbsh {
 		return {};
 	}
 
-	// ---------------------------------------------------------------------------
-	// ANSI-C quoting interpretation ($'...')
-	// ---------------------------------------------------------------------------
-
-	// `\xHH` — read up to two hex digits at `body[*i]` and emit the byte.
-	// On entry, `*i` points just past the `\x`.
 	static void ansicHexEscape(const std::string& body, std::size_t* i,
 	                           std::string& out) {
 		const std::size_t end = body.size();
@@ -726,11 +671,10 @@ namespace wbsh {
 			++(*i);
 			++cnt;
 		}
+
 		out.push_back(static_cast<char>(val));
 	}
 
-	// `\NNN` — read up to three octal digits starting at `body[*i]`.
-	// On entry, `*i` already points at the first octal digit.
 	static void ansicOctalEscape(const std::string& body, std::size_t* i,
 	                             std::string& out) {
 		const std::size_t end = body.size();
@@ -741,12 +685,10 @@ namespace wbsh {
 			++(*i);
 			++cnt;
 		}
+
 		out.push_back(static_cast<char>(val));
 	}
 
-	// Returns the literal mapping for simple `\X` escapes (e.g. `\n` -> `\n`),
-	// or 0 if `nx` is not a one-character escape. Caller advances by 2 on a
-	// non-zero return.
 	static char simpleAnsicEscape(char nx) {
 		switch (nx) {
 		case 'a':  return '\a';
@@ -771,33 +713,32 @@ namespace wbsh {
 		std::size_t i = 0;
 		while (i < end) {
 			const char c = body[i];
-			// Bare char (not a backslash, or backslash with nothing after).
 			if (c != '\\' || i + 1 >= end) {
 				out.push_back(c);
 				++i;
 				continue;
 			}
+
 			const char nx = body[i + 1];
 
-			// Simple one-character escapes (\n, \t, ...).
 			if (const char m = simpleAnsicEscape(nx); m != 0) {
 				out.push_back(m);
 				i += 2;
 				continue;
 			}
-			// `\xHH` hex byte.
+
 			if (nx == 'x') {
 				i += 2;
 				ansicHexEscape(body, &i, out);
 				continue;
 			}
-			// `\NNN` octal byte.
+
 			if (nx >= '0' && nx <= '7') {
 				++i;
 				ansicOctalEscape(body, &i, out);
 				continue;
 			}
-			// `\cX` control byte.
+
 			if (nx == 'c') {
 				if (i + 2 < end) {
 					out.push_back(static_cast<char>(body[i + 2] & 0x1f));
@@ -808,17 +749,14 @@ namespace wbsh {
 				}
 				continue;
 			}
-			// Unknown — keep both the backslash and the next char.
+
 			out.push_back('\\');
 			out.push_back(nx);
 			i += 2;
 		}
+
 		return out;
 	}
-
-	// ---------------------------------------------------------------------------
-	// Tilde expansion
-	// ---------------------------------------------------------------------------
 
 	Word Expander::applyTildeExpansion(const Word& w) {
 		Word out = w;
@@ -840,17 +778,11 @@ namespace wbsh {
 		return out;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Parameter lookup
-	// ---------------------------------------------------------------------------
-
 	bool Expander::isSpecialParam1(char c) const {
 		return c == '?' || c == '$' || c == '!' || c == '#'
 		    || c == '@' || c == '*' || c == '-' || c == '_';
 	}
 
-	// Join positional parameters into one string. `*` form uses the first
-	// IFS char as separator (per POSIX), `@` form uses a single space.
 	std::string Expander::joinPositionals(char form) const {
 		const auto& p = env_.positional();
 		std::string sep = " ";
@@ -858,16 +790,16 @@ namespace wbsh {
 			const std::string ifs = env_.get("IFS");
 			sep = ifs.empty() ? std::string() : std::string(1, ifs[0]);
 		}
+
 		std::string out;
 		for (std::size_t i = 0; i < p.size(); ++i) {
 			if (i) out += sep;
 			out += p[i];
 		}
+
 		return out;
 	}
 
-	// Single-character special parameters: `$?`, `$$`, `$@`, `$1`, etc.
-	// On miss, returns false and leaves `out` untouched.
 	bool Expander::lookupSpecialChar(char c, std::string& out) {
 		switch (c) {
 		case '?': out = std::to_string(env_.lastStatus());            return true;
@@ -887,12 +819,11 @@ namespace wbsh {
 					: std::string();
 				return true;
 			}
+
 			return false;
 		}
 	}
 
-	// Dynamic vars whose value is computed each read (RANDOM, SECONDS, ...).
-	// Returns false if `name` isn't a dynamic special.
 	bool Expander::lookupDynamicSpecial(const std::string& name, std::string& out) const {
 		if (name == "RANDOM")  { out = std::to_string(env_.randomNext());        return true; }
 		if (name == "SECONDS") { out = std::to_string(env_.secondsSinceStart()); return true; }
@@ -905,6 +836,7 @@ namespace wbsh {
 #endif
 			return true;
 		}
+
 		return false;
 	}
 
@@ -916,7 +848,6 @@ namespace wbsh {
 			if (lookupSpecialChar(name[0], out)) return out;
 		}
 
-		// All-digit name: positional arg lookup (`$10`, `$11`, ...).
 		bool all_digits = true;
 		for (char c : name) {
 			if (!std::isdigit(static_cast<unsigned char>(c))) {
@@ -924,6 +855,7 @@ namespace wbsh {
 				break;
 			}
 		}
+
 		if (all_digits) {
 			unsigned long parsed = 0;
 			if (!parseUL(name, parsed)) parsed = 0;
@@ -940,21 +872,19 @@ namespace wbsh {
 			if (env_.nounset()) {
 				fail(name + ": unbound variable");
 			}
+
 			return {};
 		}
+
 		return env_.get(name);
 	}
 
-	// Pick the separator for `${arr[*]}` — first IFS char when `star_join_ifs`,
-	// otherwise a single space (matching bash's @ behaviour).
 	std::string Expander::starSeparator(bool star_join_ifs) const {
 		if (!star_join_ifs) return " ";
 		const std::string ifs = env_.get("IFS");
 		return ifs.empty() ? std::string() : std::string(1, ifs[0]);
 	}
 
-	// Concatenate every value in an indexed array, separated by `sep`. The
-	// map is sorted by index, so the output is in subscript order.
 	static std::string joinAllArrayValues(const Environment::IndexedArray& items,
 	                                      const std::string& sep) {
 		std::string out;
@@ -964,11 +894,10 @@ namespace wbsh {
 			out += kv.second;
 			first = false;
 		}
+
 		return out;
 	}
 
-	// Same as above, for an associative array. Order matches the underlying
-	// std::map iteration (lexicographic by key).
 	static std::string joinAllArrayValues(const Environment::AssocArray& items,
 	                                      const std::string& sep) {
 		std::string out;
@@ -978,6 +907,7 @@ namespace wbsh {
 			out += kv.second;
 			first = false;
 		}
+
 		return out;
 	}
 
@@ -985,13 +915,12 @@ namespace wbsh {
 	                                        const std::string& subscript_in,
 	                                        bool star_join_ifs)
 	{
-		// Subscripts permit $-substitutions: `${arr[$i]}`, `${m[$key]}`.
-		// `@` and `*` are literal markers and never expanded.
 		std::string subscript = subscript_in;
 		if (subscript != "@" && subscript != "*"
 		    && subscript.find('$') != std::string::npos) {
 			subscript = expandHeredoc(subscript, false);
 		}
+
 		const bool whole_array = (subscript == "@" || subscript == "*");
 
 		if (auto* ia = env_.getIndexedArray(name)) {
@@ -1001,11 +930,13 @@ namespace wbsh {
 					: std::string(" ");
 				return joinAllArrayValues(*ia, sep);
 			}
+
 			long long idx = 0;
 			if (!tryEvalArith(subscript, idx)) return {};
 			const auto it = ia->find(idx);
 			return it == ia->end() ? std::string() : it->second;
 		}
+
 		if (auto* aa = env_.getAssocArray(name)) {
 			if (whole_array) {
 				const std::string sep = (subscript == "*")
@@ -1013,10 +944,11 @@ namespace wbsh {
 					: std::string(" ");
 				return joinAllArrayValues(*aa, sep);
 			}
+
 			const auto it = aa->find(subscript);
 			return it == aa->end() ? std::string() : it->second;
 		}
-		// Scalar treated as a 1-element indexed array at index 0.
+
 		if (whole_array) return lookupParam(name);
 		long long idx = 0;
 		if (!tryEvalArith(subscript, idx)) return {};
@@ -1026,7 +958,6 @@ namespace wbsh {
 	std::size_t Expander::arrayLength(const std::string& name) const {
 		if (auto* ia = env_.getIndexedArray(name)) return ia->size();
 		if (auto* aa = env_.getAssocArray(name))   return aa->size();
-		// Treat scalar as length 1 if set, 0 otherwise.
 		return env_.has(name) ? 1u : 0u;
 	}
 
@@ -1039,6 +970,7 @@ namespace wbsh {
 		} else if (env_.has(name)) {
 			out.push_back("0");
 		}
+
 		return out;
 	}
 
@@ -1051,20 +983,14 @@ namespace wbsh {
 		} else if (env_.has(name)) {
 			out.push_back(env_.get(name));
 		}
+
 		return out;
 	}
 
-	// ---------------------------------------------------------------------------
-	// ${...} body expansion
-	// ---------------------------------------------------------------------------
-
-	// `${#name}` / `${#name[i]}` / `${#name[@]}`. Returns empty string only
-	// if the body doesn't actually start with `#`.
 	std::string Expander::expandParamLengthForm(const std::string& body) {
 		const std::string rest = body.substr(1);
 		if (rest == "@" || rest == "*")
 			return std::to_string(env_.positional().size());
-		// Subscripted: ${#arr[@]} / ${#arr[i]}.
 		const std::size_t lb = rest.find('[');
 		if (lb != std::string::npos && rest.back() == ']') {
 			const std::string nm  = rest.substr(0, lb);
@@ -1073,12 +999,10 @@ namespace wbsh {
 				return std::to_string(arrayLength(nm));
 			return std::to_string(lookupSubscripted(nm, sub, false).size());
 		}
+
 		return std::to_string(lookupParam(rest).size());
 	}
 
-	// `${!name[@]}` / `${!name[*]}` — list of array indices/keys joined
-	// by spaces. Returns empty string for any other body shape (caller
-	// will fall through to other forms).
 	std::string Expander::expandParamIndicesForm(const std::string& body) {
 		if (body.size() <= 4) return {};
 		const std::string rest = body.substr(1);
@@ -1094,12 +1018,10 @@ namespace wbsh {
 			if (k) out.push_back(' ');
 			out += keys[k];
 		}
+
 		return out;
 	}
 
-	// Identify the leading parameter name span in `body`. On success returns
-	// the index just past the name, with `out_name` set to the name; on
-	// failure returns std::string::npos.
 	static std::size_t scanParamName(const std::string& body, std::string& out_name,
 	                                 const Expander& self_for_special) {
 		std::size_t i = 0;
@@ -1115,14 +1037,11 @@ namespace wbsh {
 		} else {
 			return std::string::npos;
 		}
+
 		out_name = body.substr(0, i);
 		return i;
 	}
 
-	// Default-form operators: ${name:-x}, ${name:+x}, ${name:=x}, ${name:?x}
-	// and the colon-less variants. Caller has already classified `op` and
-	// `colon` from the body, and computed `cur` (current value) via
-	// namedValue().
 	std::string Expander::evalParamDefaultOp(char op, bool colon,
 	                                         const std::string& name,
 	                                         const std::string& cur,
@@ -1157,14 +1076,10 @@ namespace wbsh {
 		}
 	}
 
-	// `${arr[@]:offset:length}` — slice across the array's elements, joining
-	// the survivors with single spaces. Both offset and length are arithmetic
-	// expressions (`-1` from end, etc.).
 	std::string Expander::evalArraySlice(const std::string& name,
 	                                     const std::string& args)
 	{
 		auto elems = arrayValues(name);
-		// Split off:length on the first unparenthesised `:`.
 		int depth = 0;
 		std::size_t split = std::string::npos;
 		for (std::size_t k = 0; k < args.size(); ++k) {
@@ -1173,6 +1088,7 @@ namespace wbsh {
 			else if (c == ')' && depth > 0) --depth;
 			else if (c == ':' && depth == 0) { split = k; break; }
 		}
+
 		const std::string off_s = (split == std::string::npos) ? args : args.substr(0, split);
 		const std::string len_s = (split == std::string::npos) ? std::string()
 		                                                       : args.substr(split + 1);
@@ -1195,11 +1111,10 @@ namespace wbsh {
 			if (k) out.push_back(' ');
 			out += elems[static_cast<std::size_t>(off + k)];
 		}
+
 		return out;
 	}
 
-	// `${name/pat/rep}` / `${name//pat/rep}` / `${name/#pat/rep}` /
-	// `${name/%pat/rep}`. `args` is everything after `/` or `//`.
 	std::string Expander::evalParamReplace(const std::string& cur,
 	                                       const std::string& args, bool all)
 	{
@@ -1218,34 +1133,37 @@ namespace wbsh {
 		                      all, anchor_start, anchor_end);
 	}
 
-	// Apply the recognised operator. @p op_pos points at the operator char.
-	// `colon` indicates the colon variant of the default-form ops (${name:-x}).
 	std::string Expander::expandParamApplyOp(char op, bool colon, std::size_t op_pos,
 	                                         ParamOpCtx& ctx) {
 		if (op == '-' || op == '+' || op == '=' || op == '?') {
 			return evalParamDefaultOp(op, colon, ctx.name, ctx.named_value,
 			                          ctx.body.substr(op_pos + 1));
 		}
+
 		if (op == ':') {
 			if (ctx.has_subscript && (ctx.subscript == "@" || ctx.subscript == "*"))
 				return evalArraySlice(ctx.name, ctx.body.substr(op_pos + 1));
 			return substringExpand(ctx.named_value, ctx.body.substr(op_pos + 1));
 		}
+
 		if (op == '#') {
 			const bool greedy = (op_pos + 1 < ctx.body.size() && ctx.body[op_pos + 1] == '#');
 			const std::string pat = ctx.body.substr(greedy ? op_pos + 2 : op_pos + 1);
 			return stripPrefix(ctx.named_value, expandHeredoc(pat, false), greedy);
 		}
+
 		if (op == '%') {
 			const bool greedy = (op_pos + 1 < ctx.body.size() && ctx.body[op_pos + 1] == '%');
 			const std::string pat = ctx.body.substr(greedy ? op_pos + 2 : op_pos + 1);
 			return stripSuffix(ctx.named_value, expandHeredoc(pat, false), greedy);
 		}
+
 		if (op == '/') {
 			const bool all = (op_pos + 1 < ctx.body.size() && ctx.body[op_pos + 1] == '/');
 			return evalParamReplace(ctx.named_value,
 			                        ctx.body.substr(all ? op_pos + 2 : op_pos + 1), all);
 		}
+
 		return ctx.named_value;
 	}
 
@@ -1256,7 +1174,6 @@ namespace wbsh {
 		if (body[0] == '!' && body.size() > 4) {
 			std::string out = expandParamIndicesForm(body);
 			if (!out.empty()) return out;
-			// Fall through if the !-form didn't match any recognised shape.
 		}
 
 		std::string name;
@@ -1273,6 +1190,7 @@ namespace wbsh {
 				i = close + 1;
 			}
 		}
+
 		const std::string named = has_subscript
 			? lookupSubscripted(name, subscript, true)
 			: lookupParam(name);
@@ -1288,12 +1206,12 @@ namespace wbsh {
 			++i;
 			op = body[i];
 		}
+
 		ParamOpCtx ctx{ name, subscript, has_subscript, body, named };
 		return expandParamApplyOp(op, colon, i, ctx);
 	}
 
 	std::string Expander::substringExpand(const std::string& val, const std::string& args) {
-		// Find unbalanced ':' that splits offset from length.
 		int depth = 0;
 		std::size_t split = std::string::npos;
 		for (std::size_t k = 0; k < args.size(); ++k) {
@@ -1302,6 +1220,7 @@ namespace wbsh {
 			else if (c == ')' && depth > 0) --depth;
 			else if (c == ':' && depth == 0) { split = k; break; }
 		}
+
 		std::string off_s = (split == std::string::npos) ? args : args.substr(0, split);
 		std::string len_s = (split == std::string::npos) ? std::string() : args.substr(split + 1);
 		long long off = evalArith(off_s);
@@ -1316,6 +1235,7 @@ namespace wbsh {
 			return val.substr(static_cast<std::size_t>(off),
 			                  static_cast<std::size_t>(endpos - off));
 		}
+
 		if (off + len > n) len = n - off;
 		return val.substr(static_cast<std::size_t>(off),
 		                  static_cast<std::size_t>(len));
@@ -1325,15 +1245,16 @@ namespace wbsh {
 		if (pat.empty()) return val;
 		if (greedy) {
 			for (long long L = static_cast<long long>(val.size()); L >= 0; --L) {
-				if (fnmatchFull(pat, val.substr(0, static_cast<std::size_t>(L))))
+				if (fnmatchRange(pat, val, 0, static_cast<std::size_t>(L)))
 					return val.substr(static_cast<std::size_t>(L));
 			}
 		} else {
 			for (std::size_t L = 0; L <= val.size(); ++L) {
-				if (fnmatchFull(pat, val.substr(0, L)))
+				if (fnmatchRange(pat, val, 0, L))
 					return val.substr(L);
 			}
 		}
+
 		return val;
 	}
 
@@ -1343,56 +1264,54 @@ namespace wbsh {
 		if (greedy) {
 			for (long long L = static_cast<long long>(n); L >= 0; --L) {
 				std::size_t off = n - static_cast<std::size_t>(L);
-				if (fnmatchFull(pat, val.substr(off, static_cast<std::size_t>(L))))
+				if (fnmatchRange(pat, val, off, static_cast<std::size_t>(L)))
 					return val.substr(0, off);
 			}
 		} else {
 			for (std::size_t L = 0; L <= n; ++L) {
 				std::size_t off = n - L;
-				if (fnmatchFull(pat, val.substr(off, L)))
+				if (fnmatchRange(pat, val, off, L))
 					return val.substr(0, off);
 			}
 		}
+
 		return val;
 	}
 
-	// `${val/#pat/rep}` — replace the longest prefix of `val` matching `pat`.
 	static std::string replaceAnchoredPrefix(const std::string& val,
 	                                         const std::string& pat,
 	                                         const std::string& rep) {
 		for (long long L = static_cast<long long>(val.size()); L >= 0; --L) {
-			if (fnmatchFull(pat, val.substr(0, static_cast<std::size_t>(L))))
+			if (fnmatchRange(pat, val, 0, static_cast<std::size_t>(L)))
 				return rep + val.substr(static_cast<std::size_t>(L));
 		}
+
 		return val;
 	}
 
-	// `${val/%pat/rep}` — replace the longest suffix of `val` matching `pat`.
 	static std::string replaceAnchoredSuffix(const std::string& val,
 	                                         const std::string& pat,
 	                                         const std::string& rep) {
 		const std::size_t n = val.size();
 		for (long long L = static_cast<long long>(n); L >= 0; --L) {
 			const std::size_t off = n - static_cast<std::size_t>(L);
-			if (fnmatchFull(pat, val.substr(off, static_cast<std::size_t>(L))))
+			if (fnmatchRange(pat, val, off, static_cast<std::size_t>(L)))
 				return val.substr(0, off) + rep;
 		}
+
 		return val;
 	}
 
-	// At position `i`, find the length of the longest substring matching
-	// `pat`. Returns -1 if nothing at this position matches.
 	static long long longestMatchAt(const std::string& val, std::size_t i,
 	                                const std::string& pat) {
 		for (long long L = static_cast<long long>(val.size() - i); L >= 0; --L) {
-			if (fnmatchFull(pat, val.substr(i, static_cast<std::size_t>(L))))
+			if (fnmatchRange(pat, val, i, static_cast<std::size_t>(L)))
 				return L;
 		}
+
 		return -1;
 	}
 
-	// `${val/pat/rep}` (single match) and `${val//pat/rep}` (all matches),
-	// unanchored. Greedy at each position.
 	static std::string replaceUnanchored(const std::string& val,
 	                                     const std::string& pat,
 	                                     const std::string& rep, bool all) {
@@ -1415,11 +1334,13 @@ namespace wbsh {
 			} else {
 				i += static_cast<std::size_t>(best);
 			}
+
 			if (!all) {
 				out += val.substr(i);
 				return out;
 			}
 		}
+
 		return out;
 	}
 
@@ -1432,10 +1353,6 @@ namespace wbsh {
 		return replaceUnanchored(val, pat, rep, all);
 	}
 
-	// ---------------------------------------------------------------------------
-	// Word rendering
-	// ---------------------------------------------------------------------------
-
 	Expander::Tagged Expander::renderWord(const Word& w) {
 		Tagged t;
 		t.reserve(w.raw.size());
@@ -1447,23 +1364,18 @@ namespace wbsh {
 				t.had_quote = true;
 			}
 		}
+
 		for (const auto& s : w.segments) {
-			// Stop rendering once an expansion error or a control-flow
-			// signal from a command substitution is pending — the old
-			// exceptions aborted mid-word the same way.
 			if (aborting()) break;
 			renderSegment(s, t, /*inside_dq=*/false);
 		}
+
 		return t;
 	}
 
-	// `${name[@]}` / `${name[*]}` / `${!name[@]}`: if `body` is one of these
-	// shapes, return the bare `name`; otherwise return empty string. The
-	// length form `${#name[@]}` and any body with trailing operators are
-	// rejected.
 	static std::string fieldAwareArrayName(const std::string& body) {
 		if (body.size() < 4) return {};
-		if (body[0] == '#') return {};   // length form is not field-aware
+		if (body[0] == '#') return {};
 		const bool indices = body[0] == '!';
 		const std::size_t start = indices ? 1 : 0;
 		const std::size_t lb = body.find('[', start);
@@ -1471,15 +1383,10 @@ namespace wbsh {
 		if (lb + 2 >= body.size()) return {};
 		if (body[lb + 1] != '@' && body[lb + 1] != '*') return {};
 		if (body[lb + 2] != ']') return {};
-		if (lb + 3 != body.size()) return {};   // no trailing ops
+		if (lb + 3 != body.size()) return {};
 		return body.substr(start, lb - start);
 	}
 
-	// Render a `${name[@]}` / `${name[*]}` / `${!name[@]}` segment whose
-	// element list is `elems`. Inside double quotes with `*`, elements are
-	// joined with the first IFS char; otherwise each element becomes its
-	// own field separated by an unquoted space (so word splitting can
-	// break them apart later while preserving internal spaces).
 	void Expander::renderArrayFields(const std::vector<std::string>& elems,
 	                                 bool star, bool inside_dq, Tagged& out)
 	{
@@ -1501,7 +1408,6 @@ namespace wbsh {
 
 	void Expander::renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
-		// Field-aware fast path for `${name[@]}` / `${name[*]}` / `${!name[@]}`.
 		const std::string fname = fieldAwareArrayName(s.text);
 		if (!fname.empty()) {
 			const bool indices = s.text[0] == '!';
@@ -1512,15 +1418,12 @@ namespace wbsh {
 			if (!elems.empty() || inside_dq) out.had_quote |= inside_dq;
 			return;
 		}
-		// Generic ${...} expansion — already returns a single string.
+
 		const std::string v = expandParam(s.text, inside_dq);
 		for (char c : v) out.push(c, mark);
 	}
 
 	void Expander::renderProcSubstSegment(const WordSegment& s, Tagged& out) {
-		// `<(cmd)` runs the inner command, captures stdout to a temp
-		// file, and substitutes that file's path. `>(cmd)` would need
-		// reverse-direction streaming (named pipe); not supported yet.
 		if (s.proc_dir != '<') {
 			std::fprintf(stderr,
 				"wbsh: process substitution >(...) not supported\n");
@@ -1534,13 +1437,13 @@ namespace wbsh {
 		    || GetTempFileNameA(tdir, "wbsh", 0, tpath) == 0) {
 			return;
 		}
-		// Process substitution preserves the producer's stdout exactly,
-		// unlike $(...) which strips trailing newlines.
+
 		const std::string body = sub_ ? sub_->runRaw(s.text) : std::string();
 		{
 			std::ofstream f(tpath, std::ios::binary | std::ios::trunc);
 			f.write(body.data(), body.size());
 		}
+
 		pending_temp_files_.emplace_back(tpath);
 		const std::string posix = path_conv_.toPosix(tpath);
 		for (char c : posix) out.push(c, F_QUOTED);
@@ -1548,9 +1451,6 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
-	// `$@` (and only `$@`): each positional becomes its own field. Emit them
-	// joined by an UNQUOTED IFS-space so word splitting will break them
-	// apart later while preserving any spaces inside individual positionals.
 	void Expander::renderDollarAt(Tagged& out, bool inside_dq) {
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
 		const auto& p = env_.positional();
@@ -1587,6 +1487,7 @@ namespace wbsh {
 				renderDollarAt(out, inside_dq);
 				break;
 			}
+
 			const std::string v = lookupParam(s.text);
 			for (char c : v) out.push(c, mark);
 			break;
@@ -1612,10 +1513,6 @@ namespace wbsh {
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Word splitting
-	// ---------------------------------------------------------------------------
-
 	std::vector<Expander::Tagged> Expander::splitWords(const Tagged& t) {
 		std::string ifs = env_.get("IFS");
 		std::vector<Tagged> out;
@@ -1623,6 +1520,7 @@ namespace wbsh {
 			if (t.size() > 0 || t.had_quote) out.push_back(t);
 			return out;
 		}
+
 		auto isIfsWS = [&](char c) {
 			if (c != ' ' && c != '\t' && c != '\n') return false;
 			return ifs.find(c) != std::string::npos;
@@ -1632,7 +1530,6 @@ namespace wbsh {
 		};
 		std::size_t n = t.size();
 		std::size_t i = 0;
-		// Trim leading IFS-whitespace.
 		while (i < n && (t.flags[i] & F_QUOTED) == 0 && isIfsWS(t.text[i])) ++i;
 		while (i < n) {
 			Tagged cur;
@@ -1644,8 +1541,8 @@ namespace wbsh {
 				cur.had_quote = cur.had_quote || q;
 				++i;
 			}
+
 			out.push_back(std::move(cur));
-			// Consume separator run; allow at most one non-WS-IFS in the run.
 			bool saw_nonws = false;
 			while (i < n) {
 				char c = t.text[i];
@@ -1655,19 +1552,15 @@ namespace wbsh {
 					if (saw_nonws) break;
 					saw_nonws = true;
 				}
+
 				++i;
 			}
 		}
+
 		return out;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Pathname expansion
-	// ---------------------------------------------------------------------------
-
 	namespace glob_internal {
-		// One path component during glob expansion, with per-char quotedness
-		// preserved so we can tell `\*` (literal asterisk) from `*` (meta).
 		struct GlobComp {
 			std::string text;
 			std::vector<std::uint8_t> quoted;
@@ -1679,10 +1572,10 @@ namespace wbsh {
 						if (c == '*' || c == '?' || c == '[') return true;
 					}
 				}
+
 				return false;
 			}
-			// Render the component as an fnmatch pattern: literal chars in
-			// the source escape the matching glob metas in the output.
+
 			std::string asPattern() const {
 				std::string p;
 				for (std::size_t i = 0; i < text.size(); ++i) {
@@ -1691,15 +1584,16 @@ namespace wbsh {
 					    && (c == '*' || c == '?' || c == '[' || c == '\\')) {
 						p.push_back('\\');
 					}
+
 					p.push_back(c);
 				}
+
 				return p;
 			}
+
 			std::string asLiteral() const { return text; }
 		};
 
-		// Join one path component onto a directory result. Handles "." and
-		// "/" specially so we don't get "./foo" or "//foo".
 		static std::string joinDir(const std::string& dir, const std::string& name) {
 			if (dir == "." || dir.empty()) return name;
 			if (dir == "/") return "/" + name;
@@ -1708,9 +1602,6 @@ namespace wbsh {
 		}
 	}  // namespace glob_internal
 
-	// Quick-reject scan: does the tagged text contain any unquoted glob
-	// meta-character? Used to short-circuit globExpand for the common case
-	// of a fully-quoted or meta-free word.
 	static bool taggedHasUnquotedGlobMeta(const Expander::Tagged& t) {
 		for (std::size_t i = 0; i < t.size(); ++i) {
 			if ((t.flags[i] & Expander::F_QUOTED) == 0) {
@@ -1718,11 +1609,10 @@ namespace wbsh {
 				if (c == '*' || c == '?' || c == '[') return true;
 			}
 		}
+
 		return false;
 	}
 
-	// Slice the tagged text into glob components (separated by unquoted `/`).
-	// Sets `*absolute` to true if the path begins with an unquoted `/`.
 	static std::vector<glob_internal::GlobComp>
 	splitTaggedIntoGlobComps(const Expander::Tagged& t, bool* absolute) {
 		std::vector<glob_internal::GlobComp> comps;
@@ -1738,21 +1628,20 @@ namespace wbsh {
 					comps.push_back(std::move(cur));
 					cur = {};
 				}
+
 				first = false;
 				continue;
 			}
+
 			cur.text.push_back(c);
 			cur.quoted.push_back(q ? 1 : 0);
 			first = false;
 		}
+
 		if (!cur.text.empty()) comps.push_back(std::move(cur));
 		return comps;
 	}
 
-	// `**` step: expand each accumulated dir into itself plus every reachable
-	// descendant. If this is the trailing component we list everything;
-	// otherwise we keep only sub-directories so the next component continues
-	// to descend.
 	static std::vector<std::string>
 	expandGlobstarStep(const std::vector<std::string>& current, bool last,
 	                   const PathConv& pc) {
@@ -1777,6 +1666,7 @@ namespace wbsh {
 					cur.disable_recursion_pending();
 					continue;
 				}
+
 				std::error_code dec;
 				std::string rel = pathToUtf8(fs::relative(cur->path(), list_dir, dec));
 				std::replace(rel.begin(), rel.end(), '\\', '/');
@@ -1785,13 +1675,12 @@ namespace wbsh {
 				}
 			}
 		}
+
 		std::vector<std::string> out(acc.begin(), acc.end());
 		std::sort(out.begin(), out.end());
 		return out;
 	}
 
-	// Single-component step: descend each accumulated dir by one level,
-	// either matching `comp` as a glob pattern or appending it literally.
 	static std::vector<std::string>
 	expandGlobOneStep(const std::vector<std::string>& current,
 	                  const glob_internal::GlobComp& comp, const PathConv& pc,
@@ -1827,14 +1716,14 @@ namespace wbsh {
 			for (auto& entry : it) {
 				const std::string name = pathToUtf8(entry.path().filename());
 				if (name.empty()) continue;
-				// Hide dotfiles unless the pattern itself starts with `.`
-				// or `dotglob` is on.
 				if (name[0] == '.' && !pat_starts_dot && !dotglob) continue;
 				if (match_one(pat, name)) matches.push_back(name);
 			}
+
 			std::sort(matches.begin(), matches.end());
 			for (auto& m : matches) next.push_back(glob_internal::joinDir(d, m));
 		}
+
 		return next;
 	}
 
@@ -1865,11 +1754,10 @@ namespace wbsh {
 		}
 
 		if (current.empty()) {
-			// `nullglob`: drop unmatched patterns entirely. Default bash
-			// behaviour (and ours when off) is to keep the literal pattern.
 			if (env_.nullglob()) return {};
 			return { quoteRemove(t) };
 		}
+
 		return current;
 	}
 
@@ -1877,24 +1765,15 @@ namespace wbsh {
 		return t.text;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Brace expansion
-	// ---------------------------------------------------------------------------
-
 	static bool isInteger(const std::string& v) {
-			if (v.empty()) return false;
-			std::size_t i = (v[0] == '-' || v[0] == '+') ? 1 : 0;
+		if (v.empty()) return false;
+		std::size_t i = (v[0] == '-' || v[0] == '+') ? 1 : 0;
 		if (i == v.size()) return false;
 		for (; i < v.size(); ++i)
 			if (!std::isdigit(static_cast<unsigned char>(v[i]))) return false;
 		return true;
 	}
 
-	// Returns the alternatives generated by the leftmost UNQUOTED brace
-	// Skip past a single-quoted or double-quoted run in @p s starting at @p i
-	// (which must index the opening quote). Returns the position one past the
-	// closing quote (or end of string if unterminated). Used by braceExpandOnce
-	// to stay quote-aware while scanning for brace delimiters.
 	static std::size_t braceSkipQuotedRun(const std::string& s, std::size_t i) {
 		char quote = s[i];
 		++i;
@@ -1902,10 +1781,10 @@ namespace wbsh {
 			if (quote == '"' && s[i] == '\\' && i + 1 < s.size()) i += 2;
 			else ++i;
 		}
+
 		return (i < s.size()) ? i + 1 : i;
 	}
 
-	// Locate the leftmost top-level `{` in @p s. Returns npos when none.
 	static std::size_t braceFindOpen(const std::string& s) {
 		std::size_t i = 0;
 		while (i < s.size()) {
@@ -1915,13 +1794,10 @@ namespace wbsh {
 			if (c == '{') return i;
 			++i;
 		}
+
 		return std::string::npos;
 	}
 
-	// Walk forward from @p start (which is one past the opening `{`) until the
-	// matching `}` is found at the same nesting level. Populates @p commas
-	// with the positions of all top-level `,` separators inside the braces.
-	// Returns the index of the matching `}`, or npos when unbalanced.
 	static std::size_t braceFindClose(const std::string& s, std::size_t start,
 	                                  std::vector<std::size_t>& commas) {
 		int depth = 1;
@@ -1935,19 +1811,18 @@ namespace wbsh {
 			if (c == ',' && depth == 1) commas.push_back(j);
 			++j;
 		}
+
 		return std::string::npos;
 	}
 
-	// Parse a `{X..Y[..Z]}` sequence body. Returns the empty vector for
-	// non-sequence (or malformed) input, mirroring bash's pass-through behavior.
 	static std::vector<std::string> braceParseSequence(const std::string& body) {
-		auto dd = body.find("..");
-		if (dd == std::string::npos) return {};
-		std::string from = body.substr(0, dd);
-		std::string rest = body.substr(dd + 2);
-		auto dd2 = rest.find("..");
-		std::string to    = (dd2 == std::string::npos) ? rest : rest.substr(0, dd2);
-		std::string stepS = (dd2 == std::string::npos) ? std::string() : rest.substr(dd2 + 2);
+		StrScan in(body);
+		std::string from;
+		if (!in.readUpTo("..", from)) return {};
+		std::string to;
+		std::string stepS;
+		if (in.readUpTo("..", to)) stepS = in.rest();
+		else to = in.rest();
 
 		std::vector<std::string> alts;
 		if (isInteger(from) && isInteger(to)) {
@@ -1967,6 +1842,7 @@ namespace wbsh {
 			if (needsPad(from) || needsPad(to)) {
 				width = static_cast<int>((std::max)(from.size(), to.size()));
 			}
+
 			for (long long v = a; (step > 0) ? (v <= b) : (v >= b); v += step) {
 				if (width > 0) {
 					char buf[32];
@@ -1976,8 +1852,10 @@ namespace wbsh {
 					alts.push_back(std::to_string(v));
 				}
 			}
+
 			return alts;
 		}
+
 		if (from.size() == 1 && to.size() == 1
 		    && std::isalpha(static_cast<unsigned char>(from[0]))
 		    && std::isalpha(static_cast<unsigned char>(to[0])))
@@ -1992,11 +1870,10 @@ namespace wbsh {
 				alts.emplace_back(1, static_cast<char>(v));
 			}
 		}
+
 		return alts;
 	}
 
-	// pattern in `s`. Empty result means "no expandable brace found here";
-	// caller treats `s` as a single unchanged result.
 	static std::vector<std::string> braceExpandOnce(const std::string& s) {
 		const std::size_t open = braceFindOpen(s);
 		if (open == std::string::npos) return {};
@@ -2016,6 +1893,7 @@ namespace wbsh {
 				alts.push_back(body.substr(start, off - start));
 				start = off + 1;
 			}
+
 			alts.push_back(body.substr(start));
 		} else {
 			alts = braceParseSequence(body);
@@ -2027,6 +1905,7 @@ namespace wbsh {
 		for (const auto& alt : alts) {
 			out.push_back(prefix + alt + suffix);
 		}
+
 		return out;
 	}
 
@@ -2038,22 +1917,16 @@ namespace wbsh {
 			auto sub = braceExpandAll(alt);
 			for (auto& r : sub) out.push_back(std::move(r));
 		}
+
 		return out;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Public expansion entry points
-	// ---------------------------------------------------------------------------
-
 	std::vector<std::string> Expander::expandWord(const Word& w) {
-		// Brace expansion is the first stage; each result is re-lexed and
-		// fed through the rest of the pipeline as if it had been typed
-		// directly. Quoted regions are preserved.
 		auto braced = braceExpandAll(w.raw);
 		if (braced.size() <= 1) {
-			// Common case: no braces. Skip the re-lex round trip.
 			return expandWordPostBrace(w);
 		}
+
 		std::vector<std::string> out;
 		for (const auto& alt : braced) {
 			if (aborting()) break;
@@ -2071,6 +1944,7 @@ namespace wbsh {
 				for (auto& f : fields) out.push_back(std::move(f));
 			}
 		}
+
 		return out;
 	}
 
@@ -2083,11 +1957,13 @@ namespace wbsh {
 			empty.had_quote = true;
 			fields.push_back(std::move(empty));
 		}
+
 		std::vector<std::string> out;
 		for (auto& f : fields) {
 			auto results = globExpand(f);
 			for (auto& s : results) out.push_back(std::move(s));
 		}
+
 		return out;
 	}
 

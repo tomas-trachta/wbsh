@@ -1,12 +1,6 @@
 /**
  * @file main.cpp
- * @brief wbsh process entry point.
- *
- * Parses argv, dispatches to the REPL or the script runner, and
- * stays out of the way. All real logic lives in:
- *   - setup.cpp   environment preparation
- *   - repl.cpp    interactive REPL
- *   - script.cpp  non-interactive run-on-source
+ * @brief Process entry point: argv decoding and CLI dispatch.
  */
 
 #ifdef _WIN32
@@ -32,12 +26,8 @@
 
 using namespace wbsh;
 
-// The major/minor/patch are passed as numeric preprocessor defines from
-// wbsh.vcxproj (which derives them from <WbshVersionMajor> et al). The
-// stringification dance below turns them into a single string literal
-// usable for adjacent-literal concatenation. Quoting the version
-// directly via /D would force MSBuild to escape the quotes, which it
-// double-escapes — sidestep that entirely by passing bare digits.
+// The version arrives from wbsh.vcxproj as bare numeric defines — /D
+// with quoted strings gets double-escaped by MSBuild.
 #if !defined(WBSH_VERSION_MAJOR) || !defined(WBSH_VERSION_MINOR) || !defined(WBSH_VERSION_PATCH)
 #define WBSH_VERSION_MAJOR 0
 #define WBSH_VERSION_MINOR 0
@@ -84,10 +74,6 @@ static bool isInteractiveStdin() {
 #endif /* _WIN32 */
 }
 
-// On Windows, MSVC's narrow `argv` is decoded through the C locale
-// (default "C"), which mangles any non-ASCII argument like
-// "/c/Users/Tomáš" into replacement chars. Re-decode from the wide
-// command line to UTF-8 and rewrite argv before anyone reads it.
 #ifdef _WIN32
 static void rewriteArgvAsUtf8(int& argc, char**& argv,
 		std::vector<std::string>& storage, std::vector<char*>& ptrs) {
@@ -98,6 +84,7 @@ static void rewriteArgvAsUtf8(int& argc, char**& argv,
 	for (int i = 0; i < wargc; ++i) {
 		storage.push_back(wbsh::wideToUtf8(wargv[i]));
 	}
+
 	::LocalFree(wargv);
 	ptrs.reserve(storage.size() + 1);
 	for (auto& s : storage) ptrs.push_back(s.data());
@@ -116,14 +103,9 @@ struct CliOptions {
 	bool from_stdin   = false;
 	bool have_src     = false;
 	std::string src;
-	// Path used to invoke a script file, surfaced as `$0`. Empty for
-	// `-c <cmd>` and stdin runs, which keep the default `wbsh`.
 	std::string script_name;
 };
 
-// Result of one of the early phases of main. `exit_now == true` means the
-// caller should `return exit_code` immediately (help shown, REPL ran to
-// completion, malformed -c, etc.).
 struct ParseResult {
 	bool exit_now;
 	int  exit_code;
@@ -136,12 +118,14 @@ static ParseResult parseArgs(int argc, char** argv, CliOptions& opts) {
 			printHelp();
 			return { true, 0 };
 		}
+
 		if (a == "-t" || a == "--tokens")      { opts.show_tokens = true;  continue; }
 		if (a == "-e" || a == "--expand")      { opts.do_expand   = true;  continue; }
 		if (a == "-r" || a == "--run")         { opts.do_run      = true;  continue; }
 		if (a == "-i" || a == "--interactive") {
 			return { true, runInteractive() };
 		}
+
 		if (a == "--ast")    { opts.show_ast = true;  opts.ast_explicit = true; continue; }
 		if (a == "--no-ast") { opts.show_ast = false; opts.ast_explicit = true; continue; }
 		if (a == "-c") {
@@ -149,29 +133,31 @@ static ParseResult parseArgs(int argc, char** argv, CliOptions& opts) {
 				std::cerr << "wbsh: -c requires an argument\n";
 				return { true, 2 };
 			}
+
 			opts.src = argv[++i];
 			opts.have_src = true;
 			continue;
 		}
+
 		if (a == "-") {
 			opts.from_stdin = true;
 			continue;
 		}
+
 		std::ifstream f(a, std::ios::binary);
 		if (!f) {
 			std::cerr << "wbsh: cannot open file: " << a << "\n";
 			return { true, 2 };
 		}
+
 		opts.src = readAll(f);
 		opts.have_src = true;
 		opts.script_name = a;
 	}
+
 	return { false, 0 };
 }
 
-// Resolve the source-of-input. With no -c / file / `-`, fall through to
-// the interactive REPL when stdin is a TTY, or read piped stdin as a
-// script otherwise.
 static ParseResult resolveSource(CliOptions& opts) {
 	if (opts.have_src) return { false, 0 };
 	if (opts.from_stdin) {
@@ -179,14 +165,17 @@ static ParseResult resolveSource(CliOptions& opts) {
 		opts.have_src = true;
 		return { false, 0 };
 	}
+
 	if (isInteractiveStdin()) {
 		return { true, runInteractive() };
 	}
+
 	if (!std::cin.eof()) {
 		opts.src = readAll(std::cin);
 		opts.have_src = true;
 		return { false, 0 };
 	}
+
 	printHelp();
 	return { true, 0 };
 }
@@ -197,12 +186,8 @@ int main(int argc, char** argv) {
 	std::vector<char*>       argv_ptrs;
 	rewriteArgvAsUtf8(argc, argv, argv_utf8_storage, argv_ptrs);
 
-	// Force LF-only on stdout so command substitutions and pipelines round-
-	// trip the way bash does on POSIX. The MSVC CRT defaults to text mode
-	// on stdout/stderr, which silently translates `\n` to `\r\n` whenever
-	// the destination is a pipe or file. That extra `\r` then sticks to
-	// every word read back through `$(...)` or `read` and makes
-	// `arr[$key]` and `arr[X]` index different buckets.
+	// LF-only output: the CRT's default text mode writes `\r\n` to pipes
+	// and files, which corrupts `$(...)` captures and `read` values.
 	_setmode(_fileno(stdout), _O_BINARY);
 	_setmode(_fileno(stderr), _O_BINARY);
 #endif /* _WIN32 */
@@ -211,7 +196,6 @@ int main(int argc, char** argv) {
 	if (auto pr = parseArgs(argc, argv, opts); pr.exit_now) return pr.exit_code;
 	if (auto pr = resolveSource(opts);          pr.exit_now) return pr.exit_code;
 
-	// In run mode, default to suppressing the AST dump so output is clean.
 	if (opts.do_run && !opts.ast_explicit) opts.show_ast = false;
 	return runOnSource(opts.src, opts.show_tokens, opts.show_ast,
 	                   opts.do_expand, opts.do_run, opts.script_name);

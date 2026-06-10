@@ -24,7 +24,6 @@
 
 namespace wbsh {
 
-	/// Parser diagnostic.
 	struct ParseError {
 		SourceLoc loc;          ///< Where in the source the problem was detected.
 		std::string message;    ///< Human-readable description.
@@ -60,13 +59,10 @@ namespace wbsh {
 		 */
 		Arena takeArena() { return std::move(arena_); }
 
-		/// Diagnostics accumulated during parsing.
 		const std::vector<ParseError>& errors() const { return errors_; }
-		/// True iff parsing completed with no errors.
 		bool ok() const { return errors_.empty(); }
 
 	private:
-		// ---- Token cursor ----
 		const Token& peek(std::size_t n = 0) const;
 		const Token& advance();
 		bool atEnd() const;
@@ -81,7 +77,6 @@ namespace wbsh {
 		void expect(TokKind k, const char* msg);
 		void expectReserved(const char* word, const char* msg);
 
-		// ---- Common helpers ----
 		void skipNewlines();
 		bool atRedirOp() const;
 		bool atListSeparator() const;        // ; & or newline
@@ -97,7 +92,6 @@ namespace wbsh {
 		// Stamp `node` with the span [start_offset, current_end_offset()).
 		void stampSpan(Node& node, std::size_t start_offset);
 
-		// ---- Grammar productions ----
 		NodePtr parseList(bool top_level);
 		NodePtr parseAndOr();
 		NodePtr parsePipeline();
@@ -123,16 +117,11 @@ namespace wbsh {
 		// Redirections are syntactically interleaved through compound commands.
 		bool tryParseRedirection(Redirection& out);
 
-		// Try to interpret a Word token as `name=value`. Returns false if the
-		// token does not have the assignment shape.
-		bool extractAssignment(const Token& t, Assignment& out) const;
-		// Helpers for parseSimpleCommand — extract the array-literal sub-grammar
-		// (`arr=(...)`) and the leading-assignment-vs-word disambiguation.
+		bool tryExtractAssignment(const Token& t, Assignment& out) const;
 		bool tryConsumeLeadingAssignment(SimpleCommand& cmd);
 		void parseArrayLiteralBody(Assignment& a);
 		void parseArrayLiteralItem(Assignment& a);
 
-		// ---- State ----
 		std::vector<Token> toks_;
 		// Owns every node this parser produces plus the interned source
 		// text; transferred out via takeArena() when the AST outlives us.

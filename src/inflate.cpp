@@ -1,22 +1,12 @@
-/**
- * @file inflate.cpp
- * @brief Minimal pure-C++ DEFLATE decoder.
- *
- * Implements RFC 1951 — three block types: stored (00), fixed
- * Huffman (01), dynamic Huffman (10). Pattern follows Mark Adler's
- * "puff" reference implementation but adapted for `std::vector`
- * output.
- */
-
 #include "inflate.h"
 
 #include <cstring>
 
 namespace wbsh {
 
-constexpr int MAXBITS  = 15;     // max code length
-constexpr int MAXLCODES = 286;   // max literal/length codes
-constexpr int MAXDCODES = 30;    // max distance codes
+constexpr int MAXBITS  = 15;
+constexpr int MAXLCODES = 286;
+constexpr int MAXDCODES = 30;
 constexpr int MAXCODES = MAXLCODES + MAXDCODES;
 constexpr int FIXLCODES = 288;
 
@@ -39,6 +29,7 @@ struct InflateState {
 			val |= (long)in[in_pos++] << bitcnt;
 			bitcnt += 8;
 		}
+
 		bitbuf = (int)(val >> need);
 		bitcnt -= need;
 		return (int)val & ((1 << need) - 1);
@@ -61,6 +52,7 @@ static int decode(InflateState& s, const InflateHuffman& h) {
 		first <<= 1;
 		code <<= 1;
 	}
+
 	s.err = true;
 	return -1;
 }
@@ -76,11 +68,13 @@ static int construct(InflateHuffman& h, const short* length, int n) {
 		left -= h.count[len];
 		if (left < 0) return left;
 	}
+
 	offs[1] = 0;
 	for (int len = 1; len < MAXBITS; ++len) offs[len + 1] = offs[len] + h.count[len];
 	for (int sym = 0; sym < n; ++sym) {
 		if (length[sym] != 0) h.symbol[offs[length[sym]]++] = (short)sym;
 	}
+
 	return left;
 }
 
@@ -115,6 +109,7 @@ static int codes(InflateState& s, const InflateHuffman& lencode, const InflateHu
 			}
 		}
 	}
+
 	return 0;
 }
 
@@ -147,6 +142,7 @@ static int fixedBlock(InflateState& s) {
 		construct(distcode, lens, MAXDCODES);
 		built = true;
 	}
+
 	return codes(s, lencode, distcode);
 }
 
@@ -180,6 +176,7 @@ static int dynamicBlock(InflateState& s) {
 			while (n--) lengths[idx++] = 0;
 		}
 	}
+
 	if (lengths[256] == 0) return -1;
 	InflateHuffman ll;
 	if (construct(ll, lengths, nlen) != 0 && (nlen != 1 || lengths[0] != 0)) return -1;
@@ -203,6 +200,7 @@ bool inflateRaw(const std::uint8_t* in, std::size_t in_len, std::vector<std::uin
 		case 2:  rc = dynamicBlock(s); break;
 		default: return false;
 		}
+
 		if (rc != 0 || s.err) return false;
 	} while (!last);
 	return true;

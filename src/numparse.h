@@ -8,7 +8,8 @@
  * throwing `std::stoi` / `std::stoll` / `std::stoul` / `std::stod`
  * calls they replace: leading whitespace and sign are accepted and a
  * numeric prefix is parsed. They return false (instead of throwing)
- * when no conversion is possible or the value is out of range.
+ * when no conversion is possible or the value is out of range, and
+ * leave `out` untouched in that case.
  *
  * Pass @p consumed to detect trailing garbage: it receives the number
  * of characters consumed, so `consumed == s.size()` means the whole
@@ -23,16 +24,6 @@
 
 namespace wbsh {
 
-	/**
-	 * @brief Parse a signed long long prefix of @p s (like std::stoll).
-	 *
-	 * @param s        Input text.
-	 * @param out      Receives the value; untouched on failure.
-	 * @param base     Numeric base; 0 enables 0x/0 prefix detection.
-	 * @param consumed Optional: number of characters consumed.
-	 * @return true on success; false when nothing numeric was found or
-	 *         the value is out of range.
-	 */
 	inline bool parseLL(const std::string& s, long long& out, int base = 10,
 	                    std::size_t* consumed = nullptr) {
 		const char* begin = s.c_str();
@@ -45,7 +36,6 @@ namespace wbsh {
 		return true;
 	}
 
-	/// Parse an int prefix of @p s (like std::stoi, int range enforced).
 	inline bool parseInt(const std::string& s, int& out, int base = 10,
 	                     std::size_t* consumed = nullptr) {
 		long long v = 0;
@@ -55,7 +45,6 @@ namespace wbsh {
 		return true;
 	}
 
-	/// Parse an unsigned long prefix of @p s (like std::stoul).
 	inline bool parseUL(const std::string& s, unsigned long& out, int base = 10,
 	                    std::size_t* consumed = nullptr) {
 		const char* begin = s.c_str();
@@ -68,7 +57,6 @@ namespace wbsh {
 		return true;
 	}
 
-	/// Parse a double prefix of @p s (like std::stod).
 	inline bool parseDouble(const std::string& s, double& out,
 	                        std::size_t* consumed = nullptr) {
 		const char* begin = s.c_str();

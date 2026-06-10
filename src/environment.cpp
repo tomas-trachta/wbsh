@@ -1,8 +1,3 @@
-/**
- * @file environment.cpp
- * @brief Environment / variable / array store implementation.
- */
-
 #include "environment.h"
 
 #ifdef _WIN32
@@ -29,46 +24,41 @@ namespace wbsh {
 #else
 		shell_pid_ = static_cast<long long>(::getpid());
 #endif
-		// Provide a sane default IFS, matching POSIX.
 		vars_["IFS"] = " \t\n";
-		// Seed the RANDOM LCG from PID + time so different shells get
-		// different streams.
 		random_state_ = static_cast<unsigned int>(shell_pid_)
 		    ^ static_cast<unsigned int>(
 		        std::chrono::steady_clock::now().time_since_epoch().count());
 	}
 
 	void Environment::set(const std::string& name, std::string value) {
-		// Dynamic special parameters: assignment is a state poke, not a
-		// stored value. Reads always synthesise.
 		if (name == "RANDOM") {
 			unsigned long seed = 0;
 			if (parseUL(value, seed)) setRandomSeed(static_cast<unsigned int>(seed));
 			return;
 		}
+
 		if (name == "SECONDS") {
 			long long secs = 0;
 			if (parseLL(value, secs)) setSecondsOffset(secs);
 			return;
 		}
+
 		if (name == "LINENO" || name == "BASHPID") {
 			// Read-only dynamic params; ignore writes silently.
 			return;
 		}
+
 		if (readonly_.count(name)) {
 			std::fprintf(stderr, "wbsh: %s: readonly variable\n", name.c_str());
 			return;
 		}
-		// Plain scalar assignment removes any array form bash-style:
-		//   `arr=foo` to a previous indexed array sets index 0 only,
-		//   keeping the rest. We keep the simpler interpretation: if
-		//   there's an existing indexed array, set element 0; otherwise
-		//   normal scalar.
+
 		auto it = indexed_.find(name);
 		if (it != indexed_.end()) {
 			it->second[0] = std::move(value);
 			return;
 		}
+
 		assoc_.erase(name);
 		vars_[name] = std::move(value);
 	}
@@ -79,12 +69,14 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s: readonly variable\n", name.c_str());
 			return;
 		}
+
 		vars_.erase(name);
 		assoc_.erase(name);
 		IndexedArray ia;
 		for (std::size_t i = 0; i < values.size(); ++i) {
 			ia[static_cast<long long>(i)] = std::move(values[i]);
 		}
+
 		indexed_[name] = std::move(ia);
 	}
 
@@ -94,6 +86,7 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s: readonly variable\n", name.c_str());
 			return;
 		}
+
 		vars_.erase(name);
 		assoc_.erase(name);
 		indexed_[name] = std::move(elems);
@@ -105,12 +98,12 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s: readonly variable\n", name.c_str());
 			return;
 		}
-		// Promote a scalar to an indexed array on first element write.
+
 		if (assoc_.count(name)) {
-			// Treat assoc-keyed numeric assignment as assoc[key=str(idx)].
 			assoc_[name][std::to_string(idx)] = std::move(val);
 			return;
 		}
+
 		auto it = indexed_.find(name);
 		if (it == indexed_.end()) {
 			IndexedArray ia;
@@ -119,10 +112,12 @@ namespace wbsh {
 				ia[0] = std::move(sv->second);
 				vars_.erase(sv);
 			}
+
 			ia[idx] = std::move(val);
 			indexed_[name] = std::move(ia);
 			return;
 		}
+
 		it->second[idx] = std::move(val);
 	}
 
@@ -131,6 +126,7 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s: readonly variable\n", name.c_str());
 			return;
 		}
+
 		vars_.erase(name);
 		indexed_.erase(name);
 		assoc_.emplace(name, AssocArray{});
@@ -142,6 +138,7 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s: readonly variable\n", name.c_str());
 			return;
 		}
+
 		auto it = assoc_.find(name);
 		if (it == assoc_.end()) {
 			vars_.erase(name);
@@ -149,6 +146,7 @@ namespace wbsh {
 			assoc_[name][std::move(key)] = std::move(val);
 			return;
 		}
+
 		it->second[std::move(key)] = std::move(val);
 	}
 
@@ -169,17 +167,18 @@ namespace wbsh {
 	std::string Environment::get(const std::string& name) const {
 		auto it = vars_.find(name);
 		if (it != vars_.end()) return it->second;
-		// $arr without subscript means $arr[0].
 		auto ix = indexed_.find(name);
 		if (ix != indexed_.end()) {
 			auto e = ix->second.find(0);
 			return e == ix->second.end() ? std::string() : e->second;
 		}
+
 		auto as = assoc_.find(name);
 		if (as != assoc_.end()) {
 			auto e = as->second.find("0");
 			return e == as->second.end() ? std::string() : e->second;
 		}
+
 		return {};
 	}
 
@@ -230,7 +229,6 @@ namespace wbsh {
 			if (eq == std::wstring::npos || eq == 0) continue;
 			std::wstring wname = entry.substr(0, eq);
 			std::wstring wval  = entry.substr(eq + 1);
-			// Convert to UTF-8 (best-effort using WideCharToMultiByte).
 			auto toUtf8 = [](const std::wstring& w) -> std::string {
 				if (w.empty()) return {};
 				int n = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(),
@@ -245,6 +243,7 @@ namespace wbsh {
 			vars_[name] = std::move(val);
 			exported_.insert(std::move(name));
 		}
+
 		::FreeEnvironmentStringsW(block);
 #else
 		for (char** p = environ; *p; ++p) {

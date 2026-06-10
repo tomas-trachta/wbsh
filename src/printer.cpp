@@ -1,8 +1,3 @@
-/**
- * @file printer.cpp
- * @brief Pretty-printers for the token stream and the AST.
- */
-
 #include "printer.h"
 
 #include <functional>
@@ -45,6 +40,7 @@ namespace wbsh {
 				os << "\")";
 			}
 		}
+
 		os << "]";
 	}
 
@@ -70,6 +66,7 @@ namespace wbsh {
 			escapeString(os, r.heredoc_body);
 			os << "\"";
 		}
+
 		os << "\n";
 	}
 
@@ -81,6 +78,7 @@ namespace wbsh {
 			os << "(empty)\n";
 			return;
 		}
+
 		dumpNode(os, depth, *maybe_list);
 	}
 
@@ -91,6 +89,7 @@ namespace wbsh {
 			dumpSegments(os, a.value.segments);
 			os << "\n";
 		}
+
 		for (const auto& w : sc.words) dumpWord(os, depth + 1, "Word", w);
 		for (const auto& r : sc.redirs) dumpRedir(os, depth + 1, r);
 	}
@@ -102,6 +101,7 @@ namespace wbsh {
 				indent(os, depth + 1);
 				os << (p.stderr_to_stdout[i - 1] ? "|& pipe\n" : "| pipe\n");
 			}
+
 			dumpNode(os, depth + 1, *p.commands[i]);
 		}
 	}
@@ -130,10 +130,12 @@ namespace wbsh {
 			os << "then\n";
 			dumpListBody(os, depth + 2, ic.branches[i].body);
 		}
+
 		if (ic.else_body) {
 			indent(os, depth + 1); os << "else\n";
 			dumpListBody(os, depth + 2, ic.else_body);
 		}
+
 		for (const auto& r : ic.redirs) dumpRedir(os, depth + 1, r);
 	}
 
@@ -153,6 +155,7 @@ namespace wbsh {
 			indent(os, depth + 1); os << "in\n";
 			for (const auto& w : f.items) dumpWord(os, depth + 2, "Word", w);
 		}
+
 		indent(os, depth + 1); os << "do\n";
 		dumpListBody(os, depth + 2, f.body);
 		for (const auto& r : f.redirs) dumpRedir(os, depth + 1, r);
@@ -164,6 +167,7 @@ namespace wbsh {
 		case CaseClause::Term::SemiAmp:  return ";&";
 		case CaseClause::Term::DSemiAmp: return ";;&";
 		}
+
 		return "?";
 	}
 
@@ -177,6 +181,7 @@ namespace wbsh {
 			indent(os, depth + 2); os << "body:\n";
 			dumpListBody(os, depth + 3, it.body);
 		}
+
 		for (const auto& r : c.redirs) dumpRedir(os, depth + 1, r);
 	}
 
@@ -214,6 +219,7 @@ namespace wbsh {
 				os << "test \"" << e.lhs.raw << "\" "
 				   << e.op << " \"" << e.rhs.raw << "\"\n";
 			}
+
 			return;
 		}
 	}
@@ -223,6 +229,7 @@ namespace wbsh {
 			indent(os, depth + 1); os << "expr:\n";
 			dumpDBracketExpr(os, depth + 2, *d.root);
 		}
+
 		for (const auto& r : d.redirs) dumpRedir(os, depth + 1, r);
 	}
 
@@ -290,6 +297,7 @@ namespace wbsh {
 				os << "\" segs=";
 				dumpSegments(os, t.segments);
 			}
+
 			if (t.is_heredoc_delim) {
 				os << "  (heredoc-delim, quoted=" << (t.heredoc_quoted ? "y" : "n")
 					<< ", strip_tabs=" << (t.heredoc_strip_tabs ? "y" : "n")
@@ -297,6 +305,7 @@ namespace wbsh {
 				escapeString(os, t.heredoc_body);
 				os << "\")";
 			}
+
 			os << "\n";
 		}
 	}

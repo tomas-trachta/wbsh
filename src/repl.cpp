@@ -1,9 +1,3 @@
-/**
- * @file repl.cpp
- * @brief Interactive REPL implementation: prompt expansion, console
- *        setup, multi-line continuation, and signal handling.
- */
-
 #include "repl.h"
 
 #ifdef _WIN32
@@ -44,18 +38,16 @@
 #include "executor.h"
 #include "lexer.h"
 #include "lineedit.h"
+#include "numparse.h"
 #include "parser.h"
 #include "pathconv.h"
 #include "setup.h"
+#include "strscan.h"
 
 namespace wbsh {
 
-	// =====================================================================
-	// Bookkeeping shared across the per-iteration helpers. Bundled into a
-	// struct so runInteractive doesn't grow a wall of by-reference args.
-	// =====================================================================
 	struct ReplState {
-		std::string buffer;            // accumulated multi-line input
+		std::string buffer;
 		bool        waiting_for_more = false;
 		bool        color_ok = false;
 		std::string histfile;
@@ -78,10 +70,6 @@ namespace wbsh {
 	}
 
 #ifdef _WIN32
-	// Set by the console handler when the user hits Ctrl-C. The REPL polls
-	// this between commands to fire the INT trap (or just abandon a partly-
-	// edited line). Externals are killed by the OS via the dispatched event,
-	// so we don't need to forward; we just swallow at the shell level.
 	std::atomic<bool> g_ctrlc_pending{ false };
 
 	BOOL WINAPI ctrlCHandler(DWORD ctrl) {
@@ -89,12 +77,10 @@ namespace wbsh {
 			g_ctrlc_pending.store(true);
 			return TRUE;
 		}
+
 		return FALSE;
 	}
 
-	// Apply title + dark mode title bar to the host console window.
-	// No-op on Windows Terminal (which owns its own chrome) and harmless
-	// on conhost when the OS doesn't recognize the DWM attribute.
 	static void setupConsoleWindow() {
 		SetConsoleTitleW(L"wbsh");
 		HWND hwnd = GetConsoleWindow();
@@ -113,9 +99,6 @@ namespace wbsh {
 		DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
 	}
 
-	// Pick a clean monospace face for conhost. Windows Terminal ignores
-	// SetCurrentConsoleFontEx (font is profile-driven) — so this is a
-	// best-effort upgrade for the legacy host, never a regression.
 	static void setupConsoleFont(HANDLE h_out) {
 		if (h_out == INVALID_HANDLE_VALUE) return;
 		CONSOLE_FONT_INFOEX cfi{};
@@ -133,37 +116,23 @@ namespace wbsh {
 	}
 #endif /* _WIN32 */
 
-	// =====================================================================
-	// Prompt expansion: \u, \w, \g (git branch), \t, etc.
-	// =====================================================================
-
 	struct GitInfo {
-		std::string branch;   // empty when not inside a repo
-		std::string state;    // empty when on a clean branch with no in-progress op
+		std::string branch;
+		std::string state;
 	};
 
-	// ANSI colour for a state word. Mid-operation states (merging, rebasing,
-	// cherry-picking, reverting) are red bold — they're transitional modes
-	// where conflicts may exist and the user shouldn't lose track of them.
-	// Bisecting is magenta (investigation, not destructive). Working-tree
-	// states use red for unstaged (work to save), green for staged (ready
-	// to commit), cyan for untracked (peripheral). Empty string for unknown
-	// states or when colour is disabled.
 	static const char* gitStateColor(const std::string& state) {
 		if (state == "merging" ||
 		    state == "rebasing" ||
 		    state == "cherry-picking" ||
-		    state == "reverting")  return "\x1b[31;1m"; // red bold
-		if (state == "bisecting")  return "\x1b[35;1m"; // magenta bold
-		if (state == "unstaged")   return "\x1b[31m";   // red
-		if (state == "staged")     return "\x1b[32m";   // green
-		if (state == "untracked")  return "\x1b[36m";   // cyan
+		    state == "reverting")  return "\x1b[31;1m";
+		if (state == "bisecting")  return "\x1b[35;1m";
+		if (state == "unstaged")   return "\x1b[31m";
+		if (state == "staged")     return "\x1b[32m";
+		if (state == "untracked")  return "\x1b[36m";
 		return "";
 	}
 
-	// In-progress operation states are detected from sentinel files inside
-	// the resolved git dir — same files Git itself uses, so this stays in
-	// sync with whatever the user is doing without forking git.
 	static std::string detectGitOpState(const std::filesystem::path& git_dir) {
 		namespace fs = std::filesystem;
 		std::error_code ec;
@@ -176,18 +145,9 @@ namespace wbsh {
 		return {};
 	}
 
-	// Working-tree dirtiness via `git status --porcelain`. Forks once per
-	// prompt — same cost model as Git Bash's __git_ps1 with SHOWDIRTYSTATE.
-	// We read only the two status columns of each entry, so output size
-	// doesn't matter; we close the pipe as soon as we've classified.
-	// Priority: unstaged > staged > untracked. Set WBSH_GIT_NO_DIRTY=1 to
-	// skip this entirely (useful on huge repos where status is slow).
 	static std::string detectGitDirtyState() {
 		if (const char* off = std::getenv("WBSH_GIT_NO_DIRTY"); off && *off && *off != '0')
 			return {};
-		// `--no-optional-locks` is a top-level git option (must come before
-		// the subcommand) — it prevents `status` from refreshing the index
-		// on disk, which would race with a concurrent foreground git command.
 #ifdef _WIN32
 		FILE* p = _popen("git --no-optional-locks status --porcelain 2>NUL", "r");
 #else
@@ -203,7 +163,8 @@ namespace wbsh {
 				if (buf[0] != ' ' && buf[0] != '?') staged = true;
 				if (buf[1] != ' ' && buf[1] != '?') unstaged = true;
 			}
-			if (unstaged) break; // highest priority — no need to keep reading
+
+			if (unstaged) break;
 		}
 #ifdef _WIN32
 		_pclose(p);
@@ -216,49 +177,14 @@ namespace wbsh {
 		return {};
 	}
 
-	// Resolve the current git branch + state, walking up from cwd looking
-	// for .git. branch is the branch name (e.g. "main"), a short commit
-	// hash for detached HEAD, or empty if not inside a repository. state
-	// is one of merging / rebasing / cherry-picking / reverting / bisecting
-	// / unstaged / staged / untracked, or empty on a clean branch.
 	static GitInfo detectGitInfo() {
-		namespace fs = std::filesystem;
 		GitInfo info;
-		std::error_code ec;
-		fs::path cur = fs::current_path(ec);
-		if (ec) return info;
-
-		fs::path git_dir;
-		fs::path probe = cur;
-		while (true) {
-			fs::path candidate = probe / ".git";
-			if (fs::exists(candidate, ec)) {
-				git_dir = candidate;
-				break;
-			}
-			fs::path parent = probe.parent_path();
-			if (parent == probe) break;
-			probe = parent;
-		}
+		const std::filesystem::path git_dir = findGitDir();
 		if (git_dir.empty()) return info;
-
-		// `.git` may be a regular directory OR a file containing
-		// `gitdir: <relative-or-absolute-path>` (worktrees, submodules).
-		if (!fs::is_directory(git_dir, ec)) {
-			std::ifstream f(git_dir);
-			std::string line;
-			if (!std::getline(f, line)) return info;
-			const std::string prefix = "gitdir: ";
-			if (line.compare(0, prefix.size(), prefix) != 0) return info;
-			fs::path g(line.substr(prefix.size()));
-			if (!g.is_absolute()) g = (probe / g).lexically_normal();
-			git_dir = g;
-		}
 
 		std::ifstream head(git_dir / "HEAD");
 		std::string line;
 		if (!std::getline(head, line)) return info;
-		// Trim trailing CR/LF.
 		while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
 			line.pop_back();
 
@@ -269,14 +195,10 @@ namespace wbsh {
 			info.branch = (ref.compare(0, heads.size(), heads) == 0)
 				? ref.substr(heads.size()) : ref;
 		} else {
-			// Detached HEAD: line is a 40-char SHA. Show short form.
 			if (line.size() >= 7) line.resize(7);
 			info.branch = line + " (detached)";
 		}
 
-		// Mid-operation state takes priority over working-tree dirtiness:
-		// during a merge/rebase the user already knows their tree is dirty,
-		// they need to see *which* operation they're in.
 		info.state = detectGitOpState(git_dir);
 		if (info.state.empty()) info.state = detectGitDirtyState();
 		return info;
@@ -288,15 +210,12 @@ namespace wbsh {
 		return ec ? std::string(".") : pathToUtf8(p);
 	}
 
-	// `\u` — user name. Falls back to %USERNAME% on Windows.
 	static std::string promptUser(const Environment& env) {
 		std::string u = env.get("USER");
 		if (u.empty()) u = env.get("USERNAME");
 		return u;
 	}
 
-	// `\h` (short) / `\H` (long) — host name. The short form trims the
-	// first dot-component.
 	static std::string promptHost(const Environment& env, char form) {
 		std::string h = env.get("HOSTNAME");
 		if (h.empty()) h = env.get("COMPUTERNAME");
@@ -304,10 +223,10 @@ namespace wbsh {
 			const auto dot = h.find('.');
 			if (dot != std::string::npos) h.resize(dot);
 		}
+
 		return h;
 	}
 
-	// `\w` — full CWD with `~` substitution for $HOME.
 	static std::string promptCwdHome(const Environment& env, const PathConv& pc) {
 		std::string posix = pc.toPosix(currentCwdAsUtf8());
 		const std::string home = env.get("HOME");
@@ -317,19 +236,16 @@ namespace wbsh {
 		{
 			posix = "~" + posix.substr(home.size());
 		}
+
 		return posix;
 	}
 
-	// `\W` — basename of the CWD.
 	static std::string promptCwdBasename(const PathConv& pc) {
 		const std::string posix = pc.toPosix(currentCwdAsUtf8());
 		const auto slash = posix.rfind('/');
 		return (slash == std::string::npos) ? posix : posix.substr(slash + 1);
 	}
 
-	// `\g` — git branch + state. Plain ` (branch)` / ` (branch | state)`
-	// when stdout is not a TTY; yellow-bold (with optional state-specific
-	// colour) on a TTY.
 	static std::string promptGitBranch() {
 		GitInfo gi = detectGitInfo();
 		if (gi.branch.empty()) return {};
@@ -347,6 +263,7 @@ namespace wbsh {
 			out += ")";
 			return out;
 		}
+
 		const char* yellow = "\x1b[33;1m";
 		out += " ";
 		out += yellow;
@@ -358,16 +275,16 @@ namespace wbsh {
 			if (*sc) {
 				out += sc;
 				out += gi.state;
-				out += yellow;   // back to yellow for the closing paren
+				out += yellow;
 			} else {
 				out += gi.state;
 			}
 		}
+
 		out += ")\x1b[0m";
 		return out;
 	}
 
-	// `\t` — current local time, "HH:MM:SS".
 	static std::string promptTimeHms() {
 		const std::time_t t = std::time(nullptr);
 		char buf[16];
@@ -375,9 +292,6 @@ namespace wbsh {
 		return buf;
 	}
 
-	// Expand one `\X` escape from the prompt string. Returns the expansion.
-	// `nx` is the character following the backslash. Unknown escapes pass
-	// through as the backslash + nx (matching bash leniency).
 	static std::string expandPromptEscape(char nx, const Environment& env,
 	                                      const PathConv& pc) {
 		switch (nx) {
@@ -388,8 +302,6 @@ namespace wbsh {
 		case '\\': return "\\";
 		case '$':  return "$";
 		case 's':  return "wbsh";
-		// \[ and \] mark non-printing regions for line-editor width
-		// accounting. We don't have a fancy editor, so just drop them.
 		case '[':  return {};
 		case ']':  return {};
 		case 'u':  return promptUser(env);
@@ -415,46 +327,33 @@ namespace wbsh {
 				out.push_back(ps[i]);
 				continue;
 			}
+
 			out += expandPromptEscape(ps[++i], env, pc);
 		}
+
 		return out;
 	}
 
-	// =====================================================================
-	// History expansion: csh-style !! / !N / !-N / !str / ^old^new
-	// =====================================================================
-
-	// Apply csh-style history expansion to `line` against `history`.
-	//   !!         most recent entry
-	//   !N         entry by 1-based number
-	//   !-N        N-th most recent
-	//   !str       most recent entry starting with str
-	//   ^old^new   first occurrence of `old` in last entry replaced
-	// Returns true when the line was rewritten; on output, `expanded` holds
-	// the new text the caller should run.
-	// Handle the `^old^new[^]` substitution form. Returns true if a substitution
-	// was made; otherwise leaves @p expanded == @p line and returns false.
 	static bool expandHistoryCarat(const std::string& line,
 	                               const std::vector<std::string>& history,
 	                               std::string& expanded) {
-		if (history.empty()) { expanded = line; return false; }
-		std::size_t p1 = line.find('^', 1);
-		if (p1 == std::string::npos) { expanded = line; return false; }
-		std::size_t p2 = line.find('^', p1 + 1);
-		std::string oldp = line.substr(1, p1 - 1);
-		std::string newp = (p2 == std::string::npos)
-			? line.substr(p1 + 1)
-			: line.substr(p1 + 1, p2 - p1 - 1);
+		StrScan in(line);
+		std::string oldp;
+		if (history.empty() || !in.consume("^") || !in.readUpTo('^', oldp)) {
+			expanded = line;
+			return false;
+		}
+
+		std::string newp;
+		if (!in.readUpTo('^', newp)) newp = in.rest();
+
 		const std::string& base = history.back();
-		auto pos = base.find(oldp);
+		const auto pos = base.find(oldp);
 		if (pos == std::string::npos) { expanded = line; return false; }
 		expanded = base.substr(0, pos) + newp + base.substr(pos + oldp.size());
 		return true;
 	}
 
-	// Resolve a single `!...` reference starting at @p line[@p i]. On success
-	// writes the historical line to @p sub and the number of source-characters
-	// consumed (including the `!`) to @p advance, and returns true.
 	static bool resolveHistoryBang(const std::string& line, std::size_t i,
 	                               const std::vector<std::string>& history,
 	                               std::string& sub, std::size_t& advance) {
@@ -465,24 +364,29 @@ namespace wbsh {
 			advance = 2;
 			return true;
 		}
+
 		if (nx == '-' && i + 2 < line.size() && std::isdigit((unsigned char)line[i + 2])) {
 			std::size_t k = i + 2;
 			while (k < line.size() && std::isdigit((unsigned char)line[k])) ++k;
-			int n = std::stoi(line.substr(i + 2, k - i - 2));
+			int n = 0;
+			if (!parseInt(line.substr(i + 2, k - i - 2), n)) return false;
 			if (n <= 0 || static_cast<std::size_t>(n) > history.size()) return false;
 			sub = history[history.size() - n];
 			advance = k - i;
 			return true;
 		}
+
 		if (std::isdigit((unsigned char)nx)) {
 			std::size_t k = i + 1;
 			while (k < line.size() && std::isdigit((unsigned char)line[k])) ++k;
-			int n = std::stoi(line.substr(i + 1, k - i - 1));
+			int n = 0;
+			if (!parseInt(line.substr(i + 1, k - i - 1), n)) return false;
 			if (n <= 0 || static_cast<std::size_t>(n) > history.size()) return false;
 			sub = history[n - 1];
 			advance = k - i;
 			return true;
 		}
+
 		if (std::isalpha((unsigned char)nx) || nx == '_') {
 			std::size_t k = i + 1;
 			while (k < line.size()
@@ -496,6 +400,7 @@ namespace wbsh {
 				}
 			}
 		}
+
 		return false;
 	}
 
@@ -511,7 +416,6 @@ namespace wbsh {
 			char c = line[i];
 			if (c != '!' || i + 1 >= line.size()) { expanded.push_back(c); continue; }
 			char nx = line[i + 1];
-			// Don't expand `!=`, `!"`, `!\`, end-of-line `!`, or `!{` (rare).
 			if (nx == ' ' || nx == '\t' || nx == '\n' || nx == '='
 			    || nx == '"' || nx == '\\') { expanded.push_back(c); continue; }
 			std::string sub;
@@ -520,23 +424,21 @@ namespace wbsh {
 				expanded.push_back(c);
 				continue;
 			}
+
 			expanded += sub;
 			i += advance - 1;
 			any = true;
 		}
+
 		return any;
 	}
 
-	// =====================================================================
-	// Multi-line continuation detection. If lex/parse complains about an
-	// unterminated quote / heredoc / pipe operand, we treat the buffer as
-	// "still being typed" and re-prompt with PS2.
-	// =====================================================================
 	static bool looksIncomplete(const std::vector<LexError>& lex_errs,
 	                     const std::vector<ParseError>& parse_errs) {
 		for (const auto& e : lex_errs) {
 			if (e.message.find("unterminated") != std::string::npos) return true;
 		}
+
 		for (const auto& e : parse_errs) {
 			const auto& m = e.message;
 			if (m.find("expected `")        != std::string::npos
@@ -545,24 +447,16 @@ namespace wbsh {
 				return true;
 			}
 		}
+
 		return false;
 	}
-
-	// =====================================================================
-	// SETUP HELPERS — called once, before the main loop starts.
-	// =====================================================================
 
 	static void initConsoleAndSignals(ReplState& s) {
 #ifdef _WIN32
 		SetConsoleCtrlHandler(ctrlCHandler, TRUE);
-		// UTF-8 console output so the prompt and our messages render right
-		// on Windows Terminal / conhost. Input mode left as default (line
-		// + echo + processed) so basic editing works.
 		SetConsoleOutputCP(CP_UTF8);
-		// Capture sensible "cooked" modes once and re-apply them every loop
-		// iteration. Externals (git's pager, less, vim, etc.) often change
-		// console state and don't always restore it cleanly — without this
-		// the next prompt's escape codes print literally.
+		// The captured "good" modes are re-applied before every prompt:
+		// externals (pagers, vim) corrupt console state and don't restore it.
 		s.h_out = GetStdHandle(STD_OUTPUT_HANDLE);
 		s.h_in  = GetStdHandle(STD_INPUT_HANDLE);
 		if (s.h_out != INVALID_HANDLE_VALUE && GetConsoleMode(s.h_out, &s.good_out_mode)) {
@@ -571,6 +465,7 @@ namespace wbsh {
 			s.good_out_mode |= ENABLE_WRAP_AT_EOL_OUTPUT;
 			s.color_ok = SetConsoleMode(s.h_out, s.good_out_mode) != 0;
 		}
+
 		if (s.h_in != INVALID_HANDLE_VALUE && GetConsoleMode(s.h_in, &s.good_in_mode)) {
 			s.good_in_mode |= ENABLE_LINE_INPUT;
 			s.good_in_mode |= ENABLE_ECHO_INPUT;
@@ -578,6 +473,7 @@ namespace wbsh {
 			s.good_in_mode |= ENABLE_EXTENDED_FLAGS;
 			SetConsoleMode(s.h_in, s.good_in_mode);
 		}
+
 		setupConsoleWindow();
 		setupConsoleFont(s.h_out);
 #else
@@ -587,9 +483,6 @@ namespace wbsh {
 
 	static void initShellDefaults(Environment& env, const ReplState& s) {
 		if (env.get("PS1").empty()) {
-			// Match Git Bash's default look when colour is available:
-			// bright-green user@host, bright-cyan path, yellow git-branch
-			// suffix, bold prompt char.
 			if (s.color_ok) {
 				env.set("PS1",
 					"\\[\\e[32;1m\\]\\u@\\h\\[\\e[0m\\] "
@@ -598,6 +491,7 @@ namespace wbsh {
 				env.set("PS1", "\\u@\\h \\w\\g\\$ ");
 			}
 		}
+
 		if (env.get("PS2").empty()) env.set("PS2", "> ");
 	}
 
@@ -630,21 +524,18 @@ namespace wbsh {
 	}
 
 	static void initHistFile(Environment& env, Executor& exec, ReplState& s) {
-		// Determine HISTFILE (defaults to $HOME/.wbsh_history) and load
-		// previous-session history before showing any prompt.
 		std::string home_dir = env.get("HOME");
 		s.histfile = env.get("HISTFILE");
 		if (s.histfile.empty() && !home_dir.empty()) {
 			s.histfile = home_dir + "/.wbsh_history";
 			env.set("HISTFILE", s.histfile);
 		}
+
 		if (!s.histfile.empty()) {
 			exec.loadHistoryFromFile(exec.pathConv().toWin32(s.histfile));
 		}
 	}
 
-	// Source ~/.wbshrc for user customisation (aliases, env, prompt). May
-	// leave an Exit FlowSignal pending if the rc file calls `exit`.
 	static void sourceWbshrc(const Environment& env, Executor& exec) {
 		std::string home_dir = env.get("HOME");
 		if (home_dir.empty()) return;
@@ -665,22 +556,10 @@ namespace wbsh {
 		}
 	}
 
-	// =====================================================================
-	// PER-ITERATION HELPERS — called once per loop turn.
-	// =====================================================================
-
-	// Re-apply the captured "good" console modes (externals can change
-	// them), drain a pending Ctrl-C, and detect a window resize.
 	static void pumpAsyncEvents(Environment& env, Executor& exec, ReplState& s) {
 #ifdef _WIN32
-		// External processes (especially pagers — git log -> less, vim,
-		// etc.) commonly mutate console mode and don't restore it on
-		// exit. Re-apply our good modes before every prompt so the line
-		// editor and ANSI escapes work consistently.
 		if (s.h_out != INVALID_HANDLE_VALUE) SetConsoleMode(s.h_out, s.good_out_mode);
 		if (s.h_in  != INVALID_HANDLE_VALUE) SetConsoleMode(s.h_in,  s.good_in_mode);
-		// If a Ctrl-C arrived while no command was running, fire the
-		// INT trap (if any) and discard any partly-typed multiline.
 		if (g_ctrlc_pending.exchange(false)) {
 			s.buffer.clear();
 			s.waiting_for_more = false;
@@ -689,9 +568,10 @@ namespace wbsh {
 				std::string action = exec.trapAction("INT");
 				exec.executeText(action, "<trap INT>");
 			}
+
 			exec.setLastStatus(130);   // 128 + SIGINT
 		}
-		// Window resize → update LINES/COLUMNS and fire WINCH trap.
+
 		if (s.h_out != INVALID_HANDLE_VALUE) {
 			CONSOLE_SCREEN_BUFFER_INFO info{};
 			if (GetConsoleScreenBufferInfo(s.h_out, &info)) {
@@ -704,6 +584,7 @@ namespace wbsh {
 						std::string action = exec.trapAction("WINCH");
 						exec.executeText(action, "<trap WINCH>");
 					}
+
 					s.last_cols  = cols;
 					s.last_lines = lines;
 				}
@@ -720,10 +601,6 @@ namespace wbsh {
 		return expandPrompt(ps_raw, env, exec.pathConv());
 	}
 
-	// Apply csh-style history expansion in place if the line warrants it
-	// (not in continuation mode, non-empty, and doesn't start with space —
-	// matching bash's HISTCONTROL=ignorespace convention by default).
-	// Echoes the rewritten command to stdout so the user sees what ran.
 	static void maybeExpandHistory(const std::vector<std::string>& history,
 	                        std::string& line) {
 		if (line.empty() || line[0] == ' ') return;
@@ -751,6 +628,7 @@ namespace wbsh {
 				err_pre, err_msg, err_loc, e.loc.line, e.loc.column, err_msg,
 				e.message.c_str());
 		}
+
 		for (const auto& e : parse_errs) {
 			std::fprintf(stderr, "%swbsh: parse%s %s%zu:%zu:%s %s\n",
 				err_pre, err_msg, err_loc, e.loc.line, e.loc.column, err_msg,
@@ -758,11 +636,6 @@ namespace wbsh {
 		}
 	}
 
-	// Lex+parse the accumulated buffer. If incomplete, mark the state and
-	// return so the next iteration prompts with PS2. Otherwise print any
-	// errors and (when both lex/parse were clean) execute. An Exit signal
-	// raised by execute is left pending for runInteractive, which consumes
-	// it and returns it as the shell's exit status.
 	static void parseAndMaybeExecute(Executor& exec, ReplState& s) {
 		Lexer lex(s.buffer);
 		auto tokens = lex.tokenize();
@@ -773,35 +646,26 @@ namespace wbsh {
 			s.waiting_for_more = true;
 			return;
 		}
+
 		s.waiting_for_more = false;
 
 		printLexParseErrors(lex.errors(), parser.errors());
 
 		if (root && parser.errors().empty() && lex.errors().empty()) {
-			// Adopt the backing arena first: functions defined by this
-			// line must outlive the parser (and this iteration).
 			exec.adoptArena(parser.takeArena());
 			exec.setSourceText(s.buffer);
-			exec.execute(*root);   // may leave an Exit signal pending
+			exec.execute(*root);
 		}
+
 		s.buffer.clear();
 	}
 
-	// Check for a pending Exit signal after running user code. When one is
-	// consumed, writes its status to *exit_status and returns true (caller
-	// saves history and leaves the REPL). Any other stray signal is dropped
-	// — break / continue / return can't reach a prompt.
 	static bool shellExited(Executor& exec, int* exit_status) {
 		if (exec.consumeFlow(FlowSignal::Kind::Exit, exit_status)) return true;
 		exec.clearFlow();
 		return false;
 	}
 
-	// =========================================================================
-	// runInteractive: top-level orchestrator. Reads top-down as a story —
-	// every step is a named function, the loop body is a handful of clear
-	// calls. The bookkeeping lives in ReplState.
-	// =========================================================================
 	int runInteractive() {
 		Environment env;
 		prepareEnv(env);
@@ -828,14 +692,13 @@ namespace wbsh {
 			std::string prompt = buildPrompt(env, exec, state);
 			std::string line;
 			if (!editor.readLine(prompt, line)) {
-				// EOF (Ctrl-D / stdin closed). If we're mid-multi-line, just
-				// discard and re-prompt; otherwise the shell exits.
 				if (!state.buffer.empty()) {
 					state.buffer.clear();
 					state.waiting_for_more = false;
 					std::fputc('\n', stdout);
 					continue;
 				}
+
 				std::fputc('\n', stdout);
 				exec.fireExitTrap();
 				saveHistory(exec, state);
@@ -853,10 +716,7 @@ namespace wbsh {
 				saveHistory(exec, state);
 				return exit_status;
 			}
-			// When the buffer became a complete statement and ran,
-			// attribute the resulting exit status to the entry just
-			// typed so the inline-prediction filter can hide failed
-			// commands on the next prompt (and across sessions).
+
 			if (!state.waiting_for_more && !line.empty()) {
 				exec.markLastHistoryStatus(exec.lastStatus());
 			}

@@ -47,7 +47,6 @@ namespace wbsh {
 	 * consumes it via Executor::consumeFlow().
 	 */
 	struct FlowSignal {
-		/// What kind of unwinding is in progress.
 		enum class Kind {
 			None,       ///< No signal pending — normal execution.
 			Break,      ///< `break N` — unwind N enclosing loops.
@@ -81,6 +80,15 @@ namespace wbsh {
 	typedef int (*BuiltinFn)(Executor&, const std::vector<std::string>&);
 
 	/**
+	 * @brief Split a PATH string into directory entries.
+	 *
+	 * Accepts both `:` (POSIX, wbsh-internal) and `;` separators. A `:`
+	 * right after a single alpha char is treated as a Windows drive
+	 * letter (`C:\foo`), not a separator.
+	 */
+	std::vector<std::string> splitPathList(const std::string& path);
+
+	/**
 	 * @brief AST executor and runtime registry.
 	 *
 	 * Constructed with a borrowed Environment. Owns the live tables
@@ -91,7 +99,6 @@ namespace wbsh {
 	 */
 	class Executor : public CommandSubstitutor {
 	public:
-		/// Construct over @p env (borrowed; must outlive the Executor).
 		explicit Executor(Environment& env);
 
 		/**
@@ -104,24 +111,15 @@ namespace wbsh {
 		 */
 		int execute(const Node& root);
 
-		/// CommandSubstitutor: run a script body and capture stdout.
 		std::string run(const std::string& body) override;
-		/// CommandSubstitutor: like run(), but preserves trailing bytes.
 		std::string runRaw(const std::string& body) override;
 
-		/// Borrowed reference to the Environment.
 		Environment& env()        { return env_; }
-		/// Borrowed reference to the Expander used by execution.
 		Expander&    expander()   { return expander_; }
-		/// Read-only POSIX↔Windows path translator.
 		const PathConv& pathConv() const { return path_conv_; }
-		/// `$?` — exit status of the last command.
 		int          lastStatus() const { return last_status_; }
-		/// Update `$?`.
 		void         setLastStatus(int s) { last_status_ = s; env_.setLastStatus(s); }
 
-		// ---- Aliases ----
-		/// Define / replace an alias. Used by the `alias` builtin.
 		void setAlias(const std::string& name, std::string value) {
 			aliases_[name] = std::move(value);
 		}
@@ -135,7 +133,6 @@ namespace wbsh {
 		}
 		const std::unordered_map<std::string, std::string>& aliases() const { return aliases_; }
 
-		// ---- History ----
 		// history_ and history_status_ are strictly parallel: same size,
 		// same indexing. history_status_[i] is the exit code of the most
 		// recent execution of history_[i] (0 = success, anything else =
@@ -149,14 +146,11 @@ namespace wbsh {
 		bool  loadHistoryFromFile(const std::string& path);
 		bool  saveHistoryToFile(const std::string& path) const;
 
-		// ---- Directory stack (pushd/popd/dirs) ----
 		// dir_stack_.front() is the current directory; entries below are
 		// previously-pushed dirs (POSIX form).
 		std::vector<std::string>& dirStack() { return dir_stack_; }
 		const std::vector<std::string>& dirStack() const { return dir_stack_; }
 
-		// ---- Job control ----
-		/// Tracked background job entry.
 		struct Job {
 			int  id = 0;                ///< Job ID (`%N`).
 #ifdef _WIN32
@@ -173,14 +167,11 @@ namespace wbsh {
 		int  registerJob(void* handle, long long pid, std::string cmd_text);
 		/// Update statuses of finished jobs.  @return true if any newly finished.
 		bool reapJobs();
-		/// Live job table.
 		std::vector<Job>& jobsTable() { return jobs_; }
 		/// Wait for one job; returns its exit status, or -1 if id unknown.
 		int  waitForJob(int id);
-		/// Block until every running job has exited.
 		void waitForAllJobs();
 
-		// ---- Trap handlers ----
 		/// Install the trap action for @p sig. Replaces any prior action.
 		///
 		/// Only `EXIT` is currently fired by the REPL; signal-driven
@@ -206,8 +197,6 @@ namespace wbsh {
 		int& getoptsSubindex() { return getopts_subindex_; }
 		void resetGetopts() { getopts_subindex_ = 1; }
 
-		// ---- Programmable completion (`complete` / `compgen`) ----
-		/// Per-command completion spec registered via the `complete` builtin.
 		struct CompletionSpec {
 			std::vector<std::string> words;     ///< `-W` word list.
 			std::string function;               ///< `-F` function name.
@@ -235,7 +224,6 @@ namespace wbsh {
 		void registerBuiltin(std::string name, BuiltinFn fn);
 		bool isBuiltin(const std::string& name) const;
 		bool isFunction(const std::string& name) const;
-		// Used by completion: enumerate registered builtin / function names.
 		std::vector<std::string> builtinNames() const {
 			std::vector<std::string> v;
 			v.reserve(builtins_.size());
@@ -283,7 +271,6 @@ namespace wbsh {
 		// drops arrays — only scalars survive the env-block round-trip.
 		std::string serializeArrays() const;
 
-		// Loop / function bookkeeping (for builtins to use).
 		int  loopDepth() const  { return loop_depth_; }
 		int  funcDepth() const  { return func_depth_; }
 
@@ -294,33 +281,26 @@ namespace wbsh {
 		void pushErrexitSuppress() { ++errexit_suppress_; }
 		void popErrexitSuppress()  { --errexit_suppress_; }
 
-		// ---- Control-flow signal (break / continue / return / exit) ----
 		/// Is a control-flow signal pending? Frames that don't own the
 		/// signal check this after running a child and return early.
 		bool flowPending() const { return flow_.kind != FlowSignal::Kind::None; }
-		/// The pending signal (Kind::None when nothing is pending).
 		const FlowSignal& flow() const { return flow_; }
-		/// Drop the pending signal unconditionally.
 		void clearFlow() { flow_ = FlowSignal{}; }
-		/// `break N` — raised by the break builtin.
 		void raiseBreak(int count) {
 			flow_.kind = FlowSignal::Kind::Break;
 			flow_.status = 0;
 			flow_.count = count;
 		}
-		/// `continue N` — raised by the continue builtin.
 		void raiseContinue(int count) {
 			flow_.kind = FlowSignal::Kind::Continue;
 			flow_.status = 0;
 			flow_.count = count;
 		}
-		/// `return [N]` — raised by the return builtin.
 		void raiseReturn(int status) {
 			flow_.kind = FlowSignal::Kind::Return;
 			flow_.status = status;
 			flow_.count = 1;
 		}
-		/// `exit [N]` — raised by the exit builtin and `set -e`.
 		void raiseExit(int status) {
 			flow_.kind = FlowSignal::Kind::Exit;
 			flow_.status = status;
@@ -392,7 +372,6 @@ namespace wbsh {
 		};
 
 	private:
-		// AST execution.
 		int execNode(const Node& n);
 		int execList(const List& l);
 		int execAndOr(const AndOr& a);
@@ -411,12 +390,9 @@ namespace wbsh {
 		// the current loop and report what the loop should do next.
 		LoopFlowAction dispatchLoopFlow();
 
-		// Helpers.
 		struct RedirState {
 			// Saved fds: target_fd -> dup'd backup fd
 			std::vector<std::pair<int, int>> saved;
-			// Files opened during this redirection batch (so we can close them).
-			std::vector<int> opened;
 			// Temp files to delete after the command finishes.
 			std::vector<std::string> temps;
 		};
@@ -450,8 +426,7 @@ namespace wbsh {
 		bool applyLessRedir       (const Redirection& r, int target, RedirState& s);
 		bool applyTruncOrClobber  (const Redirection& r, int target, RedirState& s);
 		bool applyAppendRedir     (const Redirection& r, int target, RedirState& s);
-		bool applyAmpGreatRedir   (const Redirection& r, RedirState& s);
-		bool applyAmpDGreatRedir  (const Redirection& r, RedirState& s);
+		bool applyAmpRedir        (const Redirection& r, int extra_flags, RedirState& s);
 		bool applyLessGreatRedir  (const Redirection& r, int target, RedirState& s);
 		bool applyDupRedir        (const Redirection& r, int target, RedirState& s);
 		bool applyHeredocRedir    (const Redirection& r, int target, RedirState& s);
@@ -466,15 +441,11 @@ namespace wbsh {
 		// `exec` with no command: install the redirections on the current
 		// shell permanently and return the resulting status.
 		int  execBareRedirsForExec(const std::vector<Redirection>& redirs);
-		// No-command form: just apply the assignments to the current shell.
 		void applyBareAssignmentsToShell(const SimpleCmdAssigns& a);
-		// No-argv path: just assignments + redirections, no command to run.
 		int  execSimpleCommandNoArgv(const SimpleCommand& sc, SimpleCmdAssigns& assigns_data);
-		// Dispatch a resolved argv to function/builtin/external.
 		int  runResolvedCommand(
 			const std::vector<std::string>& argv,
 			const std::vector<std::pair<std::string, std::string>>& assigns);
-		// `set -x` trace announcement to stderr.
 		void traceXtrace(const std::vector<std::string>& argv);
 
 		// State snapshotted at the start of a shell-script invocation
@@ -630,9 +601,7 @@ namespace wbsh {
 		FlowSignal flow_;
 	};
 
-	/// Register every shell builtin (defined in builtins.cpp).
 	void registerCoreBuiltins(Executor& exec);
-	/// Register every bundled coreutil (defined in coreutils.cpp).
 	void registerCoreutils(Executor& exec);
 
 }  // namespace wbsh

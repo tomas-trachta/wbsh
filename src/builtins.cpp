@@ -36,8 +36,6 @@
 
 namespace wbsh {
 
-	// ---- Tiny helpers ----
-
 	static long long toIntSafe(const std::string& s, bool& ok) {
 		ok = false;
 		if (s.empty()) return 0;
@@ -48,10 +46,6 @@ namespace wbsh {
 		return v;
 	}
 
-	// Parse args[0] as a small int. Returns `fallback` when args is empty,
-	// the value isn't a parseable integer, or (when require_positive)
-	// it's <= 0. Centralises the "first arg is an optional count" idiom
-	// used by exit/return/break/continue/shift.
 	static int firstArgAsInt(const std::vector<std::string>& args, int fallback,
 	                  bool require_positive = false) {
 		if (args.empty()) return fallback;
@@ -66,13 +60,14 @@ namespace wbsh {
 		std::fprintf(stderr, "wbsh: %s\n", msg.c_str());
 	}
 
-	// ---- Builtin: true/false/: ----
+	static long long toIntOrZero(const std::string& s) {
+		bool ok = false;
+		return toIntSafe(s, ok);
+	}
 
 	static int builtin_true(Executor&, const std::vector<std::string>&) { return 0; }
 	static int builtin_false(Executor&, const std::vector<std::string>&) { return 1; }
 	static int builtin_colon(Executor&, const std::vector<std::string>&) { return 0; }
-
-	// ---- echo ----
 
 	static std::string interpretEcho(const std::string& s) {
 		std::string out;
@@ -96,6 +91,7 @@ namespace wbsh {
 					val = val * 8 + (s[++i] - '0');
 					++cnt;
 				}
+
 				out.push_back(static_cast<char>(val));
 				break;
 			}
@@ -110,12 +106,14 @@ namespace wbsh {
 					val = val * 16 + d;
 					++cnt;
 				}
+
 				out.push_back(static_cast<char>(val));
 				break;
 			}
 			default: out.push_back('\\'); out.push_back(nx); break;
 			}
 		}
+
 		return out;
 	}
 
@@ -133,9 +131,11 @@ namespace wbsh {
 				else if (f[k] == 'E') interp = false;
 				else { ok = false; break; }
 			}
+
 			if (!ok) break;
 			++i;
 		}
+
 		bool first = true;
 		for (; i < args.size(); ++i) {
 			if (!first) std::fputc(' ', stdout);
@@ -147,15 +147,12 @@ namespace wbsh {
 				std::fwrite(args[i].data(), 1, args[i].size(), stdout);
 			}
 		}
+
 		if (newline) std::fputc('\n', stdout);
 		std::fflush(stdout);
 		return 0;
 	}
 
-	// ---- printf (subset) ----
-
-	// Emit the C-string equivalent of a `\X` escape (e.g. `\n` -> newline).
-	// Unknown escapes pass through as `\X` literal (matching bash printf).
 	static void emitBackslashEscape(char nx) {
 		switch (nx) {
 		case 'a':  std::fputc('\a', stdout); break;
@@ -174,15 +171,10 @@ namespace wbsh {
 		}
 	}
 
-	// Parse a `%[flags][width][.precision]<conv>` spec starting at fmt[i]
-	// (which must be `%`). On return, `i` indexes the conversion char and
-	// `out_spec` holds the full spec string (including the conv char).
-	// Returns false if the format ended mid-spec (no conv char); the caller
-	// should print the partial spec verbatim and stop emitting.
 	static bool parsePrintfConversionSpec(const std::string& fmt, std::size_t& i,
 	                                      std::string& out_spec) {
 		out_spec = "%";
-		++i;  // step past '%'
+		++i;
 		while (i < fmt.size() && std::strchr("-+ #0", fmt[i])) out_spec.push_back(fmt[i++]);
 		while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i])))
 			out_spec.push_back(fmt[i++]);
@@ -191,13 +183,12 @@ namespace wbsh {
 			while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i])))
 				out_spec.push_back(fmt[i++]);
 		}
+
 		if (i >= fmt.size()) return false;
-		out_spec.push_back(fmt[i]);   // conversion char
+		out_spec.push_back(fmt[i]);
 		return true;
 	}
 
-	// Emit one conversion. `spec` ends in `conv`; `arg_text` is the next
-	// printf positional arg (already consumed by the caller).
 	static void emitPrintfConversion(const std::string& spec, char conv,
 	                                 const std::string& arg_text) {
 		switch (conv) {
@@ -206,15 +197,13 @@ namespace wbsh {
 			break;
 		case 'd':
 		case 'i': {
-			bool ok;
-			const long long v = toIntSafe(arg_text, ok);
+			const long long v = toIntOrZero(arg_text);
 			std::string s2 = spec; s2.pop_back(); s2 += "lld";
 			std::fprintf(stdout, s2.c_str(), v);
 			break;
 		}
 		case 'u': {
-			bool ok;
-			const long long v = toIntSafe(arg_text, ok);
+			const long long v = toIntOrZero(arg_text);
 			std::string s2 = spec; s2.pop_back(); s2 += "llu";
 			std::fprintf(stdout, s2.c_str(), static_cast<unsigned long long>(v));
 			break;
@@ -222,8 +211,7 @@ namespace wbsh {
 		case 'x':
 		case 'X':
 		case 'o': {
-			bool ok;
-			const long long v = toIntSafe(arg_text, ok);
+			const long long v = toIntOrZero(arg_text);
 			std::string s2 = spec; s2.pop_back(); s2 += "ll";
 			s2.push_back(conv);
 			std::fprintf(stdout, s2.c_str(), static_cast<unsigned long long>(v));
@@ -236,15 +224,11 @@ namespace wbsh {
 			std::fputc('%', stdout);
 			break;
 		default:
-			// Unknown conversion: print the spec verbatim.
 			std::fwrite(spec.data(), 1, spec.size(), stdout);
 			break;
 		}
 	}
 
-	// Walk `fmt` once, emitting literal text and consuming positional args
-	// from `args` starting at `*ai`. On return `*ai` is updated to the
-	// index of the next unconsumed arg.
 	static void emitPrintfFormatOnce(const std::string& fmt,
 	                                 const std::vector<std::string>& args,
 	                                 std::size_t* ai) {
@@ -257,17 +241,19 @@ namespace wbsh {
 				emitBackslashEscape(fmt[++i]);
 				continue;
 			}
+
 			if (c != '%') {
 				std::fputc(c, stdout);
 				continue;
 			}
+
 			const std::size_t spec_start = i;
 			std::string spec;
 			if (!parsePrintfConversionSpec(fmt, i, spec)) {
-				// Truncated spec at end of string: emit verbatim, stop.
 				std::fwrite(fmt.data() + spec_start, 1, fmt.size() - spec_start, stdout);
 				return;
 			}
+
 			emitPrintfConversion(spec, fmt[i], next_arg());
 		}
 	}
@@ -277,6 +263,7 @@ namespace wbsh {
 			printerr("printf: missing format");
 			return 2;
 		}
+
 		const std::string& fmt = args[0];
 		std::size_t ai = 1;
 
@@ -289,11 +276,10 @@ namespace wbsh {
 			emitPrintfFormatOnce(fmt, args, &ai);
 			if (ai == before) break;
 		}
+
 		std::fflush(stdout);
 		return 0;
 	}
-
-	// ---- cd / pwd ----
 
 	static int builtin_pwd(Executor& exec, const std::vector<std::string>& args) {
 		namespace fs = std::filesystem;
@@ -302,6 +288,7 @@ namespace wbsh {
 			if (a == "-W") win = true;
 			else if (a == "-P" || a == "-L") { /* accept silently */ }
 		}
+
 		std::error_code ec;
 		auto p = fs::current_path(ec);
 		std::string s = ec ? exec.env().get("PWD") : pathToUtf8(p);
@@ -328,17 +315,16 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: cd: %s: %s\n", target.c_str(), ec.message().c_str());
 			return 1;
 		}
+
 		std::string old_pwd = exec.env().get("PWD");
 		auto cwd = fs::current_path(ec);
 		if (!ec) {
 			if (!old_pwd.empty()) exec.env().set("OLDPWD", old_pwd);
-			// Store PWD in POSIX form so $PWD looks bash-like.
 			exec.env().set("PWD", exec.pathConv().toPosix(pathToUtf8(cwd)));
 		}
+
 		return 0;
 	}
-
-	// ---- exit / return / break / continue ----
 
 	static int builtin_exit(Executor& exec, const std::vector<std::string>& args) {
 		const int status = firstArgAsInt(args, exec.lastStatus());
@@ -351,6 +337,7 @@ namespace wbsh {
 			printerr("return: can only `return' from a function or sourced script");
 			return 1;
 		}
+
 		const int status = firstArgAsInt(args, exec.lastStatus());
 		exec.raiseReturn(status);
 		return status;
@@ -361,6 +348,7 @@ namespace wbsh {
 			printerr("break: only meaningful in a `for', `while', or `until' loop");
 			return 0;
 		}
+
 		exec.raiseBreak(firstArgAsInt(args, 1, /*require_positive=*/true));
 		return 0;
 	}
@@ -370,11 +358,10 @@ namespace wbsh {
 			printerr("continue: only meaningful in a `for', `while', or `until' loop");
 			return 0;
 		}
+
 		exec.raiseContinue(firstArgAsInt(args, 1, /*require_positive=*/true));
 		return 0;
 	}
-
-	// ---- export / unset / shift ----
 
 	static int builtin_export(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
@@ -383,16 +370,20 @@ namespace wbsh {
 					std::printf("declare -x %s=\"%s\"\n", kv.first.c_str(), kv.second.c_str());
 				}
 			}
+
 			return 0;
 		}
+
 		for (const auto& a : args) {
 			auto eq = a.find('=');
 			std::string name = (eq == std::string::npos) ? a : a.substr(0, eq);
 			if (eq != std::string::npos) {
 				exec.env().set(name, a.substr(eq + 1));
 			}
+
 			exec.env().exportVar(name);
 		}
+
 		return 0;
 	}
 
@@ -410,7 +401,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	// Bare `set`: dump all shell vars (sorted, `name=value` per line).
 	static int dumpAllShellVars(Executor& exec) {
 		std::vector<std::pair<std::string, std::string>> v(
 			exec.env().vars().begin(), exec.env().vars().end());
@@ -419,8 +409,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	// Apply one short option char (`e`, `u`, `x`, `f`) to the shell flags.
-	// Unknown chars are silently ignored, matching bash leniency.
 	static void applyShortSetFlag(Environment& env, char ch, bool on) {
 		switch (ch) {
 		case 'e': env.setErrexit(on); break;
@@ -431,8 +419,6 @@ namespace wbsh {
 		}
 	}
 
-	// Apply one long option name (`-o errexit`, `+o pipefail`). Returns
-	// false if the name is not a recognised option.
 	static bool applyLongSetOption(Environment& env, const std::string& name, bool on) {
 		if (name == "errexit")  { env.setErrexit(on);  return true; }
 		if (name == "nounset")  { env.setNounset(on);  return true; }
@@ -442,11 +428,6 @@ namespace wbsh {
 		return false;
 	}
 
-	// Walk `args` consuming option-style entries (`-e`, `-o errexit`,
-	// `+u`, `--`) until the first non-option. Returns the index of the
-	// first non-option arg via `*out_idx` and writes whether any flags
-	// were consumed via `*out_consumed`. Returns 0 on success or a
-	// non-zero status mirroring bash for unknown `-o NAME` operands.
 	static int parseSetFlags(Executor& exec, const std::vector<std::string>& args,
 	                         std::size_t* out_idx, bool* out_consumed) {
 		std::size_t i = 0;
@@ -457,7 +438,6 @@ namespace wbsh {
 			if (a.empty() || (a[0] != '-' && a[0] != '+')) break;
 
 			const bool on = (a[0] == '-');
-			// `-o NAME` / `+o NAME` — long option toggle.
 			if (a.size() > 1 && a[1] == 'o') {
 				if (i + 1 < args.size()) {
 					if (!applyLongSetOption(exec.env(), args[i + 1], on)) {
@@ -465,17 +445,20 @@ namespace wbsh {
 							args[i + 1].c_str());
 						return 2;
 					}
+
 					i += 2;
 				} else {
-					++i;   // bare `-o` / `+o` — bash prints opts; we no-op.
+					++i;
 				}
+
 				consumed = true;
 				continue;
 			}
-			// `-eXf` / `+xu` — cluster of short options.
+
 			for (std::size_t k = 1; k < a.size(); ++k) {
 				applyShortSetFlag(exec.env(), a[k], on);
 			}
+
 			++i;
 			consumed = true;
 		}
@@ -492,25 +475,16 @@ namespace wbsh {
 		const int rc = parseSetFlags(exec, args, &i, &consumed_flags);
 		if (rc != 0) return rc;
 
-		// Positional arguments are reset only when explicit args remain
-		// after flag parsing (otherwise `set -e` would erase $@).
 		if (i < args.size() || !consumed_flags) {
 			std::vector<std::string> pos(args.begin() + i, args.end());
 			exec.env().setPositional(std::move(pos));
 		}
+
 		return 0;
 	}
 
-	// ---- eval / source ----
-
 	static int builtin_exec(Executor& exec, const std::vector<std::string>& args) {
-		// Bash semantics: with no command, redirections take effect on
-		// the current shell (permanent for the rest of the session).
-		// With a command, replaces the shell with that command — we
-		// can't do the latter losslessly on Windows so we just run it
-		// and exit with its status.
-		if (args.empty()) return 0;   // redirections-only handled by caller
-		// Run as if it were a regular external invocation.
+		if (args.empty()) return 0;
 		std::vector<std::string> argv = args;
 		std::string cmd = argv[0];
 		argv.erase(argv.begin());
@@ -524,12 +498,11 @@ namespace wbsh {
 				if (c == '\'') joined += "'\\''";
 				else joined.push_back(c);
 			}
+
 			joined.push_back('\'');
 		}
+
 		int rc = exec.executeText(joined, "<exec>");
-		// `exec cmd` ends the shell with cmd's status. If the executed
-		// text itself raised a signal (e.g. called `exit`), keep that
-		// signal instead of overwriting it.
 		if (!exec.flowPending()) exec.raiseExit(rc);
 		return rc;
 	}
@@ -540,6 +513,7 @@ namespace wbsh {
 			if (i) joined.push_back(' ');
 			joined += args[i];
 		}
+
 		if (joined.empty()) return 0;
 		return exec.executeText(joined, "eval");
 	}
@@ -549,6 +523,7 @@ namespace wbsh {
 			printerr("source: filename required");
 			return 2;
 		}
+
 		std::filesystem::path p = utf8ToPath(exec.pathConv().toWin32(args[0]));
 		std::ifstream f(p, std::ios::binary);
 		if (!f) {
@@ -556,23 +531,21 @@ namespace wbsh {
 				args[0].c_str(), std::strerror(errno));
 			return 1;
 		}
+
 		std::stringstream ss;
 		ss << f.rdbuf();
 		std::string body = ss.str();
 		normalizeCrlf(body);
-		// If extra args provided, set them as positional during the source.
 		auto saved = exec.env().positional();
 		if (args.size() > 1) {
 			exec.env().setPositional({ args.begin() + 1, args.end() });
 		}
+
 		int r = exec.executeText(body, args[0]);
-		// `return' from sourced top-level ends the source, not a function.
 		exec.consumeFlow(FlowSignal::Kind::Return, &r);
 		exec.env().setPositional(std::move(saved));
 		return r;
 	}
-
-	// ---- type / command ----
 
 	static int builtin_type(Executor& exec, const std::vector<std::string>& args) {
 		int rc = 0;
@@ -591,6 +564,7 @@ namespace wbsh {
 				}
 			}
 		}
+
 		return rc;
 	}
 
@@ -605,37 +579,34 @@ namespace wbsh {
 			if (f == "-V") { show_verbose = true; ++i; continue; }
 			break;
 		}
+
 		if (i >= args.size()) return 0;
 		if (show_path || show_verbose) {
 			std::vector<std::string> rest(args.begin() + i, args.end());
 			return builtin_type(exec, rest);
 		}
-		// command bypasses functions; for now just route to builtin/external lookup.
+
 		std::vector<std::string> rest(args.begin() + i, args.end());
 		if (exec.isBuiltin(rest[0])) {
 			std::vector<std::string> sub(rest.begin() + 1, rest.end());
 			return exec.callBuiltin(rest[0], sub);
 		}
-		// External: invoke through a fresh SimpleCommand-like flow.
-		// Easiest path: use eval to re-tokenize the joined command. (Quoting limits apply.)
+
 		std::string joined;
 		for (std::size_t k = 0; k < rest.size(); ++k) {
 			if (k) joined.push_back(' ');
-			// Quote each arg defensively.
 			joined.push_back('"');
 			for (char c : rest[k]) {
 				if (c == '"' || c == '\\' || c == '$' || c == '`') joined.push_back('\\');
 				joined.push_back(c);
 			}
+
 			joined.push_back('"');
 		}
+
 		return exec.executeText(joined, "command");
 	}
 
-	// ---- read ----
-
-	// Walk the leading `-r` / `-p prompt` / `--` options of a `read` invocation.
-	// Returns the index of the first non-option arg (the variable list).
 	static std::size_t parseReadFlags(const std::vector<std::string>& args,
 	                                  bool* out_raw, std::string* out_prompt,
 	                                  std::string* out_array_name) {
@@ -652,47 +623,43 @@ namespace wbsh {
 				++i;
 				continue;
 			}
+
 			if (f == "-a") {
-				// `read -a NAME` — every input field becomes one element of
-				// the indexed array NAME, replacing any prior value.
 				if (i + 1 < args.size()) {
 					*out_array_name = args[i + 1];
 					i += 2;
 					continue;
 				}
+
 				++i;
 				continue;
 			}
 			break;
 		}
+
 		return i;
 	}
 
-	// Read one line from stdin honouring `read`'s `\` escapes (unless raw).
-	// Returns false if EOF was hit before any input — the caller should
-	// then return 1 from the builtin.
 	static bool readOneLineFromStdin(bool raw, std::string& line) {
 		while (true) {
 			const int c = std::fgetc(stdin);
 			if (c == EOF) {
 				return !line.empty();
 			}
+
 			if (c == '\n') return true;
 			if (!raw && c == '\\') {
 				const int n = std::fgetc(stdin);
 				if (n == EOF) return true;
-				if (n == '\n') continue;   // line continuation
+				if (n == '\n') continue;
 				line.push_back(static_cast<char>(n));
 				continue;
 			}
+
 			line.push_back(static_cast<char>(c));
 		}
 	}
 
-	// Split `line` into fields per the rules in `read` / POSIX field
-	// splitting: leading IFS whitespace is skipped; then alternating
-	// non-IFS fields and IFS runs (where each non-whitespace IFS char is
-	// at most one field separator).
 	static std::vector<std::string> splitReadLine(const std::string& line,
 	                                              const std::string& ifs) {
 		auto is_ifs_ws = [&](char c) {
@@ -715,15 +682,14 @@ namespace wbsh {
 					if (saw_nonws) break;
 					saw_nonws = true;
 				}
+
 				++pos;
 			}
 		}
+
 		return fields;
 	}
 
-	// Assign `fields` into the listed variable `names`. The last named var
-	// receives all remaining fields joined by a single space (matching
-	// bash's read).
 	static void assignReadFields(Environment& env,
 	                             const std::vector<std::string>& names,
 	                             const std::vector<std::string>& fields) {
@@ -737,6 +703,7 @@ namespace wbsh {
 			} else if (k < fields.size()) {
 				val = fields[k];
 			}
+
 			env.set(names[k], val);
 		}
 	}
@@ -760,8 +727,6 @@ namespace wbsh {
 
 		auto fields = splitReadLine(line, ifs);
 
-		// `-a NAME` short-circuits the per-name distribution: every field
-		// becomes one element of the indexed array NAME.
 		if (!array_name.empty()) {
 			exec.env().setIndexedArrayFromList(array_name, std::move(fields));
 			return 0;
@@ -772,8 +737,6 @@ namespace wbsh {
 		assignReadFields(exec.env(), names, fields);
 		return 0;
 	}
-
-	// ---- test / [ ----
 
 	static bool fileStat(const std::string& path, struct stat& st) {
 		return ::stat(path.c_str(), &st) == 0;
@@ -798,7 +761,6 @@ namespace wbsh {
 	static int evalTest(const std::vector<std::string>& a, const PathConv& pc) {
 		if (a.empty()) return 1;
 
-		// Leading ! negates the rest.
 		if (a[0] == "!" && a.size() > 1) {
 			std::vector<std::string> rest(a.begin() + 1, a.end());
 			int r = evalTest(rest, pc);
@@ -822,6 +784,7 @@ namespace wbsh {
 				if (op == 'n') return a[1].empty() ? 1 : 0;
 				return evalUnaryFileTest(op, a[1], pc);
 			}
+
 			return 2;
 		}
 
@@ -841,8 +804,10 @@ namespace wbsh {
 				if (op == "-gt") return li >  ri ? 0 : 1;
 				if (op == "-ge") return li >= ri ? 0 : 1;
 			}
+
 			return 2;
 		}
+
 		return 2;
 	}
 
@@ -850,8 +815,6 @@ namespace wbsh {
 		return evalTest(args, exec.pathConv());
 	}
 
-	// Print one declare entry. Arrays render as `declare -a/A name=(...)`;
-	// scalars as `declare [-attrs] name="value"`.
 	static void printDeclareEntry(Executor& exec, const std::string& n) {
 		if (auto* ia = exec.env().getIndexedArray(n)) {
 			std::printf("declare -a %s=(", n.c_str());
@@ -861,9 +824,11 @@ namespace wbsh {
 				std::printf("[%lld]=\"%s\"", kv.first, kv.second.c_str());
 				first = false;
 			}
+
 			std::printf(")\n");
 			return;
 		}
+
 		if (auto* aa = exec.env().getAssocArray(n)) {
 			std::printf("declare -A %s=(", n.c_str());
 			bool first = true;
@@ -873,9 +838,11 @@ namespace wbsh {
 					kv.first.c_str(), kv.second.c_str());
 				first = false;
 			}
+
 			std::printf(")\n");
 			return;
 		}
+
 		std::string attrs;
 		if (exec.env().isExported(n)) attrs += "x";
 		if (exec.env().isReadonly(n)) attrs += "r";
@@ -887,17 +854,14 @@ namespace wbsh {
 
 	namespace declare_internal {
 		struct DeclareFlags {
-			bool x = false;   ///< -x: mark exported
-			bool r = false;   ///< -r: mark readonly
-			bool p = false;   ///< -p: print one entry
-			bool a = false;   ///< -a: indexed array
-			bool A = false;   ///< -A: associative array
+			bool x = false;
+			bool r = false;
+			bool p = false;
+			bool a = false;
+			bool A = false;
 		};
 	}  // namespace declare_internal
 
-	// Walk `args`, splitting them into a flag bundle and the trailing list of
-	// `name` or `name=value` operands. Unknown letters in a `-XYZ` cluster
-	// are silently ignored (matching bash's lenient declare).
 	static void parseDeclareFlags(const std::vector<std::string>& args,
 	                              declare_internal::DeclareFlags& f,
 	                              std::vector<std::string>& names) {
@@ -916,11 +880,11 @@ namespace wbsh {
 				}
 				continue;
 			}
+
 			names.push_back(a);
 		}
 	}
 
-	// Bare `declare`: dump the entire variable + array tables (sorted).
 	static int dumpAllDeclareEntries(Executor& exec) {
 		std::vector<std::pair<std::string, std::string>> v(
 			exec.env().vars().begin(), exec.env().vars().end());
@@ -935,8 +899,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	// `declare -p name [name ...]`: print each named entry, or a "not
-	// found" error per missing one. Returns 1 if any name was missing.
 	static int printDeclareNamedEntries(Executor& exec,
 	                                    const std::vector<std::string>& names) {
 		int rc = 0;
@@ -948,12 +910,13 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			printDeclareEntry(exec, n);
 		}
+
 		return rc;
 	}
 
-	// Apply `declare -aArx ...` to a single name (with optional =value).
 	static void applyDeclareToName(Executor& exec,
 	                               const declare_internal::DeclareFlags& f,
 	                               const std::string& nv) {
@@ -963,7 +926,6 @@ namespace wbsh {
 		if (f.A && eq == std::string::npos) {
 			exec.env().declareAssocArray(n);
 		} else if (f.a && eq == std::string::npos) {
-			// `declare -a name` initialises an empty indexed array.
 			exec.env().setIndexedArrayFromList(n, {});
 		} else if (eq != std::string::npos) {
 			exec.env().set(n, nv.substr(eq + 1));
@@ -1012,12 +974,11 @@ namespace wbsh {
 		enum class Mode { ListAll, Set, Unset, Query };
 	}
 
-	// Find an entry in the shopt option table by name. Returns null if the
-	// name is not a known shopt option.
 	static const ShoptFlag* findShoptFlag(const std::string& name) {
 		for (const ShoptFlag* p = shoptTable(); p->name; ++p) {
 			if (name == p->name) return p;
 		}
+
 		return nullptr;
 	}
 
@@ -1026,9 +987,6 @@ namespace wbsh {
 		std::printf("%-15s %s\n", f->name, on ? "on" : "off");
 	}
 
-	// Walk `args`, pulling out option flags into `mode` and pushing each
-	// option name onto `names`. Returns false (with diagnostic) on an
-	// unknown option spelling.
 	static bool parseShoptArgs(const std::vector<std::string>& args,
 	                           shopt_internal::Mode& mode,
 	                           std::vector<std::string>& names) {
@@ -1043,13 +1001,13 @@ namespace wbsh {
 				std::fprintf(stderr, "wbsh: shopt: unknown option: %s\n", a.c_str());
 				return false;
 			}
+
 			names.push_back(a);
 		}
+
 		return true;
 	}
 
-	// `shopt -s name ...` / `shopt -u name ...`: toggle each flag, diagnose
-	// invalid names. Returns 1 if any name was unknown.
 	static int shoptSetOrUnset(Executor& exec,
 	                           const std::vector<std::string>& names, bool on) {
 		int rc = 0;
@@ -1060,30 +1018,32 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			(exec.env().*(f->set))(on);
 		}
+
 		return rc;
 	}
 
-	// `shopt -q name ...`: silently return 0 iff every named flag is set.
 	static int shoptQuery(Executor& exec, const std::vector<std::string>& names) {
 		for (const auto& n : names) {
 			const ShoptFlag* f = findShoptFlag(n);
 			if (!f) return 1;
 			if (!(exec.env().*(f->get))()) return 1;
 		}
+
 		return 0;
 	}
 
-	// `shopt` / `shopt name ...`: print the current setting of all (or just
-	// the listed) flags. Diagnoses invalid names with rc=1.
 	static int shoptListMode(Executor& exec, const std::vector<std::string>& names) {
 		if (names.empty()) {
 			for (const ShoptFlag* p = shoptTable(); p->name; ++p) {
 				printShoptFlag(exec.env(), p);
 			}
+
 			return 0;
 		}
+
 		int rc = 0;
 		for (const auto& n : names) {
 			const ShoptFlag* f = findShoptFlag(n);
@@ -1092,8 +1052,10 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			printShoptFlag(exec.env(), f);
 		}
+
 		return rc;
 	}
 
@@ -1108,14 +1070,15 @@ namespace wbsh {
 		case shopt_internal::Mode::Query:   return shoptQuery(exec, names);
 		case shopt_internal::Mode::ListAll: return shoptListMode(exec, names);
 		}
+
 		return 0;
 	}
 
 	static int builtin_mapfile(Executor& exec, const std::vector<std::string>& args) {
 		bool strip_newline = false;
-		long long max_lines = -1;       // -n N: stop after N lines
-		long long origin = 0;           // -O start: assign starting from index
-		long long skip = 0;             // -s N: skip first N lines from input
+		long long max_lines = -1;
+		long long origin = 0;
+		long long skip = 0;
 		std::string array_name = "MAPFILE";
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
@@ -1130,7 +1093,6 @@ namespace wbsh {
 				parseLL(args[++i], skip);
 			}
 			else if (a == "-u" && i + 1 < args.size()) {
-				// File descriptor — we only support 0 (stdin) here.
 				++i;
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-" && a != "--") {
@@ -1139,6 +1101,7 @@ namespace wbsh {
 			}
 			else array_name = a;
 		}
+
 		std::vector<std::string> lines;
 		std::string buf;
 		int c;
@@ -1154,6 +1117,7 @@ namespace wbsh {
 				buf.push_back((char)c);
 			}
 		}
+
 		if (!buf.empty()) {
 			if (skipped < skip) { /* skip last partial too */ }
 			else {
@@ -1161,10 +1125,12 @@ namespace wbsh {
 					lines.push_back(std::move(buf));
 			}
 		}
+
 		std::map<long long, std::string> elems;
 		for (std::size_t i = 0; i < lines.size(); ++i) {
 			elems[origin + (long long)i] = std::move(lines[i]);
 		}
+
 		exec.env().setIndexedArraySparse(array_name, std::move(elems));
 		return 0;
 	}
@@ -1175,8 +1141,10 @@ namespace wbsh {
 				std::printf("declare -r %s=\"%s\"\n",
 					name.c_str(), exec.env().get(name).c_str());
 			}
+
 			return 0;
 		}
+
 		for (const auto& nv : args) {
 			if (!nv.empty() && nv[0] == '-') continue;
 			auto eq = nv.find('=');
@@ -1184,6 +1152,7 @@ namespace wbsh {
 			if (eq != std::string::npos) exec.env().set(n, nv.substr(eq + 1));
 			exec.env().markReadonly(n);
 		}
+
 		return 0;
 	}
 
@@ -1193,24 +1162,28 @@ namespace wbsh {
 				std::printf("trap -- '%s' %s\n",
 					kv.second.c_str(), kv.first.c_str());
 			}
+
 			return 0;
 		}
+
 		if (args[0] == "-l") {
 			std::printf("EXIT INT TERM HUP QUIT\n");
 			return 0;
 		}
+
 		if (args.size() < 2) {
 			printerr("trap: usage: trap [-lp] [[ARG] SIG ...]");
 			return 2;
 		}
+
 		const std::string& action = args[0];
 		for (std::size_t i = 1; i < args.size(); ++i) {
 			std::string sig = args[i];
-			// Normalise: strip leading SIG and uppercase.
 			if (sig.size() > 3 && (sig.compare(0, 3, "SIG") == 0
 			    || sig.compare(0, 3, "sig") == 0)) {
 				sig = sig.substr(3);
 			}
+
 			std::transform(sig.begin(), sig.end(), sig.begin(),
 				[](char c) { return static_cast<char>(std::toupper((unsigned char)c)); });
 			if (sig == "0") sig = "EXIT";
@@ -1220,18 +1193,15 @@ namespace wbsh {
 				exec.setTrap(sig, action);
 			}
 		}
+
 		return 0;
 	}
 
 	namespace getopts_internal {
-		// Cursor state shared between the main loop and its helpers. `optind`
-		// points one past the last consumed positional arg (1-based, like
-		// bash's $OPTIND); `sub` is the index inside the current cluster
-		// `-abc` of arg[optind-1].
 		struct GetoptsCtx {
 			Executor& exec;
-			std::string opts;            ///< Spec without leading `:`.
-			const std::string& name;     ///< Variable to assign the option char to.
+			std::string opts;
+			const std::string& name;
 			std::vector<std::string> source;
 			bool silent;
 			int& sub;
@@ -1243,7 +1213,6 @@ namespace wbsh {
 			}
 		};
 
-		// Read $OPTIND from the env and clamp to >= 1.
 		static int loadOptind(Executor& exec) {
 			int v = 1;
 			const std::string s = exec.env().get("OPTIND");
@@ -1251,9 +1220,6 @@ namespace wbsh {
 			return v < 1 ? 1 : v;
 		}
 
-		// End-of-options markers: out of arguments, or a positional that
-		// can't be an option (`-`, no leading `-`, or empty after `-`).
-		// Resets state and returns 1, mirroring bash's getopts.
 		static int finishWithoutOption(GetoptsCtx& ctx) {
 			ctx.setName("?");
 			ctx.exec.env().unset("OPTARG");
@@ -1262,8 +1228,6 @@ namespace wbsh {
 			return 1;
 		}
 
-		// Hit `--`: bump past it, reset, mark $? = 1 to terminate the
-		// caller's getopts loop.
 		static int finishOnDoubleDash(GetoptsCtx& ctx) {
 			++ctx.optind;
 			ctx.exec.resetGetopts();
@@ -1272,7 +1236,6 @@ namespace wbsh {
 			return 1;
 		}
 
-		// Move past `cur[ctx.sub]`, advancing optind when the cluster is done.
 		static void advanceOneOptionChar(GetoptsCtx& ctx, const std::string& cur) {
 			++ctx.sub;
 			if (ctx.sub >= static_cast<int>(cur.size())) {
@@ -1281,8 +1244,6 @@ namespace wbsh {
 			}
 		}
 
-		// Option char isn't in spec or is the placeholder `:`. Diagnose
-		// (loud or silent) and return 0 with NAME set to "?".
 		static int handleIllegalOption(GetoptsCtx& ctx,
 		                               const std::string& cur, char opt) {
 			if (ctx.silent) {
@@ -1293,20 +1254,16 @@ namespace wbsh {
 				ctx.setName("?");
 				ctx.exec.env().unset("OPTARG");
 			}
+
 			advanceOneOptionChar(ctx, cur);
 			ctx.storeOptind();
 			return 0;
 		}
 
-		// Option `opt` takes an arg ("o:" in spec). Try to fetch it from
-		// the rest of the current word, or from the next positional.
-		// Returns 0 with NAME set to either the option char (success) or
-		// `?` / `:` (missing-arg, depending on silent mode).
 		static int handleOptionWithArg(GetoptsCtx& ctx,
 		                               const std::string& cur, char opt) {
 			std::string optarg;
 
-			// Form 1: -ofoo — arg is glued to the option letter.
 			if (ctx.sub + 1 < static_cast<int>(cur.size())) {
 				optarg = cur.substr(ctx.sub + 1);
 				++ctx.optind;
@@ -1317,7 +1274,6 @@ namespace wbsh {
 				return 0;
 			}
 
-			// Form 2: -o foo — arg is the next positional.
 			if (ctx.optind >= static_cast<int>(ctx.source.size())) {
 				if (ctx.silent) {
 					ctx.setName(":");
@@ -1328,11 +1284,13 @@ namespace wbsh {
 					ctx.setName("?");
 					ctx.exec.env().unset("OPTARG");
 				}
+
 				++ctx.optind;
 				ctx.sub = 1;
 				ctx.storeOptind();
 				return 0;
 			}
+
 			optarg = ctx.source[ctx.optind];
 			ctx.optind += 2;
 			ctx.sub = 1;
@@ -1349,14 +1307,10 @@ namespace wbsh {
 			return 2;
 		}
 
-		// First char `:` switches getopts into silent mode (errors via OPTARG
-		// instead of printed diagnostics, plus the `:` exit-name signal).
 		std::string opts = args[0];
 		const bool silent = !opts.empty() && opts[0] == ':';
 		if (silent) opts.erase(0, 1);
 
-		// `getopts spec name args...` overrides the positional list; with
-		// fewer args the shell's positionals are scanned.
 		std::vector<std::string> source = (args.size() > 2)
 			? std::vector<std::string>(args.begin() + 2, args.end())
 			: exec.env().positional();
@@ -1379,7 +1333,6 @@ namespace wbsh {
 			if (cur == "--")
 				return getopts_internal::finishOnDoubleDash(ctx);
 
-			// Cluster done; advance to next positional and re-enter.
 			if (ctx.sub >= static_cast<int>(cur.size())) {
 				++ctx.optind;
 				ctx.sub = 1;
@@ -1393,7 +1346,6 @@ namespace wbsh {
 			if (pos + 1 < ctx.opts.size() && ctx.opts[pos + 1] == ':')
 				return getopts_internal::handleOptionWithArg(ctx, cur, opt);
 
-			// Plain flag (no argument).
 			ctx.setName(std::string(1, opt));
 			ctx.exec.env().unset("OPTARG");
 			getopts_internal::advanceOneOptionChar(ctx, cur);
@@ -1410,6 +1362,7 @@ namespace wbsh {
 				j.running ? "Running" : "Done",
 				j.cmd_text.empty() ? "<command>" : j.cmd_text.c_str());
 		}
+
 		return 0;
 	}
 
@@ -1418,6 +1371,7 @@ namespace wbsh {
 			exec.waitForAllJobs();
 			return 0;
 		}
+
 		int rc = 0;
 		for (const auto& a : args) {
 			int id = -1;
@@ -1430,10 +1384,12 @@ namespace wbsh {
 					if (j.pid == pid) { id = j.id; break; }
 				}
 			}
+
 			if (id < 0) { rc = 1; continue; }
 			int s = exec.waitForJob(id);
 			if (s >= 0) rc = s;
 		}
+
 		return rc;
 	}
 
@@ -1446,11 +1402,11 @@ namespace wbsh {
 			v.erase(std::remove_if(v.begin(), v.end(),
 				[&](const Executor::Job& j) { return j.id == id; }), v.end());
 		}
+
 		return 0;
 	}
 
 	static int builtin_fg(Executor& exec, const std::vector<std::string>& args) {
-		// We don't support stop/cont so fg simply waits for the job.
 		exec.reapJobs();
 		int id = -1;
 		if (args.empty()) {
@@ -1461,13 +1417,13 @@ namespace wbsh {
 			const std::string& a = args[0];
 			if (!a.empty() && a[0] == '%' && !parseInt(a.substr(1), id)) id = -1;
 		}
+
 		if (id < 0) { printerr("fg: no current job"); return 1; }
 		int s = exec.waitForJob(id);
 		return s < 0 ? 1 : s;
 	}
 
 	static int builtin_bg(Executor& exec, const std::vector<std::string>&) {
-		// No stopped-job concept on Windows; bg is a no-op that lists.
 		return builtin_jobs(exec, {});
 	}
 
@@ -1480,8 +1436,10 @@ namespace wbsh {
 				std::printf("alias %s='%s'\n",
 					kv.first.c_str(), kv.second.c_str());
 			}
+
 			return 0;
 		}
+
 		int rc = 0;
 		for (const auto& a : args) {
 			auto eq = a.find('=');
@@ -1499,6 +1457,7 @@ namespace wbsh {
 				exec.setAlias(name, std::move(value));
 			}
 		}
+
 		return rc;
 	}
 
@@ -1510,12 +1469,14 @@ namespace wbsh {
 			else if (!a.empty() && a[0] == '-') continue;
 			else names.push_back(a);
 		}
+
 		if (all) {
 			std::vector<std::string> all_names;
 			for (const auto& kv : exec.aliases()) all_names.push_back(kv.first);
 			for (const auto& n : all_names) exec.unsetAlias(n);
 			return 0;
 		}
+
 		int rc = 0;
 		for (const auto& n : names) {
 			if (!exec.isAlias(n)) {
@@ -1523,8 +1484,10 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			exec.unsetAlias(n);
 		}
+
 		return rc;
 	}
 
@@ -1536,6 +1499,7 @@ namespace wbsh {
 				if (home.empty()) return std::string();
 				p = home + "/.wbsh_history";
 			}
+
 			return exec.pathConv().toWin32(p);
 		};
 		if (!args.empty()) {
@@ -1546,56 +1510,52 @@ namespace wbsh {
 					printerr("history: cannot write history file");
 					return 1;
 				}
+
 				return 0;
 			}
+
 			if (args[0] == "-r") {
 				std::string p = histfilePath();
 				if (p.empty() || !exec.loadHistoryFromFile(p)) {
 					printerr("history: cannot read history file");
 					return 1;
 				}
+
 				return 0;
 			}
+
 			if (args[0] == "-s") {
-				// Push the remaining args as a single history entry,
-				// matching bash. `history -s` with no args is a no-op.
 				if (args.size() < 2) return 0;
 				std::string entry = args[1];
 				for (std::size_t i = 2; i < args.size(); ++i) {
 					entry.push_back(' ');
 					entry += args[i];
 				}
+
 				exec.addHistoryEntry(std::move(entry));
 				return 0;
 			}
 		}
+
 		long n = -1;
 		if (!args.empty()) {
 			bool ok; long long v = toIntSafe(args[0], ok);
 			if (ok) n = static_cast<long>(v);
 		}
+
 		const auto& h = exec.history();
 		std::size_t start = (n > 0 && static_cast<std::size_t>(n) < h.size())
 			? h.size() - static_cast<std::size_t>(n) : 0;
 		for (std::size_t i = start; i < h.size(); ++i) {
 			std::printf("%5zu  %s\n", i + 1, h[i].c_str());
 		}
+
 		return 0;
 	}
 
-	// Test hook for the reverse-incremental-search matcher. Wraps the pure
-	// `findReverseSearchMatch` helper so a shell script can drive it
-	// without needing a real TTY. Usage:
-	//
-	//     __revsearch [-c N] [-f] QUERY
-	//
-	// `-c N`   start searching from 1-based history index N (default: the
-	//          last entry, matching the initial state of Ctrl-R).
-	// `-f`     scan toward newer entries (default: backward toward older).
-	//
-	// Prints "INDEX MATCHED_LINE" on success (1-based index, to align with
-	// the user-visible `history` output) or "no match" otherwise. Exit
-	// status 0 on match, 1 on no-match, 2 on bad usage.
+	// Test hook driving findReverseSearchMatch without a TTY:
+	//     __revsearch [-c START_INDEX] [-f(orward)] QUERY
+	// prints "INDEX MATCHED_LINE" (1-based) or "no match".
 	static int builtin_revsearch(Executor& exec, const std::vector<std::string>& args) {
 		bool forward = false;
 		long long start_one_based = -1;
@@ -1608,6 +1568,7 @@ namespace wbsh {
 					printerr("__revsearch: -c requires an argument");
 					return 2;
 				}
+
 				bool ok = false;
 				start_one_based = toIntSafe(args[++i], ok);
 				if (!ok || start_one_based < 1) {
@@ -1616,8 +1577,10 @@ namespace wbsh {
 				}
 				continue;
 			}
+
 			query = a;
 		}
+
 		const auto& history = exec.history();
 		std::size_t start = history.empty()
 			? 0
@@ -1629,22 +1592,14 @@ namespace wbsh {
 			std::printf("no match\n");
 			return 1;
 		}
+
 		std::printf("%zu %s\n", idx + 1, history[idx].c_str());
 		return 0;
 	}
 
-	// Test hook for the inline-prediction matcher. Wraps the pure
-	// `findInlinePrediction` helper so a shell script can drive the
-	// PowerShell-style ghost-text feature without needing a real TTY.
-	// Usage:
-	//
+	// Test hook driving findInlinePrediction without a TTY:
 	//     __predict PREFIX
-	//
-	// Prints the predicted suffix verbatim (which may begin with a
-	// space) on success, or "no prediction" otherwise. Exit status 0
-	// on hit, 1 on miss. The prediction filter automatically skips
-	// any history entry whose status was recorded as non-zero (see
-	// `__histstat`).
+	// prints the predicted suffix verbatim or "no prediction".
 	static int builtin_predict(Executor& exec, const std::vector<std::string>& args) {
 		std::string prefix = args.empty() ? std::string() : args.front();
 		std::string suffix = findInlinePrediction(exec.history(),
@@ -1654,49 +1609,43 @@ namespace wbsh {
 			std::printf("no prediction\n");
 			return 1;
 		}
+
 		std::printf("%s\n", suffix.c_str());
 		return 0;
 	}
 
-	// Test hook for marking the recorded exit status of a history entry.
-	// The interactive REPL writes this from `lastStatus()` after each
-	// top-level command; this hook lets non-interactive test scripts do
-	// the same so the `__predict` filter can be exercised.
-	//
-	//     __histstat INDEX STATUS    (INDEX is 1-based, matching `history`)
+	// Test hook recording a history entry's exit status (what the REPL
+	// does after each command):
+	//     __histstat INDEX STATUS    (INDEX is 1-based)
 	static int builtin_histstat(Executor& exec, const std::vector<std::string>& args) {
 		if (args.size() != 2) {
 			printerr("__histstat: usage: __histstat INDEX STATUS");
 			return 2;
 		}
+
 		bool ok = false;
 		long long idx = toIntSafe(args[0], ok);
 		if (!ok || idx < 1) {
 			printerr("__histstat: INDEX must be a positive integer");
 			return 2;
 		}
+
 		long long status = toIntSafe(args[1], ok);
 		if (!ok) {
 			printerr("__histstat: STATUS must be an integer");
 			return 2;
 		}
+
 		exec.setHistoryEntryStatus(static_cast<std::size_t>(idx - 1),
 		                           static_cast<int>(status));
 		return 0;
 	}
 
-	// Append all PATH-resolvable executables to `out`. Paths are walked
-	// in order; duplicates dropped.
 	static void collectCommandsFromPath(Executor& exec, std::vector<std::string>& out) {
-		std::string path = exec.env().get("PATH");
+		const std::string path = exec.env().get("PATH");
 		if (path.empty()) return;
 		std::set<std::string> seen;
-		std::size_t i = 0;
-		while (i <= path.size()) {
-			auto sep = path.find(':', i);
-			std::string dir = path.substr(i, sep == std::string::npos
-				? std::string::npos : sep - i);
-			i = (sep == std::string::npos) ? path.size() + 1 : sep + 1;
+		for (const auto& dir : splitPathList(path)) {
 			if (dir.empty()) continue;
 			std::filesystem::path win = utf8ToPath(exec.pathConv().toWin32(dir));
 			std::error_code ec;
@@ -1704,7 +1653,6 @@ namespace wbsh {
 			if (ec) continue;
 			for (auto& e : it) {
 				std::string n = pathToUtf8(e.path().filename());
-				// Strip .exe / .cmd / .bat for nicer suggestions.
 				auto ends_with = [&](const std::string& suf) {
 					if (n.size() < suf.size()) return false;
 					std::string tail = n.substr(n.size() - suf.size());
@@ -1718,12 +1666,12 @@ namespace wbsh {
 						break;
 					}
 				}
+
 				if (seen.insert(base).second) out.push_back(base);
 			}
 		}
 	}
 
-	// Apply prefix filtering to a list of candidates.
 	static std::vector<std::string> filterByPrefix(const std::vector<std::string>& v,
 	                                        const std::string& prefix) {
 		std::vector<std::string> out;
@@ -1731,11 +1679,11 @@ namespace wbsh {
 			if (s.compare(0, prefix.size(), prefix) == 0)
 				out.push_back(s);
 		}
+
 		return out;
 	}
 
 	namespace compgen_internal {
-		// Parsed `compgen` / `complete` flag set. Built up by parseCompgenFlags.
 		struct CompgenFlags {
 			std::string action;
 			std::string prefix;
@@ -1751,7 +1699,6 @@ namespace wbsh {
 		};
 	}  // namespace compgen_internal
 
-	// Split a `-W "word1 word2 ..."` argument on whitespace.
 	static std::vector<std::string> splitDashWWordList(const std::string& s) {
 		std::vector<std::string> out;
 		std::string cur;
@@ -1762,13 +1709,11 @@ namespace wbsh {
 				cur.push_back(c);
 			}
 		}
+
 		if (!cur.empty()) out.push_back(std::move(cur));
 		return out;
 	}
 
-	// Parse the option flags accepted by compgen / complete and capture the
-	// trailing positional arg (the prefix) into `f`. Unknown options are
-	// silently ignored, matching bash for forward compatibility.
 	static void parseCompgenFlags(const std::vector<std::string>& args,
 	                              compgen_internal::CompgenFlags& f) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
@@ -1777,6 +1722,7 @@ namespace wbsh {
 				f.wordlist = splitDashWWordList(args[++i]);
 				continue;
 			}
+
 			if (a == "-A" && i + 1 < args.size()) { f.action = args[++i]; continue; }
 			if (a == "-f") { f.include_files    = true; continue; }
 			if (a == "-d") { f.include_dirs     = true; continue; }
@@ -1785,9 +1731,7 @@ namespace wbsh {
 			if (a == "-a") { f.include_aliases  = true; continue; }
 			if (a == "-v") { f.include_vars     = true; continue; }
 			if (a == "-k") { f.include_keywords = true; continue; }
-			// user / group / service / exported — not meaningful on Windows.
 			if (a == "-u" || a == "-g" || a == "-s" || a == "-e") continue;
-			// Options we recognise but don't act on at this layer.
 			if (a == "-o" && i + 1 < args.size()) { ++i; continue; }
 			if (a == "-F" && i + 1 < args.size()) { ++i; continue; }
 			if (a == "-C" && i + 1 < args.size()) { ++i; continue; }
@@ -1796,7 +1740,6 @@ namespace wbsh {
 			f.prefix = a;
 		}
 
-		// `-A <name>` aliases for the boolean flags.
 		if (f.action == "function")  f.include_funcs    = true;
 		if (f.action == "variable")  f.include_vars     = true;
 		if (f.action == "alias")     f.include_aliases  = true;
@@ -1806,7 +1749,6 @@ namespace wbsh {
 		if (f.action == "directory") f.include_dirs     = true;
 	}
 
-	// Append every prefix-matching item from `src` (sorted) to `out`.
 	static void appendSortedFiltered(std::vector<std::string>& out,
 	                                 std::vector<std::string> src,
 	                                 const std::string& prefix) {
@@ -1814,9 +1756,6 @@ namespace wbsh {
 		for (auto& n : filterByPrefix(src, prefix)) out.push_back(std::move(n));
 	}
 
-	// Append the (sorted, deduplicated) names of all `-c command` candidates
-	// — builtins + functions + every executable on PATH — that begin with
-	// `prefix`.
 	static void appendCommandCandidates(std::vector<std::string>& out,
 	                                    Executor& exec, const std::string& prefix) {
 		std::vector<std::string> names = exec.builtinNames();
@@ -1828,7 +1767,6 @@ namespace wbsh {
 		for (auto& n : filterByPrefix(names, prefix)) out.push_back(std::move(n));
 	}
 
-	// Append shell-keyword candidates matching `prefix`.
 	static void appendKeywordCandidates(std::vector<std::string>& out,
 	                                    const std::string& prefix) {
 		static const char* kw[] = {
@@ -1840,8 +1778,6 @@ namespace wbsh {
 		for (auto& n : filterByPrefix(v, prefix)) out.push_back(std::move(n));
 	}
 
-	// Append filename / directory candidates whose basename matches the
-	// `prefix` argument's leaf component. Directories are suffixed with `/`.
 	static void appendFileDirCandidates(std::vector<std::string>& out, Executor& exec,
 	                                    const std::string& prefix,
 	                                    bool include_files, bool include_dirs) {
@@ -1854,6 +1790,7 @@ namespace wbsh {
 			leaf = prefix.substr(sl + 1);
 			if (dir.empty()) dir = "/";
 		}
+
 		std::error_code ec;
 		fs::path list_dir = utf8ToPath(exec.pathConv().toWin32(dir));
 		fs::directory_iterator it(list_dir, ec);
@@ -1873,10 +1810,6 @@ namespace wbsh {
 		}
 	}
 
-	// Shared candidate generator used by compgen and (later) the line
-	// editor's programmable-completion path. Reads -A action / -W words /
-	// -f / -d / -c flags from `args` and produces the prefix-filtered
-	// candidate list.
 	static std::vector<std::string> generateCompletions(
 			Executor& exec,
 			const std::vector<std::string>& args,
@@ -1891,6 +1824,7 @@ namespace wbsh {
 			for (auto& w : filterByPrefix(f.wordlist, f.prefix))
 				out.push_back(std::move(w));
 		}
+
 		if (f.include_funcs)    appendSortedFiltered(out, exec.functionNames(),  f.prefix);
 		if (f.include_builtins) appendSortedFiltered(out, exec.builtinNames(),   f.prefix);
 		if (f.include_aliases) {
@@ -1898,11 +1832,13 @@ namespace wbsh {
 			for (const auto& kv : exec.aliases()) names.push_back(kv.first);
 			appendSortedFiltered(out, std::move(names), f.prefix);
 		}
+
 		if (f.include_vars) {
 			std::vector<std::string> names;
 			for (const auto& kv : exec.env().vars()) names.push_back(kv.first);
 			appendSortedFiltered(out, std::move(names), f.prefix);
 		}
+
 		if (f.include_cmds)     appendCommandCandidates(out, exec, f.prefix);
 		if (f.include_keywords) appendKeywordCandidates(out, f.prefix);
 		if (f.include_files || f.include_dirs) {
@@ -1931,9 +1867,6 @@ namespace wbsh {
 		};
 	}  // namespace complete_internal
 
-	// Walk `args`, populating a CompletionSpec, the command-name list, and
-	// mode flags. Unrecognised `-X` options are silently accepted to stay
-	// forward-compatible with bash extensions.
 	static void parseCompleteArgs(const std::vector<std::string>& args,
 	                              complete_internal::CompleteOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
@@ -1945,6 +1878,7 @@ namespace wbsh {
 				o.spec.words = splitDashWWordList(args[++i]);
 				continue;
 			}
+
 			if (a == "-F" && i + 1 < args.size()) { o.spec.function = args[++i]; continue; }
 			if (a == "-C" && i + 1 < args.size()) { o.spec.command  = args[++i]; continue; }
 			if (a == "-f") { o.spec.include_files = true; continue; }
@@ -1956,15 +1890,13 @@ namespace wbsh {
 				else if (opt == "nospace")  o.spec.nospace = true;
 				continue;
 			}
+
 			if (!a.empty() && a[0] == '-' && a != "-" && a != "--") continue;
 			if (a == "--") continue;
 			o.commands.push_back(a);
 		}
 	}
 
-	// `complete -p [name ...]`: print one `complete <name>` line per
-	// command with a registered spec. Returns 1 if any named command had
-	// no spec.
 	static int printCompleteSpecs(Executor& exec,
 	                              const std::vector<std::string>& commands) {
 		const auto& specs = exec.completionSpecs();
@@ -1972,8 +1904,10 @@ namespace wbsh {
 			for (const auto& kv : specs) {
 				std::printf("complete %s\n", kv.first.c_str());
 			}
+
 			return 0;
 		}
+
 		int rc = 0;
 		for (const auto& c : commands) {
 			if (specs.count(c) == 0) {
@@ -1983,13 +1917,13 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			std::printf("complete %s\n", c.c_str());
 		}
+
 		return rc;
 	}
 
-	// `complete -r [name ...]`: clear all specs (no args), or just the
-	// named ones.
 	static int clearCompleteSpecs(Executor& exec,
 	                              const std::vector<std::string>& commands) {
 		if (commands.empty()) {
@@ -1997,6 +1931,7 @@ namespace wbsh {
 				exec.removeCompletionSpec(kv.first);
 			return 0;
 		}
+
 		for (const auto& c : commands) exec.removeCompletionSpec(c);
 		return 0;
 	}
@@ -2015,34 +1950,27 @@ namespace wbsh {
 	}
 
 	static int builtin_compopt(Executor&, const std::vector<std::string>& args) {
-		// Minimal implementation: accept and ignore. We don't track an
-		// "active completion" so options have no place to attach. This
-		// is sufficient for scripts that toggle, e.g., -o nospace.
 		(void)args;
 		return 0;
 	}
 
 	static int builtin_let(Executor& exec, const std::vector<std::string>& args) {
-		// `let EXPR ...`: evaluate each arithmetic expression. Exit
-		// status is 0 if the last expression evaluates to non-zero,
-		// else 1. Side-effects (assignments) propagate via $((...)).
 		if (args.empty()) return 1;
 		long long last = 0;
 		for (const auto& e : args) {
 			if (!exec.expander().tryEvalArith(e, last)) return 1;
 		}
+
 		return last != 0 ? 0 : 1;
 	}
 
 	static int builtin_umask(Executor& exec, const std::vector<std::string>& args) {
-		// Windows has no real umask. Track a stored value in env so
-		// scripts that read/write umask see consistent values, and
-		// best-effort apply it via _umask (limited mask support).
 		if (args.empty() || (args.size() == 1 && args[0] == "-S")) {
 			std::string cur = exec.env().get("_WBSH_UMASK");
 			if (cur.empty()) cur = "0022";
 			if (!args.empty() && args[0] == "-S") {
-				int v = std::stoi(cur, nullptr, 8);
+				int v = 0;
+				if (!parseInt(cur, v, 8)) v = 022;
 				auto bits = [&](int shift) {
 					std::string s;
 					s.push_back((v & (0400 >> shift)) ? '-' : 'r');
@@ -2055,8 +1983,10 @@ namespace wbsh {
 			} else {
 				std::printf("%s\n", cur.c_str());
 			}
+
 			return 0;
 		}
+
 		if (args.size() == 1 && !args[0].empty() && args[0][0] != '-') {
 			int v = 0;
 			if (!parseInt(args[0], v, 8)) return 1;
@@ -2068,22 +1998,21 @@ namespace wbsh {
 #endif
 			return 0;
 		}
+
 		return 1;
 	}
 
 	static int builtin_hash(Executor&, const std::vector<std::string>& args) {
-		// We don't keep a PATH hash; the file system check on each
-		// lookup is fast enough on Windows. Implement -r (clear) and
-		// -l (list) as no-ops for compatibility, treating positional
-		// args as remembered names (printed back without lookup).
 		if (args.empty()) {
 			std::printf("hash: no commands hashed\n");
 			return 0;
 		}
+
 		for (const auto& a : args) {
 			if (a == "-r" || a == "-l" || a == "-d") continue;
-			if (a == "-p" || a == "-t") continue;   // ignore option val
+			if (a == "-p" || a == "-t") continue;
 		}
+
 		return 0;
 	}
 
@@ -2101,7 +2030,7 @@ namespace wbsh {
 			int um = (int)(u / 60); double us = u - um * 60;
 			int km = (int)(k / 60); double ks = k - km * 60;
 			std::printf("%dm%.3fs %dm%.3fs\n", um, us, km, ks);
-			std::printf("0m0.000s 0m0.000s\n");   // children CPU not tracked
+			std::printf("0m0.000s 0m0.000s\n");
 		} else {
 			std::printf("0m0.000s 0m0.000s\n");
 			std::printf("0m0.000s 0m0.000s\n");
@@ -2111,8 +2040,6 @@ namespace wbsh {
 	}
 
 	static int builtin_caller(Executor& exec, const std::vector<std::string>& args) {
-		// Minimal: when called from a function, print current LINENO
-		// and the script "shell name" ($0). Without args.
 		(void)args;
 		if (exec.funcDepth() == 0) return 1;
 		std::printf("%d %s\n",
@@ -2130,6 +2057,7 @@ namespace wbsh {
 				std::printf("  %-14s", names[i].c_str());
 				if (i % 5 == 4) std::printf("\n");
 			}
+
 			if (names.size() % 5 != 0) std::printf("\n");
 			std::printf("\nUse `help NAME` for more on a specific builtin.\n");
 		};
@@ -2142,9 +2070,11 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			std::printf("%s: %s — see bash(1) for full semantics\n",
 				n.c_str(), n.c_str());
 		}
+
 		return rc;
 	}
 
@@ -2153,12 +2083,14 @@ namespace wbsh {
 			printerr("local: can only be used in a function");
 			return 1;
 		}
+
 		for (const auto& a : args) {
 			auto eq = a.find('=');
 			std::string name = (eq == std::string::npos) ? a : a.substr(0, eq);
 			std::string val  = (eq == std::string::npos) ? std::string() : a.substr(eq + 1);
 			exec.declareLocal(name, val);
 		}
+
 		return 0;
 	}
 
@@ -2167,6 +2099,7 @@ namespace wbsh {
 			printerr("[: missing closing `]'");
 			return 2;
 		}
+
 		std::vector<std::string> body(args.begin(), args.end() - 1);
 		return evalTest(body, exec.pathConv());
 	}

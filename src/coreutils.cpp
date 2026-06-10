@@ -1,17 +1,8 @@
 /**
  * @file coreutils.cpp
- * @brief Native bundled coreutils.
- *
- * Native implementations of the most-used coreutils so wbsh is
- * functional out of the box without depending on Git Bash / MSYS /
- * Cygwin binaries. Scope is intentionally pragmatic: enough flags to
- * cover everyday interactive use and common scripts. Power users
- * with full GNU coreutils installed can still call them by absolute
- * path (or remove these by `unalias` / dropping them in a future
- * flag).
- *
- * registerCoreutils() (declared in executor.h) wires every entry
- * point into the Executor's builtin table.
+ * @brief File / system coreutils plus the helpers shared by the
+ *        coreutils_*.cpp family. Scope is pragmatic: enough flags to
+ *        cover everyday interactive use and common scripts.
  */
 
 #ifdef _WIN32
@@ -50,40 +41,32 @@ namespace wbsh {
 
 	namespace fs = std::filesystem;
 
-	static void perr(const std::string& cmd, const std::string& path, const std::error_code& ec) {
+	void perr(const std::string& cmd, const std::string& path, const std::error_code& ec) {
 		std::fprintf(stderr, "wbsh: %s: %s: %s\n",
 			cmd.c_str(), path.c_str(), ec.message().c_str());
 	}
 
-	static void perr(const std::string& cmd, const std::string& msg) {
+	void perr(const std::string& cmd, const std::string& msg) {
 		std::fprintf(stderr, "wbsh: %s: %s\n", cmd.c_str(), msg.c_str());
 	}
 
-	// Translate an arg-style path (POSIX-or-Win32, UTF-8) to a native
-	// filesystem::path. On Windows we route through wide strings so the
-	// UTF-8 bytes don't get mojibake'd through the active codepage by
-	// the default `path(string)` constructor (`Tomáš` -> `TomÃ¡Å¡`).
-	static fs::path toNative(Executor& exec, const std::string& p) {
+	fs::path toNative(Executor& exec, const std::string& p) {
 		return utf8ToPath(exec.pathConv().toWin32(p));
 	}
 
-	// fopen on a UTF-8, POSIX-or-Win32 path. Routes through `_wfopen`
-	// on Windows so non-ASCII filenames survive intact.
-	static std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode) {
+	std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode) {
 		return openUtf8(exec.pathConv().toWin32(p), mode);
 	}
 
-	// ---- ls --------------------------------------------------------------
-
 	struct LsOpts {
-		bool all = false;        // -a / -A
-		bool long_fmt = false;   // -l
-		bool one = false;        // -1
-		bool human = false;      // -h (with -l)
-		bool reverse = false;    // -r
-		bool sort_mtime = false; // -t
-		bool sort_size = false;  // -S
-		bool classify = false;   // -F
+		bool all = false;
+		bool long_fmt = false;
+		bool one = false;
+		bool human = false;
+		bool reverse = false;
+		bool sort_mtime = false;
+		bool sort_size = false;
+		bool classify = false;
 		enum { Auto, Always, Never } color = Auto;
 	};
 
@@ -147,18 +130,18 @@ namespace wbsh {
 			e.size = fs::file_size(e.full, ec);
 			if (ec) e.size = 0;
 		}
+
 		std::error_code ec2;
 		e.mtime = fs::last_write_time(e.full, ec2);
-		// Hidden: leading dot OR Windows hidden attribute.
 		if (!name.empty() && name[0] == '.') e.is_hidden = true;
 		if (windowsHidden(e.full)) e.is_hidden = true;
-		// Executable heuristic on Windows: extension.
 		std::string ext = pathToUtf8(e.full.extension());
 		std::transform(ext.begin(), ext.end(), ext.begin(),
 			[](char c) { return static_cast<char>(std::tolower((unsigned char)c)); });
 		if (ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".com" || ext == ".ps1") {
 			e.is_executable = true;
 		}
+
 		e.valid = true;
 		return e;
 	}
@@ -166,9 +149,9 @@ namespace wbsh {
 	static std::string colorize(const LsEntry& e, bool use_color) {
 		if (!use_color) return e.name;
 		const char* code = nullptr;
-		if (e.is_symlink) code = "\x1b[36;1m";       // cyan
-		else if (e.is_dir) code = "\x1b[34;1m";      // blue
-		else if (e.is_executable) code = "\x1b[32;1m"; // green
+		if (e.is_symlink) code = "\x1b[36;1m";
+		else if (e.is_dir) code = "\x1b[34;1m";
+		else if (e.is_executable) code = "\x1b[32;1m";
 		if (!code) return e.name;
 		return std::string(code) + e.name + "\x1b[0m";
 	}
@@ -188,6 +171,7 @@ namespace wbsh {
 			v /= 1024.0;
 			++u;
 		}
+
 		char buf[32];
 		if (u == 0) {
 			std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(n));
@@ -198,6 +182,7 @@ namespace wbsh {
 		else {
 			std::snprintf(buf, sizeof(buf), "%.1f%s", v, units[u]);
 		}
+
 		return buf;
 	}
 
@@ -212,8 +197,6 @@ namespace wbsh {
 #else
 		localtime_r(&tt, &tm);
 #endif
-		// Match GNU ls: month day time-or-year. For the past 6 months, show
-		// time; otherwise show year. Cheap version: always show YYYY-MM-DD.
 		char buf[32];
 		std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm);
 		return buf;
@@ -222,7 +205,6 @@ namespace wbsh {
 	static std::string permString(const LsEntry& e) {
 		std::string s;
 		s += e.is_symlink ? 'l' : (e.is_dir ? 'd' : '-');
-		// Best-effort rwx — Windows lacks POSIX bits; we approximate.
 		bool readonly = false;
 #ifdef _WIN32
 		DWORD attr = GetFileAttributesW(e.full.wstring().c_str());
@@ -240,34 +222,37 @@ namespace wbsh {
 		return s;
 	}
 
+	static bool lsNameLess(const LsEntry& a, const LsEntry& b) {
+		const std::size_t n = a.name.size() < b.name.size() ? a.name.size() : b.name.size();
+		for (std::size_t i = 0; i < n; ++i) {
+			const int ca = std::tolower(static_cast<unsigned char>(a.name[i]));
+			const int cb = std::tolower(static_cast<unsigned char>(b.name[i]));
+			if (ca != cb) return ca < cb;
+		}
+
+		if (a.name.size() != b.name.size()) return a.name.size() < b.name.size();
+		return a.name < b.name;
+	}
+
 	static void sortEntries(std::vector<LsEntry>& items, const LsOpts& opts) {
-		auto cmp_name = [](const LsEntry& a, const LsEntry& b) {
-			// Case-insensitive primary, case-sensitive tiebreak.
-			std::string al = a.name, bl = b.name;
-			std::transform(al.begin(), al.end(), al.begin(),
-				[](char c) { return static_cast<char>(std::tolower((unsigned char)c)); });
-			std::transform(bl.begin(), bl.end(), bl.begin(),
-				[](char c) { return static_cast<char>(std::tolower((unsigned char)c)); });
-			if (al != bl) return al < bl;
-			return a.name < b.name;
-			};
 		if (opts.sort_mtime) {
 			std::sort(items.begin(), items.end(),
-				[&](const LsEntry& a, const LsEntry& b) {
+				[](const LsEntry& a, const LsEntry& b) {
 					if (a.mtime != b.mtime) return a.mtime > b.mtime;
-					return cmp_name(a, b);
+					return lsNameLess(a, b);
 				});
 		}
 		else if (opts.sort_size) {
 			std::sort(items.begin(), items.end(),
-				[&](const LsEntry& a, const LsEntry& b) {
+				[](const LsEntry& a, const LsEntry& b) {
 					if (a.size != b.size) return a.size > b.size;
-					return cmp_name(a, b);
+					return lsNameLess(a, b);
 				});
 		}
 		else {
-			std::sort(items.begin(), items.end(), cmp_name);
+			std::sort(items.begin(), items.end(), lsNameLess);
 		}
+
 		if (opts.reverse) std::reverse(items.begin(), items.end());
 	}
 
@@ -282,6 +267,7 @@ namespace wbsh {
 			if (label.size() > maxlen) maxlen = label.size();
 			labels.push_back(std::move(label));
 		}
+
 		if (opts.one || !stdoutIsTty()) {
 			for (std::size_t i = 0; i < items.size(); ++i) {
 				if (use_color) std::fputs(colorize(items[i], true).c_str(), stdout);
@@ -289,8 +275,10 @@ namespace wbsh {
 				std::fputs(classifySuffix(items[i]).c_str(), stdout);
 				std::fputc('\n', stdout);
 			}
+
 			return;
 		}
+
 		int width = consoleWidth();
 		std::size_t pad = maxlen + 2;
 		std::size_t cols = std::max<std::size_t>(1, width / pad);
@@ -303,11 +291,11 @@ namespace wbsh {
 				disp += classifySuffix(items[idx]);
 				std::fputs(disp.c_str(), stdout);
 				if (c + 1 < cols && (c + 1) * rows + r < items.size()) {
-					// Pad to column width using the *visible* label length.
 					std::size_t visible = labels[idx].size();
 					for (std::size_t k = visible; k < pad; ++k) std::fputc(' ', stdout);
 				}
 			}
+
 			std::fputc('\n', stdout);
 		}
 	}
@@ -317,19 +305,18 @@ namespace wbsh {
 		std::string user = exec.env().get("USER");
 		if (user.empty()) user = exec.env().get("USERNAME");
 		if (user.empty()) user = "user";
-		// Compute column widths.
 		std::size_t size_w = 1;
 		for (const auto& e : items) {
 			std::string s = opts.human ? humanSize(e.size) : std::to_string(e.size);
 			if (s.size() > size_w) size_w = s.size();
 		}
+
 		for (const auto& e : items) {
 			std::string p = permString(e);
 			std::string s = opts.human ? humanSize(e.size) : std::to_string(e.size);
 			std::string mt = formatMtime(e.mtime);
 			std::string label = use_color ? colorize(e, true) : e.name;
 			label += classifySuffix(e);
-			// Pad size right-aligned.
 			std::string spad(size_w - s.size(), ' ');
 			std::fprintf(stdout, "%s 1 %s %s %s%s %s %s\n",
 				p.c_str(), user.c_str(), user.c_str(),
@@ -337,7 +324,6 @@ namespace wbsh {
 		}
 	}
 
-	// Returns 0 on success, 2 on unknown short option (with diagnostic).
 	static int parseLsArgs(const std::vector<std::string>& args,
 	                       LsOpts& opts, std::vector<std::string>& paths) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
@@ -346,6 +332,7 @@ namespace wbsh {
 				for (++i; i < args.size(); ++i) paths.push_back(args[i]);
 				break;
 			}
+
 			if      (a == "--color" || a == "--color=auto")  opts.color = LsOpts::Auto;
 			else if (a == "--color=always" || a == "--color=yes") opts.color = LsOpts::Always;
 			else if (a == "--color=never"  || a == "--color=no")  opts.color = LsOpts::Never;
@@ -374,13 +361,11 @@ namespace wbsh {
 				paths.push_back(a);
 			}
 		}
+
 		if (paths.empty()) paths.push_back(".");
 		return 0;
 	}
 
-	// Collect the directory entries of `target` into `items`. Filters
-	// hidden files unless opts.all. Returns false (with diagnostic) on
-	// iteration error.
 	static bool collectLsDirectoryEntries(const fs::path& target, const LsOpts& opts,
 	                                      const std::string& source_path,
 	                                      std::vector<LsEntry>& items) {
@@ -390,12 +375,14 @@ namespace wbsh {
 			perr("ls", source_path, ec);
 			return false;
 		}
+
 		for (const auto& de : it) {
 			std::string name = pathToUtf8(de.path().filename());
 			LsEntry e = collect(target, name);
 			if (!opts.all && e.is_hidden) continue;
 			items.push_back(std::move(e));
 		}
+
 		return true;
 	}
 
@@ -426,29 +413,31 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			std::vector<LsEntry> items;
 			if (fs::is_directory(st)) {
 				if (show_headers) {
 					if (pi) std::fputc('\n', stdout);
 					std::fprintf(stdout, "%s:\n", p.c_str());
 				}
+
 				if (!collectLsDirectoryEntries(target, opts, p, items)) {
 					rc = 1;
 					continue;
 				}
 			} else {
 				LsEntry e = collect(fs::path(), p);
-				e.name = p;   // preserve user-supplied spelling
+				e.name = p;
 				items.push_back(std::move(e));
 			}
+
 			sortEntries(items, opts);
 			emitLsItems(items, opts, use_color, exec);
 		}
+
 		std::fflush(stdout);
 		return rc;
 	}
-
-	// ---- cat -------------------------------------------------------------
 
 	struct CatOptions {
 		bool number = false;
@@ -477,24 +466,25 @@ namespace wbsh {
 					else if (a[k] == 'b') o.number_nonblank = true;
 					else { ok = false; break; }
 				}
+
 				if (ok) { ++i; continue; }
 			}
+
 			o.files.push_back(a);
 			++i;
 		}
+
 		if (o.files.empty()) o.files.push_back("-");
 		return o;
 	}
 
-	// Write @p n bytes from @p data to stdout, prepending a line number on
-	// each new line when @p opts requests it. @p st carries the line counter
-	// and end-of-previous-chunk state across calls.
 	static void catEmitChunk(const char* data, std::size_t n,
 	                         const CatOptions& opts, CatEmitState& st) {
 		if (!opts.number && !opts.number_nonblank) {
 			std::fwrite(data, 1, n, stdout);
 			return;
 		}
+
 		for (std::size_t p = 0; p < n; ++p) {
 			if (st.at_line_start) {
 				bool blank_line = (data[p] == '\n');
@@ -502,15 +492,15 @@ namespace wbsh {
 					++st.lineno;
 					std::fprintf(stdout, "%6zu\t", st.lineno);
 				}
+
 				st.at_line_start = false;
 			}
+
 			std::fputc(data[p], stdout);
 			if (data[p] == '\n') st.at_line_start = true;
 		}
 	}
 
-	// Stream one file (or stdin if @p name is "-") through catEmitChunk.
-	// Returns 0 on success, 1 if the file could not be opened.
 	static int catStreamFile(Executor& exec, const std::string& name,
 	                         const CatOptions& opts, CatEmitState& st) {
 		if (name == "-") {
@@ -520,8 +510,10 @@ namespace wbsh {
 				if (got == 0) break;
 				catEmitChunk(buf, got, opts, st);
 			}
+
 			return 0;
 		}
+
 		fs::path native = toNative(exec, name);
 		std::ifstream in(native, std::ios::binary);
 		if (!in) {
@@ -529,12 +521,14 @@ namespace wbsh {
 				name.c_str(), std::strerror(errno));
 			return 1;
 		}
+
 		char buf[4096];
 		while (in) {
 			in.read(buf, sizeof(buf));
 			std::streamsize got = in.gcount();
 			if (got > 0) catEmitChunk(buf, static_cast<std::size_t>(got), opts, st);
 		}
+
 		return 0;
 	}
 
@@ -545,20 +539,16 @@ namespace wbsh {
 		for (const auto& f : opts.files) {
 			if (catStreamFile(exec, f, opts, st) != 0) rc = 1;
 		}
+
 		std::fflush(stdout);
 		return rc;
 	}
 
-	// ---- clear -----------------------------------------------------------
-
 	static int builtin_clear(Executor&, const std::vector<std::string>&) {
-		// Cursor home + clear screen + clear scrollback.
 		std::fputs("\x1b[H\x1b[2J\x1b[3J", stdout);
 		std::fflush(stdout);
 		return 0;
 	}
-
-	// ---- which -----------------------------------------------------------
 
 	static int builtin_which(Executor& exec, const std::vector<std::string>& args) {
 		int rc = 0;
@@ -567,10 +557,12 @@ namespace wbsh {
 				std::printf("%s: shell function\n", name.c_str());
 				continue;
 			}
+
 			if (exec.isBuiltin(name)) {
 				std::printf("%s: shell builtin\n", name.c_str());
 				continue;
 			}
+
 			std::string path = exec.env().get("PATH");
 			bool found = false;
 			std::vector<std::string> dirs;
@@ -584,6 +576,7 @@ namespace wbsh {
 				}
 				else cur.push_back(c);
 			}
+
 			if (!cur.empty()) dirs.push_back(cur);
 			for (const auto& d : dirs) {
 				if (d.empty()) continue;
@@ -602,17 +595,18 @@ namespace wbsh {
 						break;
 					}
 				}
+
 				if (found) break;
 			}
+
 			if (!found) {
 				std::fprintf(stderr, "wbsh: which: %s: not found\n", name.c_str());
 				rc = 1;
 			}
 		}
+
 		return rc;
 	}
-
-	// ---- mkdir / rmdir / rm / cp / mv / touch ---------------------------
 
 	static int builtin_mkdir(Executor& exec, const std::vector<std::string>& args) {
 		bool parents = false;
@@ -624,6 +618,7 @@ namespace wbsh {
 			}
 			else paths.push_back(a);
 		}
+
 		if (paths.empty()) { perr("mkdir", "missing operand"); return 1; }
 		int rc = 0;
 		for (const auto& p : paths) {
@@ -634,6 +629,7 @@ namespace wbsh {
 			if (ec) { perr("mkdir", p, ec); rc = 1; }
 			else if (!ok && !parents) { perr("mkdir", p + ": already exists"); rc = 1; }
 		}
+
 		return rc;
 	}
 
@@ -649,6 +645,7 @@ namespace wbsh {
 				rc = 1;
 			}
 		}
+
 		return rc;
 	}
 
@@ -669,10 +666,12 @@ namespace wbsh {
 			}
 			else paths.push_back(a);
 		}
+
 		if (paths.empty()) {
 			if (!force) { perr("rm", "missing operand"); return 1; }
 			return 0;
 		}
+
 		int rc = 0;
 		for (const auto& p : paths) {
 			std::error_code ec;
@@ -681,6 +680,7 @@ namespace wbsh {
 				if (!force) { perr("rm", p + ": no such file or directory"); rc = 1; }
 				continue;
 			}
+
 			if (recursive) {
 				std::uintmax_t n = fs::remove_all(nat, ec);
 				if (ec && !force) { perr("rm", p, ec); rc = 1; }
@@ -692,11 +692,13 @@ namespace wbsh {
 					rc = 1;
 					continue;
 				}
+
 				if (!fs::remove(nat, ec)) {
 					if (!force) { perr("rm", p, ec); rc = 1; }
 				}
 			}
 		}
+
 		return rc;
 	}
 
@@ -705,7 +707,7 @@ namespace wbsh {
 		std::vector<std::string> paths;
 		for (const auto& a : args) {
 			if (a == "-r" || a == "-R" || a == "--recursive") recursive = true;
-			else if (a == "-a") recursive = true;   // archive (we treat as -r)
+			else if (a == "-a") recursive = true;
 			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
 				for (std::size_t k = 1; k < a.size(); ++k) {
 					if (a[k] == 'r' || a[k] == 'R') recursive = true;
@@ -713,6 +715,7 @@ namespace wbsh {
 			}
 			else paths.push_back(a);
 		}
+
 		if (paths.size() < 2) { perr("cp", "missing source/destination"); return 1; }
 		fs::path dst(toNative(exec, paths.back()));
 		std::error_code ec;
@@ -728,6 +731,7 @@ namespace wbsh {
 			fs::copy(src, target, opts, copy_ec);
 			if (copy_ec) { perr("cp", paths[i], copy_ec); rc = 1; }
 		}
+
 		return rc;
 	}
 
@@ -735,10 +739,10 @@ namespace wbsh {
 		std::vector<std::string> paths;
 		for (const auto& a : args) {
 			if (a == "--") continue;
-			// Ignore unknown flags (mv has no informative ones we support).
 			if (a.size() > 1 && a[0] == '-' && a[1] != '-' && a != "-") continue;
 			paths.push_back(a);
 		}
+
 		if (paths.size() < 2) { perr("mv", "missing source/destination"); return 1; }
 		fs::path dst(toNative(exec, paths.back()));
 		std::error_code ec;
@@ -750,7 +754,6 @@ namespace wbsh {
 			std::error_code mv_ec;
 			fs::rename(src, target, mv_ec);
 			if (mv_ec) {
-				// Cross-device or other rename failure: fall back to copy + remove.
 				std::error_code cp_ec;
 				fs::copy(src, target, fs::copy_options::overwrite_existing
 					| fs::copy_options::recursive | fs::copy_options::copy_symlinks, cp_ec);
@@ -760,6 +763,7 @@ namespace wbsh {
 				if (rm_ec) { perr("mv", paths[i], rm_ec); rc = 1; }
 			}
 		}
+
 		return rc;
 	}
 
@@ -767,7 +771,7 @@ namespace wbsh {
 		if (args.empty()) { perr("touch", "missing operand"); return 1; }
 		int rc = 0;
 		for (const auto& p : args) {
-			if (!p.empty() && p[0] == '-' && p != "-") continue;   // skip flags
+			if (!p.empty() && p[0] == '-' && p != "-") continue;
 			fs::path nat = toNative(exec, p);
 			std::error_code ec;
 			if (!fs::exists(nat, ec)) {
@@ -780,10 +784,9 @@ namespace wbsh {
 				if (ec) { perr("touch", p, ec); rc = 1; }
 			}
 		}
+
 		return rc;
 	}
-
-	// ---- head / tail / wc ------------------------------------------------
 
 	static int parseNumFlag(const std::vector<std::string>& args, const char* short_flag,
 		std::size_t& i, long& out) {
@@ -794,12 +797,14 @@ namespace wbsh {
 			if (!parseInt(a.substr(2), v)) return -1;
 			out = v; ++i; return 0;
 		}
+
 		if (a == short_flag || a == std::string("-") + short_flag) {
 			if (i + 1 >= args.size()) return -1;
 			int v = 0;
 			if (!parseInt(args[i + 1], v)) return -1;
 			out = v; i += 2; return 0;
 		}
+
 		return 1;
 	}
 
@@ -814,6 +819,7 @@ namespace wbsh {
 				if (r == 0) { i = j; continue; }
 				if (r == -1) { perr("head", "bad -n value"); return 1; }
 			}
+
 			if (a == "--") { for (++i; i < args.size(); ++i) files.push_back(args[i]); break; }
 			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
 				int v = 0;
@@ -821,9 +827,11 @@ namespace wbsh {
 				n = v;
 				++i; continue;
 			}
+
 			files.push_back(a);
 			++i;
 		}
+
 		if (files.empty()) files.push_back("-");
 		int rc = 0;
 		for (const auto& f : files) {
@@ -835,8 +843,10 @@ namespace wbsh {
 				std::fputc(c, stdout);
 				if (c == '\n') ++printed;
 			}
+
 			if (fp != stdin) std::fclose(fp);
 		}
+
 		std::fflush(stdout);
 		return rc;
 	}
@@ -852,6 +862,7 @@ namespace wbsh {
 				if (r == 0) { i = j; continue; }
 				if (r == -1) { perr("tail", "bad -n value"); return 1; }
 			}
+
 			if (a == "--") { for (++i; i < args.size(); ++i) files.push_back(args[i]); break; }
 			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
 				int v = 0;
@@ -859,9 +870,11 @@ namespace wbsh {
 				n = v;
 				++i; continue;
 			}
+
 			files.push_back(a);
 			++i;
 		}
+
 		if (files.empty()) files.push_back("-");
 		int rc = 0;
 		for (const auto& f : files) {
@@ -877,6 +890,7 @@ namespace wbsh {
 				}
 				else cur.push_back(static_cast<char>(c));
 			}
+
 			if (!cur.empty()) lines.push_back(std::move(cur));
 			if (fp != stdin) std::fclose(fp);
 			std::size_t start = (lines.size() > static_cast<std::size_t>(n))
@@ -886,12 +900,11 @@ namespace wbsh {
 				std::fputc('\n', stdout);
 			}
 		}
+
 		std::fflush(stdout);
 		return rc;
 	}
 
-	// Append the decimal form of @p v to @p out, prepending a space if @p out
-	// already has content. Used by builtin_wc to format `-l/-w/-c/-m` counts.
 	static void appendWcCount(std::string& out, std::uintmax_t v) {
 		if (!out.empty()) out += " ";
 		char buf[64];
@@ -925,16 +938,18 @@ namespace wbsh {
 				}
 				continue;
 			}
+
 			o.files.push_back(a);
 		}
+
 		if (!(o.want_l || o.want_w || o.want_c || o.want_m)) {
 			o.want_l = o.want_w = o.want_c = true;
 		}
+
 		if (o.files.empty()) o.files.push_back("-");
 		return o;
 	}
 
-	// Count lines/words/chars/multibyte-chars in @p fp. Caller owns @p fp.
 	static WcCounts wcCountStream(FILE* fp) {
 		WcCounts r;
 		bool in_word = false;
@@ -951,11 +966,10 @@ namespace wbsh {
 				++r.w;
 			}
 		}
+
 		return r;
 	}
 
-	// Format one line of wc output. `label` is the trailing filename or
-	// "total"; pass an empty string to omit a trailing label (used for stdin).
 	static std::string formatWcLine(const WcOptions& opts, const WcCounts& cnt,
 	                                const std::string& label) {
 		std::string out;
@@ -980,14 +994,14 @@ namespace wbsh {
 			std::fputs(formatWcLine(opts, cnt, f == "-" ? "" : f).c_str(), stdout);
 			totals.l += cnt.l; totals.w += cnt.w; totals.c += cnt.c; totals.m += cnt.m;
 		}
+
 		if (opts.files.size() > 1) {
 			std::fputs(formatWcLine(opts, totals, "total").c_str(), stdout);
 		}
+
 		std::fflush(stdout);
 		return rc;
 	}
-
-	// ---- whoami / hostname / env / sleep / basename / dirname ------------
 
 	static int builtin_whoami(Executor& exec, const std::vector<std::string>&) {
 		std::string u = exec.env().get("USER");
@@ -1012,9 +1026,6 @@ namespace wbsh {
 	}
 
 	static int builtin_env(Executor& exec, const std::vector<std::string>& args) {
-		// `env` with no args: print env. With `NAME=val ...` followed by a
-		// command: run command with overridden env. (Not implemented yet —
-		// we just print the merged set.)
 		std::vector<std::pair<std::string, std::string>> sets;
 		std::vector<std::string> cmd;
 		for (const auto& a : args) {
@@ -1027,11 +1038,13 @@ namespace wbsh {
 				cmd.push_back(a);
 			}
 		}
+
 		if (!cmd.empty()) {
 			std::fprintf(stderr, "wbsh: env: running with overrides not yet implemented; "
 				"set then call directly\n");
 			return 1;
 		}
+
 		std::vector<std::pair<std::string, std::string>> all(
 			exec.env().vars().begin(), exec.env().vars().end());
 		for (const auto& s : sets) {
@@ -1041,13 +1054,16 @@ namespace wbsh {
 					kv.second = s.second; found = true; break;
 				}
 			}
+
 			if (!found) all.push_back(s);
 		}
+
 		std::sort(all.begin(), all.end());
 		for (const auto& kv : all) {
 			if (!exec.env().isExported(kv.first)) continue;
 			std::printf("%s=%s\n", kv.first.c_str(), kv.second.c_str());
 		}
+
 		return 0;
 	}
 
@@ -1062,6 +1078,7 @@ namespace wbsh {
 			perr("sleep", args[0] + ": invalid time interval");
 			return 1;
 		}
+
 		if (suffix == 'm') secs *= 60.0;
 		else if (suffix == 'h') secs *= 3600.0;
 		std::this_thread::sleep_for(std::chrono::milliseconds(
@@ -1082,6 +1099,7 @@ namespace wbsh {
 				name.resize(name.size() - suf.size());
 			}
 		}
+
 		std::printf("%s\n", name.c_str());
 		return 0;
 	}
@@ -1097,12 +1115,7 @@ namespace wbsh {
 		return 0;
 	}
 
-	// ---- Common helpers for line-oriented builtins -----------------------
-
-	// Read all lines from a file (or stdin if path is "-"). Lines do NOT
-	// include the terminating newline. A final unterminated line is
-	// emitted as-is.
-	static bool readAllLines(Executor& exec, const std::string& path,
+	bool readAllLines(Executor& exec, const std::string& path,
 		std::vector<std::string>& out) {
 		FILE* fp = (path == "-") ? stdin : fopenNative(exec, path, "rb");
 		if (!fp) return false;
@@ -1112,524 +1125,11 @@ namespace wbsh {
 			if (c == '\n') { out.push_back(std::move(cur)); cur.clear(); }
 			else cur.push_back(static_cast<char>(c));
 		}
+
 		if (!cur.empty()) out.push_back(std::move(cur));
 		if (fp != stdin) std::fclose(fp);
 		return true;
 	}
-
-	// ---- sort ------------------------------------------------------------
-
-	struct SortOptions {
-		bool reverse = false, numeric = false, unique = false, fold = false;
-		std::vector<std::string> files;
-	};
-
-	// Returns 0 on success, 2 on bad flag (and prints the error).
-	static int parseSortArgs(const std::vector<std::string>& args, SortOptions& o) {
-		for (const auto& a : args) {
-			if (a == "--") continue;
-			if (a == "-r" || a == "--reverse") o.reverse = true;
-			else if (a == "-n" || a == "--numeric-sort") o.numeric = true;
-			else if (a == "-u" || a == "--unique") o.unique = true;
-			else if (a == "-f" || a == "--ignore-case") o.fold = true;
-			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					switch (a[k]) {
-					case 'r': o.reverse = true; break;
-					case 'n': o.numeric = true; break;
-					case 'u': o.unique = true; break;
-					case 'f': o.fold = true; break;
-					default:
-						std::fprintf(stderr, "wbsh: sort: unknown -%c\n", a[k]);
-						return 2;
-					}
-				}
-			}
-			else o.files.push_back(a);
-		}
-		if (o.files.empty()) o.files.push_back("-");
-		return 0;
-	}
-
-	static std::string asciiLower(std::string s) {
-		for (char& c : s) c = static_cast<char>(std::tolower((unsigned char)c));
-		return s;
-	}
-
-	static int builtin_sort(Executor& exec, const std::vector<std::string>& args) {
-		SortOptions opt;
-		if (int rc = parseSortArgs(args, opt); rc != 0) return rc;
-
-		std::vector<std::string> lines;
-		for (const auto& f : opt.files) {
-			if (!readAllLines(exec, f, lines)) {
-				perr("sort", f + ": " + std::strerror(errno));
-				return 2;
-			}
-		}
-		auto cmp = [&](const std::string& a, const std::string& b) {
-			if (opt.numeric) {
-				double da = 0, db = 0;
-				parseDouble(a, da);
-				parseDouble(b, db);
-				if (da != db) return da < db;
-				return a < b;
-			}
-			if (opt.fold) return asciiLower(a) < asciiLower(b);
-			return a < b;
-		};
-		std::sort(lines.begin(), lines.end(), cmp);
-		if (opt.reverse) std::reverse(lines.begin(), lines.end());
-		if (opt.unique) {
-			auto eq = [&](const std::string& a, const std::string& b) {
-				return opt.fold ? asciiLower(a) == asciiLower(b) : a == b;
-			};
-			lines.erase(std::unique(lines.begin(), lines.end(), eq), lines.end());
-		}
-		for (const auto& l : lines) {
-			std::fwrite(l.data(), 1, l.size(), stdout);
-			std::fputc('\n', stdout);
-		}
-		std::fflush(stdout);
-		return 0;
-	}
-
-	// ---- uniq (only dedupes ADJACENT duplicates, like real uniq) --------
-
-	static int builtin_uniq(Executor& exec, const std::vector<std::string>& args) {
-		bool count = false, dups_only = false, uniques_only = false, fold = false;
-		std::vector<std::string> files;
-		for (const auto& a : args) {
-			if (a == "-c" || a == "--count") count = true;
-			else if (a == "-d" || a == "--repeated") dups_only = true;
-			else if (a == "-u" || a == "--unique") uniques_only = true;
-			else if (a == "-i" || a == "--ignore-case") fold = true;
-			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					switch (a[k]) {
-					case 'c': count = true; break;
-					case 'd': dups_only = true; break;
-					case 'u': uniques_only = true; break;
-					case 'i': fold = true; break;
-					}
-				}
-			}
-			else files.push_back(a);
-		}
-		if (files.empty()) files.push_back("-");
-
-		auto fold_lower = [](std::string s) {
-			for (char& c : s) c = static_cast<char>(std::tolower((unsigned char)c));
-			return s;
-			};
-		auto eq = [&](const std::string& a, const std::string& b) {
-			if (fold) return fold_lower(a) == fold_lower(b);
-			return a == b;
-			};
-
-		std::vector<std::string> lines;
-		for (const auto& f : files) {
-			if (!readAllLines(exec, f, lines)) {
-				perr("uniq", f + ": " + std::strerror(errno));
-				return 1;
-			}
-		}
-		std::size_t i = 0;
-		while (i < lines.size()) {
-			std::size_t j = i + 1;
-			while (j < lines.size() && eq(lines[j], lines[i])) ++j;
-			int n = static_cast<int>(j - i);
-			bool emit = true;
-			if (dups_only && n < 2) emit = false;
-			if (uniques_only && n > 1) emit = false;
-			if (emit) {
-				if (count) std::printf("%7d %s\n", n, lines[i].c_str());
-				else      std::printf("%s\n", lines[i].c_str());
-			}
-			i = j;
-		}
-		std::fflush(stdout);
-		return 0;
-	}
-
-	// ---- tr --------------------------------------------------------------
-
-	static std::string trExpandSet(const std::string& s) {
-		std::string r;
-		for (std::size_t i = 0; i < s.size(); ++i) {
-			if (s[i] == '\\' && i + 1 < s.size()) {
-				char nx = s[++i];
-				switch (nx) {
-				case 'n': r.push_back('\n'); break;
-				case 't': r.push_back('\t'); break;
-				case 'r': r.push_back('\r'); break;
-				case '\\': r.push_back('\\'); break;
-				case 'a': r.push_back('\a'); break;
-				case 'b': r.push_back('\b'); break;
-				case '0': r.push_back('\0'); break;
-				default: r.push_back(nx); break;
-				}
-			}
-			else if (i + 2 < s.size() && s[i + 1] == '-') {
-				char a = s[i], b = s[i + 2];
-				if (a <= b) for (char c = a; c <= b; ++c) r.push_back(c);
-				else        for (char c = a; c >= b; --c) r.push_back(c);
-				i += 2;
-			}
-			else {
-				r.push_back(s[i]);
-			}
-		}
-		return r;
-	}
-
-	static int builtin_tr(Executor&, const std::vector<std::string>& args) {
-		bool delete_mode = false, squeeze = false, complement = false;
-		std::vector<std::string> sets;
-		for (const auto& a : args) {
-			if (a == "-d") delete_mode = true;
-			else if (a == "-s") squeeze = true;
-			else if (a == "-c" || a == "-C" || a == "--complement") complement = true;
-			else if (a.size() > 1 && a[0] == '-' && a != "-") {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					if (a[k] == 'd') delete_mode = true;
-					else if (a[k] == 's') squeeze = true;
-					else if (a[k] == 'c' || a[k] == 'C') complement = true;
-				}
-			}
-			else sets.push_back(a);
-		}
-		if (sets.empty() || (!delete_mode && !squeeze && sets.size() < 2)) {
-			perr("tr", "usage: tr [-cds] SET1 [SET2]");
-			return 2;
-		}
-		std::string s1 = trExpandSet(sets[0]);
-		std::string s2 = (sets.size() > 1) ? trExpandSet(sets[1]) : std::string();
-		std::vector<bool> in_s1(256, false);
-		for (unsigned char c : s1) in_s1[c] = true;
-		if (complement) {
-			std::vector<bool> inv(256, true);
-			for (int k = 0; k < 256; ++k) if (in_s1[k]) inv[k] = false;
-			in_s1 = std::move(inv);
-		}
-		std::vector<unsigned char> map(256);
-		for (int k = 0; k < 256; ++k) map[k] = static_cast<unsigned char>(k);
-		if (!delete_mode && !s2.empty()) {
-			// Map each byte in s1 (or in complement) to the corresponding
-			// byte in s2; pad s2 with its last char.
-			if (complement) {
-				unsigned char repl = static_cast<unsigned char>(s2.back());
-				for (int k = 0; k < 256; ++k) if (in_s1[k]) map[k] = repl;
-			}
-			else {
-				for (std::size_t k = 0; k < s1.size(); ++k) {
-					unsigned char src = static_cast<unsigned char>(s1[k]);
-					unsigned char dst = (k < s2.size())
-						? static_cast<unsigned char>(s2[k])
-						: static_cast<unsigned char>(s2.back());
-					map[src] = dst;
-				}
-			}
-		}
-		int prev = -1;
-		int c;
-		while ((c = std::fgetc(stdin)) != EOF) {
-			unsigned char uc = static_cast<unsigned char>(c);
-			if (delete_mode && in_s1[uc]) continue;
-			unsigned char out = map[uc];
-			if (squeeze && static_cast<int>(out) == prev) continue;
-			std::fputc(out, stdout);
-			prev = out;
-		}
-		std::fflush(stdout);
-		return 0;
-	}
-
-	// ---- cut -------------------------------------------------------------
-
-	struct CutSpec {
-		std::vector<std::pair<int, int>> ranges;  // [start,end], 1-indexed; -1 means "to end"
-		bool parse(const std::string& spec) {
-			std::size_t i = 0;
-			while (i < spec.size()) {
-				std::string tok;
-				while (i < spec.size() && spec[i] != ',') tok.push_back(spec[i++]);
-				if (i < spec.size() && spec[i] == ',') ++i;
-				if (tok.empty()) continue;
-				int a = 0, b = 0;
-				auto dash = tok.find('-');
-				if (dash == std::string::npos) {
-					if (!parseInt(tok, a)) return false;
-					b = a;
-				}
-				else if (dash == 0) {
-					a = 1;
-					if (!parseInt(tok.substr(1), b)) return false;
-				}
-				else if (dash + 1 == tok.size()) {
-					if (!parseInt(tok.substr(0, dash), a)) return false;
-					b = -1;
-				}
-				else {
-					if (!parseInt(tok.substr(0, dash), a)) return false;
-					if (!parseInt(tok.substr(dash + 1), b)) return false;
-				}
-				ranges.emplace_back(a, b);
-			}
-			return !ranges.empty();
-		}
-		bool contains(int n) const {
-			for (auto& r : ranges) {
-				if (n >= r.first && (r.second == -1 || n <= r.second)) return true;
-			}
-			return false;
-		}
-	};
-
-	struct CutOptions {
-		char delim = '\t';
-		std::string field_spec, char_spec;
-		bool only_delim_lines = false;
-		std::vector<std::string> files;
-	};
-
-	static CutOptions parseCutArgs(const std::vector<std::string>& args) {
-		CutOptions o;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-d" && i + 1 < args.size()) {
-				if (!args[i + 1].empty()) o.delim = args[i + 1][0];
-				++i;
-			}
-			else if (a.size() > 2 && a.compare(0, 2, "-d") == 0) o.delim = a[2];
-			else if (a == "-f" && i + 1 < args.size()) o.field_spec = args[++i];
-			else if (a.size() > 2 && a.compare(0, 2, "-f") == 0) o.field_spec = a.substr(2);
-			else if (a == "-c" && i + 1 < args.size()) o.char_spec = args[++i];
-			else if (a.size() > 2 && a.compare(0, 2, "-c") == 0) o.char_spec = a.substr(2);
-			else if (a == "-s") o.only_delim_lines = true;
-			else if (a == "--") {
-				for (++i; i < args.size(); ++i) o.files.push_back(args[i]);
-			}
-			else if (!a.empty() && a[0] != '-') o.files.push_back(a);
-		}
-		return o;
-	}
-
-	// Emit @p line as a field-selected slice using @p spec / @p delim.
-	static void cutEmitFieldLine(const std::string& line, char delim, bool only_delim_lines,
-	                             const CutSpec& spec) {
-		if (line.find(delim) == std::string::npos) {
-			if (!only_delim_lines) std::printf("%s\n", line.c_str());
-			return;
-		}
-		std::vector<std::string> fields;
-		std::string cur;
-		for (char c : line) {
-			if (c == delim) { fields.push_back(std::move(cur)); cur.clear(); }
-			else cur.push_back(c);
-		}
-		fields.push_back(std::move(cur));
-		std::string out;
-		bool first = true;
-		for (std::size_t k = 0; k < fields.size(); ++k) {
-			if (spec.contains(static_cast<int>(k + 1))) {
-				if (!first) out.push_back(delim);
-				out += fields[k];
-				first = false;
-			}
-		}
-		std::printf("%s\n", out.c_str());
-	}
-
-	// Emit @p line as a character-selected slice using @p spec.
-	static void cutEmitCharLine(const std::string& line, const CutSpec& spec) {
-		std::string out;
-		for (std::size_t k = 0; k < line.size(); ++k) {
-			if (spec.contains(static_cast<int>(k + 1))) out.push_back(line[k]);
-		}
-		std::printf("%s\n", out.c_str());
-	}
-
-	static int builtin_cut(Executor& exec, const std::vector<std::string>& args) {
-		CutOptions opt = parseCutArgs(args);
-		if (opt.field_spec.empty() && opt.char_spec.empty()) {
-			perr("cut", "specify -f or -c");
-			return 1;
-		}
-		CutSpec spec;
-		if (!spec.parse(opt.field_spec.empty() ? opt.char_spec : opt.field_spec)) {
-			perr("cut", "bad field/char spec");
-			return 1;
-		}
-		bool by_field = !opt.field_spec.empty();
-		if (opt.files.empty()) opt.files.push_back("-");
-		int rc = 0;
-		for (const auto& f : opt.files) {
-			std::vector<std::string> lines;
-			if (!readAllLines(exec, f, lines)) {
-				perr("cut", f + ": " + std::strerror(errno));
-				rc = 1;
-				continue;
-			}
-			for (auto& line : lines) {
-				if (by_field) cutEmitFieldLine(line, opt.delim, opt.only_delim_lines, spec);
-				else          cutEmitCharLine(line, spec);
-			}
-		}
-		std::fflush(stdout);
-		return rc;
-	}
-
-	// ---- tee -------------------------------------------------------------
-
-	static int builtin_tee(Executor& exec, const std::vector<std::string>& args) {
-		bool append = false;
-		std::vector<std::string> files;
-		for (const auto& a : args) {
-			if (a == "-a" || a == "--append") append = true;
-			else if (a.size() > 1 && a[0] == '-' && a != "-") continue;
-			else files.push_back(a);
-		}
-		std::vector<FILE*> outs;
-		for (const auto& f : files) {
-			FILE* fp = fopenNative(exec, f, append ? "ab" : "wb");
-			if (!fp) {
-				perr("tee", f + ": " + std::strerror(errno));
-			}
-			else {
-				outs.push_back(fp);
-			}
-		}
-		char buf[4096];
-		while (true) {
-			std::size_t got = std::fread(buf, 1, sizeof(buf), stdin);
-			if (got == 0) break;
-			std::fwrite(buf, 1, got, stdout);
-			for (FILE* fp : outs) std::fwrite(buf, 1, got, fp);
-		}
-		for (FILE* fp : outs) std::fclose(fp);
-		std::fflush(stdout);
-		return 0;
-	}
-
-	// ---- paste -----------------------------------------------------------
-
-	static int builtin_paste(Executor& exec, const std::vector<std::string>& args) {
-		std::string delims = "\t";
-		std::vector<std::string> files;
-		bool serial = false;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-d" && i + 1 < args.size()) {
-				delims = args[++i];
-			}
-			else if (a.size() > 2 && a.compare(0, 2, "-d") == 0) {
-				delims = a.substr(2);
-			}
-			else if (a == "-s") serial = true;
-			else if (a == "--") { for (++i; i < args.size(); ++i) files.push_back(args[i]); }
-			else if (!a.empty() && a[0] != '-') files.push_back(a);
-		}
-		if (files.empty()) files.push_back("-");
-		if (serial) {
-			int rc = 0;
-			for (const auto& f : files) {
-				std::vector<std::string> lines;
-				if (!readAllLines(exec, f, lines)) { perr("paste", f); rc = 1; continue; }
-				for (std::size_t k = 0; k < lines.size(); ++k) {
-					if (k) std::fputc(delims.empty() ? '\t' : delims[k % delims.size()], stdout);
-					std::fputs(lines[k].c_str(), stdout);
-				}
-				std::fputc('\n', stdout);
-			}
-			std::fflush(stdout);
-			return rc;
-		}
-		std::vector<std::vector<std::string>> all;
-		std::size_t maxlen = 0;
-		for (const auto& f : files) {
-			std::vector<std::string> v;
-			if (!readAllLines(exec, f, v)) { perr("paste", f); return 1; }
-			if (v.size() > maxlen) maxlen = v.size();
-			all.push_back(std::move(v));
-		}
-		for (std::size_t r = 0; r < maxlen; ++r) {
-			for (std::size_t c = 0; c < all.size(); ++c) {
-				if (c) std::fputc(delims.empty() ? '\t' : delims[(c - 1) % delims.size()], stdout);
-				if (r < all[c].size()) std::fputs(all[c][r].c_str(), stdout);
-			}
-			std::fputc('\n', stdout);
-		}
-		std::fflush(stdout);
-		return 0;
-	}
-
-	// ---- tac / rev / nl --------------------------------------------------
-
-	static int builtin_tac(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> files;
-		for (const auto& a : args) if (!a.empty() && a[0] != '-') files.push_back(a);
-		if (files.empty()) files.push_back("-");
-		int rc = 0;
-		for (const auto& f : files) {
-			std::vector<std::string> lines;
-			if (!readAllLines(exec, f, lines)) { perr("tac", f); rc = 1; continue; }
-			for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
-				std::fputs(it->c_str(), stdout);
-				std::fputc('\n', stdout);
-			}
-		}
-		std::fflush(stdout);
-		return rc;
-	}
-
-	static int builtin_rev(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> files;
-		for (const auto& a : args) if (!a.empty() && a[0] != '-') files.push_back(a);
-		if (files.empty()) files.push_back("-");
-		int rc = 0;
-		for (const auto& f : files) {
-			std::vector<std::string> lines;
-			if (!readAllLines(exec, f, lines)) { perr("rev", f); rc = 1; continue; }
-			for (auto& l : lines) {
-				std::reverse(l.begin(), l.end());
-				std::fputs(l.c_str(), stdout);
-				std::fputc('\n', stdout);
-			}
-		}
-		std::fflush(stdout);
-		return rc;
-	}
-
-	static int builtin_nl(Executor& exec, const std::vector<std::string>& args) {
-		bool number_blank = false;
-		std::vector<std::string> files;
-		for (const auto& a : args) {
-			if (a == "-ba") number_blank = true;
-			else if (a == "-bt") number_blank = false;
-			else if (!a.empty() && a[0] != '-') files.push_back(a);
-		}
-		if (files.empty()) files.push_back("-");
-		int rc = 0;
-		int n = 0;
-		for (const auto& f : files) {
-			std::vector<std::string> lines;
-			if (!readAllLines(exec, f, lines)) { perr("nl", f); rc = 1; continue; }
-			for (auto& l : lines) {
-				if (l.empty() && !number_blank) {
-					std::fputc('\n', stdout);
-				}
-				else {
-					++n;
-					std::fprintf(stdout, "%6d\t%s\n", n, l.c_str());
-				}
-			}
-		}
-		std::fflush(stdout);
-		return rc;
-	}
-
-	// ---- date / seq ------------------------------------------------------
 
 	static int builtin_date(Executor&, const std::vector<std::string>& args) {
 		std::string fmt = "%a %b %e %H:%M:%S %Y";
@@ -1638,6 +1138,7 @@ namespace wbsh {
 			if (a == "-u" || a == "--utc") utc = true;
 			else if (!a.empty() && a[0] == '+') fmt = a.substr(1);
 		}
+
 		std::time_t t = std::time(nullptr);
 		std::tm tm{};
 #ifdef _WIN32
@@ -1664,6 +1165,7 @@ namespace wbsh {
 			}
 			else nums.push_back(a);
 		}
+
 		bool num_ok = true;
 		if (nums.size() == 1) { num_ok = parseDouble(nums[0], last); }
 		else if (nums.size() == 2) {
@@ -1691,12 +1193,11 @@ namespace wbsh {
 		else {
 			for (double v = first; v >= last - 1e-12; v += inc) emit(v);
 		}
+
 		std::fputc('\n', stdout);
 		std::fflush(stdout);
 		return 0;
 	}
-
-	// ---- uname / id ------------------------------------------------------
 
 	static int builtin_uname(Executor& exec, const std::vector<std::string>& args) {
 		bool s = false, n = false, r = false, v = false, m = false, o = false, all = false;
@@ -1722,6 +1223,7 @@ namespace wbsh {
 				}
 			}
 		}
+
 		if (!all && !s && !n && !r && !v && !m && !o) s = true;
 		if (all) s = n = r = v = m = o = true;
 
@@ -1764,10 +1266,10 @@ namespace wbsh {
 			else if (a == "-u") user_only = true;
 			else if (a == "-g") group_only = true;
 		}
+
 		std::string user = exec.env().get("USER");
 		if (user.empty()) user = exec.env().get("USERNAME");
 		if (user.empty()) user = "user";
-		// Windows lacks POSIX uid/gid; print stable placeholders.
 		int uid = 1000, gid = 1000;
 		if (user_only) {
 			if (name_only) std::printf("%s\n", user.c_str());
@@ -1781,10 +1283,9 @@ namespace wbsh {
 			std::printf("uid=%d(%s) gid=%d(%s) groups=%d(%s)\n",
 				uid, user.c_str(), gid, user.c_str(), gid, user.c_str());
 		}
+
 		return 0;
 	}
-
-	// ---- realpath / readlink --------------------------------------------
 
 	static int builtin_realpath(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) { perr("realpath", "missing operand"); return 1; }
@@ -1796,6 +1297,7 @@ namespace wbsh {
 			if (ec) { perr("realpath", p, ec); rc = 1; continue; }
 			std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(nat)).c_str());
 		}
+
 		return rc;
 	}
 
@@ -1806,6 +1308,7 @@ namespace wbsh {
 			if (a == "-f" || a == "-e" || a == "-m" || a == "--canonicalize") canonical = true;
 			else if (!a.empty() && a[0] != '-') paths.push_back(a);
 		}
+
 		if (paths.empty()) { perr("readlink", "missing operand"); return 1; }
 		int rc = 0;
 		for (const auto& p : paths) {
@@ -1821,13 +1324,10 @@ namespace wbsh {
 				std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(q)).c_str());
 			}
 		}
+
 		return rc;
 	}
 
-	// ---- expr (simple) ---------------------------------------------------
-
-	// 3-arg `expr L OP R` with integer-valued L and R. Returns the exit status,
-	// or -1 to indicate "operator wasn't recognised; caller should fall through".
 	static int exprBinaryIntOp(long long li, long long ri, const std::string& op) {
 		if (op == "+") { std::printf("%lld\n", li + ri); return 0; }
 		if (op == "-") { std::printf("%lld\n", li - ri); return 0; }
@@ -1836,10 +1336,12 @@ namespace wbsh {
 			if (ri == 0) return 2;
 			std::printf("%lld\n", li / ri); return 0;
 		}
+
 		if (op == "%") {
 			if (ri == 0) return 2;
 			std::printf("%lld\n", li % ri); return 0;
 		}
+
 		if (op == "<")  { std::printf("%d\n", li <  ri); return (li <  ri) ? 0 : 1; }
 		if (op == "<=") { std::printf("%d\n", li <= ri); return (li <= ri) ? 0 : 1; }
 		if (op == ">")  { std::printf("%d\n", li >  ri); return (li >  ri) ? 0 : 1; }
@@ -1847,33 +1349,34 @@ namespace wbsh {
 		if (op == "=" || op == "==") {
 			std::printf("%d\n", li == ri); return (li == ri) ? 0 : 1;
 		}
+
 		if (op == "!=") {
 			std::printf("%d\n", li != ri); return (li != ri) ? 0 : 1;
 		}
+
 		return -1;
 	}
 
-	// `expr L OP R` string fallback when L or R isn't numeric. Returns the
-	// exit status, or -1 if the operator isn't one of the string-comparable ones.
 	static int exprBinaryStringOp(const std::string& l, const std::string& r,
 	                              const std::string& op) {
 		if (op == "=" || op == "==") {
 			std::printf("%d\n", l == r); return (l == r) ? 0 : 1;
 		}
+
 		if (op == "!=") {
 			std::printf("%d\n", l != r); return (l != r) ? 0 : 1;
 		}
+
 		return -1;
 	}
 
 	static int builtin_expr(Executor&, const std::vector<std::string>& args) {
-		// Tiny `expr`: integer arithmetic + string `length`, `substr`, `index`.
-		// Not full POSIX, but handles common scripts.
 		if (args.empty()) { perr("expr", "missing operand"); return 2; }
 		if (args.size() == 2 && args[0] == "length") {
 			std::printf("%zu\n", args[1].size());
 			return 0;
 		}
+
 		if (args.size() == 4 && args[0] == "substr") {
 			int p = 0, n = 0;
 			if (!parseInt(args[2], p) || !parseInt(args[3], n)) return 2;
@@ -1883,6 +1386,7 @@ namespace wbsh {
 			std::printf("%s\n", args[1].substr(start, n).c_str());
 			return 0;
 		}
+
 		if (args.size() == 3) {
 			const std::string& l  = args[0];
 			const std::string& op = args[1];
@@ -1897,712 +1401,16 @@ namespace wbsh {
 				if (rc >= 0) return rc;
 			}
 		}
-		// Fallback: print joined with spaces.
+
 		std::string out;
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			if (i) out.push_back(' ');
 			out += args[i];
 		}
+
 		std::printf("%s\n", out.c_str());
 		return 0;
 	}
-
-	// ---- grep ------------------------------------------------------------
-
-	namespace grep_internal {
-		struct GrepOptions {
-			bool icase = false;
-			bool invert = false;
-			bool line_no = false;
-			bool count_only = false;
-			bool fixed = false;
-			bool list_only = false;
-			bool quiet = false;
-			bool recursive = false;
-			bool whole_line = false;
-			std::string pattern;
-			std::vector<std::string> files;
-		};
-
-		// Per-line matcher state. Borrows `opts` and `re` from the caller; both
-		// must outlive the matcher. `lower_pat` is owned and is the lowercased
-		// pattern used for case-insensitive fixed-string matching.
-		struct GrepMatcher {
-			const GrepOptions* opts = nullptr;
-			const std::regex*  re   = nullptr;
-			std::string        lower_pat;
-		};
-	}  // namespace grep_internal
-
-	// Apply one short-option char (one cluster letter at a time).
-	// Returns false on unknown option (caller prints error and returns 2).
-	static bool applyGrepShortFlag(char c, grep_internal::GrepOptions& o) {
-		switch (c) {
-		case 'i': o.icase = true; return true;
-		case 'v': o.invert = true; return true;
-		case 'n': o.line_no = true; return true;
-		case 'c': o.count_only = true; return true;
-		case 'F': o.fixed = true; return true;
-		case 'E': return true;                 // ERE — accept, no-op
-		case 'l': o.list_only = true; return true;
-		case 'q': o.quiet = true; return true;
-		case 'r': case 'R': o.recursive = true; return true;
-		case 'x': o.whole_line = true; return true;
-		default:  return false;
-		}
-	}
-
-	// Returns 0 on success, 2 on unknown option (matching GNU grep's exit
-	// code for bad flags).
-	static int parseGrepArgs(const std::vector<std::string>& args,
-	                         grep_internal::GrepOptions& o) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "--") {
-				for (++i; i < args.size(); ++i) {
-					if (o.pattern.empty()) o.pattern = args[i];
-					else o.files.push_back(args[i]);
-				}
-				break;
-			}
-			if (a == "-e" && i + 1 < args.size()) { o.pattern = args[++i]; continue; }
-			if (a == "-i" || a == "--ignore-case")     { o.icase      = true; continue; }
-			if (a == "-v" || a == "--invert-match")    { o.invert     = true; continue; }
-			if (a == "-n" || a == "--line-number")     { o.line_no    = true; continue; }
-			if (a == "-c" || a == "--count")           { o.count_only = true; continue; }
-			if (a == "-F" || a == "--fixed-strings")   { o.fixed      = true; continue; }
-			if (a == "-E" || a == "--extended-regexp") continue;
-			if (a == "-l") { o.list_only = true; continue; }
-			if (a == "-q" || a == "--quiet" || a == "--silent") { o.quiet = true; continue; }
-			if (a == "-r" || a == "-R" || a == "--recursive") { o.recursive = true; continue; }
-			if (a == "-x" || a == "--line-regexp") { o.whole_line = true; continue; }
-
-			// Short-flag cluster.
-			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					if (!applyGrepShortFlag(a[k], o)) {
-						std::fprintf(stderr, "wbsh: grep: unknown option -%c\n", a[k]);
-						return 2;
-					}
-				}
-				continue;
-			}
-
-			// Positionals: first one is the pattern, rest are files.
-			if (o.pattern.empty()) o.pattern = a;
-			else o.files.push_back(a);
-		}
-		return 0;
-	}
-
-	// `-r`: descend each directory in `files`, replacing it with its
-	// regular-file contents. Stdin marker `-` is preserved.
-	static std::vector<std::string> expandGrepRecursive(Executor& exec,
-	                                                    const std::vector<std::string>& files) {
-		std::vector<std::string> out;
-		for (const auto& f : files) {
-			if (f == "-") { out.push_back(f); continue; }
-			fs::path nat = toNative(exec, f);
-			std::error_code ec;
-			if (!fs::is_directory(nat, ec)) {
-				out.push_back(f);
-				continue;
-			}
-			fs::recursive_directory_iterator it(nat,
-				fs::directory_options::skip_permission_denied, ec);
-			if (ec) continue;
-			for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
-				if (ec) break;
-				std::error_code fec;
-				if (cur->is_regular_file(fec)) {
-					std::string p = pathToUtf8(cur->path());
-					std::replace(p.begin(), p.end(), '\\', '/');
-					out.push_back(std::move(p));
-				}
-			}
-		}
-		return out;
-	}
-
-	// Initialise `out` so matchesGrepLine() can be called against `o` and
-	// `re`. The matcher borrows both — they must outlive it.
-	static void prepareGrepMatcher(const grep_internal::GrepOptions& o,
-	                               const std::regex& re,
-	                               grep_internal::GrepMatcher& out) {
-		out.opts = &o;
-		out.re   = &re;
-		out.lower_pat.clear();
-		if (o.fixed && o.icase) {
-			out.lower_pat = o.pattern;
-			for (char& c : out.lower_pat)
-				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		}
-	}
-
-	// Test whether `line` matches under `m`. Replaces what used to be the
-	// closure produced by makeGrepMatcher: fixed-string vs regex, plus the
-	// case-insensitive and whole-line variants.
-	static bool matchesGrepLine(const grep_internal::GrepMatcher& m,
-	                            const std::string& line) {
-		const grep_internal::GrepOptions& o = *m.opts;
-		if (o.fixed) {
-			if (o.whole_line) {
-				if (line.size() != o.pattern.size()) return false;
-				if (!o.icase) return line == o.pattern;
-				for (std::size_t k = 0; k < line.size(); ++k) {
-					if (std::tolower(static_cast<unsigned char>(line[k])) !=
-					    std::tolower(static_cast<unsigned char>(o.pattern[k])))
-						return false;
-				}
-				return true;
-			}
-			if (!o.icase) return line.find(o.pattern) != std::string::npos;
-			std::string lo = line;
-			for (char& c : lo)
-				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			return lo.find(m.lower_pat) != std::string::npos;
-		}
-		if (o.whole_line) return std::regex_match(line, *m.re);
-		return std::regex_search(line, *m.re);
-	}
-
-	// Scan one file's lines against `matcher`, emitting matches per the
-	// grep options. Sets `*any_match` if anything matched in any file
-	// (across calls). Returns 1 if the file's I/O failed.
-	static int grepOneFile(const std::string& f,
-	                       const grep_internal::GrepOptions& o,
-	                       const grep_internal::GrepMatcher& matcher,
-	                       bool show_filename, bool* any_match, Executor& exec) {
-		std::vector<std::string> lines;
-		if (!readAllLines(exec, f, lines)) {
-			perr("grep", f + ": " + std::strerror(errno));
-			return 2;
-		}
-		int file_count = 0;
-		for (std::size_t k = 0; k < lines.size(); ++k) {
-			bool m = matchesGrepLine(matcher, lines[k]);
-			if (o.invert) m = !m;
-			if (!m) continue;
-
-			++file_count;
-			*any_match = true;
-			if (o.quiet) return 0;          // caller short-circuits anyway
-			if (o.list_only) { std::printf("%s\n", f.c_str()); return 0; }
-			if (o.count_only) continue;
-			if (show_filename) std::printf("%s:", f.c_str());
-			if (o.line_no)     std::printf("%zu:", k + 1);
-			std::printf("%s\n", lines[k].c_str());
-		}
-		if (o.count_only && !o.list_only && !o.quiet) {
-			if (show_filename) std::printf("%s:", f.c_str());
-			std::printf("%d\n", file_count);
-		}
-		return 0;
-	}
-
-	static int builtin_grep(Executor& exec, const std::vector<std::string>& args) {
-		grep_internal::GrepOptions o;
-		const int parse_rc = parseGrepArgs(args, o);
-		if (parse_rc != 0) return parse_rc;
-
-		if (o.pattern.empty()) { perr("grep", "missing pattern"); return 2; }
-		if (o.files.empty())   o.files.push_back(o.recursive ? "." : "-");
-		if (o.recursive)       o.files = expandGrepRecursive(exec, o.files);
-
-		std::regex re;
-		if (!o.fixed) {
-			std::regex::flag_type flags = std::regex::ECMAScript;
-			if (o.icase) flags |= std::regex::icase;
-			if (!compileRegex(re, o.pattern, flags)) {
-				perr("grep", "bad pattern: " + o.pattern);
-				return 2;
-			}
-		}
-		grep_internal::GrepMatcher matcher;
-		prepareGrepMatcher(o, re, matcher);
-
-		bool any_match = false;
-		const bool show_filename = o.files.size() > 1;
-		int rc = 1;   // default: no match
-		for (const auto& f : o.files) {
-			const int file_rc = grepOneFile(f, o, matcher, show_filename, &any_match, exec);
-			if (file_rc == 2) rc = 2;
-		}
-		std::fflush(stdout);
-		if (o.quiet) return any_match ? 0 : 1;
-		return any_match ? 0 : rc;
-	}
-
-	// ---- find ------------------------------------------------------------
-
-	namespace find_internal {
-		struct FindOptions {
-			std::vector<std::string> roots;
-			std::string name_pat;
-			char type_filter = 0;   // 0 = any, 'f', 'd', 'l'
-			int max_depth = -1;
-		};
-	}  // namespace find_internal
-
-	// Returns 0 on success, 1 on a recoverable usage error (bad option).
-	static int parseFindArgs(const std::vector<std::string>& args,
-	                         find_internal::FindOptions& o) {
-		std::size_t i = 0;
-		while (i < args.size()) {
-			const std::string& a = args[i];
-			if (a == "-name" && i + 1 < args.size()) {
-				o.name_pat = args[++i];
-				++i;
-				continue;
-			}
-			if (a == "-type" && i + 1 < args.size()) {
-				if (!args[i + 1].empty()) o.type_filter = args[i + 1][0];
-				i += 2;
-				continue;
-			}
-			if (a == "-maxdepth" && i + 1 < args.size()) {
-				if (!parseInt(args[++i], o.max_depth)) {
-					perr("find", "bad -maxdepth");
-					return 1;
-				}
-				++i;
-				continue;
-			}
-			if (!a.empty() && a[0] == '-') {
-				std::fprintf(stderr,
-					"wbsh: find: option %s not implemented\n", a.c_str());
-				return 1;
-			}
-			o.roots.push_back(a);
-			++i;
-		}
-		if (o.roots.empty()) o.roots.push_back(".");
-		return 0;
-	}
-
-	// Compile the `-name` glob (with * / ?) into a regex matcher. Empty
-	// pattern means "match anything".
-	static bool findNameMatches(const std::string& name_pat, const std::string& name) {
-		if (name_pat.empty()) return true;
-		std::string r;
-		for (char c : name_pat) {
-			switch (c) {
-			case '*': r += ".*"; break;
-			case '?': r += ".";  break;
-			case '.': case '+': case '(': case ')': case '|':
-			case '^': case '$': case '{': case '}': case '\\':
-				r.push_back('\\');
-				r.push_back(c);
-				break;
-			default:  r.push_back(c); break;
-			}
-		}
-		std::regex re;
-		if (!compileRegex(re, "^(?:" + r + ")$")) return false;
-		return searchRegex(name, re);
-	}
-
-	static bool findTypeMatches(char type_filter, const fs::path& p) {
-		if (type_filter == 0) return true;
-		std::error_code ec;
-		const auto st = fs::symlink_status(p, ec);
-		if (ec) return false;
-		if (type_filter == 'l') return fs::is_symlink(st);
-		if (type_filter == 'd') return fs::is_directory(st);
-		if (type_filter == 'f') return fs::is_regular_file(st);
-		return true;
-	}
-
-	// Walk one root, emitting matching paths (relative to the original root
-	// shape — POSIX-form via PathConv).
-	static void walkAndPrintFindMatches(Executor& exec,
-	                                    const find_internal::FindOptions& o,
-	                                    const fs::path& nat,
-	                                    const std::string& root_arg) {
-		std::error_code ec;
-		// Print the root itself if it matches.
-		const std::string root_basename = pathToUtf8(nat.filename()).empty()
-			? root_arg
-			: pathToUtf8(nat.filename());
-		if (findTypeMatches(o.type_filter, nat)
-		    && findNameMatches(o.name_pat, root_basename)) {
-			std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(nat)).c_str());
-		}
-		if (!fs::is_directory(nat, ec)) return;
-
-		fs::recursive_directory_iterator it(nat,
-			fs::directory_options::skip_permission_denied, ec);
-		if (ec) return;
-		for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
-			if (ec) break;
-			if (o.max_depth >= 0 && cur.depth() >= o.max_depth) {
-				cur.disable_recursion_pending();
-			}
-			const fs::path p = cur->path();
-			if (!findTypeMatches(o.type_filter, p)) continue;
-			if (!findNameMatches(o.name_pat, pathToUtf8(p.filename()))) continue;
-			std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(p)).c_str());
-		}
-	}
-
-	static int builtin_find(Executor& exec, const std::vector<std::string>& args) {
-		find_internal::FindOptions o;
-		const int parse_rc = parseFindArgs(args, o);
-		if (parse_rc != 0) return parse_rc;
-
-		int rc = 0;
-		for (const auto& r : o.roots) {
-			std::error_code ec;
-			const fs::path nat = toNative(exec, r);
-			if (!fs::exists(nat, ec)) {
-				std::fprintf(stderr,
-					"wbsh: find: %s: no such file or directory\n", r.c_str());
-				rc = 1;
-				continue;
-			}
-			walkAndPrintFindMatches(exec, o, nat, r);
-		}
-		std::fflush(stdout);
-		return rc;
-	}
-
-	// ---- tar (ustar, uncompressed) -------------------------------------
-
-	struct TarHeader {
-		char name[100];
-		char mode[8];
-		char uid[8];
-		char gid[8];
-		char size[12];
-		char mtime[12];
-		char chksum[8];
-		char typeflag;
-		char linkname[100];
-		char magic[6];     // "ustar\0"
-		char version[2];   // "00"
-		char uname[32];
-		char gname[32];
-		char devmajor[8];
-		char devminor[8];
-		char prefix[155];
-		char pad[12];
-	};
-	static_assert(sizeof(TarHeader) == 512, "tar header must be 512 bytes");
-
-	static void tarOctal(char* dst, std::size_t width, std::uintmax_t v) {
-		std::string s;
-		while (v > 0) { s.insert(s.begin(), char('0' + (v & 7))); v >>= 3; }
-		if (s.empty()) s = "0";
-		while (s.size() < width - 1) s.insert(s.begin(), '0');
-		std::memset(dst, 0, width);
-		std::memcpy(dst, s.data(), (std::min)(s.size(), width - 1));
-	}
-
-	std::uintmax_t tarParseOctal(const char* p, std::size_t n) {
-		std::uintmax_t v = 0;
-		for (std::size_t i = 0; i < n && p[i] && p[i] != ' '; ++i) {
-			if (p[i] < '0' || p[i] > '7') break;
-			v = (v << 3) | (p[i] - '0');
-		}
-		return v;
-	}
-
-	static void tarFillChecksum(TarHeader* h) {
-		std::memset(h->chksum, ' ', sizeof(h->chksum));
-		std::uintmax_t s = 0;
-		const unsigned char* p = reinterpret_cast<const unsigned char*>(h);
-		for (std::size_t i = 0; i < sizeof(*h); ++i) s += p[i];
-		tarOctal(h->chksum, 7, s);
-		h->chksum[6] = '\0';
-		h->chksum[7] = ' ';
-	}
-
-	static bool tarWriteEntry(FILE* out, const fs::path& src, const std::string& rel,
-		bool verbose) {
-		std::error_code ec;
-		fs::file_status st = fs::symlink_status(src, ec);
-		if (ec) return false;
-		TarHeader h{};
-		std::string name = rel;
-		std::replace(name.begin(), name.end(), '\\', '/');
-		if (fs::is_directory(st)) {
-			if (!name.empty() && name.back() != '/') name.push_back('/');
-			h.typeflag = '5';
-		}
-		else {
-			h.typeflag = '0';
-		}
-		if (name.size() >= sizeof(h.name)) {
-			std::fprintf(stderr, "wbsh: tar: name too long: %s\n", name.c_str());
-			return false;
-		}
-		std::strncpy(h.name, name.c_str(), sizeof(h.name) - 1);
-		tarOctal(h.mode, 8, 0644);
-		tarOctal(h.uid, 8, 0);
-		tarOctal(h.gid, 8, 0);
-		std::uintmax_t size = (h.typeflag == '5') ? 0 : fs::file_size(src, ec);
-		if (ec) size = 0;
-		tarOctal(h.size, 12, size);
-		std::time_t mt = 0;
-		{
-			auto t = fs::last_write_time(src, ec);
-			if (!ec) {
-				mt = std::chrono::system_clock::to_time_t(
-					std::chrono::system_clock::now()
-					+ std::chrono::duration_cast<std::chrono::system_clock::duration>(
-						t - fs::file_time_type::clock::now()));
-			}
-		}
-		tarOctal(h.mtime, 12, static_cast<std::uintmax_t>(mt));
-		std::memcpy(h.magic, "ustar\0", 6);
-		std::memcpy(h.version, "00", 2);
-		tarFillChecksum(&h);
-		std::fwrite(&h, 1, sizeof(h), out);
-		if (verbose) std::fprintf(stderr, "%s\n", name.c_str());
-		if (h.typeflag != '5' && size > 0) {
-			FILE* in = openUtf8(pathToUtf8(src), "rb");
-			if (!in) return false;
-			char buf[512];
-			std::uintmax_t left = size;
-			while (left > 0) {
-				std::size_t want = (std::min)(static_cast<std::uintmax_t>(512), left);
-				std::size_t got = std::fread(buf, 1, want, in);
-				if (got == 0) break;
-				std::fwrite(buf, 1, got, out);
-				if (got < 512) {
-					char zero[512] = {};
-					std::fwrite(zero, 1, 512 - got, out);
-				}
-				left -= got;
-			}
-			std::fclose(in);
-		}
-		return true;
-	}
-
-	static int tarCreate(Executor& exec, const std::string& archive,
-		const std::vector<std::string>& items, bool verbose) {
-		FILE* out = fopenNative(exec, archive, "wb");
-		if (!out) { perr("tar", archive + ": " + std::strerror(errno)); return 1; }
-		int rc = 0;
-		for (const auto& item : items) {
-			fs::path nat(toNative(exec, item));
-			std::error_code ec;
-			if (!fs::exists(nat, ec)) {
-				perr("tar", item + ": not found");
-				rc = 1;
-				continue;
-			}
-			if (fs::is_directory(nat, ec)) {
-				tarWriteEntry(out, nat, item, verbose);
-				fs::recursive_directory_iterator it(nat,
-					fs::directory_options::skip_permission_denied, ec);
-				if (ec) continue;
-				for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
-					if (ec) break;
-					std::error_code rec;
-					std::string rel = item + "/" + pathToUtf8(fs::relative(cur->path(), nat, rec));
-					tarWriteEntry(out, cur->path(), rel, verbose);
-				}
-			}
-			else {
-				tarWriteEntry(out, nat, item, verbose);
-			}
-		}
-		char zero[1024] = {};
-		std::fwrite(zero, 1, 1024, out);
-		std::fclose(out);
-		return rc;
-	}
-
-	static int tarExtract(Executor& exec, const std::string& archive,
-	                      bool verbose, bool list_only) {
-		FILE* in = fopenNative(exec, archive, "rb");
-		if (!in) { perr("tar", archive + ": " + std::strerror(errno)); return 1; }
-		int rc = 0;
-		while (true) {
-			TarHeader h{};
-			std::size_t got = std::fread(&h, 1, sizeof(h), in);
-			if (got != sizeof(h)) break;
-			bool all_zero = true;
-			const unsigned char* p = reinterpret_cast<const unsigned char*>(&h);
-			for (std::size_t k = 0; k < sizeof(h); ++k) {
-				if (p[k]) { all_zero = false; break; }
-			}
-			if (all_zero) break;
-			std::string name(h.name, ::strnlen(h.name, sizeof(h.name)));
-			std::uintmax_t size = tarParseOctal(h.size, sizeof(h.size));
-			bool is_dir = (h.typeflag == '5')
-				|| (!name.empty() && name.back() == '/');
-			if (verbose || list_only) std::printf("%s\n", name.c_str());
-			if (list_only) {
-				std::uintmax_t skip = (size + 511) & ~static_cast<std::uintmax_t>(511);
-				std::fseek(in, static_cast<long>(skip), SEEK_CUR);
-				continue;
-			}
-			if (is_dir) {
-				std::error_code ec;
-				fs::create_directories(toNative(exec, name), ec);
-				std::uintmax_t skip = (size + 511) & ~static_cast<std::uintmax_t>(511);
-				std::fseek(in, static_cast<long>(skip), SEEK_CUR);
-				continue;
-			}
-			// Ensure parent dir.
-			{
-				fs::path p(toNative(exec, name));
-				std::error_code ec;
-				fs::create_directories(p.parent_path(), ec);
-			}
-			FILE* out = fopenNative(exec, name, "wb");
-			if (!out) {
-				perr("tar", name + ": " + std::strerror(errno));
-				rc = 1;
-				std::uintmax_t skip = (size + 511) & ~static_cast<std::uintmax_t>(511);
-				std::fseek(in, static_cast<long>(skip), SEEK_CUR);
-				continue;
-			}
-			char buf[512];
-			std::uintmax_t left = size;
-			while (left > 0) {
-				std::size_t want = 512;
-				std::size_t r = std::fread(buf, 1, want, in);
-				if (r == 0) break;
-				std::size_t writeN = (left >= 512) ? 512 : static_cast<std::size_t>(left);
-				std::fwrite(buf, 1, writeN, out);
-				left -= writeN;
-			}
-			std::fclose(out);
-		}
-		std::fclose(in);
-		return rc;
-	}
-
-	static int builtin_tar(Executor& exec, const std::vector<std::string>& args) {
-		char mode = 0;
-		bool verbose = false;
-		std::string archive;
-		std::vector<std::string> items;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (!a.empty() && a[0] == '-' && a.size() > 1) {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					char c = a[k];
-					if (c == 'c' || c == 'x' || c == 't') mode = c;
-					else if (c == 'v') verbose = true;
-					else if (c == 'f') {
-						if (k + 1 < a.size()) archive = a.substr(k + 1);
-						else if (i + 1 < args.size()) archive = args[++i];
-						k = a.size();
-					}
-				}
-				continue;
-			}
-			items.push_back(a);
-		}
-		if (mode == 0) { perr("tar", "specify -c, -x, or -t"); return 2; }
-		if (archive.empty()) { perr("tar", "missing -f ARCHIVE"); return 2; }
-		switch (mode) {
-		case 'c': return tarCreate(exec, archive, items, verbose);
-		case 'x': return tarExtract(exec, archive, verbose, false);
-		case 't': return tarExtract(exec, archive, false, true);
-		}
-		return 2;
-	}
-
-
-	// ---- base64 ---------------------------------------------------------
-
-	const char* kB64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-	static std::string base64Encode(const std::vector<unsigned char>& in) {
-		std::string out;
-		std::size_t n = in.size();
-		out.reserve(((n + 2) / 3) * 4);
-		for (std::size_t i = 0; i < n; i += 3) {
-			unsigned int v = static_cast<unsigned int>(in[i]) << 16;
-			if (i + 1 < n) v |= static_cast<unsigned int>(in[i + 1]) << 8;
-			if (i + 2 < n) v |= static_cast<unsigned int>(in[i + 2]);
-			out.push_back(kB64[(v >> 18) & 0x3F]);
-			out.push_back(kB64[(v >> 12) & 0x3F]);
-			out.push_back((i + 1 < n) ? kB64[(v >> 6) & 0x3F] : '=');
-			out.push_back((i + 2 < n) ? kB64[v & 0x3F] : '=');
-		}
-		return out;
-	}
-
-	static std::vector<unsigned char> base64Decode(const std::string& in, bool& ok) {
-		ok = true;
-		int dec[256];
-		for (int i = 0; i < 256; ++i) dec[i] = -1;
-		for (int i = 0; i < 64; ++i) dec[static_cast<unsigned char>(kB64[i])] = i;
-		std::vector<unsigned char> out;
-		int v = 0, bits = 0;
-		for (char c : in) {
-			if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
-			if (c == '=') break;
-			int d = dec[static_cast<unsigned char>(c)];
-			if (d < 0) { ok = false; return out; }
-			v = (v << 6) | d;
-			bits += 6;
-			if (bits >= 8) {
-				bits -= 8;
-				out.push_back(static_cast<unsigned char>((v >> bits) & 0xFF));
-			}
-		}
-		return out;
-	}
-
-	static int builtin_base64(Executor& exec, const std::vector<std::string>& args) {
-		bool decode = false;
-		std::string file = "-";
-		std::size_t wrap = 76;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-d" || a == "--decode") { decode = true; continue; }
-			if (a == "-w" && i + 1 < args.size()) {
-				unsigned long w = 0;
-				if (parseUL(args[++i], w)) wrap = w;
-				continue;
-			}
-			if (!a.empty() && a[0] == '-' && a != "-") continue;
-			file = a;
-		}
-		FILE* fp = (file == "-") ? stdin : fopenNative(exec, file, "rb");
-		if (!fp) {
-			std::fprintf(stderr, "wbsh: base64: %s: %s\n",
-				file.c_str(), std::strerror(errno));
-			return 1;
-		}
-		std::vector<unsigned char> bytes;
-		int c;
-		while ((c = std::fgetc(fp)) != EOF) bytes.push_back(static_cast<unsigned char>(c));
-		if (fp != stdin) std::fclose(fp);
-		if (decode) {
-			std::string s(bytes.begin(), bytes.end());
-			bool ok;
-			auto out = base64Decode(s, ok);
-			if (!ok) { perr("base64", "invalid input"); return 1; }
-			std::fwrite(out.data(), 1, out.size(), stdout);
-		}
-		else {
-			std::string out = base64Encode(bytes);
-			if (wrap > 0) {
-				for (std::size_t i = 0; i < out.size(); i += wrap) {
-					std::size_t take = (std::min)(wrap, out.size() - i);
-					std::fwrite(out.data() + i, 1, take, stdout);
-					std::fputc('\n', stdout);
-				}
-			}
-			else {
-				std::fwrite(out.data(), 1, out.size(), stdout);
-				std::fputc('\n', stdout);
-			}
-		}
-		std::fflush(stdout);
-		return 0;
-	}
-
-	// ---- cmp ------------------------------------------------------------
 
 	static int builtin_cmp(Executor& exec, const std::vector<std::string>& args) {
 		std::vector<std::string> files;
@@ -2612,10 +1420,12 @@ namespace wbsh {
 			if (!a.empty() && a[0] == '-') continue;
 			files.push_back(a);
 		}
+
 		if (files.size() < 2) {
 			perr("cmp", "usage: cmp [-s] FILE1 FILE2");
 			return 2;
 		}
+
 		FILE* f1 = fopenNative(exec, files[0], "rb");
 		if (!f1) { if (!quiet) perr("cmp", files[0] + ": " + std::strerror(errno)); return 2; }
 		FILE* f2 = fopenNative(exec, files[1], "rb");
@@ -2624,6 +1434,7 @@ namespace wbsh {
 			if (!quiet) perr("cmp", files[1] + ": " + std::strerror(errno));
 			return 2;
 		}
+
 		long long byte = 0, line = 1;
 		int rc = 0;
 		while (true) {
@@ -2636,25 +1447,28 @@ namespace wbsh {
 					std::fprintf(stderr, "cmp: EOF on %s\n",
 						(a == EOF ? files[0].c_str() : files[1].c_str()));
 				}
+
 				rc = 1;
 				break;
 			}
+
 			if (a != b) {
 				if (!quiet) {
 					std::printf("%s %s differ: byte %lld, line %lld\n",
 						files[0].c_str(), files[1].c_str(), byte, line);
 				}
+
 				rc = 1;
 				break;
 			}
+
 			if (a == '\n') ++line;
 		}
+
 		std::fclose(f1);
 		std::fclose(f2);
 		return rc;
 	}
-
-	// ---- diff (line-LCS, normal output) --------------------------------
 
 	static void diffEmitRange(int a, int b) {
 		if (a == b) std::printf("%d", a);
@@ -2669,18 +1483,16 @@ namespace wbsh {
 			std::vector<std::string> files;
 		};
 
-		// Item in a unified-diff edit script, in source order.
 		struct UnifiedItem {
-			char kind;        // ' ', '-', '+'
-			int a, b;         // 1-based line numbers in A / B (0 if N/A)
+			char kind;
+			int a, b;
 			std::string text;
 		};
 
-		// One change region in normal-format diff output.
 		struct NormalHunk {
 			int a1, a2;
 			int b1, b2;
-			char kind;        // 'a' = add, 'd' = delete, 'c' = change
+			char kind;
 		};
 	}  // namespace diff_internal
 
@@ -2695,18 +1507,20 @@ namespace wbsh {
 				parseInt(a.substr(2), o.context);
 				continue;
 			}
+
 			if (a == "-U" && i + 1 < args.size()) {
 				o.unified = true;
 				parseInt(args[++i], o.context);
 				continue;
 			}
+
 			if (!a.empty() && a[0] == '-') continue;
 			o.files.push_back(a);
 		}
+
 		return o;
 	}
 
-	// LCS dynamic-programming table (m+1) x (n+1) for line lists A and B.
 	static std::vector<std::vector<int>>
 	buildLcsTable(const std::vector<std::string>& A, const std::vector<std::string>& B) {
 		const std::size_t m = A.size();
@@ -2718,12 +1532,10 @@ namespace wbsh {
 				else                      L[i][j] = (std::max)(L[i - 1][j], L[i][j - 1]);
 			}
 		}
+
 		return L;
 	}
 
-	// Walk the LCS table backwards into a forward-ordered list of edit
-	// items, classifying each line as ' ' (common), '-' (in A only), or
-	// '+' (in B only).
 	static std::vector<diff_internal::UnifiedItem>
 	walkLcsToUnifiedItems(const std::vector<std::string>& A,
 	                      const std::vector<std::string>& B,
@@ -2743,13 +1555,11 @@ namespace wbsh {
 				--ai;
 			}
 		}
+
 		std::reverse(items.begin(), items.end());
 		return items;
 	}
 
-	// Find the index just past the last change-or-near-change in the run
-	// starting at `i`. Allows up to 2*context contiguous common lines
-	// inside a single hunk before splitting.
 	static int findHunkLastChange(const std::vector<diff_internal::UnifiedItem>& items,
 	                              int i, int context) {
 		const int N = static_cast<int>(items.size());
@@ -2761,24 +1571,24 @@ namespace wbsh {
 				++j;
 				continue;
 			}
-			// Look ahead: if the run of common lines is short enough to
-			// keep the surrounding changes in a single hunk, swallow it.
+
 			int run = 0;
 			int k = j;
 			while (k < N && items[k].kind == ' ' && run < 2 * context) {
 				++run;
 				++k;
 			}
+
 			if (k < N && items[k].kind != ' ') {
 				j = k;
 				continue;
 			}
 			break;
 		}
+
 		return last_change;
 	}
 
-	// Emit one `@@ -A,B +C,D @@` hunk and its body lines.
 	static void emitUnifiedHunk(const std::vector<diff_internal::UnifiedItem>& items,
 	                            int hstart, int hend) {
 		int a_start = 0, a_count = 0, b_start = 0, b_count = 0;
@@ -2787,11 +1597,13 @@ namespace wbsh {
 				if (a_count == 0) a_start = items[k].a;
 				++a_count;
 			}
+
 			if (items[k].kind != '-') {
 				if (b_count == 0) b_start = items[k].b;
 				++b_count;
 			}
 		}
+
 		std::printf("@@ -%d,%d +%d,%d @@\n",
 			a_count == 0 ? 0 : a_start, a_count,
 			b_count == 0 ? 0 : b_start, b_count);
@@ -2821,10 +1633,10 @@ namespace wbsh {
 			emitUnifiedHunk(items, hstart, hend);
 			i = hend + 1;
 		}
+
 		return 1;
 	}
 
-	// Backtrack the LCS into normal-format hunks (a/d/c).
 	static std::vector<diff_internal::NormalHunk>
 	buildNormalHunks(const std::vector<std::string>& A,
 	                 const std::vector<std::string>& B,
@@ -2837,12 +1649,14 @@ namespace wbsh {
 				--i; --j;
 				continue;
 			}
+
 			const std::size_t ei = i;
 			const std::size_t ej = j;
 			while (i > 0 && j > 0 && A[i - 1] != B[j - 1]) {
 				if (L[i - 1][j] >= L[i][j - 1]) --i;
 				else                            --j;
 			}
+
 			while (i > 0 && (j == 0 || L[i - 1][j] >= L[i][j])) --i;
 			while (j > 0 && (i == 0 || L[i][j - 1] >  L[i][j])) --j;
 
@@ -2856,6 +1670,7 @@ namespace wbsh {
 			else                          { kind = 'c'; }
 			hunks.push_back({ a1, a2, b1, b2, kind });
 		}
+
 		std::reverse(hunks.begin(), hunks.end());
 		return hunks;
 	}
@@ -2864,8 +1679,6 @@ namespace wbsh {
 	                          const std::vector<std::string>& B,
 	                          const std::vector<std::vector<int>>& L) {
 		const auto hunks = buildNormalHunks(A, B, L);
-		// Each normal-format hunk is: range opcode range, optional `<` block,
-		// optional `---` separator, optional `>` block.
 		for (const auto& h : hunks) {
 			diffEmitRange(h.a1, h.a2);
 			std::putchar(h.kind);
@@ -2877,6 +1690,7 @@ namespace wbsh {
 						std::printf("< %s\n", A[k - 1].c_str());
 				}
 			}
+
 			if (h.kind == 'c') std::puts("---");
 			if (h.kind == 'a' || h.kind == 'c') {
 				for (int k = h.b1; k <= h.b2; ++k) {
@@ -2885,6 +1699,7 @@ namespace wbsh {
 				}
 			}
 		}
+
 		return 1;
 	}
 
@@ -2894,6 +1709,7 @@ namespace wbsh {
 			perr("diff", "usage: diff [-q] FILE1 FILE2");
 			return 2;
 		}
+
 		std::vector<std::string> A;
 		std::vector<std::string> B;
 		if (!readAllLines(exec, o.files[0], A) || !readAllLines(exec, o.files[1], B))
@@ -2910,16 +1726,16 @@ namespace wbsh {
 		if (o.unified) {
 			return emitUnifiedDiff(A, B, L, o.files[0], o.files[1], o.context);
 		}
+
 		return emitNormalDiff(A, B, L);
 	}
-
-	// ---- du -------------------------------------------------------------
 
 	std::uintmax_t walkSize(const fs::path& p, std::error_code& ec) {
 		std::uintmax_t total = 0;
 		if (fs::is_regular_file(p, ec)) {
 			return fs::file_size(p, ec);
 		}
+
 		if (!fs::is_directory(p, ec)) return 0;
 		fs::recursive_directory_iterator it(p,
 			fs::directory_options::skip_permission_denied, ec);
@@ -2932,7 +1748,41 @@ namespace wbsh {
 				if (!fec) total += s;
 			}
 		}
+
 		return total;
+	}
+
+	static std::string duFormatSize(std::uintmax_t bytes, bool human) {
+		if (human) return humanSize(bytes);
+		return std::to_string((bytes + 1023) / 1024);
+	}
+
+	static int duEmitDirectory(const fs::path& nat, const std::string& label,
+	                           bool human, bool all) {
+		std::error_code ec;
+		fs::recursive_directory_iterator it(nat,
+			fs::directory_options::skip_permission_denied, ec);
+		if (ec) {
+			std::fprintf(stderr, "wbsh: du: %s\n", ec.message().c_str());
+			return 1;
+		}
+
+		std::uintmax_t grand = 0;
+		for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
+			if (ec) break;
+			std::error_code fec;
+			if (cur->is_regular_file(fec)) {
+				std::uintmax_t s = cur->file_size(fec);
+				if (!fec) grand += s;
+				if (all) {
+					std::printf("%s\t%s\n",
+						duFormatSize(s, human).c_str(), pathToUtf8(cur->path()).c_str());
+				}
+			}
+		}
+
+		std::printf("%s\t%s\n", duFormatSize(grand, human).c_str(), label.c_str());
+		return 0;
 	}
 
 	static int builtin_du(Executor& exec, const std::vector<std::string>& args) {
@@ -2945,12 +1795,9 @@ namespace wbsh {
 			else if (!a.empty() && a[0] == '-') continue;
 			else paths.push_back(a);
 		}
+
 		if (paths.empty()) paths.push_back(".");
-		auto fmt = [&](std::uintmax_t bytes) -> std::string {
-			if (human) return humanSize(bytes);
-			// Default: 1024-byte blocks, like GNU du.
-			return std::to_string((bytes + 1023) / 1024);
-			};
+
 		int rc = 0;
 		for (const auto& p : paths) {
 			fs::path nat = toNative(exec, p);
@@ -2961,42 +1808,24 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			if (summary) {
 				std::uintmax_t total = walkSize(nat, ec);
-				std::printf("%s\t%s\n", fmt(total).c_str(), p.c_str());
+				std::printf("%s\t%s\n", duFormatSize(total, human).c_str(), p.c_str());
 				continue;
 			}
+
 			if (fs::is_regular_file(nat, ec)) {
 				std::printf("%s\t%s\n",
-					fmt(fs::file_size(nat, ec)).c_str(), p.c_str());
+					duFormatSize(fs::file_size(nat, ec), human).c_str(), p.c_str());
 				continue;
 			}
-			// Walk each entry; print directory totals as we ascend.
-			std::uintmax_t grand = 0;
-			fs::recursive_directory_iterator it(nat,
-				fs::directory_options::skip_permission_denied, ec);
-			if (ec) {
-				std::fprintf(stderr, "wbsh: du: %s\n", ec.message().c_str());
-				rc = 1; continue;
-			}
-			for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
-				if (ec) break;
-				std::error_code fec;
-				if (cur->is_regular_file(fec)) {
-					std::uintmax_t s = cur->file_size(fec);
-					if (!fec) grand += s;
-					if (all) {
-						std::printf("%s\t%s\n",
-							fmt(s).c_str(), pathToUtf8(cur->path()).c_str());
-					}
-				}
-			}
-			std::printf("%s\t%s\n", fmt(grand).c_str(), p.c_str());
+
+			rc |= duEmitDirectory(nat, p, human, all);
 		}
+
 		return rc;
 	}
-
-	// ---- df -------------------------------------------------------------
 
 	static int builtin_df(Executor& exec, const std::vector<std::string>& args) {
 		bool human = false;
@@ -3006,6 +1835,7 @@ namespace wbsh {
 			else if (!a.empty() && a[0] == '-') continue;
 			else paths.push_back(a);
 		}
+
 		std::vector<std::string> drives;
 		if (paths.empty()) {
 #ifdef _WIN32
@@ -3021,6 +1851,7 @@ namespace wbsh {
 		else {
 			for (const auto& p : paths) drives.push_back(pathToUtf8(toNative(exec, p)));
 		}
+
 		auto fmt = [&](std::uintmax_t b) -> std::string {
 			if (human) return humanSize(b);
 			return std::to_string(b / 1024);
@@ -3037,6 +1868,7 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			std::uintmax_t t = total.QuadPart;
 			std::uintmax_t a = avail.QuadPart;
 			std::uintmax_t u = (t > a) ? (t - a) : 0;
@@ -3048,280 +1880,9 @@ namespace wbsh {
 			(void)d;
 #endif
 		}
+
 		return rc;
 	}
-
-	// ---- sed (s/PAT/REPL/[g] only) --------------------------------------
-
-	struct SedSubst {
-		std::regex re;
-		std::string repl;
-		bool global = false;
-	};
-
-	// Translate a POSIX BRE pattern to its ERE equivalent. MSVC's
-	// `std::regex::basic` engine has greediness bugs with back-to-back
-	// `[^X]*` runs; running everything through the ERE engine after a
-	// purely-syntactic toggle of metacharacter status sidesteps that.
-	//
-	// Toggles outside `[...]`:
-	//   `\(` `\)` `\{` `\}` `\|`  ->  `(` `)` `{` `}` `|`
-	//   `(`  `)`  `{`  `}`  `|`   ->  `\(` `\)` `\{` `\}` `\|`
-	//   `+` `?`                    ->  `\+` `\?`  (literal in BRE)
-	// Inside `[...]` everything is left verbatim.
-	static std::string translateBreToErePattern(const std::string& bre) {
-		std::string out;
-		out.reserve(bre.size());
-		bool in_class = false;
-		bool class_start = false;
-		for (std::size_t i = 0; i < bre.size(); ++i) {
-			const char c = bre[i];
-			if (in_class) {
-				out.push_back(c);
-				// `]` immediately after `[` (or `[^`) is a literal — only
-				// after that does `]` close the class.
-				if (c == ']' && !class_start) { in_class = false; }
-				class_start = false;
-				continue;
-			}
-			if (c == '[') {
-				in_class = true;
-				class_start = true;
-				out.push_back(c);
-				// Allow leading `^` to negate without ending the class.
-				if (i + 1 < bre.size() && bre[i + 1] == '^') {
-					out.push_back('^');
-					++i;
-				}
-				continue;
-			}
-			if (c == '\\' && i + 1 < bre.size()) {
-				const char nx = bre[i + 1];
-				// BRE meta-pairs become bare ERE metas.
-				if (nx == '(' || nx == ')' || nx == '{' || nx == '}'
-				    || nx == '|') {
-					out.push_back(nx);
-					++i;
-					continue;
-				}
-				// Other escapes (incl. `\1`..`\9` backrefs) pass through.
-				out.push_back(c);
-				out.push_back(nx);
-				++i;
-				continue;
-			}
-			// Bare `(`, `)`, `{`, `}`, `|` are literals in BRE.
-			if (c == '(' || c == ')' || c == '{' || c == '}' || c == '|') {
-				out.push_back('\\');
-				out.push_back(c);
-				continue;
-			}
-			// `?` and `+` are literals in BRE (their `\?` / `\+` forms are
-			// undefined; we don't accept them either way).
-			if (c == '?' || c == '+') {
-				out.push_back('\\');
-				out.push_back(c);
-				continue;
-			}
-			out.push_back(c);
-		}
-		return out;
-	}
-
-	// Scan the pattern half of `s/PAT/REPL/...` up to (but not including) the
-	// closing delimiter. Backslash escapes are passed through unchanged so the
-	// regex engine sees them. Advances @p i past the delimiter on success.
-	static bool sedScanPattern(const std::string& cmd, char delim, std::size_t& i,
-	                           std::string& pat, std::string& err) {
-		while (i < cmd.size() && cmd[i] != delim) {
-			if (cmd[i] == '\\' && i + 1 < cmd.size()) {
-				pat.push_back(cmd[i]);
-				pat.push_back(cmd[i + 1]);
-				i += 2;
-				continue;
-			}
-			pat.push_back(cmd[i++]);
-		}
-		if (i >= cmd.size()) { err = "missing closing delimiter"; return false; }
-		++i;   // skip delim
-		return true;
-	}
-
-	// Scan the replacement half. Translates `\n`/`\t` to literals, `\N`
-	// backreferences to `$N` (std::regex syntax), and escapes bare `$` as `$$`.
-	static void sedScanReplacement(const std::string& cmd, char delim, std::size_t& i,
-	                               std::string& rep) {
-		while (i < cmd.size() && cmd[i] != delim) {
-			if (cmd[i] == '\\' && i + 1 < cmd.size()) {
-				char nx = cmd[i + 1];
-				if (nx == 'n') { rep.push_back('\n'); i += 2; continue; }
-				if (nx == 't') { rep.push_back('\t'); i += 2; continue; }
-				if (nx >= '0' && nx <= '9') {
-					rep.push_back('$'); rep.push_back(nx);
-					i += 2;
-					continue;
-				}
-				rep.push_back(nx);
-				i += 2;
-				continue;
-			}
-			if (cmd[i] == '$') { rep += "$$"; ++i; continue; }
-			rep.push_back(cmd[i++]);
-		}
-		if (i < cmd.size()) ++i;   // skip closing delim
-	}
-
-	static bool sedParseSubst(const std::string& cmd, bool extended,
-	                          SedSubst& out, std::string& err) {
-		if (cmd.size() < 4 || cmd[0] != 's') {
-			err = "only s/PAT/REPL/[g] is supported";
-			return false;
-		}
-		char delim = cmd[1];
-		std::size_t i = 2;
-		std::string pat, rep;
-		if (!sedScanPattern(cmd, delim, i, pat, err)) return false;
-		sedScanReplacement(cmd, delim, i, rep);
-		std::string flags = (i < cmd.size()) ? cmd.substr(i) : std::string();
-		// POSIX sed defaults to BRE; -E / -r selects ERE. We always
-		// compile under std::regex::extended — MSVC's std::regex::basic
-		// implementation has greediness bugs with back-to-back negated
-		// classes (`[^X]* [^X]*`). For BRE inputs we translate the
-		// pattern to ERE syntax first; the resulting regex behaves
-		// the same per POSIX semantics but rides on the working engine.
-		const std::string compiled_pat = extended ? pat : translateBreToErePattern(pat);
-		if (!compileRegex(out.re, compiled_pat, std::regex::extended)) {
-			err = "regex: invalid pattern: " + pat;
-			return false;
-		}
-		out.repl = rep;
-		out.global = flags.find('g') != std::string::npos;
-		return true;
-	}
-
-	// Walk `args`, joining `-e SCRIPT` / inline `-eSCRIPT` / leading
-	// positional fragments into a single `;`-separated script string.
-	// Anything left over goes into `files`.
-	static void parseSedArgs(const std::vector<std::string>& args,
-	                         bool& quiet, bool& extended, std::string& script,
-	                         std::vector<std::string>& files) {
-		auto append_script = [&](const std::string& s) {
-			if (!script.empty()) script.push_back(';');
-			script += s;
-		};
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-n" || a == "--quiet" || a == "--silent") { quiet = true; continue; }
-			if (a == "-E" || a == "-r" || a == "--regexp-extended") {
-				extended = true;
-				continue;
-			}
-			if (a == "--") {
-				for (++i; i < args.size(); ++i) files.push_back(args[i]);
-				break;
-			}
-			if (a == "-e" && i + 1 < args.size()) {
-				append_script(args[++i]);
-				continue;
-			}
-			if (a.size() > 2 && a.compare(0, 2, "-e") == 0) {
-				append_script(a.substr(2));
-				continue;
-			}
-			if (script.empty() && (a.empty() || a[0] != '-')) {
-				script = a;
-				continue;
-			}
-			files.push_back(a);
-		}
-	}
-
-	// Parse the `;`-separated `s/.../.../` commands inside a sed script.
-	// Returns false on parse error (already diagnosed).
-	static bool compileSedScript(const std::string& script, bool extended,
-	                             std::vector<SedSubst>& out_cmds) {
-		std::size_t s = 0;
-		while (s <= script.size()) {
-			std::size_t e = script.find(';', s);
-			if (e == std::string::npos) e = script.size();
-			const std::string sub = script.substr(s, e - s);
-			if (!sub.empty()) {
-				SedSubst c;
-				std::string err;
-				if (!sedParseSubst(sub, extended, c, err)) {
-					std::fprintf(stderr, "wbsh: sed: %s\n", err.c_str());
-					return false;
-				}
-				out_cmds.push_back(std::move(c));
-			}
-			if (e == script.size()) break;
-			s = e + 1;
-		}
-		return true;
-	}
-
-	static std::string applySedCommandsToLine(const std::vector<SedSubst>& cmds,
-	                                          const std::string& line) {
-		std::string out = line;
-		for (const auto& c : cmds) {
-			out = c.global
-				? std::regex_replace(out, c.re, c.repl)
-				: std::regex_replace(out, c.re, c.repl,
-				                     std::regex_constants::format_first_only);
-		}
-		return out;
-	}
-
-	static int runSedOnFile(FILE* fp, const std::vector<SedSubst>& cmds, bool quiet) {
-		std::string line;
-		int c;
-		while ((c = std::fgetc(fp)) != EOF) {
-			if (c == '\n') {
-				const std::string out = applySedCommandsToLine(cmds, line);
-				if (!quiet) {
-					std::fwrite(out.data(), 1, out.size(), stdout);
-					std::fputc('\n', stdout);
-				}
-				line.clear();
-				continue;
-			}
-			line.push_back(static_cast<char>(c));
-		}
-		if (!line.empty()) {
-			const std::string out = applySedCommandsToLine(cmds, line);
-			if (!quiet) std::fwrite(out.data(), 1, out.size(), stdout);
-		}
-		return 0;
-	}
-
-	static int builtin_sed(Executor& exec, const std::vector<std::string>& args) {
-		bool quiet = false;
-		bool extended = false;
-		std::string script;
-		std::vector<std::string> files;
-		parseSedArgs(args, quiet, extended, script, files);
-		if (script.empty()) { perr("sed", "no script provided"); return 2; }
-
-		std::vector<SedSubst> cmds;
-		if (!compileSedScript(script, extended, cmds)) return 2;
-		if (files.empty()) files.push_back("-");
-
-		int rc = 0;
-		for (const auto& f : files) {
-			FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
-			if (!fp) {
-				perr("sed", f + ": " + std::strerror(errno));
-				rc = 1;
-				continue;
-			}
-			runSedOnFile(fp, cmds, quiet);
-			if (fp != stdin) std::fclose(fp);
-		}
-		std::fflush(stdout);
-		return rc;
-	}
-
-	// ---- stat -----------------------------------------------------------
 
 	static int builtin_stat(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) { perr("stat", "missing operand"); return 1; }
@@ -3336,6 +1897,7 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			const char* type =
 #ifdef S_ISDIR
 			(S_ISDIR(st.st_mode) ? "directory" :
@@ -3359,21 +1921,18 @@ namespace wbsh {
 				static_cast<unsigned int>(st.st_mode & 0777));
 			std::printf("Modify: %s\n", tbuf);
 		}
+
 		return rc;
 	}
-
-	// ---- chmod (best-effort: only the readonly bit on Windows) ----------
 
 	static int builtin_chmod(Executor& exec, const std::vector<std::string>& args) {
 		if (args.size() < 2) {
 			perr("chmod", "usage: chmod MODE FILE...");
 			return 1;
 		}
+
 		const std::string& mode = args[0];
 		int rc = 0;
-		// Map a small set of common modes to a "writable" bool.
-		// +w / -w / u+w / u-w / numeric (NNN where owner has w) all
-		// drive the read-only NTFS attribute.
 		bool writable = true;
 		if (mode == "-w" || mode == "u-w" || mode == "a-w" || mode == "go-w") {
 			writable = false;
@@ -3385,9 +1944,9 @@ namespace wbsh {
 			&& std::isdigit((unsigned char)mode[0])
 			&& std::isdigit((unsigned char)mode[1])
 			&& std::isdigit((unsigned char)mode[2])) {
-			// Owner-write bit (octal): mode[0] & 2.
 			writable = ((mode[0] - '0') & 2) != 0;
 		}
+
 		for (std::size_t i = 1; i < args.size(); ++i) {
 			std::string nat = exec.pathConv().toWin32(args[i]);
 #ifdef _WIN32
@@ -3397,6 +1956,7 @@ namespace wbsh {
 				rc = 1;
 				continue;
 			}
+
 			if (writable) attr &= ~FILE_ATTRIBUTE_READONLY;
 			else          attr |= FILE_ATTRIBUTE_READONLY;
 			if (!SetFileAttributesA(nat.c_str(), attr)) {
@@ -3407,10 +1967,9 @@ namespace wbsh {
 			(void)nat;
 #endif
 		}
+
 		return rc;
 	}
-
-	// ---- ln [-s] [-f] TARGET LINK ---------------------------------------
 
 	static int builtin_ln(Executor& exec, const std::vector<std::string>& args) {
 		bool symbolic = false;
@@ -3423,10 +1982,12 @@ namespace wbsh {
 			else if (!a.empty() && a[0] == '-') continue;
 			else rest.push_back(a);
 		}
+
 		if (rest.size() < 2) {
 			perr("ln", "usage: ln [-s] [-f] TARGET LINK");
 			return 1;
 		}
+
 		std::string target = rest[0];
 		std::string link = rest[1];
 		std::string nat_target = exec.pathConv().toWin32(target);
@@ -3435,21 +1996,22 @@ namespace wbsh {
 		if (force) DeleteFileA(nat_link.c_str());
 		BOOL ok = FALSE;
 		if (symbolic) {
-			DWORD flags = 0;
+			DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
 			std::error_code ec;
-			if (fs::is_directory(nat_target, ec)) flags |= 0x1;   // SYMBOLIC_LINK_FLAG_DIRECTORY
-			flags |= 0x2;   // SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+			if (fs::is_directory(nat_target, ec)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
 			ok = CreateSymbolicLinkA(nat_link.c_str(), nat_target.c_str(), flags);
 		}
 		else {
 			ok = CreateHardLinkA(nat_link.c_str(), nat_target.c_str(), nullptr);
 		}
+
 		if (!ok) {
 			DWORD err = GetLastError();
 			std::fprintf(stderr, "wbsh: ln: %s -> %s failed (err=%lu)\n",
 				link.c_str(), target.c_str(), err);
 			return 1;
 		}
+
 		return 0;
 #else
 		(void)nat_target; (void)nat_link;
@@ -3457,8 +2019,6 @@ namespace wbsh {
 		return 1;
 #endif
 	}
-
-	// ---- pushd / popd / dirs --------------------------------------------
 
 	static std::string currentCwdPosix(Executor& exec) {
 		std::error_code ec;
@@ -3473,6 +2033,7 @@ namespace wbsh {
 			std::printf("%s\n", currentCwdPosix(exec).c_str());
 			return;
 		}
+
 		if (numbered) {
 			for (std::size_t i = 0; i < s.size(); ++i) {
 				std::printf("%2zu  %s\n", i, s[i].c_str());
@@ -3483,6 +2044,7 @@ namespace wbsh {
 				if (i) std::fputc(' ', stdout);
 				std::fputs(s[i].c_str(), stdout);
 			}
+
 			std::fputc('\n', stdout);
 		}
 	}
@@ -3497,6 +2059,7 @@ namespace wbsh {
 				perr("pushd", "no other directory");
 				return 1;
 			}
+
 			std::swap(stack[0], stack[1]);
 		}
 		else {
@@ -3508,13 +2071,14 @@ namespace wbsh {
 			stack.insert(stack.begin(), exec.pathConv().toPosix(
 				pathToUtf8(fs::current_path(ec))));
 		}
-		// After pushd, the front of the stack must reflect new cwd.
+
 		std::error_code ec;
 		fs::current_path(toNative(exec, stack[0]), ec);
 		if (!ec) {
 			exec.env().set("OLDPWD", cur);
 			exec.env().set("PWD", stack[0]);
 		}
+
 		printDirStack(exec, false);
 		return 0;
 	}
@@ -3525,6 +2089,7 @@ namespace wbsh {
 			perr("popd", "directory stack empty");
 			return 1;
 		}
+
 		std::string old = stack.front();
 		stack.erase(stack.begin());
 		std::error_code ec;
@@ -3545,1239 +2110,19 @@ namespace wbsh {
 			else if (a == "-l") {}    // long form — not implemented
 			else if (a == "-p") numbered = false;
 		}
+
 		if (clear) {
 			exec.dirStack().clear();
 			return 0;
 		}
+
 		if (exec.dirStack().empty()) {
 			exec.dirStack().push_back(currentCwdPosix(exec));
 		}
+
 		printDirStack(exec, numbered);
 		return 0;
 	}
-
-	// (`time` is now a parser-level reserved word; see parser.cpp /
-	//  Executor::execPipeline.)
-
-	// ---- gzip / gunzip / zcat -------------------------------------------
-
-	// CRC-32/IEEE 802.3 (poly 0xEDB88320). Required for gzip footer.
-	std::uint32_t crc32Update(std::uint32_t crc, const std::uint8_t* buf, std::size_t n) {
-		static std::uint32_t table[256];
-		static bool inited = false;
-		if (!inited) {
-			for (std::uint32_t i = 0; i < 256; ++i) {
-				std::uint32_t c = i;
-				for (int k = 0; k < 8; ++k)
-					c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-				table[i] = c;
-			}
-			inited = true;
-		}
-		crc ^= 0xFFFFFFFFu;
-		for (std::size_t i = 0; i < n; ++i)
-			crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
-		return crc ^ 0xFFFFFFFFu;
-	}
-
-	// Read all bytes from a FILE*.
-	static std::vector<std::uint8_t> readAllBytesFromFile(FILE* f) {
-		std::vector<std::uint8_t> out;
-		std::uint8_t buf[4096];
-		while (true) {
-			std::size_t n = std::fread(buf, 1, sizeof(buf), f);
-			if (n == 0) break;
-			out.insert(out.end(), buf, buf + n);
-		}
-		return out;
-	}
-
-	// Strip the gzip wrapper and return the raw DEFLATE stream offset.
-	// `compressed_end` is set to the byte just past the DEFLATE stream
-	// (where CRC32 + ISIZE live).
-	static bool gzipParseHeader(const std::vector<std::uint8_t>& bytes,
-		std::size_t& deflate_start,
-		std::size_t& deflate_end) {
-		if (bytes.size() < 18) return false;
-		if (bytes[0] != 0x1F || bytes[1] != 0x8B) return false;
-		if (bytes[2] != 8) return false;   // CM = deflate
-		std::uint8_t flg = bytes[3];
-		std::size_t i = 10;   // skip MTIME, XFL, OS
-		if (flg & 0x04) {     // FEXTRA
-			if (i + 2 > bytes.size()) return false;
-			std::size_t xlen = bytes[i] | (bytes[i + 1] << 8);
-			i += 2 + xlen;
-		}
-		if (flg & 0x08) {     // FNAME
-			while (i < bytes.size() && bytes[i] != 0) ++i;
-			if (i < bytes.size()) ++i;
-		}
-		if (flg & 0x10) {     // FCOMMENT
-			while (i < bytes.size() && bytes[i] != 0) ++i;
-			if (i < bytes.size()) ++i;
-		}
-		if (flg & 0x02) i += 2;   // FHCRC
-		if (i + 8 > bytes.size()) return false;
-		deflate_start = i;
-		deflate_end = bytes.size() - 8;
-		return true;
-	}
-
-	// Encode `data` as gzip (using stored DEFLATE blocks — valid format,
-	// no compression). Output written to `out`.
-	static void gzipEncodeStored(const std::vector<std::uint8_t>& data,
-		std::vector<std::uint8_t>& out) {
-		// Header.
-		out.push_back(0x1F);
-		out.push_back(0x8B);
-		out.push_back(0x08);   // CM = deflate
-		out.push_back(0x00);   // FLG = 0
-		for (int k = 0; k < 4; ++k) out.push_back(0x00);   // MTIME
-		out.push_back(0x00);   // XFL
-		out.push_back(0xFF);   // OS = unknown
-		// Stored blocks: each up to 65535 bytes.
-		std::size_t i = 0;
-		std::size_t n = data.size();
-		if (n == 0) {
-			// Empty stored final block.
-			out.push_back(0x01);
-			out.push_back(0x00); out.push_back(0x00);
-			out.push_back(0xFF); out.push_back(0xFF);
-		}
-		while (i < n) {
-			std::size_t take = n - i;
-			if (take > 65535) take = 65535;
-			bool last = (i + take >= n);
-			out.push_back(last ? 0x01 : 0x00);
-			out.push_back((std::uint8_t)(take & 0xFF));
-			out.push_back((std::uint8_t)((take >> 8) & 0xFF));
-			std::uint16_t nlen = (std::uint16_t)~take;
-			out.push_back((std::uint8_t)(nlen & 0xFF));
-			out.push_back((std::uint8_t)((nlen >> 8) & 0xFF));
-			out.insert(out.end(), data.begin() + i, data.begin() + i + take);
-			i += take;
-		}
-		// Footer: CRC32 + ISIZE (mod 2^32), little-endian.
-		std::uint32_t crc = crc32Update(0, data.data(), data.size());
-		std::uint32_t isize = (std::uint32_t)(data.size() & 0xFFFFFFFFu);
-		for (int k = 0; k < 4; ++k) out.push_back((std::uint8_t)((crc >> (8 * k)) & 0xFF));
-		for (int k = 0; k < 4; ++k) out.push_back((std::uint8_t)((isize >> (8 * k)) & 0xFF));
-	}
-
-	struct GzipOptions {
-		bool decompress = false;
-		bool to_stdout = false;
-		bool keep = false;
-		std::vector<std::string> files;
-	};
-
-	static GzipOptions parseGzipArgs(const std::vector<std::string>& args) {
-		GzipOptions o;
-		for (const auto& a : args) {
-			if (a == "-d" || a == "--decompress") o.decompress = true;
-			else if (a == "-c" || a == "--stdout") o.to_stdout = true;
-			else if (a == "-k" || a == "--keep") o.keep = true;
-			else if (a == "-f" || a == "--force") { /* accepted, no-op */ }
-			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore other flags */ }
-			else o.files.push_back(a);
-		}
-		return o;
-	}
-
-	// Read @p fname (or stdin if "-" / empty) into @p input. Returns true on
-	// success; on failure prints an error tagged @p tool and returns false.
-	static bool gzipLoadInput(Executor& exec, const std::string& tool, const std::string& fname,
-	                          std::vector<std::uint8_t>& input) {
-		if (fname == "-" || fname.empty()) {
-			input = readAllBytesFromFile(stdin);
-			return true;
-		}
-		FILE* f = fopenNative(exec, fname, "rb");
-		if (!f) {
-			perr(tool, fname, std::error_code(errno, std::system_category()));
-			return false;
-		}
-		input = readAllBytesFromFile(f);
-		std::fclose(f);
-		return true;
-	}
-
-	// Derive the output filename for compressing/decompressing @p fname.
-	static std::string gzipDeriveOutputPath(const std::string& fname, bool decompress) {
-		if (decompress) {
-			if (fname.size() > 3 && fname.substr(fname.size() - 3) == ".gz") {
-				return fname.substr(0, fname.size() - 3);
-			}
-			return fname + ".out";
-		}
-		return fname + ".gz";
-	}
-
-	// Encode (or decode) @p input into @p output. Returns 0 on success or 1
-	// on error (with a message printed). @p fname is only used for error text.
-	static int gzipTransform(const GzipOptions& opt, const std::string& fname,
-	                         const std::vector<std::uint8_t>& input,
-	                         std::vector<std::uint8_t>& output) {
-		if (!opt.decompress) {
-			gzipEncodeStored(input, output);
-			return 0;
-		}
-		std::size_t s, e;
-		if (!gzipParseHeader(input, s, e)) {
-			std::fprintf(stderr, "wbsh: gunzip: not in gzip format: %s\n", fname.c_str());
-			return 1;
-		}
-		if (!inflateRaw(input.data() + s, e - s, output)) {
-			std::fprintf(stderr, "wbsh: gunzip: invalid compressed data: %s\n", fname.c_str());
-			return 1;
-		}
-		return 0;
-	}
-
-	static int gzipProcessOne(Executor& exec, const GzipOptions& opt, const std::string& fname) {
-		const char* tool = opt.decompress ? "gunzip" : "gzip";
-		std::vector<std::uint8_t> input;
-		if (!gzipLoadInput(exec, tool, fname, input)) return 1;
-		std::vector<std::uint8_t> output;
-		if (int rc = gzipTransform(opt, fname, input, output); rc != 0) return rc;
-		FILE* of = stdout;
-		std::string out_path;
-		if (!opt.to_stdout && !fname.empty() && fname != "-") {
-			out_path = gzipDeriveOutputPath(fname, opt.decompress);
-			of = fopenNative(exec, out_path, "wb");
-			if (!of) {
-				perr(tool, out_path, std::error_code(errno, std::system_category()));
-				return 1;
-			}
-		}
-		std::fwrite(output.data(), 1, output.size(), of);
-		if (of != stdout) std::fclose(of);
-		if (!opt.to_stdout && !opt.keep && !fname.empty() && fname != "-") {
-			std::error_code ec;
-			std::filesystem::remove(toNative(exec, fname), ec);
-		}
-		return 0;
-	}
-
-	static int builtin_gzip(Executor& exec, const std::vector<std::string>& args) {
-		GzipOptions opt = parseGzipArgs(args);
-		if (opt.files.empty()) {
-			opt.to_stdout = true;
-			return gzipProcessOne(exec, opt, "");
-		}
-		int rc = 0;
-		for (const auto& f : opt.files) {
-			int r = gzipProcessOne(exec, opt, f);
-			if (r) rc = r;
-		}
-		return rc;
-	}
-
-	static int builtin_gunzip(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> a = { "-d" };
-		a.insert(a.end(), args.begin(), args.end());
-		return builtin_gzip(exec, a);
-	}
-
-	static int builtin_zcat(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> a = { "-d", "-c" };
-		a.insert(a.end(), args.begin(), args.end());
-		return builtin_gzip(exec, a);
-	}
-
-	// ---- zip / unzip ----------------------------------------------------
-	//
-	// Read/write ZIP archives. Uses our DEFLATE decoder for unzip and
-	// stored entries (no compression) for zip — both produce valid
-	// archives compatible with other tools.
-
-	std::uint16_t zipR16(const std::uint8_t* p) {
-		return (std::uint16_t)(p[0] | (p[1] << 8));
-	}
-	std::uint32_t zipR32(const std::uint8_t* p) {
-		return (std::uint32_t)p[0]
-			| ((std::uint32_t)p[1] << 8)
-			| ((std::uint32_t)p[2] << 16)
-			| ((std::uint32_t)p[3] << 24);
-	}
-	static void zipW16(std::vector<std::uint8_t>& out, std::uint16_t v) {
-		out.push_back((std::uint8_t)(v & 0xFF));
-		out.push_back((std::uint8_t)((v >> 8) & 0xFF));
-	}
-	static void zipW32(std::vector<std::uint8_t>& out, std::uint32_t v) {
-		out.push_back((std::uint8_t)(v & 0xFF));
-		out.push_back((std::uint8_t)((v >> 8) & 0xFF));
-		out.push_back((std::uint8_t)((v >> 16) & 0xFF));
-		out.push_back((std::uint8_t)((v >> 24) & 0xFF));
-	}
-
-	// Find ZIP end-of-central-directory record by scanning the last 64KB.
-	static bool zipFindEOCD(const std::vector<std::uint8_t>& bytes, std::size_t& pos) {
-		if (bytes.size() < 22) return false;
-		std::size_t max_back = bytes.size() < 65557 ? bytes.size() : 65557;
-		for (std::size_t i = bytes.size() - 22; i + 22 >= bytes.size() - max_back; --i) {
-			if (zipR32(bytes.data() + i) == 0x06054B50u) { pos = i; return true; }
-			if (i == 0) break;
-		}
-		return false;
-	}
-
-	namespace unzip_internal {
-		struct UnzipOptions {
-			bool list_only = false;
-			bool to_stdout = false;
-			std::string archive;
-			std::vector<std::string> select;
-			std::string outdir;
-		};
-
-		// Decoded central-directory entry. `lfh_off` points at the matching
-		// local-file-header in the archive bytes.
-		struct CentralEntry {
-			std::uint16_t method;
-			std::uint32_t csize;
-			std::uint32_t usize;
-			std::uint32_t lfh_off;
-			std::string name;
-		};
-	}  // namespace unzip_internal
-
-	static unzip_internal::UnzipOptions parseUnzipArgs(const std::vector<std::string>& args) {
-		unzip_internal::UnzipOptions o;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if      (a == "-l") o.list_only = true;
-			else if (a == "-p") o.to_stdout = true;
-			else if (a == "-o") { /* overwrite (default) */ }
-			else if (a == "-n") { /* never overwrite — not implemented */ }
-			else if (a == "-d" && i + 1 < args.size()) o.outdir = args[++i];
-			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore */ }
-			else if (o.archive.empty()) o.archive = a;
-			else o.select.push_back(a);
-		}
-		return o;
-	}
-
-	// Read one central-directory entry at `*p`, advancing `*p` past name +
-	// extras + comment. Returns false on malformed input.
-	static bool readZipCentralEntry(const std::vector<std::uint8_t>& bytes, std::size_t* p,
-	                                unzip_internal::CentralEntry& e) {
-		if (*p + 46 > bytes.size()) return false;
-		if (zipR32(bytes.data() + *p) != 0x02014B50u) return false;
-		e.method  = zipR16(bytes.data() + *p + 10);
-		e.csize   = zipR32(bytes.data() + *p + 20);
-		e.usize   = zipR32(bytes.data() + *p + 24);
-		const std::uint16_t nlen = zipR16(bytes.data() + *p + 28);
-		const std::uint16_t xlen = zipR16(bytes.data() + *p + 30);
-		const std::uint16_t clen = zipR16(bytes.data() + *p + 32);
-		e.lfh_off = zipR32(bytes.data() + *p + 42);
-		e.name.assign(reinterpret_cast<const char*>(bytes.data() + *p + 46), nlen);
-		*p += 46 + nlen + xlen + clen;
-		return true;
-	}
-
-	// Decompress one entry's payload, returning false on a method we don't
-	// support or on inflate failure.
-	static bool decompressZipEntry(const std::vector<std::uint8_t>& bytes,
-	                               const unzip_internal::CentralEntry& e,
-	                               std::vector<std::uint8_t>& out_data) {
-		if (e.lfh_off + 30 > bytes.size()) return false;
-		if (zipR32(bytes.data() + e.lfh_off) != 0x04034B50u) return false;
-		const std::uint16_t l_nlen = zipR16(bytes.data() + e.lfh_off + 26);
-		const std::uint16_t l_xlen = zipR16(bytes.data() + e.lfh_off + 28);
-		const std::size_t data_off = e.lfh_off + 30 + l_nlen + l_xlen;
-		if (data_off + e.csize > bytes.size()) return false;
-
-		if (e.method == 0) {
-			out_data.assign(bytes.begin() + data_off,
-			                bytes.begin() + data_off + e.csize);
-			return true;
-		}
-		if (e.method == 8) {
-			return inflateRaw(bytes.data() + data_off, e.csize, out_data);
-		}
-		return false;
-	}
-
-	// Write a decompressed entry to `outdir/name` (or stdout). Creates
-	// directories as needed; treats trailing-slash names as bare directories.
-	static void writeZipEntryToDisk(Executor& exec, const std::string& outdir,
-	                                const std::string& name,
-	                                const std::vector<std::uint8_t>& data) {
-		const std::string out_path = outdir.empty() ? name : (outdir + "/" + name);
-		if (!name.empty() && name.back() == '/') {
-			std::error_code ec;
-			std::filesystem::create_directories(toNative(exec, out_path), ec);
-			return;
-		}
-		std::filesystem::path pp = toNative(exec, out_path);
-		std::error_code ec;
-		if (pp.has_parent_path()) {
-			std::filesystem::create_directories(pp.parent_path(), ec);
-		}
-		FILE* of = openUtf8(pathToUtf8(pp), "wb");
-		if (!of) {
-			perr("unzip", out_path,
-				std::error_code(errno, std::system_category()));
-			return;
-		}
-		std::fwrite(data.data(), 1, data.size(), of);
-		std::fclose(of);
-	}
-
-	static bool entryIsSelected(const std::vector<std::string>& select,
-	                            const std::string& name) {
-		if (select.empty()) return true;
-		for (const auto& s : select) if (s == name) return true;
-		return false;
-	}
-
-	// Read the archive at @p path into @p out. Returns false on open failure;
-	// caller has already validated the path is non-empty.
-	static bool unzipLoadArchive(Executor& exec, const std::string& path,
-	                             std::vector<std::uint8_t>& out) {
-		FILE* f = fopenNative(exec, path, "rb");
-		if (!f) {
-			perr("unzip", path, std::error_code(errno, std::system_category()));
-			return false;
-		}
-		out = readAllBytesFromFile(f);
-		std::fclose(f);
-		return true;
-	}
-
-	// Process one central-directory entry: skip if not selected, otherwise
-	// list it or extract it depending on @p o. @p total_bytes accumulates the
-	// sum for the listing footer.
-	static void unzipHandleEntry(Executor& exec, const unzip_internal::UnzipOptions& o,
-	                             const std::vector<std::uint8_t>& bytes,
-	                             const unzip_internal::CentralEntry& e,
-	                             std::size_t& total_bytes) {
-		if (o.list_only) {
-			std::printf("%9u  ----------- ------  %s\n",
-				static_cast<unsigned>(e.usize), e.name.c_str());
-			total_bytes += e.usize;
-			return;
-		}
-		std::vector<std::uint8_t> data;
-		if (!decompressZipEntry(bytes, e, data)) {
-			std::fprintf(stderr,
-				"wbsh: unzip: inflate / unsupported-method on %s\n", e.name.c_str());
-			return;
-		}
-		if (o.to_stdout) {
-			std::fwrite(data.data(), 1, data.size(), stdout);
-			return;
-		}
-		writeZipEntryToDisk(exec, o.outdir, e.name, data);
-		std::printf("  inflating: %s\n", e.name.c_str());
-	}
-
-	static int builtin_unzip(Executor& exec, const std::vector<std::string>& args) {
-		const unzip_internal::UnzipOptions o = parseUnzipArgs(args);
-		if (o.archive.empty()) {
-			perr("unzip", "missing archive name");
-			return 1;
-		}
-		std::vector<std::uint8_t> bytes;
-		if (!unzipLoadArchive(exec, o.archive, bytes)) return 1;
-
-		std::size_t eocd = 0;
-		if (!zipFindEOCD(bytes, eocd)) {
-			perr("unzip", "not a zip archive: " + o.archive);
-			return 1;
-		}
-		const std::uint16_t total = zipR16(bytes.data() + eocd + 10);
-		std::size_t p = zipR32(bytes.data() + eocd + 16);
-
-		if (o.list_only) {
-			std::printf("Archive:  %s\n", o.archive.c_str());
-			std::printf("  Length      Date    Time    Name\n");
-			std::printf("---------  ---------- -----   ----\n");
-		}
-		std::size_t total_bytes = 0;
-		for (std::size_t k = 0; k < total; ++k) {
-			unzip_internal::CentralEntry e;
-			if (!readZipCentralEntry(bytes, &p, e)) break;
-			if (!entryIsSelected(o.select, e.name)) continue;
-			unzipHandleEntry(exec, o, bytes, e, total_bytes);
-		}
-		if (o.list_only) {
-			std::printf("---------                     -------\n");
-			std::printf("%9zu                     %u files\n",
-				total_bytes, static_cast<unsigned>(total));
-		}
-		return 0;
-	}
-
-	namespace zip_internal {
-		// One entry recorded as we stream the archive's LFH section. Used
-		// to emit the matching central-directory entry afterwards.
-		struct ZipCdEntry {
-			std::string name;
-			std::uint32_t crc;
-			std::uint32_t size;
-			std::uint32_t lfh_off;
-		};
-	}  // namespace zip_internal
-
-	// Walk `inputs`, materialising any directories (in `recurse` mode) into
-	// their regular-file descendants. Returns POSIX-style relative paths so
-	// the archive stays portable.
-	static std::vector<std::string> gatherZipInputs(Executor& exec,
-	                                                const std::vector<std::string>& inputs,
-	                                                bool recurse) {
-		namespace fs = std::filesystem;
-		std::vector<std::string> paths;
-		for (const auto& in : inputs) {
-			const fs::path win = toNative(exec, in);
-			std::error_code ec;
-			if (fs::is_directory(win, ec) && recurse) {
-				for (auto it = fs::recursive_directory_iterator(win, ec);
-				     it != fs::recursive_directory_iterator(); it.increment(ec))
-				{
-					if (ec) break;
-					if (it->is_regular_file(ec)) {
-						std::string rel = pathToUtf8(fs::relative(it->path(),
-							fs::current_path(ec)));
-						std::replace(rel.begin(), rel.end(), '\\', '/');
-						paths.push_back(std::move(rel));
-					}
-				}
-			} else if (fs::is_regular_file(win, ec)) {
-				paths.push_back(in);
-			}
-		}
-		return paths;
-	}
-
-	// Emit one local-file-header + name + (stored) data for `path`, and
-	// return the metadata needed to build the matching CD entry later.
-	// Returns std::nullopt-like via empty `name` on read failure.
-	static zip_internal::ZipCdEntry writeZipLocalEntry(Executor& exec,
-	                                                   const std::string& path,
-	                                                   std::vector<std::uint8_t>& out) {
-		zip_internal::ZipCdEntry meta{ path, 0, 0, 0 };
-
-		FILE* f = fopenNative(exec, path, "rb");
-		if (!f) {
-			perr("zip", path, std::error_code(errno, std::system_category()));
-			meta.name.clear();
-			return meta;
-		}
-		const auto data = readAllBytesFromFile(f);
-		std::fclose(f);
-
-		const std::uint32_t crc = crc32Update(0, data.data(), data.size());
-		const std::uint32_t lfh_off = static_cast<std::uint32_t>(out.size());
-
-		zipW32(out, 0x04034B50u);
-		zipW16(out, 20);                                // version needed
-		zipW16(out, 0);                                 // flags
-		zipW16(out, 0);                                 // method = stored
-		zipW16(out, 0);                                 // mod time
-		zipW16(out, 0);                                 // mod date
-		zipW32(out, crc);
-		zipW32(out, static_cast<std::uint32_t>(data.size()));
-		zipW32(out, static_cast<std::uint32_t>(data.size()));
-		zipW16(out, static_cast<std::uint16_t>(path.size()));
-		zipW16(out, 0);                                 // extra
-		out.insert(out.end(), path.begin(), path.end());
-		out.insert(out.end(), data.begin(), data.end());
-
-		meta.crc = crc;
-		meta.size = static_cast<std::uint32_t>(data.size());
-		meta.lfh_off = lfh_off;
-		return meta;
-	}
-
-	static void writeZipCentralDir(std::vector<std::uint8_t>& out,
-	                               const std::vector<zip_internal::ZipCdEntry>& cd) {
-		for (const auto& e : cd) {
-			zipW32(out, 0x02014B50u);
-			zipW16(out, 20);                            // version made
-			zipW16(out, 20);                            // version needed
-			zipW16(out, 0);                             // flags
-			zipW16(out, 0);                             // method
-			zipW16(out, 0);                             // mod time
-			zipW16(out, 0);                             // mod date
-			zipW32(out, e.crc);
-			zipW32(out, e.size);                        // comp size
-			zipW32(out, e.size);                        // uncomp size
-			zipW16(out, static_cast<std::uint16_t>(e.name.size()));
-			zipW16(out, 0);                             // extra
-			zipW16(out, 0);                             // comment len
-			zipW16(out, 0);                             // disk
-			zipW16(out, 0);                             // int attr
-			zipW32(out, 0);                             // ext attr
-			zipW32(out, e.lfh_off);
-			out.insert(out.end(), e.name.begin(), e.name.end());
-		}
-	}
-
-	static void writeZipEocd(std::vector<std::uint8_t>& out,
-	                         std::uint32_t cd_off,
-	                         std::uint32_t cd_size,
-	                         std::uint16_t entry_count) {
-		zipW32(out, 0x06054B50u);
-		zipW16(out, 0);
-		zipW16(out, 0);
-		zipW16(out, entry_count);
-		zipW16(out, entry_count);
-		zipW32(out, cd_size);
-		zipW32(out, cd_off);
-		zipW16(out, 0);
-	}
-
-	static int builtin_zip(Executor& exec, const std::vector<std::string>& args) {
-		bool recurse = false;
-		std::string archive;
-		std::vector<std::string> inputs;
-		for (const auto& a : args) {
-			if (a == "-r" || a == "--recurse-paths") recurse = true;
-			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore */ }
-			else if (archive.empty()) archive = a;
-			else inputs.push_back(a);
-		}
-		if (archive.empty()) { perr("zip", "missing archive name"); return 1; }
-		if (inputs.empty())  { perr("zip", "no input files");      return 1; }
-
-		const std::vector<std::string> paths = gatherZipInputs(exec, inputs, recurse);
-
-		std::vector<std::uint8_t> out;
-		std::vector<zip_internal::ZipCdEntry> cd;
-		for (const auto& path : paths) {
-			zip_internal::ZipCdEntry e = writeZipLocalEntry(exec, path, out);
-			if (e.name.empty()) continue;     // read failure already reported
-			std::printf("  adding: %s (stored)\n", path.c_str());
-			cd.push_back(std::move(e));
-		}
-
-		const std::uint32_t cd_off = static_cast<std::uint32_t>(out.size());
-		writeZipCentralDir(out, cd);
-		const std::uint32_t cd_size = static_cast<std::uint32_t>(out.size() - cd_off);
-		writeZipEocd(out, cd_off, cd_size,
-		             static_cast<std::uint16_t>(cd.size()));
-
-		FILE* of = fopenNative(exec, archive, "wb");
-		if (!of) {
-			perr("zip", archive, std::error_code(errno, std::system_category()));
-			return 1;
-		}
-		std::fwrite(out.data(), 1, out.size(), of);
-		std::fclose(of);
-		return 0;
-	}
-
-
-	// ---- xxd ------------------------------------------------------------
-
-	struct XxdOptions {
-		bool plain = false;
-		bool reverse = false;
-		int cols = 16;
-		std::string path;
-	};
-
-	// Returns true if @p o was filled successfully; false (and prints error) on bad flag.
-	static bool parseXxdArgs(const std::vector<std::string>& args, XxdOptions& o) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-p" || a == "--plain")       o.plain = true;
-			else if (a == "-r" || a == "--revert") o.reverse = true;
-			else if (a == "-c" && i + 1 < args.size()) {
-				parseInt(args[++i], o.cols);
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("xxd", "unknown option: " + a);
-				return false;
-			}
-			else if (o.path.empty()) o.path = a;
-		}
-		return true;
-	}
-
-	// Convert one line of a default-format xxd dump back to bytes, appending
-	// to @p out. `plain` means the line is a raw hex stream (no addr/ascii).
-	static void xxdRevertLine(const std::string& line, bool plain,
-	                          std::vector<unsigned char>& out) {
-		std::string hex;
-		if (plain) {
-			hex = line;
-		} else {
-			auto colon = line.find(':');
-			auto start = (colon == std::string::npos) ? 0 : colon + 1;
-			auto two = line.find("  ", start);
-			hex = line.substr(start, (two == std::string::npos) ? std::string::npos : two - start);
-		}
-		unsigned cur = 0;
-		int half = 0;
-		for (char c : hex) {
-			unsigned v;
-			if (c >= '0' && c <= '9') v = c - '0';
-			else if (c >= 'a' && c <= 'f') v = 10 + c - 'a';
-			else if (c >= 'A' && c <= 'F') v = 10 + c - 'A';
-			else continue;
-			cur = (cur << 4) | v;
-			half++;
-			if (half == 2) { out.push_back((unsigned char)cur); cur = 0; half = 0; }
-		}
-	}
-
-	// `-r`: parse @p bytes as an xxd dump and emit the recovered binary to stdout.
-	static int xxdEmitRevert(const std::vector<unsigned char>& bytes, bool plain) {
-		std::vector<unsigned char> out;
-		std::string line;
-		for (unsigned char c : bytes) {
-			if (c == '\n') { xxdRevertLine(line, plain, out); line.clear(); }
-			else line.push_back((char)c);
-		}
-		if (!line.empty()) xxdRevertLine(line, plain, out);
-		std::fwrite(out.data(), 1, out.size(), stdout);
-		return 0;
-	}
-
-	// Plain forward dump (`-p`): contiguous hex pairs, wrapped at cols*2 chars.
-	static int xxdEmitPlain(const std::vector<unsigned char>& bytes, int cols) {
-		int per_line = (cols > 0) ? cols * 2 : 60;
-		int n = 0;
-		for (unsigned char c : bytes) {
-			std::printf("%02x", c);
-			n += 2;
-			if (n >= per_line) { std::printf("\n"); n = 0; }
-		}
-		if (n) std::printf("\n");
-		return 0;
-	}
-
-	// Default forward dump: `<addr>: <hex pairs>  <ascii>`.
-	static int xxdEmitDefault(const std::vector<unsigned char>& bytes, int cols) {
-		std::size_t addr = 0;
-		while (addr < bytes.size()) {
-			std::size_t end = (std::min)(bytes.size(), addr + (std::size_t)cols);
-			std::printf("%08zx:", addr);
-			for (std::size_t i = addr; i < addr + (std::size_t)cols; ++i) {
-				if ((i - addr) % 2 == 0) std::printf(" ");
-				if (i < end) std::printf("%02x", bytes[i]);
-				else         std::printf("  ");
-			}
-			std::printf("  ");
-			for (std::size_t i = addr; i < end; ++i) {
-				unsigned char c = bytes[i];
-				std::putchar((c >= 32 && c < 127) ? c : '.');
-			}
-			std::printf("\n");
-			addr = end;
-		}
-		return 0;
-	}
-
-	static int builtin_xxd(Executor& exec, const std::vector<std::string>& args) {
-		XxdOptions o;
-		if (!parseXxdArgs(args, o)) return 1;
-
-		std::vector<unsigned char> bytes;
-		auto slurp = [&](FILE* f) {
-			int c;
-			while ((c = std::fgetc(f)) != EOF) bytes.push_back((unsigned char)c);
-		};
-		if (o.path.empty() || o.path == "-") slurp(stdin);
-		else {
-			FILE* f = fopenNative(exec, o.path, "rb");
-			if (!f) {
-				perr("xxd", o.path, std::error_code(errno, std::system_category()));
-				return 1;
-			}
-			slurp(f);
-			std::fclose(f);
-		}
-		if (o.reverse) return xxdEmitRevert(bytes, o.plain);
-		if (o.plain)   return xxdEmitPlain(bytes, o.cols);
-		return xxdEmitDefault(bytes, o.cols);
-	}
-
-	// ---- od -------------------------------------------------------------
-
-	struct OdOptions {
-		char fmt = 'o';        // o = octal-byte, x = hex-byte, c = char, d = decimal
-		char addr_fmt = 'o';
-		std::string path;
-	};
-
-	static bool parseOdArgs(const std::vector<std::string>& args, OdOptions& o) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-c") o.fmt = 'c';
-			else if (a == "-x" || a == "-h") o.fmt = 'x';
-			else if (a == "-d") o.fmt = 'd';
-			else if (a == "-o") o.fmt = 'o';
-			else if (a == "-A" && i + 1 < args.size()) {
-				const std::string& w = args[++i];
-				if (!w.empty()) o.addr_fmt = w[0];
-			}
-			else if (a == "-t" && i + 1 < args.size()) {
-				const std::string& t = args[++i];
-				if (!t.empty()) {
-					char c = t[0];
-					if (c == 'x' || c == 'd' || c == 'o' || c == 'c') o.fmt = c;
-				}
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("od", "unknown option: " + a);
-				return false;
-			}
-			else if (o.path.empty()) o.path = a;
-		}
-		return true;
-	}
-
-	static void odPrintAddr(std::size_t addr, char addr_fmt, bool with_newline) {
-		const char* nl = with_newline ? "\n" : "";
-		switch (addr_fmt) {
-		case 'd': std::printf("%07zu%s", addr, nl); return;
-		case 'x': std::printf("%07zx%s", addr, nl); return;
-		case 'n': return;
-		default:  std::printf("%07zo%s", addr, nl); return;
-		}
-	}
-
-	static void odEmitRow(const std::vector<unsigned char>& bytes,
-	                      std::size_t addr, std::size_t end, char fmt) {
-		if (fmt == 'c') {
-			for (std::size_t i = addr; i < end; ++i) {
-				unsigned char b = bytes[i];
-				const char* esc = nullptr;
-				switch (b) {
-				case '\0': esc = "\\0"; break;
-				case '\a': esc = "\\a"; break;
-				case '\b': esc = "\\b"; break;
-				case '\t': esc = "\\t"; break;
-				case '\n': esc = "\\n"; break;
-				case '\v': esc = "\\v"; break;
-				case '\f': esc = "\\f"; break;
-				case '\r': esc = "\\r"; break;
-				}
-				if (esc) std::printf("  %s", esc);
-				else if (b >= 32 && b < 127) std::printf("   %c", b);
-				else std::printf(" %03o", b);
-			}
-			return;
-		}
-		const char* spec = (fmt == 'x') ? " %02x" : (fmt == 'd') ? " %3u" : " %03o";
-		for (std::size_t i = addr; i < end; ++i) std::printf(spec, bytes[i]);
-	}
-
-	static int builtin_od(Executor& exec, const std::vector<std::string>& args) {
-		OdOptions o;
-		if (!parseOdArgs(args, o)) return 1;
-
-		std::vector<unsigned char> bytes;
-		auto slurp = [&](FILE* f) {
-			int c; while ((c = std::fgetc(f)) != EOF) bytes.push_back((unsigned char)c);
-		};
-		if (o.path.empty() || o.path == "-") slurp(stdin);
-		else {
-			FILE* f = fopenNative(exec, o.path, "rb");
-			if (!f) {
-				perr("od", o.path, std::error_code(errno, std::system_category()));
-				return 1;
-			}
-			slurp(f);
-			std::fclose(f);
-		}
-		constexpr std::size_t per_row = 16;
-		std::size_t addr = 0;
-		while (addr < bytes.size()) {
-			odPrintAddr(addr, o.addr_fmt, /*with_newline=*/false);
-			std::size_t end = (std::min)(bytes.size(), addr + per_row);
-			odEmitRow(bytes, addr, end, o.fmt);
-			std::printf("\n");
-			addr = end;
-		}
-		odPrintAddr(bytes.size(), o.addr_fmt, /*with_newline=*/true);
-		return 0;
-	}
-
-	// ---- fold -----------------------------------------------------------
-
-	struct FoldOptions {
-		int width = 80;
-		bool wrap_spaces = false;
-		std::vector<std::string> files;
-	};
-
-	static bool parseFoldArgs(const std::vector<std::string>& args, FoldOptions& o) {
-		bool by_bytes = true;   // -b vs -c: same in the ASCII path
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-b" || a == "--bytes") by_bytes = true;
-			else if (a == "-c" || a == "--characters") by_bytes = false;
-			else if (a == "-s" || a == "--spaces") o.wrap_spaces = true;
-			else if (a == "-w" && i + 1 < args.size()) {
-				parseInt(args[++i], o.width);
-			}
-			else if (a.size() > 2 && a.compare(0, 2, "-w") == 0) {
-				parseInt(a.substr(2), o.width);
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-" && std::isdigit((unsigned char)a[1])) {
-				parseInt(a.substr(1), o.width);
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("fold", "unknown option: " + a);
-				return false;
-			}
-			else o.files.push_back(a);
-		}
-		(void)by_bytes;
-		if (o.width <= 0) { perr("fold", "width must be > 0"); return false; }
-		return true;
-	}
-
-	// Wrap one logical line and emit it. Honors @p wrap_spaces (`-s`): when
-	// the cut would land mid-token, back up to the last space within the chunk.
-	static void foldEmitLine(const std::string& line, int width, bool wrap_spaces) {
-		std::size_t pos = 0;
-		while (pos < line.size()) {
-			std::size_t take = (std::min<std::size_t>)(width, line.size() - pos);
-			if (wrap_spaces && take < line.size() - pos) {
-				auto sp = line.rfind(' ', pos + take - 1);
-				if (sp != std::string::npos && sp >= pos) take = sp - pos + 1;
-			}
-			std::fwrite(line.data() + pos, 1, take, stdout);
-			std::putchar('\n');
-			pos += take;
-		}
-		if (line.empty()) std::putchar('\n');
-	}
-
-	static void foldRunOnStream(FILE* f, int width, bool wrap_spaces) {
-		std::string buf;
-		int c;
-		while ((c = std::fgetc(f)) != EOF) {
-			if (c == '\n') { foldEmitLine(buf, width, wrap_spaces); buf.clear(); }
-			else buf.push_back((char)c);
-		}
-		if (!buf.empty()) foldEmitLine(buf, width, wrap_spaces);
-	}
-
-	static int builtin_fold(Executor& exec, const std::vector<std::string>& args) {
-		FoldOptions o;
-		if (!parseFoldArgs(args, o)) return 1;
-		if (o.files.empty() || o.files[0] == "-") {
-			foldRunOnStream(stdin, o.width, o.wrap_spaces);
-			return 0;
-		}
-		for (const auto& p : o.files) {
-			FILE* f = fopenNative(exec, p, "rb");
-			if (!f) { perr("fold", p, std::error_code(errno, std::system_category())); return 1; }
-			foldRunOnStream(f, o.width, o.wrap_spaces);
-			std::fclose(f);
-		}
-		return 0;
-	}
-
-	// ---- column ---------------------------------------------------------
-
-	struct ColumnOptions {
-		bool table = false;
-		std::string sep = " \t";
-		std::string out_sep = "  ";
-		std::vector<std::string> files;
-	};
-
-	static bool parseColumnArgs(const std::vector<std::string>& args, ColumnOptions& o) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-t" || a == "--table") o.table = true;
-			else if ((a == "-s" || a == "--separator") && i + 1 < args.size()) o.sep = args[++i];
-			else if (a.size() > 2 && a.compare(0, 2, "-s") == 0) o.sep = a.substr(2);
-			else if ((a == "-o" || a == "--output-separator") && i + 1 < args.size()) {
-				o.out_sep = args[++i];
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("column", "unknown option: " + a);
-				return false;
-			}
-			else o.files.push_back(a);
-		}
-		return true;
-	}
-
-	static std::vector<std::string> columnSplitLine(const std::string& line,
-	                                                const std::string& sep) {
-		std::vector<std::string> fields;
-		std::string cur;
-		for (char c : line) {
-			if (sep.find(c) != std::string::npos) {
-				fields.push_back(std::move(cur)); cur.clear();
-				// Treat consecutive whitespace separators as one field break.
-				if (sep == " \t") {
-					while (!fields.empty() && fields.back().empty()) fields.pop_back();
-				}
-			}
-			else cur.push_back(c);
-		}
-		fields.push_back(std::move(cur));
-		return fields;
-	}
-
-	// Read every line from @p f, splitting into fields by @p sep. Appends to @p rows.
-	static void columnReadStream(FILE* f, const std::string& sep,
-	                             std::vector<std::vector<std::string>>& rows) {
-		std::string buf;
-		int c;
-		while ((c = std::fgetc(f)) != EOF) {
-			if (c == '\n') { rows.push_back(columnSplitLine(buf, sep)); buf.clear(); }
-			else buf.push_back((char)c);
-		}
-		if (!buf.empty()) rows.push_back(columnSplitLine(buf, sep));
-	}
-
-	// Emit rows space-joined (no padding) — used when `-t` is absent.
-	static void columnEmitPlain(const std::vector<std::vector<std::string>>& rows) {
-		for (const auto& row : rows) {
-			for (std::size_t i = 0; i < row.size(); ++i) {
-				if (i) std::fputs(" ", stdout);
-				std::fputs(row[i].c_str(), stdout);
-			}
-			std::putchar('\n');
-		}
-	}
-
-	// Emit rows aligned in a fixed-width table, padding each column to its widest entry.
-	static void columnEmitTable(const std::vector<std::vector<std::string>>& rows,
-	                            const std::string& out_sep) {
-		std::size_t cols = 0;
-		for (const auto& r : rows) cols = (std::max)(cols, r.size());
-		std::vector<std::size_t> widths(cols, 0);
-		for (const auto& r : rows) {
-			for (std::size_t i = 0; i < r.size(); ++i)
-				widths[i] = (std::max)(widths[i], r[i].size());
-		}
-		for (const auto& r : rows) {
-			for (std::size_t i = 0; i < r.size(); ++i) {
-				if (i) std::fputs(out_sep.c_str(), stdout);
-				std::fputs(r[i].c_str(), stdout);
-				if (i + 1 < r.size()) {
-					for (std::size_t k = r[i].size(); k < widths[i]; ++k) std::putchar(' ');
-				}
-			}
-			std::putchar('\n');
-		}
-	}
-
-	static int builtin_column(Executor& exec, const std::vector<std::string>& args) {
-		ColumnOptions o;
-		if (!parseColumnArgs(args, o)) return 1;
-
-		std::vector<std::vector<std::string>> rows;
-		if (o.files.empty() || o.files[0] == "-") columnReadStream(stdin, o.sep, rows);
-		else {
-			for (const auto& p : o.files) {
-				FILE* f = fopenNative(exec, p, "rb");
-				if (!f) {
-					perr("column", p, std::error_code(errno, std::system_category()));
-					return 1;
-				}
-				columnReadStream(f, o.sep, rows);
-				std::fclose(f);
-			}
-		}
-		if (o.table) columnEmitTable(rows, o.out_sep);
-		else         columnEmitPlain(rows);
-		return 0;
-	}
-
-	// ---- expand / unexpand ----------------------------------------------
-
-	static int builtin_expand(Executor& exec, const std::vector<std::string>& args) {
-		int tabstop = 8;
-		std::vector<std::string> files;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if ((a == "-t" || a == "--tabs") && i + 1 < args.size()) {
-				parseInt(args[++i], tabstop);
-			}
-			else if (a.size() > 2 && a.compare(0, 2, "-t") == 0) {
-				parseInt(a.substr(2), tabstop);
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-" && std::isdigit((unsigned char)a[1])) {
-				parseInt(a.substr(1), tabstop);
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("expand", "unknown option: " + a); return 1;
-			}
-			else files.push_back(a);
-		}
-		if (tabstop <= 0) tabstop = 8;
-		auto runOn = [&](FILE* f) {
-			int col = 0; int c;
-			while ((c = std::fgetc(f)) != EOF) {
-				if (c == '\t') {
-					int spaces = tabstop - (col % tabstop);
-					for (int i = 0; i < spaces; ++i) std::putchar(' ');
-					col += spaces;
-				}
-				else if (c == '\n') { std::putchar('\n'); col = 0; }
-				else { std::putchar(c); ++col; }
-			}
-			};
-		if (files.empty() || files[0] == "-") runOn(stdin);
-		else {
-			for (const auto& p : files) {
-				FILE* f = fopenNative(exec, p, "rb");
-				if (!f) {
-					perr("expand", p, std::error_code(errno, std::system_category()));
-					return 1;
-				}
-				runOn(f);
-				std::fclose(f);
-			}
-		}
-		return 0;
-	}
-
-	struct UnexpandOptions {
-		int tabstop = 8;
-		bool all = false;
-		std::vector<std::string> files;
-	};
-
-	static bool parseUnexpandArgs(const std::vector<std::string>& args, UnexpandOptions& o) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-a" || a == "--all") o.all = true;
-			else if ((a == "-t" || a == "--tabs") && i + 1 < args.size()) {
-				parseInt(args[++i], o.tabstop);
-			}
-			else if (a.size() > 2 && a.compare(0, 2, "-t") == 0) {
-				parseInt(a.substr(2), o.tabstop);
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("unexpand", "unknown option: " + a);
-				return false;
-			}
-			else o.files.push_back(a);
-		}
-		if (o.tabstop <= 0) o.tabstop = 8;
-		return true;
-	}
-
-	// Compress runs of spaces into tabs at @p tabstop boundaries and emit @p line.
-	// When @p all is false only the leading-whitespace run is folded.
-	static void unexpandEmitLine(const std::string& line, int tabstop, bool all) {
-		std::size_t i = 0;
-		int col = 0;
-		bool past_indent = false;
-		while (i < line.size()) {
-			if (!past_indent || all) {
-				int run_col = col;
-				while (i < line.size() && line[i] == ' ') { ++i; ++col; }
-				if (col > run_col) {
-					int next_tab = ((run_col / tabstop) + 1) * tabstop;
-					while (next_tab <= col) {
-						std::putchar('\t');
-						run_col = next_tab;
-						next_tab += tabstop;
-					}
-					while (run_col < col) { std::putchar(' '); ++run_col; }
-					continue;
-				}
-			}
-			char ch = line[i++];
-			if (ch != ' ' && ch != '\t') past_indent = true;
-			std::putchar(ch);
-			if (ch == '\t') col = ((col / tabstop) + 1) * tabstop;
-			else ++col;
-		}
-	}
-
-	static void unexpandRunOnStream(FILE* f, int tabstop, bool all) {
-		std::string buf;
-		int c;
-		while ((c = std::fgetc(f)) != EOF) {
-			if (c == '\n') {
-				unexpandEmitLine(buf, tabstop, all);
-				std::putchar('\n');
-				buf.clear();
-			}
-			else buf.push_back((char)c);
-		}
-		if (!buf.empty()) unexpandEmitLine(buf, tabstop, all);
-	}
-
-	static int builtin_unexpand(Executor& exec, const std::vector<std::string>& args) {
-		UnexpandOptions o;
-		if (!parseUnexpandArgs(args, o)) return 1;
-		if (o.files.empty() || o.files[0] == "-") {
-			unexpandRunOnStream(stdin, o.tabstop, o.all);
-			return 0;
-		}
-		for (const auto& p : o.files) {
-			FILE* f = fopenNative(exec, p, "rb");
-			if (!f) {
-				perr("unexpand", p, std::error_code(errno, std::system_category()));
-				return 1;
-			}
-			unexpandRunOnStream(f, o.tabstop, o.all);
-			std::fclose(f);
-		}
-		return 0;
-	}
-
-	// ---- comm -----------------------------------------------------------
-
-	static int builtin_comm(Executor& exec, const std::vector<std::string>& args) {
-		bool suppress[3] = { false, false, false };  // -1 -2 -3
-		std::vector<std::string> files;
-		for (const auto& a : args) {
-			if (a == "-1") suppress[0] = true;
-			else if (a == "-2") suppress[1] = true;
-			else if (a == "-3") suppress[2] = true;
-			else if (a == "-12" || a == "-21") { suppress[0] = suppress[1] = true; }
-			else if (a == "-13" || a == "-31") { suppress[0] = suppress[2] = true; }
-			else if (a == "-23" || a == "-32") { suppress[1] = suppress[2] = true; }
-			else if (a == "-123") { suppress[0] = suppress[1] = suppress[2] = true; }
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				perr("comm", "unknown option: " + a); return 1;
-			}
-			else files.push_back(a);
-		}
-		if (files.size() != 2) { perr("comm", "usage: comm [opts] FILE1 FILE2"); return 1; }
-		auto loadLines = [&](const std::string& p) -> std::vector<std::string> {
-			std::vector<std::string> out;
-			FILE* f = (p == "-") ? stdin
-				: fopenNative(exec, p, "rb");
-			if (!f) { perr("comm", p, std::error_code(errno, std::system_category())); return out; }
-			std::string buf; int c;
-			while ((c = std::fgetc(f)) != EOF) {
-				if (c == '\n') { out.push_back(std::move(buf)); buf.clear(); }
-				else buf.push_back((char)c);
-			}
-			if (!buf.empty()) out.push_back(std::move(buf));
-			if (f != stdin) std::fclose(f);
-			return out;
-			};
-		auto la = loadLines(files[0]);
-		auto lb = loadLines(files[1]);
-		auto emit = [&](int col, const std::string& s) {
-			if (suppress[col]) return;
-			for (int k = 0; k < col; ++k) std::putchar('\t');
-			std::fputs(s.c_str(), stdout);
-			std::putchar('\n');
-			};
-		std::size_t i = 0, j = 0;
-		while (i < la.size() && j < lb.size()) {
-			if (la[i] == lb[j]) { emit(2, la[i]); ++i; ++j; }
-			else if (la[i] < lb[j]) { emit(0, la[i]); ++i; }
-			else { emit(1, lb[j]); ++j; }
-		}
-		while (i < la.size()) { emit(0, la[i++]); }
-		while (j < lb.size()) { emit(1, lb[j++]); }
-		return 0;
-	}
-
-	// ---- yes ------------------------------------------------------------
 
 	static int builtin_yes(Executor&, const std::vector<std::string>& args) {
 		std::string line;
@@ -4788,6 +2133,7 @@ namespace wbsh {
 				line += args[i];
 			}
 		}
+
 		line.push_back('\n');
 		while (true) {
 			if (std::fwrite(line.data(), 1, line.size(), stdout) != line.size()) {
@@ -4796,8 +2142,6 @@ namespace wbsh {
 		}
 	}
 
-	// ---- nproc ----------------------------------------------------------
-
 	static int builtin_nproc(Executor&, const std::vector<std::string>& args) {
 		(void)args;   // ignore --all / --ignore=N for this minimal impl
 		unsigned n = std::thread::hardware_concurrency();
@@ -4805,8 +2149,6 @@ namespace wbsh {
 		std::printf("%u\n", n);
 		return 0;
 	}
-
-	// ---- tput -----------------------------------------------------------
 
 	static void tputConsoleSize(int& cols, int& lines) {
 #ifdef _WIN32
@@ -4822,7 +2164,6 @@ namespace wbsh {
 		lines = 24;
 	}
 
-	// Static caps: name → literal escape sequence to print. Searched first.
 	static const char* tputStaticEscape(const std::string& cap) {
 		static const std::unordered_map<std::string, std::string> table = {
 			{ "clear", "\x1b[2J\x1b[H" },
@@ -4845,8 +2186,6 @@ namespace wbsh {
 		return (it == table.end()) ? nullptr : it->second.c_str();
 	}
 
-	// Caps that take arguments (cup, setaf, setab). Returns 0 on success,
-	// 1 on bad numeric arg, or -1 if @p cap is not one of these.
 	static int tputParameterizedCap(const std::string& cap, const std::vector<std::string>& args) {
 		if (cap == "cup" && args.size() >= 3) {
 			int row = 0, col = 0;
@@ -4854,6 +2193,7 @@ namespace wbsh {
 			std::printf("\x1b[%d;%dH", row + 1, col + 1);
 			return 0;
 		}
+
 		if ((cap == "setaf" || cap == "setf") && args.size() >= 2) {
 			int n = 0;
 			if (!parseInt(args[1], n)) return 1;
@@ -4861,6 +2201,7 @@ namespace wbsh {
 			else                 std::printf("\x1b[39m");
 			return 0;
 		}
+
 		if ((cap == "setab" || cap == "setb") && args.size() >= 2) {
 			int n = 0;
 			if (!parseInt(args[1], n)) return 1;
@@ -4868,6 +2209,7 @@ namespace wbsh {
 			else                 std::printf("\x1b[49m");
 			return 0;
 		}
+
 		return -1;
 	}
 
@@ -4879,22 +2221,23 @@ namespace wbsh {
 			std::printf("%d\n", c);
 			return 0;
 		}
+
 		if (cap == "lines") {
 			int c, l; tputConsoleSize(c, l);
 			std::printf("%d\n", l);
 			return 0;
 		}
+
 		if (const char* esc = tputStaticEscape(cap); esc) {
 			std::fputs(esc, stdout);
 			return 0;
 		}
+
 		int rc = tputParameterizedCap(cap, args);
 		if (rc >= 0) return rc;
 		std::fprintf(stderr, "wbsh: tput: unknown capability: %s\n", cap.c_str());
 		return 1;
 	}
-
-	// ---- mktemp ---------------------------------------------------------
 
 	namespace mktemp_internal {
 		struct MktempOptions {
@@ -4906,7 +2249,6 @@ namespace wbsh {
 		};
 	}  // namespace mktemp_internal
 
-	// Returns 0 on success, 1 on unknown option (with diagnostic).
 	static int parseMktempArgs(const std::vector<std::string>& args,
 	                           mktemp_internal::MktempOptions& o) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
@@ -4929,12 +2271,11 @@ namespace wbsh {
 				o.template_arg = a;
 			}
 		}
+
 		if (o.template_arg.empty()) o.template_arg = "tmp.XXXXXXXXXX";
 		return 0;
 	}
 
-	// Resolve the directory the template expands relative to: explicit
-	// `-p / --tmpdir` > $TMPDIR > $TEMP > $TMP > "/tmp".
 	static std::string resolveMktempBaseDir(Executor& exec,
 	                                        const std::string& tmpdir_override) {
 		if (!tmpdir_override.empty()) return tmpdir_override;
@@ -4944,8 +2285,6 @@ namespace wbsh {
 		return "/tmp";
 	}
 
-	// Compose the final on-disk path. If the template carries a slash it's
-	// treated as a path relative to CWD; otherwise it's joined to `base_dir`.
 	static fs::path resolveMktempFullPath(Executor& exec,
 	                                      const std::string& template_arg,
 	                                      const std::string& base_dir) {
@@ -4953,11 +2292,10 @@ namespace wbsh {
 		    || template_arg.find('\\') != std::string::npos) {
 			return fs::path(toNative(exec, template_arg));
 		}
+
 		return fs::path(toNative(exec, base_dir)) / template_arg;
 	}
 
-	// Generate a fresh `xcount`-length suffix using a poor-man's PCG-style
-	// mix. `attempt` is folded in so retries produce different values.
 	static std::string randomMktempSuffix(std::size_t xcount, int attempt) {
 		static const char* alpha =
 			"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -4971,17 +2309,16 @@ namespace wbsh {
 			suffix[k] = alpha[mix % alpha_n];
 			mix = mix * 6364136223846793005ULL + 1442695040888963407ULL;
 		}
+
 		return suffix;
 	}
 
-	// Try to atomically claim `candidate` (file or directory). Returns true
-	// on success; on file-mode `_NEW` fails for already-existing names so
-	// the loop in builtin_mktemp can retry safely.
 	static bool tryClaimMktempCandidate(const std::string& candidate, bool make_dir) {
 		std::error_code ec;
 		if (make_dir) {
 			return fs::create_directory(candidate, ec) && !ec;
 		}
+
 		HANDLE h = CreateFileA(candidate.c_str(),
 			GENERIC_WRITE, 0, nullptr,
 			CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -4999,7 +2336,6 @@ namespace wbsh {
 		const fs::path full = resolveMktempFullPath(exec, o.template_arg, base);
 
 		std::string s = pathToUtf8(full);
-		// Trailing run of `X`s (must be at least 3, per coreutils).
 		std::size_t end = s.size();
 		std::size_t start = end;
 		while (start > 0 && s[start - 1] == 'X') --start;
@@ -5018,39 +2354,70 @@ namespace wbsh {
 				std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
 				return 0;
 			}
+
 			if (tryClaimMktempCandidate(candidate, o.make_dir)) {
 				std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
 				return 0;
 			}
 		}
+
 		if (!o.quiet) std::fprintf(stderr,
 			"wbsh: mktemp: failed to create unique file from '%s'\n",
 			o.template_arg.c_str());
 		return 1;
 	}
 
-	// ---- kill -----------------------------------------------------------
+	static void killPrintSignalList() {
+		std::printf(" 1) HUP   2) INT   3) QUIT  4) ILL   "
+			"5) TRAP  6) ABRT  7) BUS   8) FPE\n"
+			" 9) KILL 10) USR1 11) SEGV 12) USR2 "
+			"13) PIPE 14) ALRM 15) TERM\n");
+	}
+
+	static int killTerminate(const std::vector<int>& pids, int signum) {
+		int rc = 0;
+#ifdef _WIN32
+		for (int pid : pids) {
+			HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+			if (!h) {
+				std::fprintf(stderr, "wbsh: kill: %d: no such process\n", pid);
+				rc = 1;
+				continue;
+			}
+
+			if (!TerminateProcess(h, static_cast<UINT>(128 + signum))) {
+				std::fprintf(stderr, "wbsh: kill: %d: cannot terminate\n", pid);
+				rc = 1;
+			}
+
+			CloseHandle(h);
+		}
+#else
+		(void)pids; (void)signum;
+#endif
+		return rc;
+	}
 
 	static int builtin_kill(Executor&, const std::vector<std::string>& args) {
-		int signum = 15;   // SIGTERM
+		int signum = 15;
 		std::vector<int> pids;
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "-l") {
-				std::printf(" 1) HUP   2) INT   3) QUIT  4) ILL   "
-					"5) TRAP  6) ABRT  7) BUS   8) FPE\n"
-					" 9) KILL 10) USR1 11) SEGV 12) USR2 "
-					"13) PIPE 14) ALRM 15) TERM\n");
+				killPrintSignalList();
 				return 0;
 			}
+
 			if (a == "-s" && i + 1 < args.size()) {
 				parseInt(args[++i], signum);
 				continue;
 			}
+
 			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
 				parseInt(a.substr(1), signum);
 				continue;
 			}
+
 			if (a == "-9" || a == "-KILL") { signum = 9;  continue; }
 			if (a == "-15" || a == "-TERM") { signum = 15; continue; }
 			if (a == "-2" || a == "-INT") { signum = 2;  continue; }
@@ -5060,129 +2427,18 @@ namespace wbsh {
 				std::fprintf(stderr, "wbsh: kill: %s: arguments must be PIDs\n", a.c_str());
 				return 1;
 			}
+
 			pids.push_back(pid);
 		}
+
 		if (pids.empty()) {
 			perr("kill", "usage: kill [-SIG] PID...");
 			return 2;
 		}
-		int rc = 0;
-#ifdef _WIN32
-		(void)signum;
-		for (int pid : pids) {
-			HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
-			if (!h) {
-				std::fprintf(stderr, "wbsh: kill: %d: no such process\n", pid);
-				rc = 1;
-				continue;
-			}
-			if (!TerminateProcess(h, static_cast<UINT>(128 + signum))) {
-				std::fprintf(stderr, "wbsh: kill: %d: cannot terminate\n", pid);
-				rc = 1;
-			}
-			CloseHandle(h);
-		}
-#else
-		(void)pids; (void)signum;
-#endif
-		return rc;
+
+		return killTerminate(pids, signum);
 	}
 
-	// ---- xargs (minimal) ------------------------------------------------
-
-	// Returns true on success. On failure sets the caller's status and returns false.
-	static bool parseXargsArgs(const std::vector<std::string>& args,
-	                           int& n_per, std::vector<std::string>& cmd) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-n" && i + 1 < args.size()) {
-				if (!parseInt(args[++i], n_per)) return false;
-				continue;
-			}
-			if (a.size() > 2 && a.compare(0, 2, "-n") == 0) {
-				if (!parseInt(a.substr(2), n_per)) return false;
-				continue;
-			}
-			if (a == "--") {
-				for (++i; i < args.size(); ++i) cmd.push_back(args[i]);
-				break;
-			}
-			cmd.push_back(a);
-		}
-		return true;
-	}
-
-	// Read whitespace-separated tokens from stdin.
-	static std::vector<std::string> xargsReadItems() {
-		std::vector<std::string> items;
-		std::string cur;
-		int c;
-		while ((c = std::fgetc(stdin)) != EOF) {
-			if (std::isspace(static_cast<unsigned char>(c))) {
-				if (!cur.empty()) { items.push_back(std::move(cur)); cur.clear(); }
-			}
-			else cur.push_back(static_cast<char>(c));
-		}
-		if (!cur.empty()) items.push_back(std::move(cur));
-		return items;
-	}
-
-	// Single-quote each arg (escaping inner ') and join with spaces — ready for executeText.
-	static std::string xargsQuoteArgv(const std::vector<std::string>& argv) {
-		std::string line;
-		for (std::size_t k = 0; k < argv.size(); ++k) {
-			if (k) line.push_back(' ');
-			line.push_back('\'');
-			for (char ch : argv[k]) {
-				if (ch == '\'') line += "'\\''";
-				else line.push_back(ch);
-			}
-			line.push_back('\'');
-		}
-		return line;
-	}
-
-	// Run one batch of items appended to `cmd`. Returns the child exit status.
-	static int xargsInvokeBatch(Executor& exec, const std::vector<std::string>& cmd,
-	                            std::vector<std::string> batch, bool skip_empty) {
-		if (batch.empty() && skip_empty) return 0;
-		std::vector<std::string> argv = cmd;
-		for (auto& it : batch) argv.push_back(std::move(it));
-		if (argv.empty()) return 0;
-		if (exec.isFunction(argv[0]) || exec.isBuiltin(argv[0])) {
-			std::vector<std::string> a(argv.begin() + 1, argv.end());
-			return exec.isBuiltin(argv[0])
-				? exec.callBuiltin(argv[0], a)
-				: exec.callFunction(argv[0], a);
-		}
-		return exec.executeText(xargsQuoteArgv(argv), "<xargs>");
-	}
-
-	static int builtin_xargs(Executor& exec, const std::vector<std::string>& args) {
-		int n_per = -1;   // -1 means "all in one batch"
-		std::vector<std::string> cmd;
-		if (!parseXargsArgs(args, n_per, cmd)) return 1;
-		if (cmd.empty()) cmd.push_back("echo");
-
-		std::vector<std::string> items = xargsReadItems();
-		int rc = 0;
-		if (n_per > 0) {
-			for (std::size_t k = 0; k < items.size(); k += static_cast<std::size_t>(n_per)) {
-				std::vector<std::string> batch;
-				for (int j = 0; j < n_per && k + j < items.size(); ++j) {
-					batch.push_back(items[k + j]);
-				}
-				int r = xargsInvokeBatch(exec, cmd, std::move(batch), /*skip_empty=*/false);
-				if (r != 0) rc = r;
-			}
-		} else {
-			int r = xargsInvokeBatch(exec, cmd, items, /*skip_empty=*/true);
-			if (r != 0) rc = r;
-		}
-		return rc;
-	}
-
-	// File / directory operations: ls, cat, mkdir, mv, cp, rm, etc.
 	static void registerFileBuiltins(Executor& exec) {
 		exec.registerBuiltin("ls",       builtin_ls);
 		exec.registerBuiltin("cat",      builtin_cat);
@@ -5213,48 +2469,6 @@ namespace wbsh {
 		exec.registerBuiltin("dirs",     builtin_dirs);
 	}
 
-	// Text manipulation: sort, uniq, grep, find, sed, awk, etc.
-	static void registerTextBuiltins(Executor& exec) {
-		exec.registerBuiltin("sort",     builtin_sort);
-		exec.registerBuiltin("uniq",     builtin_uniq);
-		exec.registerBuiltin("tr",       builtin_tr);
-		exec.registerBuiltin("cut",      builtin_cut);
-		exec.registerBuiltin("tee",      builtin_tee);
-		exec.registerBuiltin("paste",    builtin_paste);
-		exec.registerBuiltin("tac",      builtin_tac);
-		exec.registerBuiltin("rev",      builtin_rev);
-		exec.registerBuiltin("nl",       builtin_nl);
-		exec.registerBuiltin("fold",     builtin_fold);
-		exec.registerBuiltin("column",   builtin_column);
-		exec.registerBuiltin("expand",   builtin_expand);
-		exec.registerBuiltin("unexpand", builtin_unexpand);
-		exec.registerBuiltin("comm",     builtin_comm);
-		exec.registerBuiltin("grep",     builtin_grep);
-		exec.registerBuiltin("find",     builtin_find);
-		exec.registerBuiltin("xargs",    builtin_xargs);
-		exec.registerBuiltin("sed",      builtin_sed);
-		exec.registerBuiltin("awk",      builtin_awk);
-		exec.registerBuiltin("gawk",     builtin_awk);
-	}
-
-	// Display / encoding: xxd, od, base64.
-	static void registerEncodingBuiltins(Executor& exec) {
-		exec.registerBuiltin("xxd",    builtin_xxd);
-		exec.registerBuiltin("od",     builtin_od);
-		exec.registerBuiltin("base64", builtin_base64);
-	}
-
-	// Archive / compression: gzip, zip, tar.
-	static void registerArchiveBuiltins(Executor& exec) {
-		exec.registerBuiltin("gzip",   builtin_gzip);
-		exec.registerBuiltin("gunzip", builtin_gunzip);
-		exec.registerBuiltin("zcat",   builtin_zcat);
-		exec.registerBuiltin("zip",    builtin_zip);
-		exec.registerBuiltin("unzip",  builtin_unzip);
-		exec.registerBuiltin("tar",    builtin_tar);
-	}
-
-	// System info / misc: whoami, hostname, env, date, seq, etc.
 	static void registerSystemBuiltins(Executor& exec) {
 		exec.registerBuiltin("whoami",   builtin_whoami);
 		exec.registerBuiltin("hostname", builtin_hostname);
@@ -5278,9 +2492,9 @@ namespace wbsh {
 		registerEncodingBuiltins(exec);
 		registerArchiveBuiltins(exec);
 		registerSystemBuiltins(exec);
-		registerBcBuiltin(exec);       // defined in coreutils_bc.cpp
-		registerHashBuiltins(exec);    // defined in coreutils_hash.cpp
-		registerCurlBuiltin(exec);     // defined in coreutils_curl.cpp
+		registerBcBuiltin(exec);
+		registerHashBuiltins(exec);
+		registerCurlBuiltin(exec);
 	}
 
 }  // namespace wbsh

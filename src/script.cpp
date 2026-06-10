@@ -1,12 +1,3 @@
-/**
- * @file script.cpp
- * @brief Non-interactive run-on-source driver.
- *
- * Implements the `wbsh -c <cmd>` and `wbsh <file>` paths: lexes,
- * parses, optionally dumps tokens / AST / expanded words, and runs
- * the executor.
- */
-
 #include "script.h"
 
 #ifdef _WIN32
@@ -47,11 +38,6 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
-	// ----- AST -> expanded-words pretty-printer ---------------------------
-	// Used only by `wbsh -e`. Walks the AST and prints, per command, each
-	// word's expansion result. Provides a debugging view roughly between
-	// "token dump" and "actually run it".
-
 	static void walkAndExpand(const Node& n, Expander& exp, Environment& env,
 	                          std::ostream& os, int depth);
 
@@ -71,6 +57,7 @@ namespace wbsh {
 				default:   os << c;
 				}
 			}
+
 			os << '"';
 		}
 
@@ -79,8 +66,6 @@ namespace wbsh {
 	                                std::ostream& os, int depth) {
 			indent(os, depth);
 			os << "SimpleCommand @ " << sc.loc.line << ":" << sc.loc.column << "\n";
-			// Commit assignments to env when this is a "pure" assignment command
-			// (no command words). Mirrors bash's `a=1` (set) vs `a=1 cmd` (per-call).
 			bool commit = sc.words.empty();
 			for (const auto& a : sc.assignments) {
 				indent(os, depth + 1);
@@ -88,11 +73,13 @@ namespace wbsh {
 				if (exp.failed()) {
 					os << "<expand error: " << exp.takeError() << ">";
 				}
+
 				if (commit) env.set(a.name, v);
 				os << "Assign " << a.name << "=";
 				escape(os, v);
 				os << "\n";
 			}
+
 			for (const auto& w : sc.words) {
 				indent(os, depth + 1);
 				os << "Word raw=";
@@ -104,12 +91,15 @@ namespace wbsh {
 				} else if (fields.empty()) {
 					os << " (vanished)";
 				}
+
 				for (const auto& f : fields) {
 					os << ' ';
 					escape(os, f);
 				}
+
 				os << "\n";
 			}
+
 			for (const auto& r : sc.redirs) {
 				indent(os, depth + 1);
 				os << "Redir " << redirOpName(r.op);
@@ -123,6 +113,7 @@ namespace wbsh {
 					escape(os, exp.expandHeredoc(r.heredoc_body, r.heredoc_quoted));
 					if (exp.failed()) exp.takeError();
 				}
+
 				os << "\n";
 			}
 		}
@@ -137,6 +128,7 @@ namespace wbsh {
 			indent(os, depth + 1); os << "then:\n";
 			if (ic.branches[i].body) walkAndExpand(*ic.branches[i].body, exp, env, os, depth + 2);
 		}
+
 		if (ic.else_body) {
 			indent(os, depth + 1); os << "else:\n";
 			walkAndExpand(*ic.else_body, exp, env, os, depth + 2);
@@ -154,10 +146,13 @@ namespace wbsh {
 					os << " <error: " << exp.takeError() << ">";
 					continue;
 				}
+
 				for (const auto& s : fields) { os << ' '; escape(os, s); }
 			}
+
 			os << "\n";
 		}
+
 		indent(os, depth + 1); os << "do:\n";
 		if (f.body) walkAndExpand(*f.body, exp, env, os, depth + 2);
 	}
@@ -181,6 +176,7 @@ namespace wbsh {
 					escape(os, pat);
 				}
 			}
+
 			os << "\n";
 			if (it.body) {
 				indent(os, depth + 2); os << "body:\n";
@@ -272,6 +268,7 @@ namespace wbsh {
 			header("TOKENS");
 			dumpTokens(std::cout, tokens);
 		}
+
 		for (const auto& e : lex.errors()) {
 			std::cerr << ep << "lex error" << er << " "
 				<< el << e.loc.line << ":" << e.loc.column << er
@@ -285,6 +282,7 @@ namespace wbsh {
 			if (root) dumpAst(std::cout, *root);
 			else      std::cout << "(empty)\n";
 		}
+
 		for (const auto& e : parser.errors()) {
 			std::cerr << ep << "parse error" << er << " "
 				<< el << e.loc.line << ":" << e.loc.column << er

@@ -9,7 +9,22 @@
  * source is read from `-f FILE`, the first non-option positional, or
  * stdin (`-`).
  *
- * @see awk.cpp for the supported feature surface.
+ * Coverage:
+ *   - BEGIN { } and END { } blocks (multiple of each, in source order)
+ *   - /regex/ patterns, expression patterns, range patterns (e1, e2)
+ *   - $0..$NF accessors, including assignment to $N
+ *   - Variables: NR, NF, FS, OFS, ORS, FILENAME
+ *   - All scalar operators: + - * / % ^, == != < <= > >=, && || !,
+ *     ~ !~, ?:, =, +=, -=, *=, /=, %=, ++, --
+ *   - String concat by juxtaposition
+ *   - Statements: if/else, while, do/while, for(;;), for(k in arr),
+ *     break, continue, next, exit, delete, return-only-from-builtins
+ *   - Builtins: print, printf, sprintf, length, substr, index, split,
+ *     sub, gsub, match, tolower, toupper, getline (basic forms), system
+ *   - Associative arrays (single-dim subscripts; multi-dim via SUBSEP join)
+ *
+ * Out of scope: user-defined functions, gawk extensions, the more
+ * obscure builtins (asort, asorti, mktime, strftime, etc.).
  */
 
 #include "executor.h"
@@ -19,15 +34,6 @@
 
 namespace wbsh {
 
-	/**
-	 * @brief Entry point for the bundled `awk` builtin.
-	 *
-	 * Supports BEGIN/END, /regex/ and expression patterns, $0..$NF,
-	 * NR/NF/FS/OFS/ORS/FILENAME, the common statement set and
-	 * scalar/array operators.
-	 *
-	 * @return 0 on success, non-zero on error.
-	 */
 	int builtin_awk(Executor& exec, const std::vector<std::string>& args);
 
 }  // namespace wbsh

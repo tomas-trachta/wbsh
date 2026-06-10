@@ -1,9 +1,3 @@
-/**
- * @file executor.cpp
- * @brief AST executor implementation: pipelines, redirection, control
- *        flow, builtin / function dispatch, and process spawning.
- */
-
 #include "executor.h"
 
 #ifdef _WIN32
@@ -35,71 +29,13 @@
 #include <utility>
 #include <vector>
 
+#include "fnmatch.h"
 #include "lexer.h"
 #include "numparse.h"
 #include "parser.h"
 #include "regexutil.h"
 
 namespace wbsh {
-
-	// ---- fnmatch (subset, used for case patterns) ----
-	static bool matchHere(const std::string& p, std::size_t pi,
-	                      const std::string& s, std::size_t si);
-
-	static bool matchBracket(const std::string& p, std::size_t& pi, char c) {
-		std::size_t k = pi + 1;
-		bool negate = false;
-		if (k < p.size() && (p[k] == '!' || p[k] == '^')) { negate = true; ++k; }
-		bool match = false;
-		bool first = true;
-		while (k < p.size() && (first || p[k] != ']')) {
-			char a = p[k++];
-			if (a == '\\' && k < p.size()) a = p[k++];
-			if (k < p.size() && p[k] == '-' && k + 1 < p.size() && p[k + 1] != ']') {
-				++k;
-				char b = p[k++];
-				if (b == '\\' && k < p.size()) b = p[k++];
-				if (c >= a && c <= b) match = true;
-			} else {
-				if (c == a) match = true;
-			}
-			first = false;
-		}
-		if (k < p.size() && p[k] == ']') ++k;
-		pi = k;
-		return match != negate;
-	}
-
-	static bool matchHere(const std::string& p, std::size_t pi,
-	               const std::string& s, std::size_t si) {
-		while (pi < p.size()) {
-			char pc = p[pi];
-			if (pc == '*') {
-				while (pi < p.size() && p[pi] == '*') ++pi;
-				if (pi >= p.size()) return true;
-				for (std::size_t k = si; k <= s.size(); ++k)
-					if (matchHere(p, pi, s, k)) return true;
-				return false;
-			}
-			if (si >= s.size()) return false;
-			if (pc == '?') { ++pi; ++si; continue; }
-			if (pc == '[') {
-				std::size_t newpi = pi;
-				if (!matchBracket(p, newpi, s[si])) return false;
-				pi = newpi; ++si; continue;
-			}
-			if (pc == '\\' && pi + 1 < p.size()) {
-				++pi;
-				if (p[pi] != s[si]) return false;
-				++pi; ++si; continue;
-			}
-			if (pc != s[si]) return false;
-			++pi; ++si;
-		}
-		return si == s.size();
-	}
-
-	// ---- Temp-file helpers ----
 
 	static std::string makeTempFile() {
 #ifdef _WIN32
@@ -126,7 +62,7 @@ namespace wbsh {
 	}
 
 #ifdef _WIN32
-	std::wstring quoteArg(const std::wstring& arg) {
+	static std::wstring quoteArg(const std::wstring& arg) {
 		if (arg.empty()) return L"\"\"";
 		bool needs = false;
 		for (wchar_t c : arg) {
@@ -134,6 +70,7 @@ namespace wbsh {
 				needs = true; break;
 			}
 		}
+
 		if (!needs) return arg;
 		std::wstring out = L"\"";
 		int backslashes = 0;
@@ -150,17 +87,19 @@ namespace wbsh {
 				backslashes = 0;
 			}
 		}
+
 		out.append(static_cast<std::size_t>(backslashes) * 2, L'\\');
 		out.push_back(L'"');
 		return out;
 	}
 
-	std::wstring buildCommandLine(const std::vector<std::string>& argv) {
+	static std::wstring buildCommandLine(const std::vector<std::string>& argv) {
 		std::wstring cmd;
 		for (std::size_t i = 0; i < argv.size(); ++i) {
 			if (i) cmd.push_back(L' ');
 			cmd += quoteArg(utf8ToWide(argv[i]));
 		}
+
 		return cmd;
 	}
 
@@ -173,7 +112,7 @@ namespace wbsh {
 		return ext == "cmd" || ext == "bat";
 	}
 
-	std::wstring cmdExePath() {
+	static std::wstring cmdExePath() {
 		wchar_t buf[MAX_PATH];
 		UINT n = GetSystemDirectoryW(buf, MAX_PATH);
 		if (n && n < MAX_PATH) {
@@ -181,15 +120,11 @@ namespace wbsh {
 			p += L"\\cmd.exe";
 			return p;
 		}
+
 		return L"cmd.exe";
 	}
 
-	// Wrap a built command line so it runs through cmd.exe. Required for
-	// .cmd/.bat scripts (e.g. VS Code's `code.cmd`): CreateProcessW can't
-	// launch them directly. /d skips registry AutoRun, /s with outer
-	// quotes lets cmd treat the entire inner string as one command and
-	// preserves quoting around paths/args with spaces.
-	std::wstring wrapWithCmdExe(const std::wstring& cmdline) {
+	static std::wstring wrapWithCmdExe(const std::wstring& cmdline) {
 		std::wstring cmd = cmdExePath();
 		std::wstring quoted = (cmd.find(L' ') != std::wstring::npos)
 			? L"\"" + cmd + L"\""
@@ -197,7 +132,7 @@ namespace wbsh {
 		return quoted + L" /d /s /c \"" + cmdline + L"\"";
 	}
 
-	std::wstring buildEnvBlock(const Environment& env,
+	static std::wstring buildEnvBlock(const Environment& env,
 	                           const std::vector<std::pair<std::string, std::string>>& overrides,
 	                           bool include_unexported = false) {
 		std::vector<std::wstring> entries;
@@ -206,7 +141,7 @@ namespace wbsh {
 			std::string entry = kv.first + "=" + kv.second;
 			entries.push_back(utf8ToWide(entry));
 		}
-		// Apply overrides (replace existing entries with the same name).
+
 		for (const auto& ov : overrides) {
 			std::wstring prefix = utf8ToWide(ov.first) + L"=";
 			auto it = std::find_if(entries.begin(), entries.end(),
@@ -218,19 +153,24 @@ namespace wbsh {
 			if (it != entries.end()) *it = std::move(entry);
 			else entries.push_back(std::move(entry));
 		}
+
 		std::sort(entries.begin(), entries.end(),
 			[](const std::wstring& a, const std::wstring& b) {
-				// Case-insensitive compare per Windows env conventions.
-				std::wstring la(a.size(), L'\0'), lb(b.size(), L'\0');
-				std::transform(a.begin(), a.end(), la.begin(), ::towlower);
-				std::transform(b.begin(), b.end(), lb.begin(), ::towlower);
-				return la < lb;
+				const std::size_t n = a.size() < b.size() ? a.size() : b.size();
+				for (std::size_t i = 0; i < n; ++i) {
+					const wchar_t ca = static_cast<wchar_t>(::towlower(a[i]));
+					const wchar_t cb = static_cast<wchar_t>(::towlower(b[i]));
+					if (ca != cb) return ca < cb;
+				}
+
+				return a.size() < b.size();
 			});
 		std::wstring block;
 		for (const auto& e : entries) {
 			block += e;
 			block.push_back(L'\0');
 		}
+
 		block.push_back(L'\0');
 		return block;
 	}
@@ -279,18 +219,10 @@ namespace wbsh {
 		for (int i = 0; markers[i]; ++i) {
 			if (lower.find(markers[i]) != std::string::npos) return true;
 		}
+
 		return false;
 	}
 
-	// True if argv path translation should be suppressed for the child.
-	// Honours both the wbsh-native `WBSH_NO_PATHCONV` and the de-facto
-	// MSYS / Git-for-Windows `MSYS_NO_PATHCONV`. The MSYS variable is the
-	// one cross-shell scripts use as a `VAR=1 cmd ...` prefix to keep
-	// docker volume specs (`-v /c/foo:/bar`) and other colon-bearing
-	// args from being rewritten — wbsh has to recognise it or those
-	// scripts misbehave only when run here. Prefix assignments shadow
-	// the shell env (so `MSYS_NO_PATHCONV= cmd` re-enables conversion
-	// for a single command, matching bash's "unset for one command" idiom).
 	static bool noPathConvSet(
 		const std::vector<std::pair<std::string, std::string>>& overrides,
 		const Environment& env) {
@@ -298,15 +230,13 @@ namespace wbsh {
 			for (const auto& kv : overrides) {
 				if (kv.first == name) return kv.second;
 			}
+
 			return env.get(name);
 		};
 		return !effective("WBSH_NO_PATHCONV").empty()
 			|| !effective("MSYS_NO_PATHCONV").empty();
 	}
 
-	// Allocate and initialise an empty PROC_THREAD_ATTRIBUTE_LIST sized for one
-	// attribute. Returns nullptr on failure. Caller owns the returned list and
-	// must call DeleteProcThreadAttributeList + HeapFree to release it.
 	static LPPROC_THREAD_ATTRIBUTE_LIST allocAttrList() {
 		SIZE_T attr_size = 0;
 		InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
@@ -317,12 +247,10 @@ namespace wbsh {
 			HeapFree(GetProcessHeap(), 0, attr_list);
 			return nullptr;
 		}
+
 		return attr_list;
 	}
 
-	// Populate @p inherits with the unique inheritable handles from
-	// {h_in, h_out, h_err}, marking each one HANDLE_FLAG_INHERIT as a side
-	// effect. Returns the number of handles written.
 	static DWORD collectInheritHandles(HANDLE inherits[3],
 	                                   HANDLE h_in, HANDLE h_out, HANDLE h_err) {
 		DWORD count = 0;
@@ -336,11 +264,7 @@ namespace wbsh {
 		return count;
 	}
 
-	// Spawn a process with explicit stdin / stdout / stderr handles via
-	// STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Returns the process
-	// handle on success, INVALID_HANDLE_VALUE on failure.
-	//
-	// Note: the inherits[] buffer is referenced by attr_list until
+	// The inherits[] buffer is referenced by attr_list until
 	// DeleteProcThreadAttributeList runs, so it must live in this frame
 	// (not in a helper) — per the Win32 attribute-list ownership rules.
 	static HANDLE spawnWithHandles(const std::wstring& exe,
@@ -382,14 +306,11 @@ namespace wbsh {
 				lastErrorString().c_str());
 			return INVALID_HANDLE_VALUE;
 		}
+
 		CloseHandle(pi.hThread);
 		return pi.hProcess;
 	}
 #endif  // _WIN32
-
-	// ---------------------------------------------------------------------------
-	// Construction & dispatch
-	// ---------------------------------------------------------------------------
 
 	Executor::Executor(Environment& env)
 		: env_(env), expander_(env, this) {
@@ -398,18 +319,14 @@ namespace wbsh {
 	}
 
 	int Executor::execute(const Node& root) {
-		// An Exit signal is left pending so the REPL can tear down (run
-		// the EXIT trap, save history, etc.) and main can return cleanly.
 		return execNode(root);
 	}
 
 	int Executor::execNode(const Node& n) {
-		// Track current source line for $LINENO. We only update for nodes
-		// that have a real position (line > 0) to avoid clobbering on
-		// synthetic / wrapper nodes.
 		if (n.loc.line > 0) {
 			env_.setCurrentLineno(static_cast<int>(n.loc.line));
 		}
+
 		switch (n.kind) {
 		case Node::Kind::List:          return execList(static_cast<const List&>(n));
 		case Node::Kind::AndOr:         return execAndOr(static_cast<const AndOr&>(n));
@@ -425,15 +342,10 @@ namespace wbsh {
 		case Node::Kind::FunctionDef:   return execFunctionDef(static_cast<const FunctionDef&>(n));
 		case Node::Kind::DBracket:      return execDBracket(static_cast<const DBracketCond&>(n));
 		}
+
 		return 0;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Lists / and-or / pipelines
-	// ---------------------------------------------------------------------------
-
-	// Capture the original source slice an AST node came from. Used for the
-	// `[%d] PID` job announcement in `&`-backgrounded commands.
 	static std::string captureNodeSourceText(const Node& n) {
 		if (!n.source_text) return {};
 		if (n.src_end <= n.src_start) return {};
@@ -442,10 +354,6 @@ namespace wbsh {
 	}
 
 #ifdef _WIN32
-	// Background launch (`cmd &`): spawn `cmd` as a detached child sharing
-	// our stdin / stdout / stderr, register it as a job, and announce
-	// `[id] pid` to stderr (matching bash). Returns 0 on launch success,
-	// 1 on launch failure.
 	int Executor::launchBackgroundCommand(const Node& cmd) {
 		HANDLE in  = reinterpret_cast<HANDLE>(_get_osfhandle(0));
 		HANDLE out = reinterpret_cast<HANDLE>(_get_osfhandle(1));
@@ -473,13 +381,10 @@ namespace wbsh {
 			} else {
 				status = execNode(*it.command);
 			}
+
 			if (flowPending()) return status;
 			setLastStatus(status);
 
-			// `set -e`: abort on the first failing command unless we're
-			// inside a context where errexit is suppressed (if / while
-			// conditions, AndOr left side, bang pipeline). Background
-			// commands' exit status is intentionally not consulted here.
 			if (env_.errexit() && status != 0
 			    && errexit_suppress_ == 0
 			    && !it.background) {
@@ -487,11 +392,11 @@ namespace wbsh {
 				return status;
 			}
 		}
+
 		return status;
 	}
 
 	int Executor::execAndOr(const AndOr& a) {
-		// errexit doesn't fire on the LEFT side of `&&` / `||`.
 		pushErrexitSuppress();
 		const int l = execNode(*a.left);
 		popErrexitSuppress();
@@ -502,15 +407,13 @@ namespace wbsh {
 		} else {
 			if (l == 0) return l;
 		}
+
 		const int r = execNode(*a.right);
 		if (flowPending()) return r;
 		setLastStatus(r);
 		return r;
 	}
 
-	// RAII guard for `! pipeline` — pushes an errexit-suppression frame for
-	// the duration of the inner pipeline so `set -e` does not fire on the
-	// inner exit code (the user gets the negation instead).
 	namespace executor_internal {
 		struct BangGuard {
 			Executor* e;
@@ -518,15 +421,12 @@ namespace wbsh {
 			BangGuard(Executor* x, bool a) : e(x), active(a) {
 				if (active) e->pushErrexitSuppress();
 			}
+
 			~BangGuard() {
 				if (active) e->popErrexitSuppress();
 			}
 		};
 
-		// RAII guard for `time pipeline` — prints `real <m>m<s>s` to stderr
-		// when the guarded scope ends, measuring wall time only. Bash also
-		// prints user / sys CPU; we do not because Windows lacks reliable
-		// per-process CPU accounting from the parent.
 		struct PipelineTimeGuard {
 			bool active;
 			std::chrono::steady_clock::time_point start;
@@ -542,9 +442,6 @@ namespace wbsh {
 	}  // namespace executor_internal
 
 #ifdef _WIN32
-	// Allocate `count - 1` inheritable OS pipes. Returns true on success and
-	// fills pipe_r / pipe_w; on failure prints a diagnostic, closes any
-	// pipes already created, and returns false.
 	static bool createPipelinePipes(std::size_t count,
 	                                std::vector<HANDLE>& pipe_r,
 	                                std::vector<HANDLE>& pipe_w) {
@@ -561,16 +458,16 @@ namespace wbsh {
 					CloseHandle(pipe_r[j]);
 					CloseHandle(pipe_w[j]);
 				}
+
 				pipe_r.clear();
 				pipe_w.clear();
 				return false;
 			}
 		}
+
 		return true;
 	}
 
-	// Wait for all `processes`, collect exit codes (closing each handle), and
-	// return the pipeline's final status taking `pipefail` into account.
 	static int waitPipelineProcessesAndStatus(const std::vector<HANDLE>& processes,
 	                                          bool pipefail) {
 		std::vector<int> stats(processes.size(), 0);
@@ -581,12 +478,14 @@ namespace wbsh {
 			stats[i] = static_cast<int>(ec);
 			CloseHandle(processes[i]);
 		}
+
 		int last = stats.empty() ? 0 : stats.back();
 		if (pipefail) {
 			for (auto it = stats.rbegin(); it != stats.rend(); ++it) {
 				if (*it != 0) { last = *it; break; }
 			}
 		}
+
 		return last;
 	}
 
@@ -610,7 +509,6 @@ namespace wbsh {
 			HANDLE h_in  = (i == 0)     ? std_in  : pipe_r[i - 1];
 			HANDLE h_out = (i + 1 == n) ? std_out : pipe_w[i];
 			HANDLE h_err = std_err;
-			// `cmd |& cmd` style: route this stage's stderr into its stdout.
 			if (i + 1 < n && i < p.stderr_to_stdout.size() && p.stderr_to_stdout[i]) {
 				h_err = h_out;
 			}
@@ -620,18 +518,14 @@ namespace wbsh {
 				launch_ok = false;
 				break;
 			}
+
 			processes.push_back(proc);
-			// A `$(...)` inside this element's expansion may have raised
-			// break / continue / exit — stop launching further stages and
-			// let the signal propagate after cleanup.
 			if (flowPending()) {
 				launch_ok = false;
 				break;
 			}
 		}
 
-		// Close the parent's copies of every pipe end. With these gone, EOF
-		// will propagate correctly when each child exits.
 		for (HANDLE h : pipe_r) if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 		for (HANDLE h : pipe_w) if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 
@@ -672,9 +566,6 @@ namespace wbsh {
 		if (elem.kind != Node::Kind::SimpleCommand) return INVALID_HANDLE_VALUE;
 
 		const auto& sc = static_cast<const SimpleCommand&>(elem);
-		// Redirections need our internal redirection plumbing — the OS
-		// child can't do `<<` heredocs etc. — so kick those back to the
-		// self-spawn path.
 		if (!sc.redirs.empty()) return INVALID_HANDLE_VALUE;
 
 		std::vector<std::string> argv;
@@ -685,11 +576,11 @@ namespace wbsh {
 				*tried = true;
 				return INVALID_HANDLE_VALUE;
 			}
+
 			for (auto& f : fields) argv.push_back(std::move(f));
 		}
+
 		if (argv.empty()) return INVALID_HANDLE_VALUE;
-		// Builtins / functions / aliases are interpreter-side concepts —
-		// they don't exist as separate executables.
 		if (isBuiltin(argv[0]) || isFunction(argv[0]) || isAlias(argv[0]))
 			return INVALID_HANDLE_VALUE;
 
@@ -699,16 +590,13 @@ namespace wbsh {
 			*tried = true;
 			return INVALID_HANDLE_VALUE;
 		}
-		// Shell scripts must run through the in-process interpreter — Windows
-		// CreateProcess cannot launch them — so fall through to self-spawn.
+
 		if (looksLikeShellScript(exec_path)) return INVALID_HANDLE_VALUE;
 
 		*tried = true;
 		return launchExternalDirect(sc, argv, exec_path, h_in, h_out, h_err);
 	}
 
-	// Capture the source text of an AST node into a fresh string. Returns
-	// empty string if the node carries no usable source range.
 	static std::string extractNodeSourceSlice(const Node& elem,
 	                                          const std::string& fallback) {
 		const std::string* src = elem.source_text
@@ -718,13 +606,10 @@ namespace wbsh {
 		    || elem.src_end > src->size()) {
 			return {};
 		}
+
 		return src->substr(elem.src_start, elem.src_end - elem.src_start);
 	}
 
-	// Build the env-block overrides used when self-spawning a child wbsh.
-	// The child needs to see our full shell state (functions, aliases,
-	// non-exported vars, translated PATH), so this is more than just the
-	// usual exported subset.
 	std::vector<std::pair<std::string, std::string>>
 	Executor::buildSelfSpawnOverrides() {
 		std::vector<std::pair<std::string, std::string>> overrides;
@@ -734,6 +619,7 @@ namespace wbsh {
 			overrides.emplace_back("PATH",
 				path_conv_.pathListPosixToWin32(posix_path));
 		}
+
 		const std::string fns = serializeFunctions();
 		if (!fns.empty()) overrides.emplace_back("WBSH_FUNCTIONS", fns);
 		const std::string als = serializeAliases();
@@ -741,13 +627,11 @@ namespace wbsh {
 		const std::string arrs = serializeArrays();
 		if (!arrs.empty()) overrides.emplace_back("WBSH_ARRAYS", arrs);
 
-		// WBSH_LOCAL_NAMES: marker telling the child shell which inherited
-		// names should remain non-exported in its env table. Ordered so
-		// repeated spawns produce a stable env block.
 		std::vector<std::string> locals;
 		for (const auto& kv : env_.vars()) {
 			if (!env_.isExported(kv.first)) locals.push_back(kv.first);
 		}
+
 		std::sort(locals.begin(), locals.end());
 		if (!locals.empty()) {
 			std::string list;
@@ -755,27 +639,25 @@ namespace wbsh {
 				if (i) list.push_back(' ');
 				list += locals[i];
 			}
+
 			overrides.emplace_back("WBSH_LOCAL_NAMES", std::move(list));
 		}
+
 		return overrides;
 	}
 
-	// Append `body` and a closing `delim\n` line for each heredoc redir on
-	// `sc` to `slice`, so the child shell can re-lex the heredoc properly.
-	// Without this, the source slice for a SimpleCommand at the head of a
-	// pipeline ends at the heredoc's `<<DELIM` — the body, which lives on
-	// later lines of the original source, never makes it to the child.
 	void Executor::appendHeredocBodiesToSlice(const SimpleCommand& sc,
 	                                          std::string& slice) {
 		for (const auto& r : sc.redirs) {
 			if (r.op != RedirOp::DLess && r.op != RedirOp::DLessDash) continue;
 			if (!slice.empty() && slice.back() != '\n') slice.push_back('\n');
-			slice += r.heredoc_body;   // body lines already terminated with '\n'
+			slice += r.heredoc_body;
 			std::string delim = expander_.expandStringValue(r.target);
 			if (expander_.failed()) {
 				expander_.takeError();
 				delim.clear();
 			}
+
 			slice += delim;
 			slice.push_back('\n');
 		}
@@ -789,18 +671,17 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: cannot extract pipeline element source\n");
 			return INVALID_HANDLE_VALUE;
 		}
+
 		if (elem.kind == Node::Kind::SimpleCommand) {
 			appendHeredocBodiesToSlice(static_cast<const SimpleCommand&>(elem),
 			                           slice);
 		}
+
 		const std::string self = getSelfExecutablePath();
 		std::vector<std::string> argv = { self, "-r", "-c", slice };
 
 		std::wstring exe_w     = utf8ToWide(self);
 		std::wstring cmdline_w = buildCommandLine(argv);
-		// `include_unexported = true`: the child sees our full var table
-		// (mirrors fork(); WBSH_LOCAL_NAMES tells it which to keep
-		// non-exported on its side).
 		auto overrides = buildSelfSpawnOverrides();
 		std::wstring env_w = buildEnvBlock(env_, overrides,
 			/*include_unexported=*/true);
@@ -811,16 +692,10 @@ namespace wbsh {
 	HANDLE Executor::launchPipelineElement(const Node& elem,
 	                                       HANDLE h_in, HANDLE h_out, HANDLE h_err)
 	{
-		// First try the fast path: a SimpleCommand whose head is a real
-		// external executable can run as its own process, skipping the
-		// intermediate `wbsh.exe -r -c '<slice>'` indirection.
 		bool tried_direct = false;
 		HANDLE direct = tryDirectExternalLaunch(elem, h_in, h_out, h_err, &tried_direct);
 		if (tried_direct) return direct;
 
-		// Anything else (compound nodes, pipelines built with builtins,
-		// aliases, functions, `( ... )`, redirections, ...) goes through
-		// the in-process interpreter via a self-spawn.
 		return selfSpawnPipelineElement(elem, h_in, h_out, h_err);
 	}
 
@@ -828,17 +703,14 @@ namespace wbsh {
 	                                       const std::vector<std::string>& argv,
 	                                       const std::string& exec_path,
 	                                       HANDLE h_in, HANDLE h_out, HANDLE h_err) {
-		// Expand the per-command prefix assignments first — the no-pathconv
-		// decision needs to see them (a script that prefixes
-		// `MSYS_NO_PATHCONV=1 docker ...` is asking us to skip translation
-		// for THIS command, not for the surrounding shell).
 		std::vector<std::pair<std::string, std::string>> temp_env;
 		for (const auto& as : sc.assignments) {
 			std::string val = expander_.expandStringValue(as.value);
 			if (expander_.failed()) {
-				expander_.takeError();   // skip this assignment
+				expander_.takeError();
 				continue;
 			}
+
 			temp_env.emplace_back(as.name, std::move(val));
 		}
 
@@ -858,14 +730,6 @@ namespace wbsh {
 	}
 #endif  // _WIN32
 
-	// ---------------------------------------------------------------------------
-	// Redirections
-	// ---------------------------------------------------------------------------
-
-	// Default fd that a bare `< file` / `> file` (no leading number) targets.
-	// Input-side ops default to 0 (stdin); output-side ops default to 1
-	// (stdout). The `&>` / `&>>` ops always replace stdout AND stderr — the
-	// caller never consults this default for them.
 	static int defaultRedirTargetFd(RedirOp op) {
 		switch (op) {
 		case RedirOp::Less:
@@ -897,6 +761,7 @@ namespace wbsh {
 			if (!parseInt(path.substr(fd_pfx.size()), n)) return -1;
 			return _dup(n);
 		}
+
 		return -1;
 	}
 
@@ -915,8 +780,6 @@ namespace wbsh {
 		const std::string host = rest.substr(0, sl);
 		const std::string port = rest.substr(sl + 1);
 
-		// One-shot WSA init on first use; safe to leave running for the
-		// lifetime of the process.
 		static bool wsa_inited = false;
 		if (!wsa_inited) {
 			WSADATA wd;
@@ -939,6 +802,7 @@ namespace wbsh {
 			closesocket(sk);
 			sk = INVALID_SOCKET;
 		}
+
 		freeaddrinfo(res);
 		if (sk == INVALID_SOCKET) return -1;
 
@@ -956,9 +820,6 @@ namespace wbsh {
 		return _wopen(wp.c_str(), flags | _O_BINARY, _S_IREAD | _S_IWRITE);
 	}
 
-	// Open `path` with `flags`, redirect `target` to it, and on failure print
-	// a `wbsh: <path>: <err>\n` diagnostic. Caller handles the dup+close cycle
-	// here so the per-op helpers stay one-line dispatchers.
 	bool Executor::redirectFdFromPath(const std::string& path, int flags,
 	                                  int target, RedirState& s) {
 		const int fd = openRedirSourceFd(path, flags);
@@ -966,21 +827,20 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s: %s\n", path.c_str(), std::strerror(errno));
 			return false;
 		}
+
 		saveFd(s, target);
 		_dup2(fd, target);
 		_close(fd);
 		return true;
 	}
 
-	// Expand a redirection target word, converting a pending expansion
-	// error (unbound var under `set -u`, `${x:?msg}`) into a diagnostic
-	// plus `false` so the whole redirection batch fails cleanly.
 	bool Executor::expandRedirTarget(const Word& target, std::string& out) {
 		out = expander_.expandStringValue(target);
 		if (expander_.failed()) {
 			std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 			return false;
 		}
+
 		return true;
 	}
 
@@ -1002,30 +862,15 @@ namespace wbsh {
 		return redirectFdFromPath(path, _O_WRONLY | _O_CREAT | _O_APPEND, target, s);
 	}
 
-	// `&> path` — redirect both stdout (1) and stderr (2) to `path`, truncating.
-	bool Executor::applyAmpGreatRedir(const Redirection& r, RedirState& s) {
+	bool Executor::applyAmpRedir(const Redirection& r, int extra_flags, RedirState& s) {
 		std::string path;
 		if (!expandRedirTarget(r.target, path)) return false;
-		const int fd = openRedirSourceFd(path, _O_WRONLY | _O_CREAT | _O_TRUNC);
+		const int fd = openRedirSourceFd(path, _O_WRONLY | _O_CREAT | extra_flags);
 		if (fd < 0) {
 			std::fprintf(stderr, "wbsh: %s: %s\n", path.c_str(), std::strerror(errno));
 			return false;
 		}
-		saveFd(s, 1); _dup2(fd, 1);
-		saveFd(s, 2); _dup2(fd, 2);
-		_close(fd);
-		return true;
-	}
 
-	// `&>> path` — redirect both stdout and stderr to `path`, appending.
-	bool Executor::applyAmpDGreatRedir(const Redirection& r, RedirState& s) {
-		std::string path;
-		if (!expandRedirTarget(r.target, path)) return false;
-		const int fd = openRedirSourceFd(path, _O_WRONLY | _O_CREAT | _O_APPEND);
-		if (fd < 0) {
-			std::fprintf(stderr, "wbsh: %s: %s\n", path.c_str(), std::strerror(errno));
-			return false;
-		}
 		saveFd(s, 1); _dup2(fd, 1);
 		saveFd(s, 2); _dup2(fd, 2);
 		_close(fd);
@@ -1038,8 +883,6 @@ namespace wbsh {
 		return redirectFdFromPath(path, _O_RDWR | _O_CREAT, target, s);
 	}
 
-	// `<&N` / `>&N` — duplicate the existing fd `N` onto `target`. The special
-	// form `<&-` / `>&-` instead closes `target`.
 	bool Executor::applyDupRedir(const Redirection& r, int target, RedirState& s) {
 		std::string what;
 		if (!expandRedirTarget(r.target, what)) return false;
@@ -1048,18 +891,18 @@ namespace wbsh {
 			_close(target);
 			return true;
 		}
+
 		int from_fd = 0;
 		if (!parseInt(what, from_fd)) {
 			std::fprintf(stderr, "wbsh: %s: bad fd\n", what.c_str());
 			return false;
 		}
+
 		saveFd(s, target);
 		_dup2(from_fd, target);
 		return true;
 	}
 
-	// Spill `body` into a temp file, redirect `target` to read from it, and
-	// remember the temp path so undoRedirections can clean it up.
 	bool Executor::installRedirFromTempBody(std::string body, int target, RedirState& s) {
 		std::string tmp = makeTempFile();
 		if (tmp.empty()) return false;
@@ -1067,11 +910,13 @@ namespace wbsh {
 			std::ofstream f(utf8ToPath(tmp), std::ios::binary | std::ios::trunc);
 			f.write(body.data(), body.size());
 		}
+
 		const int fd = openRedirSourceFd(tmp, _O_RDONLY);
 		if (fd < 0) {
 			_wremove(utf8ToWide(tmp).c_str());
 			return false;
 		}
+
 		saveFd(s, target);
 		_dup2(fd, target);
 		_close(fd);
@@ -1085,6 +930,7 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 			return false;
 		}
+
 		return installRedirFromTempBody(std::move(body), target, s);
 	}
 
@@ -1107,8 +953,8 @@ namespace wbsh {
 			case RedirOp::Great:
 			case RedirOp::Clobber:     ok = applyTruncOrClobber  (r, target, s); break;
 			case RedirOp::DGreat:      ok = applyAppendRedir     (r, target, s); break;
-			case RedirOp::AmpGreat:    ok = applyAmpGreatRedir   (r, s);          break;
-			case RedirOp::AmpDGreat:   ok = applyAmpDGreatRedir  (r, s);          break;
+			case RedirOp::AmpGreat:    ok = applyAmpRedir(r, _O_TRUNC, s);        break;
+			case RedirOp::AmpDGreat:   ok = applyAmpRedir(r, _O_APPEND, s);       break;
 			case RedirOp::LessGreat:   ok = applyLessGreatRedir  (r, target, s); break;
 			case RedirOp::LessAnd:
 			case RedirOp::GreatAnd:    ok = applyDupRedir        (r, target, s); break;
@@ -1116,12 +962,11 @@ namespace wbsh {
 			case RedirOp::DLessDash:   ok = applyHeredocRedir    (r, target, s); break;
 			case RedirOp::TLess:       ok = applyHerestringRedir (r, target, s); break;
 			}
+
 			if (!ok) return false;
-			// A command substitution inside a target / heredoc body may
-			// have raised break / continue / return — fail the batch so
-			// the caller unwinds (it undoes the partial state we saved).
 			if (flowPending()) return false;
 		}
+
 		return true;
 	}
 
@@ -1132,14 +977,11 @@ namespace wbsh {
 			_dup2(it->second, it->first);
 			_close(it->second);
 		}
+
 		s.saved.clear();
 		for (const auto& tmp : s.temps) _wremove(utf8ToWide(tmp).c_str());
 		s.temps.clear();
 	}
-
-	// ---------------------------------------------------------------------------
-	// SimpleCommand
-	// ---------------------------------------------------------------------------
 
 	bool Executor::expandSimpleCmdAssigns(const SimpleCommand& sc, SimpleCmdAssigns& out) {
 		for (const auto& a : sc.assignments) {
@@ -1154,14 +996,13 @@ namespace wbsh {
 						std::string key = expander_.expandStringValue(k.key);
 						aa.keyed.emplace_back(std::move(key), std::move(val));
 					} else {
-						// Unkeyed array items get the same word-splitting +
-						// globbing a normal command word would, so
-						// `arr=($x)` splits like an external argv.
 						auto fields = expander_.expandWord(k.value);
 						for (auto& f : fields) aa.items.push_back(std::move(f));
 					}
+
 					if (expander_.failed()) break;
 				}
+
 				out.array.push_back(std::move(aa));
 			} else if (a.has_subscript) {
 				ElemAssign ea;
@@ -1177,12 +1018,15 @@ namespace wbsh {
 				sa.append = a.append;
 				out.scalar.push_back(std::move(sa));
 			}
+
 			if (expander_.failed()) {
 				std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 				return false;
 			}
+
 			if (flowPending()) return false;
 		}
+
 		return true;
 	}
 
@@ -1193,16 +1037,14 @@ namespace wbsh {
 				std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 				return false;
 			}
+
 			if (flowPending()) return false;
 			for (auto& f : fields) argv.push_back(std::move(f));
 		}
+
 		return true;
 	}
 
-	// Replace `argv[0]` with the lexed + expanded body of any matching alias,
-	// repeating until no alias matches or a cycle is detected. Each alias
-	// name is allowed to expand at most once per resolution to keep cycles
-	// (`alias ls='ls -l'`) finite.
 	void Executor::aliasExpandArgvHead(std::vector<std::string>& argv) {
 		if (argv.empty() || !env_.expand_aliases()) return;
 		std::unordered_set<std::string> seen;
@@ -1224,8 +1066,10 @@ namespace wbsh {
 					repl.push_back(w.raw);   // t.text was moved into w.raw
 					continue;
 				}
+
 				for (auto& f : fields) repl.push_back(std::move(f));
 			}
+
 			if (repl.empty()) break;
 			argv.erase(argv.begin());
 			argv.insert(argv.begin(), repl.begin(), repl.end());
@@ -1235,21 +1079,14 @@ namespace wbsh {
 	int Executor::execBareRedirsForExec(const std::vector<Redirection>& redirs) {
 		RedirState rs;
 		if (!applyRedirections(redirs, rs)) {
-			// Failure: tear down any partial saves we made so we don't leak.
 			undoRedirections(rs);
 			return 1;
 		}
-		// Persistent install: close the dup-saved backups so undo is a no-op,
-		// and let the active dup own any opened fds.
+
 		for (auto& kv : rs.saved) _close(kv.second);
-		for (int fd : rs.opened) (void)fd;
 		return 0;
 	}
 
-	// Apply a single sparse / keyed / dense array assignment to the live env.
-	// One past the largest existing index in `name`'s indexed array, or 0
-	// when `name` is unset / scalar / empty. Used as the next index for
-	// unkeyed elements of `arr+=(items)`.
 	static long long nextIndexedAppendSlot(const Environment& env,
 	                                       const std::string& name) {
 		const auto* ia = env.getIndexedArray(name);
@@ -1257,8 +1094,6 @@ namespace wbsh {
 		return ia->rbegin()->first + 1;
 	}
 
-	// Read the current value of `name[idx]` (indexed) or `name[key]` (assoc).
-	// Returns empty string when no element / array exists.
 	static std::string readElementValue(const Environment& env,
 	                                    const std::string& name,
 	                                    long long idx,
@@ -1269,31 +1104,28 @@ namespace wbsh {
 				auto it = aa->find(key);
 				if (it != aa->end()) return it->second;
 			}
+
 			return {};
 		}
+
 		if (const auto* ia = env.getIndexedArray(name)) {
 			auto it = ia->find(idx);
 			if (it != ia->end()) return it->second;
 		}
+
 		return {};
 	}
 
 	static void applyArrayAssignToEnv(Environment& env, Expander& exp,
 	                                  const Executor::ArrayAssign& aa) {
 		if (env.isAssocArray(aa.name)) {
-			// Assoc context: replace the whole array unless we're appending,
-			// in which case merge the new keyed pairs onto whatever is there.
-			// Bash treats unkeyed items in assoc context as an error; we
-			// silently drop them.
 			if (!aa.append) env.declareAssocArray(aa.name);
 			for (const auto& kv : aa.keyed)
 				env.setAssocElement(aa.name, kv.first, kv.second);
 			return;
 		}
+
 		if (aa.append) {
-			// Indexed append: keep existing elements, then place keyed items
-			// at their resolved indices and unkeyed items at the next free
-			// slot after the largest existing index.
 			long long next_idx = nextIndexedAppendSlot(env, aa.name);
 			for (const auto& k : aa.keyed) {
 				long long idx = 0;
@@ -1301,11 +1133,14 @@ namespace wbsh {
 				env.setIndexedElement(aa.name, idx, k.second);
 				next_idx = idx + 1;
 			}
+
 			for (const auto& v : aa.items) {
 				env.setIndexedElement(aa.name, next_idx++, v);
 			}
+
 			return;
 		}
+
 		if (aa.sparse) {
 			std::map<long long, std::string> sparse;
 			long long next_idx = 0;
@@ -1315,14 +1150,15 @@ namespace wbsh {
 				sparse[idx] = k.second;
 				next_idx = idx + 1;
 			}
+
 			for (auto& v : aa.items) sparse[next_idx++] = v;
 			env.setIndexedArraySparse(aa.name, std::move(sparse));
 			return;
 		}
+
 		env.setIndexedArrayFromList(aa.name, aa.items);
 	}
 
-	// Apply a single `arr[idx]=val` element assignment to the live env.
 	static void applyElemAssignToEnv(Environment& env, Expander& exp,
 	                                 const Executor::ElemAssign& ea) {
 		std::string sub_str = exp.expandStringValue(ea.subscript);
@@ -1330,16 +1166,19 @@ namespace wbsh {
 			exp.takeError();
 			sub_str.clear();
 		}
+
 		const bool is_assoc = env.isAssocArray(ea.name);
 		long long idx = 0;
 		if (!is_assoc) {
 			if (!exp.tryEvalArith(sub_str, idx)) idx = 0;
 		}
+
 		std::string final_val = ea.value;
 		if (ea.append) {
 			final_val = readElementValue(env, ea.name, idx, sub_str, is_assoc)
 				+ final_val;
 		}
+
 		if (is_assoc) {
 			env.setAssocElement(ea.name, std::move(sub_str), std::move(final_val));
 		} else {
@@ -1347,24 +1186,24 @@ namespace wbsh {
 		}
 	}
 
-	// Apply a `name=value` (or `name+=value`) scalar assignment. Append
-	// mode on a plain scalar concatenates; on an indexed array it appends
-	// to element 0 (matching bash's `arr+="x"` semantics).
 	static void applyScalarAssignToEnv(Environment& env,
 	                                   const Executor::ScalarAssign& s) {
 		if (!s.append) {
 			env.set(s.name, s.value);
 			return;
 		}
+
 		if (env.isIndexedArray(s.name)) {
 			std::string cur;
 			if (const auto* ia = env.getIndexedArray(s.name)) {
 				auto it = ia->find(0);
 				if (it != ia->end()) cur = it->second;
 			}
+
 			env.setIndexedElement(s.name, 0, cur + s.value);
 			return;
 		}
+
 		env.set(s.name, env.get(s.name) + s.value);
 	}
 
@@ -1383,15 +1222,11 @@ namespace wbsh {
 			if (i) std::fputc(' ', stderr);
 			std::fputs(argv[i].c_str(), stderr);
 		}
+
 		std::fputc('\n', stderr);
 		std::fflush(stderr);
 	}
 
-	// RAII guard that snapshots the current value of each (name, value) in
-	// `assigns`, applies the new values, and on destruction restores the
-	// snapshot. `unset` is used when the variable did not exist before.
-	// Used by the function / builtin dispatch paths so command-prefix
-	// assignments (FOO=bar cmd) are visible during the call only.
 	namespace executor_internal {
 		struct EnvAssignsGuard {
 			Environment& env;
@@ -1407,6 +1242,7 @@ namespace wbsh {
 					env.set(a.first, a.second);
 				}
 			}
+
 			~EnvAssignsGuard() {
 				for (auto it = prior.rbegin(); it != prior.rend(); ++it) {
 					const auto& name = std::get<0>(*it);
@@ -1417,12 +1253,8 @@ namespace wbsh {
 		};
 	}  // namespace executor_internal
 
-	// Bag of `name=value` pairs from a command-prefix env-assignment list.
 	using NameValueList = std::vector<std::pair<std::string, std::string>>;
 
-	// Dispatch a function call under command-prefix env-assigns. The
-	// `assigns` are visible only for the duration of the call (RAII restore
-	// on both normal and exception exit).
 	static int callFunctionWithAssigns(Executor& exec,
 	                                   const std::string& cmd,
 	                                   const std::vector<std::string>& args,
@@ -1432,7 +1264,6 @@ namespace wbsh {
 		return exec.callFunction(cmd, args);
 	}
 
-	// Same as callFunctionWithAssigns but routes to the builtin table.
 	static int callBuiltinWithAssigns(Executor& exec,
 	                                  const std::string& cmd,
 	                                  const std::vector<std::string>& args,
@@ -1442,8 +1273,6 @@ namespace wbsh {
 		return exec.callBuiltin(cmd, args);
 	}
 
-	// Handle a SimpleCommand with no argv: either `exec` (alone) or assignments
-	// without a command. Returns the exit status to propagate.
 	int Executor::execSimpleCommandNoArgv(const SimpleCommand& sc,
 	                                      SimpleCmdAssigns& assigns_data) {
 		RedirState rs;
@@ -1451,12 +1280,12 @@ namespace wbsh {
 			undoRedirections(rs);
 			return 1;
 		}
+
 		applyBareAssignmentsToShell(assigns_data);
 		undoRedirections(rs);
 		return 0;
 	}
 
-	// Dispatch a resolved argv to a function, builtin, or external process.
 	int Executor::runResolvedCommand(const std::vector<std::string>& argv,
 	                                 const NameValueList& assigns) {
 		const std::string& cmd = argv[0];
@@ -1464,18 +1293,16 @@ namespace wbsh {
 			const std::vector<std::string> args(argv.begin() + 1, argv.end());
 			return callFunctionWithAssigns(*this, cmd, args, assigns);
 		}
+
 		if (isBuiltin(cmd)) {
 			const std::vector<std::string> args(argv.begin() + 1, argv.end());
 			return callBuiltinWithAssigns(*this, cmd, args, assigns);
 		}
+
 		return runExternal(argv, assigns);
 	}
 
 	int Executor::execSimpleCommand(const SimpleCommand& sc) {
-		// Snapshot the current count of pending `<(...)` temp files. Anything
-		// added during *this* command's expansion is what we'll clean up at
-		// the end; outer files (when we're nested inside a command-/process-
-		// substitution) stay alive for the caller.
 		const std::size_t proc_subst_watermark = expander_.pendingTempFileWatermark();
 
 		SimpleCmdAssigns assigns_data;
@@ -1488,17 +1315,12 @@ namespace wbsh {
 
 		aliasExpandArgvHead(argv);
 
-		// Special form: `exec` (alone, no further args) — install redirs
-		// permanently on this shell instead of running anything.
 		if (!argv.empty() && argv[0] == "exec" && argv.size() == 1) {
 			return execBareRedirsForExec(sc.redirs);
 		}
 
-		// No command, only assignments — run them against the live shell env.
 		if (argv.empty()) return execSimpleCommandNoArgv(sc, assigns_data);
 
-		// Array / element assignments alongside a command are unsupported
-		// (bash also rejects `arr=(...) cmd`).
 		if (!assigns_data.array.empty() || !assigns_data.elem.empty()) {
 			std::fprintf(stderr,
 				"wbsh: array assignments cannot be used as command prefix\n");
@@ -1510,27 +1332,20 @@ namespace wbsh {
 			undoRedirections(rs);
 			return 1;
 		}
+
 		traceXtrace(argv);
 
 		const int status = runResolvedCommand(argv, assigns);
 		undoRedirections(rs);
-		// break / continue / return / exit raised by the command: leave
-		// the temp files and `$?` for the frame that consumes the signal.
 		if (flowPending()) return status;
 
-		// Clean up `<(...)` temp files produced by THIS command's expansion.
-		// Files above the watermark belong to an outer caller that will
-		// reap them when its own command finishes.
 		for (const auto& tf : expander_.drainTempFilesSince(proc_subst_watermark)) {
 			std::remove(tf.c_str());
 		}
+
 		setLastStatus(status);
 		return status;
 	}
-
-	// ---------------------------------------------------------------------------
-	// External process launch
-	// ---------------------------------------------------------------------------
 
 	bool Executor::isAbsoluteOrRelativePath(const std::string& name) const {
 		if (name.empty()) return false;
@@ -1542,12 +1357,6 @@ namespace wbsh {
 		return false;
 	}
 
-	// Try `base` itself, then `base.exe`, `base.cmd`, `base.bat`. Returns
-	// the first existing non-directory match (UTF-8) or empty string. Order
-	// matches what cmd.exe's PATHEXT lookup uses; the bare-name fallback at
-	// the end lets extensionless scripts (e.g. Git/MSYS installs) resolve
-	// without falsely picking Linux-only siblings (VS Code's `code` vs
-	// `code.cmd` on Windows: we want `code.cmd`).
 	static std::string tryExecutableWithExtensions(const std::filesystem::path& base) {
 #ifdef _WIN32
 		static const char* exts[] = { ".exe", ".cmd", ".bat", "", nullptr };
@@ -1558,6 +1367,7 @@ namespace wbsh {
 			if (std::filesystem::exists(q, ec) && !std::filesystem::is_directory(q, ec))
 				return pathToUtf8(q);
 		}
+
 		return {};
 #else
 		std::error_code ec;
@@ -1567,12 +1377,7 @@ namespace wbsh {
 #endif
 	}
 
-	// Split a PATH string into directory entries. wbsh stores PATH in POSIX
-	// (`:`) form internally but we tolerate `;`-separated input too (e.g.
-	// PATH set by a Win32 child). A `:` that immediately follows a single
-	// alpha character is treated as a Windows drive-letter colon
-	// (`C:\foo:/etc/bin`), not a separator.
-	static std::vector<std::string> splitPathList(const std::string& path) {
+	std::vector<std::string> splitPathList(const std::string& path) {
 		std::vector<std::string> dirs;
 		std::string cur;
 		for (std::size_t i = 0; i < path.size(); ++i) {
@@ -1582,6 +1387,7 @@ namespace wbsh {
 				cur.clear();
 				continue;
 			}
+
 			if (c == ':') {
 				const bool drive_letter =
 					cur.size() == 1
@@ -1594,16 +1400,16 @@ namespace wbsh {
 				}
 				continue;
 			}
+
 			cur.push_back(c);
 		}
+
 		if (!cur.empty()) dirs.push_back(cur);
 		return dirs;
 	}
 
 	std::string Executor::findExecutable(const std::string& name) {
 		namespace fs = std::filesystem;
-		// Path-shaped names ("./foo", "/abs/foo", "C:\foo") never go through
-		// PATH — try them directly with extension probing.
 		if (isAbsoluteOrRelativePath(name)) {
 			const fs::path p = utf8ToPath(path_conv_.toWin32(name));
 			return tryExecutableWithExtensions(p);
@@ -1620,6 +1426,7 @@ namespace wbsh {
 			std::string r = tryExecutableWithExtensions(base);
 			if (!r.empty()) return r;
 		}
+
 		return {};
 	}
 
@@ -1632,8 +1439,6 @@ namespace wbsh {
 			return 127;
 		}
 
-		// Shell scripts (.sh / shebang-marked) are interpreted in-process —
-		// Windows CreateProcess can't launch them directly.
 		if (looksLikeShellScript(exec_path)) {
 			return runShellScript(exec_path, argv, temp_env);
 		}
@@ -1658,12 +1463,10 @@ namespace wbsh {
 		const bool ok = spawnExternalAndWait(exe, cmdline, envblock, &spawn_status);
 		if (ok) return spawn_status;
 
-		// Spawn failed. If CreateProcess complained the file isn't a Win32
-		// binary, it's likely a script the OS can't load — re-run via our
-		// in-process interpreter so shebangs work.
 		if (GetLastError() == ERROR_BAD_EXE_FORMAT) {
 			return runShellScript(exec_path, argv, temp_env);
 		}
+
 		std::fprintf(stderr, "wbsh: %s: %s\n",
 			argv[0].c_str(), lastErrorString().c_str());
 		return 127;
@@ -1679,10 +1482,6 @@ namespace wbsh {
 		const std::vector<std::string>& argv,
 		const std::string& exec_path,
 		const std::vector<std::pair<std::string, std::string>>& temp_env) {
-		// MSYS / Cygwin binaries already do their own POSIX path translation
-		// internally — translating on our side would corrupt args
-		// (`/dev/null` → `NUL`, which MSYS cat does not recognise). Native
-		// Win32 binaries get the full POSIX-to-Win32 translation.
 		const bool translate =
 			!isMsysBinary(exec_path)
 			&& !noPathConvSet(temp_env, env_);
@@ -1693,6 +1492,7 @@ namespace wbsh {
 		for (std::size_t i = 1; i < a.size(); ++i) {
 			a[i] = path_conv_.translateArg(a[i]);
 		}
+
 		return a;
 	}
 
@@ -1702,8 +1502,6 @@ namespace wbsh {
 	{
 		std::vector<std::pair<std::string, std::string>> out = temp_env;
 
-		// Walk caller-supplied overrides translating PATH and noting whether
-		// the caller already set PATH / HOME (so we don't double-add them).
 		bool have_path = false;
 		bool have_home = false;
 		for (auto& kv : out) {
@@ -1714,21 +1512,19 @@ namespace wbsh {
 				have_home = true;
 			}
 		}
+
 		if (!have_path) {
 			const std::string p = env_.get("PATH");
 			if (!p.empty()) {
 				out.emplace_back("PATH", path_conv_.pathListPosixToWin32(p));
 			}
 		}
-		// HOME goes out in Win32 form for every external child. Native and
-		// MinGW-built tools both want a Windows-style HOME; the 8.3 short
-		// form sidesteps mojibake when the user profile path contains
-		// non-ASCII characters that MinGW reads through CP_ACP. See
-		// launchExternalDirect for the full reasoning.
+
 		if (!have_home) {
 			const std::string h = env_.get("HOME");
 			if (!h.empty()) out.emplace_back("HOME", path_conv_.toWin32Short(h));
 		}
+
 		return out;
 	}
 
@@ -1770,14 +1566,6 @@ namespace wbsh {
 	}
 #endif  // _WIN32
 
-	// ---------------------------------------------------------------------------
-	// Shell-script detection / execution
-	// ---------------------------------------------------------------------------
-
-	// Pre-shebang extension classification. Returns:
-	//   1  -> definitely a shell script (.sh / .bash)
-	//   0  -> definitely NOT a shell script (.exe / .com / .dll / ...)
-	//  -1  -> indeterminate; caller should fall through to shebang detection.
 	static int classifyByExtension(const std::string& path) {
 		const auto dot = path.find_last_of('.');
 		if (dot == std::string::npos) return -1;
@@ -1791,12 +1579,10 @@ namespace wbsh {
 		    || ext == "bat" || ext == "cmd" || ext == "ps1") {
 			return 0;
 		}
+
 		return -1;
 	}
 
-	// Read the first line of `path` (up to 256 bytes). Returns the line with
-	// any trailing newline stripped, or an empty optional on read failure
-	// or an empty file.
 	static std::string readShebangLine(const std::string& path) {
 		std::ifstream f(utf8ToPath(path), std::ios::binary);
 		if (!f) return {};
@@ -1813,15 +1599,10 @@ namespace wbsh {
 		return line;
 	}
 
-	// Resolve the basename of the interpreter named in a `#!/usr/bin/env <X>`
-	// shebang. `body` is the portion of the shebang line after `env`.
-	// Returns the interpreter name (e.g. `bash`, `python3`) or empty string
-	// if the line is malformed.
 	static std::string interpFromEnvShebang(std::string body) {
 		const auto rstart = body.find_first_not_of(" \t");
 		if (rstart == std::string::npos) return {};
 		body = body.substr(rstart);
-		// Skip env's own option words (`env -S foo bar bash`).
 		while (!body.empty() && body[0] == '-') {
 			const auto sp = body.find_first_of(" \t");
 			if (sp == std::string::npos) return {};
@@ -1830,16 +1611,14 @@ namespace wbsh {
 			if (rs == std::string::npos) return {};
 			body = body.substr(rs);
 		}
+
 		const auto sp = body.find_first_of(" \t");
 		return (sp == std::string::npos) ? body : body.substr(0, sp);
 	}
 
-	// Parse a shebang line ("#!/path/to/foo arg arg") and return the basename
-	// of the interpreter (resolving `env` redirection). Returns empty string
-	// if the line doesn't name a usable interpreter.
 	static std::string interpBasenameFromShebang(const std::string& shebang_line) {
 		if (shebang_line.size() < 2) return {};
-		std::string rest = shebang_line.substr(2);  // strip leading "#!"
+		std::string rest = shebang_line.substr(2);
 		const auto start = rest.find_first_not_of(" \t");
 		if (start == std::string::npos) return {};
 		rest = rest.substr(start);
@@ -1851,12 +1630,11 @@ namespace wbsh {
 			? interp
 			: interp.substr(slash + 1);
 
-		// `#!/usr/bin/env <interp>` form: the real interpreter is named
-		// after `env` on the same line.
 		if (base == "env" && sp != std::string::npos) {
 			std::string env_arg_interp = interpFromEnvShebang(rest.substr(sp + 1));
 			if (!env_arg_interp.empty()) base = std::move(env_arg_interp);
 		}
+
 		return base;
 	}
 
@@ -1871,6 +1649,7 @@ namespace wbsh {
 		case 0:  return false;
 		default: break;
 		}
+
 		const std::string shebang = readShebangLine(path);
 		if (shebang.empty()) return false;
 		const std::string interp = interpBasenameFromShebang(shebang);
@@ -1894,16 +1673,16 @@ namespace wbsh {
 	}
 
 	void Executor::restoreShellScriptScope(ShellScriptScope& snap, bool force_set) {
-		// Drop any vars introduced during the script.
 		std::vector<std::string> to_unset;
 		for (auto& kv : env_.vars()) {
 			if (snap.saved_vars.count(kv.first) == 0) to_unset.push_back(kv.first);
 		}
+
 		for (auto& n : to_unset) env_.unset(n);
 
-		// Restore prior values. The original exception-based code used
-		// `forceSet` only when unwinding a pending signal; preserve that
-		// asymmetry.
+		// Restore prior values. `forceSet` (readonly bypass) only when
+		// unwinding a pending signal, plain `set` otherwise — a deliberate
+		// asymmetry preserved from the original implementation.
 		for (auto& kv : snap.saved_vars) {
 			if (force_set) env_.forceSet(kv.first, kv.second);
 			else           env_.set(kv.first, kv.second);
@@ -1922,9 +1701,6 @@ namespace wbsh {
 		std::filesystem::current_path(snap.saved_cwd, ec);
 	}
 
-	// Read the entire body of a shell script file into memory and normalise
-	// CRLF line endings to LF. Returns empty on read failure (caller should
-	// have already failed-open via the ifstream check).
 	static std::string readScriptBody(std::ifstream& f) {
 		std::stringstream ss;
 		ss << f.rdbuf();
@@ -1942,29 +1718,20 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s: %s\n", path.c_str(), std::strerror(errno));
 			return 127;
 		}
+
 		std::string body = readScriptBody(f);
 
 		ShellScriptScope snap = snapshotShellScriptScope();
 
-		// Apply prefix-style assignments (FOO=bar ./script.sh) and set up
-		// `$0` plus positional args for the new script context.
 		for (const auto& kv : temp_env) env_.set(kv.first, kv.second);
 		env_.setShellName(path);
 		env_.setPositional(std::vector<std::string>(argv.begin() + 1, argv.end()));
 
 		int status = executeText(body, path);
-		// `exit` inside a script terminates the script, not our shell.
 		consumeFlow(FlowSignal::Kind::Exit, &status);
-		// Any other signal still pending (return / break / continue from
-		// the script's top level) propagates to our caller; mirror the
-		// old exception path's forceSet restore in that case.
 		restoreShellScriptScope(snap, /*force_set=*/flowPending());
 		return status;
 	}
-
-	// ---------------------------------------------------------------------------
-	// Compound commands
-	// ---------------------------------------------------------------------------
 
 	int Executor::execBraceGroup(const BraceGroup& bg) {
 		RedirState rs;
@@ -1983,8 +1750,6 @@ namespace wbsh {
 		snap.xtrace   = env_.xtrace();
 		snap.pipefail = env_.pipefail();
 		snap.noglob   = env_.noglob();
-		// Per-shell-context traps: a subshell installs its own handlers
-		// without affecting the parent.
 		snap.traps = trap_handlers_;
 		std::error_code ec;
 		snap.saved_cwd = std::filesystem::current_path(ec);
@@ -1992,11 +1757,11 @@ namespace wbsh {
 	}
 
 	void Executor::restoreSubshellScope(SubshellScope& snap) {
-		// Drop any vars added inside the subshell, then restore originals.
 		std::vector<std::string> to_unset;
 		for (auto& kv : env_.vars()) {
 			if (snap.saved_vars.count(kv.first) == 0) to_unset.push_back(kv.first);
 		}
+
 		for (auto& n : to_unset) env_.unset(n);
 		for (auto& kv : snap.saved_vars) env_.forceSet(kv.first, kv.second);
 
@@ -2019,12 +1784,9 @@ namespace wbsh {
 
 		int status = 0;
 		if (ss.body) status = execNode(*ss.body);
-		// `exit` inside a subshell exits only the subshell.
 		consumeFlow(FlowSignal::Kind::Exit, &status);
 		undoRedirections(rs);
 
-		// Other signals propagate without firing the subshell's EXIT trap
-		// (matching the old unwind path).
 		if (!flowPending()) fireExitTrap();
 		restoreSubshellScope(snap);
 		return status;
@@ -2046,13 +1808,16 @@ namespace wbsh {
 				const int s = execNode(*br.body);
 				if (!flowPending()) status = s;
 			}
+
 			fired = true;
 			break;
 		}
+
 		if (!fired && ic.else_body) {
 			const int s = execNode(*ic.else_body);
 			if (!flowPending()) status = s;
 		}
+
 		undoRedirections(rs);
 		return status;
 	}
@@ -2085,7 +1850,7 @@ namespace wbsh {
 			pushErrexitSuppress();
 			const int c = wc.cond ? execNode(*wc.cond) : 0;
 			popErrexitSuppress();
-			if (flowPending()) break;   // signal from the condition: propagate
+			if (flowPending()) break;
 			setLastStatus(c);
 			const bool keep = wc.until ? (c != 0) : (c == 0);
 			if (!keep) break;
@@ -2095,6 +1860,7 @@ namespace wbsh {
 			if (act == LoopFlowAction::NextIter) continue;
 			if (act == LoopFlowAction::ExitLoop || act == LoopFlowAction::Propagate) break;
 		}
+
 		--loop_depth_;
 		undoRedirections(rs);
 		return status;
@@ -2115,16 +1881,19 @@ namespace wbsh {
 					undoRedirections(rs);
 					return 1;
 				}
+
 				if (flowPending()) {
 					--loop_depth_;
 					undoRedirections(rs);
 					return status;
 				}
+
 				for (auto& f : fields) values.push_back(std::move(f));
 			}
 		} else {
 			values = env_.positional();
 		}
+
 		for (const auto& v : values) {
 			env_.set(fc.var, v);
 			const int s = fc.body ? execNode(*fc.body) : 0;
@@ -2133,13 +1902,14 @@ namespace wbsh {
 			if (act == LoopFlowAction::NextIter) continue;
 			if (act == LoopFlowAction::ExitLoop || act == LoopFlowAction::Propagate) break;
 		}
+
 		--loop_depth_;
 		undoRedirections(rs);
 		return status;
 	}
 
 	bool Executor::patternMatches(const std::string& pat, const std::string& s) {
-		return matchHere(pat, 0, s, 0);
+		return fnmatchFull(pat, s);
 	}
 
 	int Executor::execCase(const CaseClause& cc) {
@@ -2152,26 +1922,29 @@ namespace wbsh {
 			undoRedirections(rs);
 			return 1;
 		}
+
 		for (std::size_t i = 0; i < cc.items.size(); ++i) {
 			const auto& it = cc.items[i];
 			bool m = false;
 			for (const auto& pw : it.patterns) {
 				const std::string pat = expander_.expandStringValue(pw);
 				if (expander_.failed()) {
-					expander_.takeError();   // bad pattern: skip it
+					expander_.takeError();
 					continue;
 				}
+
 				if (patternMatches(pat, subject)) { m = true; break; }
 			}
+
 			if (!m) continue;
 			if (it.body) {
 				const int s = execNode(*it.body);
 				if (!flowPending()) status = s;
 			}
+
 			if (flowPending()) break;
 			if (it.term == CaseClause::Term::DSemi) break;
 			if (it.term == CaseClause::Term::SemiAmp) {
-				// Fall through to next item unconditionally.
 				if (i + 1 < cc.items.size()) {
 					const auto& nx = cc.items[i + 1];
 					if (nx.body) {
@@ -2181,12 +1954,13 @@ namespace wbsh {
 				}
 				break;
 			}
+
 			if (it.term == CaseClause::Term::DSemiAmp) {
-				// Continue testing remaining items.
 				continue;
 			}
 			break;
 		}
+
 		undoRedirections(rs);
 		return status;
 	}
@@ -2196,16 +1970,11 @@ namespace wbsh {
 		return 0;
 	}
 
-	// ---------------------------------------------------------------------------
-	// [[ ... ]] conditional expressions
-	// ---------------------------------------------------------------------------
-
 	static bool evalDBracketExpr(const DBracketCond::Expr& e,
 	                             Expander& exp,
 	                             const PathConv& pc,
 	                             bool nocasematch);
 
-	// Unary `[[ -X PATH ]]` test. @p op is the letter after the dash.
 	static bool evalDBracketUnaryTest(char op, const std::string& lhs, const PathConv& pc) {
 		if (op == 'z') return lhs.empty();
 		if (op == 'n') return !lhs.empty();
@@ -2224,7 +1993,6 @@ namespace wbsh {
 		}
 	}
 
-	// String comparison ops (==, =, !=, <, >). Inputs already case-folded if needed.
 	static bool evalDBracketStringOp(const std::string& op,
 	                                 const std::string& clhs, const std::string& crhs) {
 		if (op == "==" || op == "=") return clhs == crhs;
@@ -2234,7 +2002,6 @@ namespace wbsh {
 		return false;
 	}
 
-	// `-eq` / `-ne` / `-lt` / `-le` / `-gt` / `-ge` integer comparisons.
 	static bool evalDBracketArithOp(const std::string& op,
 	                                const std::string& lhs, const std::string& rhs) {
 		long long li = 0;
@@ -2245,10 +2012,9 @@ namespace wbsh {
 		if (op == "-lt") return li <  ri;
 		if (op == "-le") return li <= ri;
 		if (op == "-gt") return li >  ri;
-		return li >= ri;   // -ge
+		return li >= ri;
 	}
 
-	// `-ef` / `-nt` / `-ot` file comparisons by stat.
 	static bool evalDBracketFileOp(const std::string& op,
 	                               const std::string& lhs, const std::string& rhs,
 	                               const PathConv& pc) {
@@ -2259,7 +2025,7 @@ namespace wbsh {
 		bool ob = ::stat(b.c_str(), &sb) == 0;
 		if (op == "-nt") return oa && (!ob || sa.st_mtime > sb.st_mtime);
 		if (op == "-ot") return ob && (!oa || sa.st_mtime < sb.st_mtime);
-		return oa && ob && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;   // -ef
+		return oa && ob && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
 	}
 
 	static bool evalDBracketExpr(const DBracketCond::Expr& e,
@@ -2275,12 +2041,14 @@ namespace wbsh {
 		case K::Not: return !evalDBracketExpr(*e.a, exp, pc, nocasematch);
 		case K::Prim: break;
 		}
+
 		std::string lhs = exp.expandStringValue(e.lhs);
 		if (exp.failed()) return false;
 		if (e.op.empty()) return !lhs.empty();
 		if (e.op.size() == 2 && e.op[0] == '-') {
 			return evalDBracketUnaryTest(e.op[1], lhs, pc);
 		}
+
 		std::string rhs = exp.expandStringValue(e.rhs);
 		if (exp.failed()) return false;
 		auto lower = [](std::string s) {
@@ -2292,6 +2060,7 @@ namespace wbsh {
 		if (e.op == "==" || e.op == "=" || e.op == "!=" || e.op == "<" || e.op == ">") {
 			return evalDBracketStringOp(e.op, clhs, crhs);
 		}
+
 		if (e.op == "=~") {
 			auto flags = std::regex::ECMAScript;
 			if (nocasematch) flags = flags | std::regex::icase;
@@ -2299,14 +2068,17 @@ namespace wbsh {
 			if (!compileRegex(re, rhs, flags)) return false;
 			return searchRegex(lhs, re);
 		}
+
 		if (e.op == "-eq" || e.op == "-ne" || e.op == "-lt"
 		    || e.op == "-le" || e.op == "-gt" || e.op == "-ge")
 		{
 			return evalDBracketArithOp(e.op, lhs, rhs);
 		}
+
 		if (e.op == "-ef" || e.op == "-nt" || e.op == "-ot") {
 			return evalDBracketFileOp(e.op, lhs, rhs, pc);
 		}
+
 		return false;
 	}
 
@@ -2318,19 +2090,15 @@ namespace wbsh {
 		else if (!dc.root) status = 1;
 		else status = evalDBracketExpr(*dc.root, expander_, path_conv_,
 		                               env_.nocasematch()) ? 0 : 1;
-		// Expansion errors inside the condition fail the test loudly.
 		if (expander_.failed()) {
 			std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 			status = 1;
 		}
+
 		undoRedirections(rs);
 		setLastStatus(status);
 		return status;
 	}
-
-	// ---------------------------------------------------------------------------
-	// Builtin / function tables
-	// ---------------------------------------------------------------------------
 
 	void Executor::registerBuiltin(std::string name, BuiltinFn fn) {
 		builtins_[std::move(name)] = fn;
@@ -2360,7 +2128,6 @@ namespace wbsh {
 		scope_stack_.emplace_back();
 		int status = 0;
 		if (fd->body) status = execNode(*fd->body);
-		// `return` unwinds to here; break / continue / exit keep going.
 		consumeFlow(FlowSignal::Kind::Return, &status);
 		popLocalScope();
 		--func_depth_;
@@ -2371,12 +2138,11 @@ namespace wbsh {
 	void Executor::popLocalScope() {
 		if (scope_stack_.empty()) return;
 		auto& top = scope_stack_.back();
-		// Reverse iteration so nested re-declarations of the same name
-		// restore their values in the order they were captured.
 		for (auto rit = top.rbegin(); rit != top.rend(); ++rit) {
 			if (rit->had_prev) env_.set(rit->name, rit->prev_value);
 			else               env_.unset(rit->name);
 		}
+
 		scope_stack_.pop_back();
 	}
 
@@ -2428,6 +2194,7 @@ namespace wbsh {
 #endif
 			return j.exit_code;
 		}
+
 		return -1;
 	}
 
@@ -2450,16 +2217,11 @@ namespace wbsh {
 		auto it = trap_handlers_.find("EXIT");
 		if (it == trap_handlers_.end()) return;
 		std::string cmd = it->second;
-		trap_handlers_.erase(it);   // prevent re-entry
+		trap_handlers_.erase(it);
 		executeText(cmd, "<EXIT trap>");
-		// Swallow any signal the trap raised (exit-from-EXIT-trap etc.) —
-		// the shell is already tearing down.
 		clearFlow();
 	}
 
-	// Maximum kept history entries. Applied after every mutation that can
-	// grow the vectors so they don't drift apart from each other (the rest
-	// of the codebase assumes history_ and history_status_ are parallel).
 	static constexpr std::size_t kMaxHistory = 5000;
 
 	static void trimToMaxHistory(std::vector<std::string>& cmds,
@@ -2517,6 +2279,7 @@ namespace wbsh {
 				header_checked = true;
 				if (line == kHistoryV2Header) { v2 = true; continue; }
 			}
+
 			if (line.empty()) continue;
 			int status = 0;
 			std::string cmd = line;
@@ -2527,9 +2290,11 @@ namespace wbsh {
 				cmd = line.substr(tab + 1);
 				if (cmd.empty()) continue;
 			}
+
 			history_.push_back(std::move(cmd));
 			history_status_.push_back(status);
 		}
+
 		trimToMaxHistory(history_, history_status_);
 		return true;
 	}
@@ -2542,7 +2307,19 @@ namespace wbsh {
 			const int s = (i < history_status_.size()) ? history_status_[i] : 0;
 			f << s << '\t' << history_[i] << '\n';
 		}
+
 		return true;
+	}
+
+	static std::string shellQuoteSingle(const std::string& s) {
+		std::string q = "'";
+		for (char c : s) {
+			if (c == '\'') q += "'\\''";
+			else q.push_back(c);
+		}
+
+		q += "'";
+		return q;
 	}
 
 	std::string Executor::serializeAliases() const {
@@ -2553,34 +2330,17 @@ namespace wbsh {
 		for (const auto& kv : v) {
 			out += "alias ";
 			out += kv.first;
-			out += "='";
-			for (char c : kv.second) {
-				if (c == '\'') out += "'\\''";
-				else out.push_back(c);
-			}
-			out += "'\n";
+			out += "=";
+			out += shellQuoteSingle(kv.second);
+			out += "\n";
 		}
+
 		return out;
 	}
 
-	// Serialize the parent's indexed and associative arrays as runnable
-	// shell that the child re-evaluates from WBSH_ARRAYS. Without this,
-	// pipeline self-spawn (`echo "${arr[@]}" | sort`) drops arrays into
-	// children — only scalars survive the env-block round-trip.
 	std::string Executor::serializeArrays() const {
-		auto quote_single = [](const std::string& s) {
-			std::string q = "'";
-			for (char c : s) {
-				if (c == '\'') q += "'\\''";
-				else q.push_back(c);
-			}
-			q += "'";
-			return q;
-		};
 		std::string out;
 
-		// Indexed arrays first — emit `name=([i]='v' [j]='w')` literals so
-		// sparse layouts round-trip exactly.
 		std::vector<std::string> ix_names;
 		ix_names.reserve(env_.indexedArrays().size());
 		for (const auto& kv : env_.indexedArrays()) ix_names.push_back(kv.first);
@@ -2596,16 +2356,13 @@ namespace wbsh {
 				out += "[";
 				out += std::to_string(kv.first);
 				out += "]=";
-				out += quote_single(kv.second);
+				out += shellQuoteSingle(kv.second);
 				first = false;
 			}
+
 			out += ")\n";
 		}
 
-		// Assoc arrays — `declare -A name` first (so the child knows the
-		// type), then per-element assignments. A single `name=(...)` literal
-		// would also work but only after `declare -A`, and emitting elements
-		// individually keeps the parser path simple.
 		std::vector<std::string> ax_names;
 		ax_names.reserve(env_.assocArrays().size());
 		for (const auto& kv : env_.assocArrays()) ax_names.push_back(kv.first);
@@ -2619,9 +2376,9 @@ namespace wbsh {
 			for (const auto& kv : *arr) {
 				out += name;
 				out += "[";
-				out += quote_single(kv.first);
+				out += shellQuoteSingle(kv.first);
 				out += "]=";
-				out += quote_single(kv.second);
+				out += shellQuoteSingle(kv.second);
 				out += "\n";
 			}
 		}
@@ -2630,13 +2387,12 @@ namespace wbsh {
 	}
 
 	std::string Executor::serializeFunctions() const {
-		// Iterate in deterministic (sorted) order so the env var is stable
-		// across spawns. Uses each FunctionDef's pre-captured body_text.
 		std::vector<const FunctionDef*> defs;
 		defs.reserve(functions_.size());
 		for (const auto& kv : functions_) {
 			if (kv.second && !kv.second->body_text.empty()) defs.push_back(kv.second);
 		}
+
 		std::sort(defs.begin(), defs.end(),
 			[](const FunctionDef* a, const FunctionDef* b) {
 				return a->name < b->name;
@@ -2648,6 +2404,7 @@ namespace wbsh {
 			out += fd->body_text;
 			out.push_back('\n');
 		}
+
 		return out;
 	}
 
@@ -2656,22 +2413,23 @@ namespace wbsh {
 			env_.set(name, value);
 			return;
 		}
+
 		auto& top = scope_stack_.back();
 		bool already = false;
 		for (const auto& e : top) if (e.name == name) { already = true; break; }
 		if (!already) {
 			ScopeEntry se;
 			se.name = name;
+			// has()/get() rather than a single vars() lookup: both also
+			// see array variables (get() reads element 0), and the scope
+			// pop must restore those instead of unsetting them.
 			se.had_prev = env_.has(name);
 			se.prev_value = env_.get(name);
 			top.push_back(std::move(se));
 		}
+
 		env_.set(name, value);
 	}
-
-	// ---------------------------------------------------------------------------
-	// Source-text execution + command substitution
-	// ---------------------------------------------------------------------------
 
 	int Executor::executeText(const std::string& source_text, const std::string& origin) {
 		Lexer lex(source_text);
@@ -2680,27 +2438,23 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: %s:%zu:%zu: %s\n",
 				origin.c_str(), e.loc.line, e.loc.column, e.message.c_str());
 		}
+
 		Parser parser(std::move(tokens), source_text);
 		Node* root = parser.parseProgram();
 		for (const auto& e : parser.errors()) {
 			std::fprintf(stderr, "wbsh: %s:%zu:%zu: %s\n",
 				origin.c_str(), e.loc.line, e.loc.column, e.message.c_str());
 		}
+
 		if (!root) return 1;
-		// Hold the AST's arena alive: any FunctionDefs registered during
-		// this call keep raw pointers into it. Without this, sourced
-		// functions would dangle the moment executeText returns.
 		owned_arenas_.push_back(parser.takeArena());
 		return execute(*root);
 	}
 
 	std::string Executor::run(const std::string& body) {
 		std::string out = runRaw(body);
-		// $(...) strips trailing newlines; <(...) does not. On Windows the
-		// child shell's C runtime defaults to text mode for stdout and
-		// translates `\n` to `\r\n` on the way out, so we strip `\r` too —
-		// otherwise `key=$(echo X | tr ...)` ends up with a stray CR and
-		// `arr[$key]` and `arr[X]` index different buckets.
+		// `\r` is stripped along with `\n`: the child's CRT text mode may
+		// have written `\r\n`, and a stray CR corrupts captured values.
 		while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
 			out.pop_back();
 		return out;
@@ -2718,17 +2472,15 @@ namespace wbsh {
 		_dup2(fd, 1);
 		_close(fd);
 		executeText(body, "<command-substitution>");
-		// Subshell semantics: exit terminates the substitution only.
 		consumeFlow(FlowSignal::Kind::Exit);
 		std::fflush(stdout);
 		_dup2(saved, 1);
 		_close(saved);
-		// break / continue / return keep unwinding: drop the output, the
-		// enclosing expansion aborts via CommandSubstitutor::interrupted().
 		if (flowPending()) {
 			_wremove(utf8ToWide(tmp).c_str());
 			return {};
 		}
+
 		std::string out = readAllText(tmp);
 		_wremove(utf8ToWide(tmp).c_str());
 		return out;

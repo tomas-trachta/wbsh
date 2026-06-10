@@ -1,9 +1,3 @@
-/**
- * @file lineedit.cpp
- * @brief Interactive line editor implementation (raw-TTY + cooked
- *        fallback paths, history, completion, kill ring, paste).
- */
-
 #include "lineedit.h"
 
 #ifdef _WIN32
@@ -23,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "strscan.h"
+
 namespace wbsh {
 
 	namespace fs = std::filesystem;
@@ -32,13 +28,8 @@ namespace wbsh {
 		return _isatty(_fileno(stdin)) != 0;
 	}
 
-	// Compute display-column width: strip ANSI CSI sequences (the bash
-	// \[...\] non-printing markers are already removed by expandPrompt)
-	// and count UTF-8 codepoints, not bytes. A "š" or "á" in a Czech
-	// hostname is one cell on screen but two bytes in std::string --
-	// counting bytes would push the cursor past the visible end of the
-	// prompt on every redraw. Doesn't account for wide CJK or combining
-	// marks; close enough for prompts that show up in practice.
+	// Display columns: skips ANSI CSI sequences, counts UTF-8 codepoints
+	// not bytes. Wide CJK / combining marks are not handled.
 	static std::size_t visibleLen(const std::string& s) {
 		std::size_t n = 0;
 		std::size_t i = 0;
@@ -51,21 +42,21 @@ namespace wbsh {
 				if (i < s.size()) ++i;
 				continue;
 			}
+
 			if ((c & 0xC0) != 0x80) ++n;
 			++i;
 		}
+
 		return n;
 	}
 
-	// Count UTF-8 codepoints in s[0 .. end_byte). Same column-vs-byte
-	// reasoning as visibleLen -- needed for buffers that contain
-	// non-ASCII typed input.
 	static std::size_t utf8Cols(const std::string& s, std::size_t end_byte) {
 		std::size_t n = 0;
 		std::size_t lim = end_byte < s.size() ? end_byte : s.size();
 		for (std::size_t i = 0; i < lim; ++i) {
 			if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) ++n;
 		}
+
 		return n;
 	}
 #endif /* _WIN32 */
@@ -88,6 +79,7 @@ namespace wbsh {
 			for (std::size_t i = start; i < history.size(); ++i) {
 				if (history[i].find(query) != std::string::npos) return i;
 			}
+
 			return history.size();
 		}
 		// Backward (toward older entries). i is unsigned, so guard the
@@ -97,6 +89,7 @@ namespace wbsh {
 			if (history[i].find(query) != std::string::npos) return i;
 			if (i == 0) break;
 		}
+
 		return history.size();
 	}
 
@@ -106,9 +99,6 @@ namespace wbsh {
 		if (prefix.empty()) return {};
 		for (std::size_t i = history.size(); i > 0; --i) {
 			const std::size_t idx = i - 1;
-			// Treat out-of-range indices as status 0 ("ok"): callers may
-			// pass an empty status vector to disable filtering, and entries
-			// loaded from a legacy history file lack a recorded status.
 			if (idx < history_status.size() && history_status[idx] != 0) continue;
 			const std::string& entry = history[idx];
 			if (entry.size() > prefix.size()
@@ -116,7 +106,36 @@ namespace wbsh {
 				return entry.substr(prefix.size());
 			}
 		}
+
 		return {};
+	}
+
+	fs::path findGitDir() {
+		std::error_code ec;
+		fs::path probe = fs::current_path(ec);
+		if (ec) return {};
+
+		fs::path gitdir;
+		while (true) {
+			fs::path candidate = probe / ".git";
+			if (fs::exists(candidate, ec)) { gitdir = candidate; break; }
+			fs::path parent = probe.parent_path();
+			if (parent == probe) return {};
+			probe = parent;
+		}
+
+		if (!fs::is_directory(gitdir, ec)) {
+			std::ifstream f(gitdir);
+			std::string line;
+			if (!std::getline(f, line)) return {};
+			const std::string prefix = "gitdir: ";
+			if (line.compare(0, prefix.size(), prefix) != 0) return {};
+			fs::path g(line.substr(prefix.size()));
+			if (!g.is_absolute()) g = (probe / g).lexically_normal();
+			gitdir = g;
+		}
+
+		return gitdir;
 	}
 
 	LineEditor::LineEditor(Environment& env, Executor& exec)
@@ -139,7 +158,6 @@ namespace wbsh {
 			return readLineRaw(prompt, out);
 		}
 #endif /* _WIN32 */
-		// Cooked / piped fallback: emit the prompt and read a line via fgetc.
 		std::fputs(prompt.c_str(), stdout);
 		std::fflush(stdout);
 		return readLineCooked(out);
@@ -152,6 +170,7 @@ namespace wbsh {
 			if (c == '\n') return true;
 			out.push_back(static_cast<char>(c));
 		}
+
 		return !out.empty();
 	}
 
@@ -164,11 +183,6 @@ namespace wbsh {
 	}
 
 	void LineEditor::redraw() {
-		// Multi-row-aware redraw via VT escapes. The previous render may
-		// have wrapped across several rows; we tracked the cursor's row
-		// offset from the prompt's first row in last_cursor_row_, so we
-		// can walk back up there, clear from cursor to end of screen,
-		// re-emit prompt + buffer, then position the cursor at cursor_.
 		HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
 		CONSOLE_SCREEN_BUFFER_INFO info{};
 		std::size_t width = 80;
@@ -183,13 +197,11 @@ namespace wbsh {
 		if (last_cursor_row_ > 0) {
 			out += "\x1b[" + std::to_string(last_cursor_row_) + "A";
 		}
+
 		out += "\r";
 		out += "\x1b[J";
 		out += prompt_raw_;
 		out += buffer_;
-		// Ghost text: bright-black (dim grey) suffix past the cursor.
-		// The SGR escapes do not advance the cursor, so they are excluded
-		// from the column math below.
 		if (!suggestion_.empty()) {
 			out += "\x1b[90m";
 			out += suggestion_;
@@ -218,20 +230,16 @@ namespace wbsh {
 		if (cur_row > want_row) {
 			out += "\x1b[" + std::to_string(cur_row - want_row) + "A";
 		}
+
 		if (want_col > 0) {
 			out += "\x1b[" + std::to_string(want_col) + "C";
 		}
+
 		last_cursor_row_ = want_row;
 		emit(out);
 	}
 
 	void LineEditor::refreshSuggestion() {
-		// Inline prediction is hidden while the reverse-search modal owns
-		// the prompt: buffer_ then mirrors a matched history entry, and a
-		// ghost-text overlay would compete with the search rendering.
-		// Otherwise we only show a prediction at end-of-buffer, which is
-		// PowerShell's behaviour and avoids painting text the user is
-		// already editing past.
 		suggestion_.clear();
 		if (revsearch_active_) return;
 		if (buffer_.empty() || cursor_ != buffer_.size()) return;
@@ -242,9 +250,6 @@ namespace wbsh {
 
 	bool LineEditor::acceptInlineSuggestion() {
 		if (suggestion_.empty()) return false;
-		// insertChars splices at cursor_ and advances it; since the
-		// suggestion is only ever computed when cursor_ == buffer_.size(),
-		// this appends the ghost text and parks the cursor at end-of-line.
 		insertChars(suggestion_);
 		suggestion_.clear();
 		return true;
@@ -256,6 +261,7 @@ namespace wbsh {
 			redraw();
 			return;
 		}
+
 		if (acceptInlineSuggestion()) {
 			redraw();
 		}
@@ -295,7 +301,6 @@ namespace wbsh {
 	}
 
 	void LineEditor::handleClearScreen() {
-		// Move cursor home + clear screen + clear scrollback, then redraw.
 		emit("\x1b[H\x1b[2J\x1b[3J");
 		last_cursor_row_ = 0;
 		redraw();
@@ -322,12 +327,8 @@ namespace wbsh {
 	void LineEditor::handleEnter(std::string& out, bool& done) {
 		emit("\r\n");
 		out = buffer_;
-		// History is recorded by the REPL caller (so raw and cooked paths
-		// agree); we just hand back the line.
 		done = true;
 	}
-
-	// ---- Completion ----------------------------------------------------------
 
 	LineEditor::Tok LineEditor::currentToken() const {
 		Tok t{ cursor_, cursor_, true };
@@ -335,8 +336,6 @@ namespace wbsh {
 		while (i > 0 && !isWordBreak(buffer_[i - 1])) --i;
 		t.start = i;
 		t.end = cursor_;
-		// Determine whether the position is "command-position" — i.e. the
-		// previous non-space char is a command separator (or BOL).
 		std::size_t k = t.start;
 		while (k > 0 && std::isspace(static_cast<unsigned char>(buffer_[k - 1]))) --k;
 		if (k == 0) { t.first = true; return t; }
@@ -346,43 +345,38 @@ namespace wbsh {
 		return t;
 	}
 
+	static std::string stripExeExtension(std::string name) {
+		static const char* exts[] = { ".exe", ".cmd", ".bat", ".com", nullptr };
+		for (int i = 0; exts[i]; ++i) {
+			const std::size_t L = std::strlen(exts[i]);
+			if (name.size() <= L) continue;
+			const std::size_t off = name.size() - L;
+			bool match = true;
+			for (std::size_t k = 0; k < L; ++k) {
+				if (std::tolower(static_cast<unsigned char>(name[off + k]))
+				    != exts[i][k]) { match = false; break; }
+			}
+
+			if (match) {
+				name.resize(off);
+				break;
+			}
+		}
+
+		return name;
+	}
+
 	std::vector<std::string> LineEditor::commandCompletions(const std::string& prefix) {
 		std::set<std::string> set;
 		for (const auto& n : exec_.builtinNames()) {
 			if (n.compare(0, prefix.size(), prefix) == 0) set.insert(n);
 		}
+
 		for (const auto& n : exec_.functionNames()) {
 			if (n.compare(0, prefix.size(), prefix) == 0) set.insert(n);
 		}
-		// Walk PATH for executables whose names start with `prefix`.
-		std::string path = env_.get("PATH");
-		std::vector<std::string> dirs;
-		std::string cur;
-		for (std::size_t i = 0; i < path.size(); ++i) {
-			char c = path[i];
-			if (c == ';') { dirs.push_back(cur); cur.clear(); }
-			else if (c == ':') {
-				if (cur.size() == 1 && std::isalpha((unsigned char)cur[0])) cur.push_back(c);
-				else { dirs.push_back(cur); cur.clear(); }
-			} else cur.push_back(c);
-		}
-		if (!cur.empty()) dirs.push_back(cur);
 
-		auto stripExt = [](std::string s) -> std::string {
-			static const char* exts[] = { ".exe", ".cmd", ".bat", ".com", nullptr };
-			std::string lo = s;
-			std::transform(lo.begin(), lo.end(), lo.begin(),
-				[](char c) { return static_cast<char>(std::tolower((unsigned char)c)); });
-			for (int i = 0; exts[i]; ++i) {
-				std::size_t L = std::strlen(exts[i]);
-				if (lo.size() > L && lo.compare(lo.size() - L, L, exts[i]) == 0) {
-					s.resize(s.size() - L);
-					break;
-				}
-			}
-			return s;
-		};
-
+		const std::vector<std::string> dirs = splitPathList(env_.get("PATH"));
 		for (const auto& d : dirs) {
 			if (d.empty()) continue;
 			std::error_code ec;
@@ -390,18 +384,17 @@ namespace wbsh {
 			fs::directory_iterator it(base, ec);
 			if (ec) continue;
 			for (const auto& de : it) {
-				const std::string name = pathToUtf8(de.path().filename());
-				std::string nice = stripExt(name);
+				std::string nice = stripExeExtension(pathToUtf8(de.path().filename()));
 				if (nice.compare(0, prefix.size(), prefix) == 0) {
-					set.insert(nice);
+					set.insert(std::move(nice));
 				}
 			}
 		}
+
 		return std::vector<std::string>(set.begin(), set.end());
 	}
 
 	std::vector<std::string> LineEditor::pathCompletions(const std::string& prefix) {
-		// Split prefix into dir + base.
 		std::string dir, base;
 		auto slash = prefix.find_last_of("/\\");
 		if (slash == std::string::npos) {
@@ -412,9 +405,7 @@ namespace wbsh {
 			if (dir.empty()) dir = "/";
 			base = prefix.substr(slash + 1);
 		}
-		// Expand a leading `~` / `~/...` to $HOME for the directory lookup.
-		// The output we emit is built from the original `prefix`, so the
-		// user-visible `~` stays intact.
+
 		std::string lookup_dir = dir;
 		if (lookup_dir == "~"
 		    || (lookup_dir.size() >= 2 && lookup_dir[0] == '~'
@@ -426,6 +417,7 @@ namespace wbsh {
 					: home + lookup_dir.substr(1);
 			}
 		}
+
 		fs::path native = utf8ToPath(exec_.pathConv().toWin32(lookup_dir));
 		std::vector<std::string> matches;
 		std::error_code ec;
@@ -435,7 +427,6 @@ namespace wbsh {
 			const std::string name = pathToUtf8(de.path().filename());
 			if (name.empty()) continue;
 			if (name.compare(0, base.size(), base) != 0) continue;
-			// Hide dotfiles unless the user is explicitly typing a leading dot.
 			if (name[0] == '.' && (base.empty() || base[0] != '.')) continue;
 			std::string out;
 			if (slash == std::string::npos) {
@@ -443,21 +434,21 @@ namespace wbsh {
 			} else {
 				out = prefix.substr(0, slash + 1) + name;
 			}
+
 			std::error_code ec2;
 			if (de.is_directory(ec2)) out.push_back('/');
 			matches.push_back(std::move(out));
 		}
+
 		std::sort(matches.begin(), matches.end());
 		return matches;
 	}
 
 	std::vector<std::string> LineEditor::completionsFor(const std::string& prefix, bool cmd) {
-		// Treat as a path if the prefix contains `/` (even at command pos —
-		// matches bash's `./foo<TAB>` UX).
 		if (cmd && prefix.find('/') == std::string::npos) {
 			return commandCompletions(prefix);
 		}
-		// Argument-position completion: try tool-aware completions first.
+
 		Tok cur = currentToken();
 		auto tools = toolCompletions(prefix, cur);
 		if (!tools.empty()) return tools;
@@ -473,6 +464,7 @@ namespace wbsh {
 				if (!cur.empty()) { prev.push_back(cur); cur.clear(); }
 			} else cur.push_back(c);
 		}
+
 		if (!cur.empty()) prev.push_back(cur);
 		return prev;
 	}
@@ -482,16 +474,13 @@ namespace wbsh {
 		auto prev = prevTokensBefore(tok);
 		if (prev.empty()) return {};
 		const std::string& head = prev.front();
-		// Programmable completion (`complete -W ...` / `complete -F ...`)
-		// takes precedence over the built-in tool tables.
 		if (auto* spec = exec_.completionSpec(head)) {
 			std::vector<std::string> matches;
 			for (const auto& w : spec->words) {
 				if (w.compare(0, prefix.size(), prefix) == 0) matches.push_back(w);
 			}
+
 			if (!spec->function.empty() && exec_.isFunction(spec->function)) {
-				// Call the function with COMP_WORDS / COMP_CWORD set, then
-				// read COMPREPLY into matches.
 				auto& env = exec_.env();
 				std::vector<std::string> comp_words = prev;
 				comp_words.push_back(prefix);
@@ -520,13 +509,16 @@ namespace wbsh {
 					}
 				}
 			}
+
 			if (!matches.empty()) return matches;
 			if (spec->include_dirs || spec->include_files
 			    || spec->default_fallback) {
 				return pathCompletions(prefix);
 			}
+
 			return {};
 		}
+
 		if (head == "git")     return gitCompletions(prefix, prev);
 		if (head == "docker")  return dockerCompletions(prefix, prev);
 		if (head == "npm")     return npmCompletions(prefix, prev);
@@ -535,61 +527,26 @@ namespace wbsh {
 		return {};
 	}
 
-	// Walk up from CWD to find the enclosing `.git`. If `.git` is a worktree
-	// pointer file (a regular file with a `gitdir: <path>` line, used for
-	// linked worktrees and submodules), follow it to the real gitdir.
-	// Returns empty path when not inside a repo.
-	static fs::path findGitDir() {
+	static void appendLooseBranches(const fs::path& gitdir,
+	                                std::vector<std::string>& branches) {
 		std::error_code ec;
-		fs::path cur = fs::current_path(ec);
-		if (ec) return {};
-		fs::path gitdir;
-		fs::path probe = cur;
-		while (true) {
-			fs::path candidate = probe / ".git";
-			if (fs::exists(candidate, ec)) { gitdir = candidate; break; }
-			fs::path parent = probe.parent_path();
-			if (parent == probe) break;
-			probe = parent;
-		}
-		if (gitdir.empty()) return {};
-		if (!fs::is_directory(gitdir, ec)) {
-			std::ifstream f(gitdir);
-			std::string line;
-			if (std::getline(f, line)) {
-				const std::string prefix = "gitdir: ";
-				if (line.compare(0, prefix.size(), prefix) == 0) {
-					fs::path g(line.substr(prefix.size()));
-					if (!g.is_absolute()) g = (probe / g).lexically_normal();
-					gitdir = g;
-				}
+		fs::path heads = gitdir / "refs" / "heads";
+		if (!fs::is_directory(heads, ec)) return;
+		fs::recursive_directory_iterator it(heads, ec);
+		if (ec) return;
+		for (auto p = it; p != fs::recursive_directory_iterator(); p.increment(ec)) {
+			if (ec) break;
+			std::error_code fec;
+			if (p->is_regular_file(fec)) {
+				auto rel = pathToUtf8(fs::relative(p->path(), heads, fec));
+				std::replace(rel.begin(), rel.end(), '\\', '/');
+				branches.push_back(std::move(rel));
 			}
 		}
-		return gitdir;
 	}
 
-	std::vector<std::string> LineEditor::gitBranches() {
-		std::vector<std::string> branches;
-		fs::path gitdir = findGitDir();
-		if (gitdir.empty()) return branches;
-		std::error_code ec;
-		// Loose refs.
-		fs::path heads = gitdir / "refs" / "heads";
-		if (fs::is_directory(heads, ec)) {
-			fs::recursive_directory_iterator it(heads, ec);
-			if (!ec) {
-				for (auto p = it; p != fs::recursive_directory_iterator(); p.increment(ec)) {
-					if (ec) break;
-					std::error_code fec;
-					if (p->is_regular_file(fec)) {
-						auto rel = pathToUtf8(fs::relative(p->path(), heads, fec));
-						std::replace(rel.begin(), rel.end(), '\\', '/');
-						branches.push_back(std::move(rel));
-					}
-				}
-			}
-		}
-		// Packed refs.
+	static void appendPackedBranches(const fs::path& gitdir,
+	                                 std::vector<std::string>& branches) {
 		std::ifstream pr(gitdir / "packed-refs");
 		std::string line;
 		while (std::getline(pr, line)) {
@@ -604,6 +561,14 @@ namespace wbsh {
 				branches.push_back(ref.substr(p.size()));
 			}
 		}
+	}
+
+	std::vector<std::string> LineEditor::gitBranches() {
+		std::vector<std::string> branches;
+		fs::path gitdir = findGitDir();
+		if (gitdir.empty()) return branches;
+		appendLooseBranches(gitdir, branches);
+		appendPackedBranches(gitdir, branches);
 		std::sort(branches.begin(), branches.end());
 		branches.erase(std::unique(branches.begin(), branches.end()), branches.end());
 		return branches;
@@ -613,21 +578,17 @@ namespace wbsh {
 		std::vector<std::string> remotes;
 		fs::path gitdir = findGitDir();
 		if (gitdir.empty()) return remotes;
-		// Configured remotes live in `.git/config` as `[remote "name"]`
-		// section headers. Reading the file directly avoids a `git`
-		// subprocess on every Tab keystroke.
 		std::ifstream cfg(gitdir / "config");
 		std::string line;
 		while (std::getline(cfg, line)) {
-			std::size_t i = 0;
-			while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-			const std::string p = "[remote \"";
-			if (line.compare(i, p.size(), p) != 0) continue;
-			std::size_t start = i + p.size();
-			std::size_t end = line.find('"', start);
-			if (end == std::string::npos) continue;
-			remotes.push_back(line.substr(start, end - start));
+			StrScan in(line);
+			in.skipSpaces();
+			std::string name;
+			if (in.consume("[remote \"") && in.readUpTo('"', name)) {
+				remotes.push_back(std::move(name));
+			}
 		}
+
 		std::sort(remotes.begin(), remotes.end());
 		remotes.erase(std::unique(remotes.begin(), remotes.end()), remotes.end());
 		return remotes;
@@ -640,12 +601,22 @@ namespace wbsh {
 			std::string s = table[i];
 			if (s.compare(0, prefix.size(), prefix) == 0) out.push_back(std::move(s));
 		}
+
+		return out;
+	}
+
+	static std::vector<std::string> filterPrefix(std::vector<std::string> v,
+	                                             const std::string& prefix) {
+		std::vector<std::string> out;
+		for (auto& s : v) {
+			if (s.compare(0, prefix.size(), prefix) == 0) out.push_back(std::move(s));
+		}
+
 		return out;
 	}
 
 	std::vector<std::string> LineEditor::gitCompletions(const std::string& prefix,
 	                                                    const std::vector<std::string>& prev) {
-		// 2nd token = subcommand position.
 		if (prev.size() == 1) {
 			static const char* kSubs[] = {
 				"add", "am", "apply", "archive", "bisect", "blame", "branch",
@@ -659,24 +630,17 @@ namespace wbsh {
 			};
 			return filterPrefix(kSubs, prefix);
 		}
+
 		const std::string& sub = prev[1];
-		// pull / push / fetch: 1st positional arg = remote, then branch(es).
-		// `git pull <TAB>`        -> remotes (origin, upstream, ...)
-		// `git pull origin <TAB>` -> branches.
-		// Flags (`-u`, `--force`, ...) don't count toward the position.
 		if (sub == "pull" || sub == "push" || sub == "fetch") {
 			std::size_t non_flag = 0;
 			for (std::size_t i = 2; i < prev.size(); ++i) {
 				if (!prev[i].empty() && prev[i][0] != '-') ++non_flag;
 			}
-			auto src = (non_flag == 0) ? gitRemotes() : gitBranches();
-			std::vector<std::string> out;
-			for (auto& s : src) {
-				if (s.compare(0, prefix.size(), prefix) == 0) out.push_back(s);
-			}
-			return out;
+
+			return filterPrefix((non_flag == 0) ? gitRemotes() : gitBranches(), prefix);
 		}
-		// Branch-aware subcommands.
+
 		static const char* kBranchSubs[] = {
 			"checkout", "switch", "branch", "merge", "rebase", "reset",
 			"diff", "log", "show", "cherry-pick", "revert",
@@ -686,12 +650,58 @@ namespace wbsh {
 		for (int i = 0; kBranchSubs[i]; ++i) {
 			if (sub == kBranchSubs[i]) { branchy = true; break; }
 		}
+
 		if (!branchy) return {};
-		std::vector<std::string> out;
-		for (auto& b : gitBranches()) {
-			if (b.compare(0, prefix.size(), prefix) == 0) out.push_back(b);
+		return filterPrefix(gitBranches(), prefix);
+	}
+
+	static std::vector<std::string> dockerSecondLevelCompletions(
+		const std::string& sub, const std::string& prefix) {
+		if (sub == "container") {
+			static const char* kSubs[] = {
+				"attach", "commit", "cp", "create", "diff", "exec",
+				"export", "inspect", "kill", "logs", "ls", "pause", "port",
+				"prune", "rename", "restart", "rm", "run", "start",
+				"stats", "stop", "top", "unpause", "update", "wait",
+				nullptr,
+			};
+			return filterPrefix(kSubs, prefix);
 		}
-		return out;
+
+		if (sub == "image") {
+			static const char* kSubs[] = {
+				"build", "history", "import", "inspect", "load", "ls",
+				"prune", "pull", "push", "rm", "save", "tag", nullptr,
+			};
+			return filterPrefix(kSubs, prefix);
+		}
+
+		if (sub == "network") {
+			static const char* kSubs[] = {
+				"connect", "create", "disconnect", "inspect", "ls",
+				"prune", "rm", nullptr,
+			};
+			return filterPrefix(kSubs, prefix);
+		}
+
+		if (sub == "volume") {
+			static const char* kSubs[] = {
+				"create", "inspect", "ls", "prune", "rm", nullptr,
+			};
+			return filterPrefix(kSubs, prefix);
+		}
+
+		if (sub == "compose") {
+			static const char* kSubs[] = {
+				"build", "config", "create", "down", "events", "exec",
+				"images", "kill", "logs", "ls", "pause", "port", "ps",
+				"pull", "push", "restart", "rm", "run", "start", "stop",
+				"top", "unpause", "up", "version", nullptr,
+			};
+			return filterPrefix(kSubs, prefix);
+		}
+
+		return {};
 	}
 
 	std::vector<std::string> LineEditor::dockerCompletions(const std::string& prefix,
@@ -711,50 +721,35 @@ namespace wbsh {
 			};
 			return filterPrefix(kSubs, prefix);
 		}
-		// Subcommand-specific second-level completions.
+
 		if (prev.size() == 2) {
-			const std::string& sub = prev[1];
-			if (sub == "container") {
-				static const char* kSubs[] = {
-					"attach", "commit", "cp", "create", "diff", "exec",
-					"export", "inspect", "kill", "logs", "ls", "pause", "port",
-					"prune", "rename", "restart", "rm", "run", "start",
-					"stats", "stop", "top", "unpause", "update", "wait",
-					nullptr,
-				};
-				return filterPrefix(kSubs, prefix);
-			}
-			if (sub == "image") {
-				static const char* kSubs[] = {
-					"build", "history", "import", "inspect", "load", "ls",
-					"prune", "pull", "push", "rm", "save", "tag", nullptr,
-				};
-				return filterPrefix(kSubs, prefix);
-			}
-			if (sub == "network") {
-				static const char* kSubs[] = {
-					"connect", "create", "disconnect", "inspect", "ls",
-					"prune", "rm", nullptr,
-				};
-				return filterPrefix(kSubs, prefix);
-			}
-			if (sub == "volume") {
-				static const char* kSubs[] = {
-					"create", "inspect", "ls", "prune", "rm", nullptr,
-				};
-				return filterPrefix(kSubs, prefix);
-			}
-			if (sub == "compose") {
-				static const char* kSubs[] = {
-					"build", "config", "create", "down", "events", "exec",
-					"images", "kill", "logs", "ls", "pause", "port", "ps",
-					"pull", "push", "restart", "rm", "run", "start", "stop",
-					"top", "unpause", "up", "version", nullptr,
-				};
-				return filterPrefix(kSubs, prefix);
-			}
+			return dockerSecondLevelCompletions(prev[1], prefix);
 		}
+
 		return {};
+	}
+
+	/* Tolerant scan of package.json: the names of the "scripts" object's
+	 * keys, up to its first '}'. Good enough for completions; not JSON. */
+	static std::vector<std::string> packageJsonScripts() {
+		std::error_code ec;
+		std::ifstream f(fs::current_path(ec) / "package.json");
+		if (!f) return {};
+		const std::string json((std::istreambuf_iterator<char>(f)),
+		                       std::istreambuf_iterator<char>());
+
+		StrScan in(json);
+		if (!in.skipPast("\"scripts\"") || !in.skipPast("{") || !in.stopAt('}'))
+			return {};
+
+		std::vector<std::string> names;
+		std::string name;
+		std::string value;
+		while (in.readQuoted(name) && in.skipPast(":") && in.readQuoted(value)) {
+			names.push_back(name);
+		}
+
+		return names;
 	}
 
 	std::vector<std::string> LineEditor::npmCompletions(const std::string& prefix,
@@ -776,42 +771,13 @@ namespace wbsh {
 			};
 			return filterPrefix(kSubs, prefix);
 		}
-		// `npm run <TAB>`: read scripts from package.json in CWD.
+
 		if (prev.size() == 2 && (prev[1] == "run" || prev[1] == "run-script")) {
-			std::vector<std::string> scripts;
-			std::error_code ec;
-			std::filesystem::path pkg = std::filesystem::current_path(ec) / "package.json";
-			std::ifstream f(pkg);
-			if (f) {
-				std::string content((std::istreambuf_iterator<char>(f)),
-				                    std::istreambuf_iterator<char>());
-				auto sp = content.find("\"scripts\"");
-				if (sp != std::string::npos) {
-					auto open = content.find('{', sp);
-					auto close = content.find('}', open);
-					if (open != std::string::npos && close != std::string::npos) {
-						std::string body = content.substr(open + 1, close - open - 1);
-						for (std::size_t i = 0; i < body.size(); ) {
-							if (body[i] != '"') { ++i; continue; }
-							std::size_t end = body.find('"', i + 1);
-							if (end == std::string::npos) break;
-							std::string name = body.substr(i + 1, end - i - 1);
-							i = body.find(':', end);
-							if (i == std::string::npos) break;
-							std::size_t vstart = body.find('"', i);
-							if (vstart == std::string::npos) break;
-							std::size_t vend = body.find('"', vstart + 1);
-							if (vend == std::string::npos) break;
-							if (name.compare(0, prefix.size(), prefix) == 0)
-								scripts.push_back(std::move(name));
-							i = vend + 1;
-						}
-					}
-				}
-			}
+			std::vector<std::string> scripts = filterPrefix(packageJsonScripts(), prefix);
 			std::sort(scripts.begin(), scripts.end());
 			return scripts;
 		}
+
 		return {};
 	}
 
@@ -830,6 +796,7 @@ namespace wbsh {
 			};
 			return filterPrefix(kSubs, prefix);
 		}
+
 		return {};
 	}
 
@@ -849,7 +816,7 @@ namespace wbsh {
 			};
 			return filterPrefix(kSubs, prefix);
 		}
-		// Resource types after `kubectl get|describe|delete|edit|...`.
+
 		if (prev.size() == 2) {
 			static const char* kRes[] = {
 				"pods", "po", "services", "svc", "deployments", "deploy",
@@ -873,6 +840,7 @@ namespace wbsh {
 				if (sub == kVerbs[i]) return filterPrefix(kRes, prefix);
 			}
 		}
+
 		return {};
 	}
 
@@ -885,6 +853,7 @@ namespace wbsh {
 			p.resize(k);
 			if (p.empty()) break;
 		}
+
 		return p;
 	}
 
@@ -897,6 +866,7 @@ namespace wbsh {
 			int w = info.srWindow.Right - info.srWindow.Left + 1;
 			if (w > 0) width = w;
 		}
+
 		std::size_t maxlen = 0;
 		for (const auto& m : matches) if (m.size() > maxlen) maxlen = m.size();
 		std::size_t pad = maxlen + 2;
@@ -912,8 +882,10 @@ namespace wbsh {
 					for (std::size_t k = matches[idx].size(); k < pad; ++k) line.push_back(' ');
 				}
 			}
+
 			emit(line + "\r\n");
 		}
+
 		last_cursor_row_ = 0;
 		redraw();
 	}
@@ -925,16 +897,17 @@ namespace wbsh {
 			last_was_tab_ = false;
 			return;
 		}
+
 		std::string current = buffer_.substr(tok.start, tok.end - tok.start);
 		if (matches.size() == 1) {
 			std::string repl = matches[0];
-			// Add a trailing space when the completion isn't a directory.
 			if (repl.empty() || repl.back() != '/') repl.push_back(' ');
 			buffer_.replace(tok.start, tok.end - tok.start, repl);
 			cursor_ = tok.start + repl.size();
 			last_was_tab_ = false;
 			return;
 		}
+
 		std::string lcp = longestCommonPrefix(matches);
 		if (lcp.size() > current.size()) {
 			buffer_.replace(tok.start, tok.end - tok.start, lcp);
@@ -943,7 +916,7 @@ namespace wbsh {
 			last_tab_word_ = lcp;
 			return;
 		}
-		// No further common prefix — display the candidates.
+
 		printMatches(matches);
 		last_was_tab_ = true;
 		last_tab_word_ = current;
@@ -963,11 +936,13 @@ namespace wbsh {
 			CloseClipboard();
 			return;
 		}
+
 		auto* wptr = static_cast<const WCHAR*>(GlobalLock(h_clip));
 		if (!wptr) {
 			CloseClipboard();
 			return;
 		}
+
 		std::wstring w(wptr);
 		GlobalUnlock(h_clip);
 		CloseClipboard();
@@ -980,6 +955,7 @@ namespace wbsh {
 			if (c == L'\r' || c == L'\n') continue;
 			filtered.push_back(c);
 		}
+
 		if (filtered.empty()) return;
 
 		int n = WideCharToMultiByte(CP_UTF8, 0,
@@ -998,7 +974,6 @@ namespace wbsh {
 		WCHAR pair[2] = { static_cast<WCHAR>(ch), 0 };
 		int len = 1;
 		if (ch >= 0xD800 && ch <= 0xDBFF) {
-			// High surrogate: pull the low surrogate off the input queue.
 			HANDLE h_in = GetStdHandle(STD_INPUT_HANDLE);
 			INPUT_RECORD r2;
 			DWORD nr = 0;
@@ -1010,6 +985,7 @@ namespace wbsh {
 				len = 2;
 			}
 		}
+
 		char buf[8] = {};
 		int n = WideCharToMultiByte(CP_UTF8, 0, pair, len, buf, sizeof(buf), nullptr, nullptr);
 		if (n > 0) {
@@ -1018,9 +994,6 @@ namespace wbsh {
 		}
 	}
 
-	// Forward declaration: AltGr (Czech / EU layouts) detection lives further
-	// down with the rest of the raw-input helpers. The reverse-search modal
-	// is alphabetically higher in this file but needs the same predicate.
 	static bool isAltGrActive(const KEY_EVENT_RECORD& k);
 
 	void LineEditor::revsearchRefresh(const std::string& query,
@@ -1039,9 +1012,38 @@ namespace wbsh {
 			buffer_.clear();
 			cursor_ = 0;
 		}
+
 		last_cursor_row_ = 0;
 		emit("\r\x1b[J");
 		redraw();
+	}
+
+	void LineEditor::revsearchStepOlder(const std::string& query,
+	                                    std::size_t& match_index) {
+		const auto& history = exec_.history();
+		if (match_index == 0) { emit("\a"); return; }
+		std::size_t start = (match_index < history.size())
+			? match_index - 1
+			: (history.empty() ? 0 : history.size() - 1);
+		std::size_t next = findReverseSearchMatch(history, query, start, false);
+		if (next == history.size()) { emit("\a"); return; }
+		match_index = next;
+		revsearchRefresh(query, match_index);
+	}
+
+	void LineEditor::revsearchStepNewer(const std::string& query,
+	                                    std::size_t& match_index) {
+		const auto& history = exec_.history();
+		if (match_index >= history.size() || match_index + 1 >= history.size()) {
+			emit("\a");
+			return;
+		}
+
+		std::size_t next = findReverseSearchMatch(history, query,
+		                                          match_index + 1, true);
+		if (next == history.size()) { emit("\a"); return; }
+		match_index = next;
+		revsearchRefresh(query, match_index);
 	}
 
 	bool LineEditor::revsearchHandleKey(const KEY_EVENT_RECORD& k,
@@ -1065,33 +1067,22 @@ namespace wbsh {
 			revsearchRefresh(query, match_index);
 			return true;
 		}
+
 		if (is_ctrl && k.wVirtualKeyCode == 'R') {
-			if (match_index == 0) { emit("\a"); return true; }
-			std::size_t start = (match_index < history.size())
-				? match_index - 1
-				: (history.empty() ? 0 : history.size() - 1);
-			std::size_t next = findReverseSearchMatch(history, query, start, false);
-			if (next == history.size()) { emit("\a"); return true; }
-			match_index = next;
-			revsearchRefresh(query, match_index);
+			revsearchStepOlder(query, match_index);
 			return true;
 		}
+
 		if (is_ctrl && k.wVirtualKeyCode == 'S') {
-			if (match_index >= history.size()
-			    || match_index + 1 >= history.size()) {
-				emit("\a"); return true;
-			}
-			std::size_t next = findReverseSearchMatch(history, query,
-			                                          match_index + 1, true);
-			if (next == history.size()) { emit("\a"); return true; }
-			match_index = next;
-			revsearchRefresh(query, match_index);
+			revsearchStepNewer(query, match_index);
 			return true;
 		}
+
 		if (is_ctrl && (k.wVirtualKeyCode == 'G' || k.wVirtualKeyCode == 'C')) {
 			cancel = true;
 			return false;
 		}
+
 		if (is_ctrl) return false;
 		if (ch >= 0x20 && ch < 0x7F) {
 			query.push_back(static_cast<char>(ch));
@@ -1102,6 +1093,7 @@ namespace wbsh {
 			revsearchRefresh(query, match_index);
 			return true;
 		}
+
 		return false;
 	}
 
@@ -1128,6 +1120,7 @@ namespace wbsh {
 			    || nread == 0) {
 				cancel = true; eof = true; break;
 			}
+
 			if (rec.EventType != KEY_EVENT) continue;
 			KEY_EVENT_RECORD& k = rec.Event.KeyEvent;
 			if (!k.bKeyDown) { handleAltKeyUp(k); continue; }
@@ -1149,31 +1142,21 @@ namespace wbsh {
 		}
 	}
 
-	// Configure stdin for raw key-by-key input. Returns the prior mode bits
-	// so the caller can restore them on exit.
 	static DWORD enterRawInputMode(HANDLE h_in) {
 		DWORD saved = 0;
 		GetConsoleMode(h_in, &saved);
 		DWORD in_mode = saved;
-		// Turn OFF cooked behaviour. We keep ENABLE_VIRTUAL_TERMINAL_INPUT
-		// (already on at REPL boot) so OS-generated escape sequences arrive
-		// untouched.
 		in_mode &= ~ENABLE_LINE_INPUT;
 		in_mode &= ~ENABLE_ECHO_INPUT;
 		in_mode &= ~ENABLE_PROCESSED_INPUT;
-		// Mouse / window events interleave with key events; suppress so the
-		// read loop only sees keys.
 		in_mode &= ~ENABLE_MOUSE_INPUT;
 		in_mode &= ~ENABLE_WINDOW_INPUT;
 		SetConsoleMode(h_in, in_mode);
 		return saved;
 	}
 
-	// AltGr (the right-Alt key on EU layouts) arrives as LEFT_CTRL +
-	// RIGHT_ALT. Hardware sends it as Ctrl+Alt for legacy reasons, but the
-	// layout engine has already resolved the keystroke to its layout-mapped
-	// character (e.g. AltGr+W -> `|` on Czech). Without this detection,
-	// the LEFT_CTRL bit would make us mistake the keystroke for Ctrl+W.
+	// AltGr arrives as LEFT_CTRL + RIGHT_ALT with a layout-resolved char;
+	// without this check its LEFT_CTRL bit would read as Ctrl+<key>.
 	static bool isAltGrActive(const KEY_EVENT_RECORD& k) {
 		const DWORD ctrl = k.dwControlKeyState;
 		return (ctrl & (LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED))
@@ -1181,9 +1164,8 @@ namespace wbsh {
 		    && k.uChar.UnicodeChar != 0;
 	}
 
-	// Alt-code sequences (Alt + numpad digits) are delivered to the console
-	// as a key-UP event for VK_MENU with the resolved Unicode char in
-	// UnicodeChar. We pluck that out here so they show up as input.
+	// Alt-code input (Alt + numpad digits) is delivered as a key-UP event
+	// for VK_MENU carrying the resolved Unicode char.
 	void LineEditor::handleAltKeyUp(const KEY_EVENT_RECORD& k) {
 		if (k.wVirtualKeyCode != VK_MENU) return;
 		if (k.uChar.UnicodeChar < 0x20) return;
@@ -1197,7 +1179,6 @@ namespace wbsh {
 		}
 	}
 
-	// Handle one Ctrl-modified keystroke. Returns true if recognised.
 	bool LineEditor::handleCtrlKey(const KEY_EVENT_RECORD& k,
 	                               const std::string& prompt,
 	                               std::string& out, bool& done, bool& eof) {
@@ -1230,9 +1211,6 @@ namespace wbsh {
 		}
 	}
 
-	// Handle the navigation / editing virtual keys (Enter, arrows, Home,
-	// End, Backspace, Delete, Tab). Returns true if the key was a known
-	// VK; false means it's an ordinary character or modifier.
 	bool LineEditor::handleNavigationKey(const KEY_EVENT_RECORD& k,
 	                                     std::string& out, bool& done, bool& was_tab) {
 		switch (k.wVirtualKeyCode) {
@@ -1251,12 +1229,13 @@ namespace wbsh {
 	}
 
 	void LineEditor::insertReceivedChar(WCHAR ch) {
-		if (ch == 0) return;   // pure modifier press
+		if (ch == 0) return;
 		if (ch >= 0x20 && ch < 0x7F) {
 			insertChars(std::string(1, static_cast<char>(ch)));
 			redraw();
 			return;
 		}
+
 		if (ch >= 0x80) {
 			insertWideCharFromConsole(ch);
 		}
@@ -1268,6 +1247,7 @@ namespace wbsh {
 		if (h_in == INVALID_HANDLE_VALUE || h_out == INVALID_HANDLE_VALUE) {
 			return readLineCooked(out);
 		}
+
 		const DWORD saved_in_mode = enterRawInputMode(h_in);
 
 		emit(prompt);
@@ -1280,6 +1260,7 @@ namespace wbsh {
 				eof = true;
 				break;
 			}
+
 			if (rec.EventType != KEY_EVENT) continue;
 			KEY_EVENT_RECORD& k = rec.Event.KeyEvent;
 			if (!k.bKeyDown) {
@@ -1298,10 +1279,12 @@ namespace wbsh {
 				last_was_tab_ = was_tab;
 				continue;
 			}
+
 			if (is_ctrl && handleCtrlKey(k, prompt, out, done, eof)) {
 				last_was_tab_ = was_tab;
 				continue;
 			}
+
 			insertReceivedChar(ch);
 			last_was_tab_ = was_tab;
 		}

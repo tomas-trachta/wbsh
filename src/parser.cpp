@@ -1,8 +1,3 @@
-/**
- * @file parser.cpp
- * @brief Recursive-descent parser implementation.
- */
-
 #include "parser.h"
 
 #include <cctype>
@@ -28,6 +23,7 @@ namespace wbsh {
 		case RedirOp::DLessDash: return "<<-";
 		case RedirOp::TLess: return "<<<";
 		}
+
 		return "?";
 	}
 
@@ -46,12 +42,9 @@ namespace wbsh {
 		case Node::Kind::FunctionDef: return "FunctionDef";
 		case Node::Kind::DBracket: return "DBracket";
 		}
+
 		return "?";
 	}
-
-	// ---------------------------------------------------------------------------
-	// Construction & cursor helpers
-	// ---------------------------------------------------------------------------
 
 	Parser::Parser(std::vector<Token> tokens) : toks_(std::move(tokens)) {}
 
@@ -150,8 +143,6 @@ namespace wbsh {
 	}
 
 	std::size_t Parser::srcOffsetEnd() const {
-		// End of the previous token in the stream. If we haven't consumed
-		// anything yet, fall back to the current token's offset.
 		if (pos_ == 0) return peek().loc.offset;
 		const Token& prev = toks_[pos_ - 1];
 		return prev.loc.offset + prev.text.size();
@@ -183,10 +174,6 @@ namespace wbsh {
 		return w;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Top-level program
-	// ---------------------------------------------------------------------------
-
 	NodePtr Parser::parseProgram() {
 		return parseList(/*top_level=*/true);
 	}
@@ -209,13 +196,10 @@ namespace wbsh {
 			if (!had_sep) break;
 			skipNewlines();
 		}
+
 		stampSpan(*list, start);
 		return list;
 	}
-
-	// ---------------------------------------------------------------------------
-	// And-or
-	// ---------------------------------------------------------------------------
 
 	NodePtr Parser::parseAndOr() {
 		std::size_t start = srcOffsetHere();
@@ -230,6 +214,7 @@ namespace wbsh {
 				error(peek(), "expected pipeline after && / ||");
 				break;
 			}
+
 			auto ao = arena_.make<AndOr>();
 			ao->op = op;
 			ao->loc = left->loc;
@@ -239,21 +224,15 @@ namespace wbsh {
 			ao->src_end = srcOffsetEnd();
 			left = ao;
 		}
-		// If no &&/|| chain, left already has its own span.
+
 		if (left && left->src_end == 0) left->src_end = srcOffsetEnd();
 		return left;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Pipeline
-	// ---------------------------------------------------------------------------
-
 	NodePtr Parser::parsePipeline() {
 		std::size_t start = srcOffsetHere();
-		// `time` is a reserved word that prefixes a pipeline (not a command),
-		// so it must be parsed here. Only treat it as the keyword when the
-		// next token actually begins a command — otherwise `time` alone (or
-		// followed by a redirection / `;`) is just an argv[0].
+		// `time` is the keyword only when a command follows; `time` alone
+		// (or before a redirection / `;`) is an ordinary argv[0].
 		bool timed = false;
 		if (checkReserved("time")) {
 			std::size_t saved = pos_;
@@ -264,6 +243,7 @@ namespace wbsh {
 				pos_ = saved;
 			}
 		}
+
 		bool bang = matchReserved("!");
 		auto first = parseCommand();
 		if (!first) {
@@ -271,9 +251,11 @@ namespace wbsh {
 			if (timed) error(peek(), "expected command after `time`");
 			return nullptr;
 		}
+
 		if (!bang && !timed && !check(TokKind::Pipe) && !check(TokKind::PipeAmp)) {
 			return first;
 		}
+
 		auto pipe = arena_.make<Pipeline>();
 		pipe->bang = bang;
 		pipe->timed = timed;
@@ -288,16 +270,14 @@ namespace wbsh {
 				error(peek(), "expected command after pipe");
 				break;
 			}
+
 			pipe->stderr_to_stdout.push_back(amp);
 			pipe->commands.push_back(next);
 		}
+
 		stampSpan(*pipe, start);
 		return pipe;
 	}
-
-	// ---------------------------------------------------------------------------
-	// Command dispatch
-	// ---------------------------------------------------------------------------
 
 	NodePtr Parser::parseCommand() {
 		if (!atCommandStart()) return nullptr;
@@ -317,38 +297,35 @@ namespace wbsh {
 				error(peek(), "expected function name after `function`");
 				return nullptr;
 			}
+
 			std::string name = peek().text;
 			advance();
 			if (match(TokKind::LParen)) {
 				if (!match(TokKind::RParen)) error(peek(), "expected `)`");
 			}
+
 			return parseFunctionRest(std::move(name), loc);
 		}
 
 		if (check(TokKind::LParen)) return parseSubshell();
 
-		// Function definition: name '(' ')' compound_command
 		if (peek().kind == TokKind::Word
 			&& peek(1).kind == TokKind::LParen
 			&& peek(2).kind == TokKind::RParen)
 		{
 			std::string name = peek().text;
 			SourceLoc loc = peek().loc;
-			advance(); advance(); advance();   // consume name ( )
+			advance(); advance(); advance();
 			return parseFunctionRest(std::move(name), loc);
 		}
 
 		return parseSimpleCommand();
 	}
 
-	// ---------------------------------------------------------------------------
-	// Compound commands
-	// ---------------------------------------------------------------------------
-
 	NodePtr Parser::parseBraceGroup() {
 		std::size_t start = srcOffsetHere();
 		SourceLoc loc = peek().loc;
-		advance();   // consume `{`
+		advance();
 		auto body = parseList(false);
 		expectReserved("}", "expected `}`");
 		auto bg = arena_.make<BraceGroup>();
@@ -363,7 +340,7 @@ namespace wbsh {
 	NodePtr Parser::parseSubshell() {
 		std::size_t start = srcOffsetHere();
 		SourceLoc loc = peek().loc;
-		advance();   // consume `(`
+		advance();
 		auto body = parseList(false);
 		expect(TokKind::RParen, "expected `)`");
 		auto ss = arena_.make<Subshell>();
@@ -378,7 +355,7 @@ namespace wbsh {
 	NodePtr Parser::parseIf() {
 		std::size_t start = srcOffsetHere();
 		SourceLoc loc = peek().loc;
-		advance();   // consume `if`
+		advance();
 		auto cond = parseList(false);
 		expectReserved("then", "expected `then`");
 		auto then_body = parseList(false);
@@ -393,9 +370,11 @@ namespace wbsh {
 			auto b = parseList(false);
 			node->branches.push_back({ c, b });
 		}
+
 		if (matchReserved("else")) {
 			node->else_body = parseList(false);
 		}
+
 		expectReserved("fi", "expected `fi`");
 		Redirection r;
 		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
@@ -408,6 +387,7 @@ namespace wbsh {
 			error(peek(), "expected `do`");
 			return nullptr;
 		}
+
 		auto body = parseList(false);
 		expectReserved("done", "expected `done`");
 		return body;
@@ -416,7 +396,7 @@ namespace wbsh {
 	NodePtr Parser::parseWhileUntil(bool until) {
 		std::size_t start = srcOffsetHere();
 		SourceLoc loc = peek().loc;
-		advance();   // consume while/until
+		advance();
 		auto cond = parseList(false);
 		auto body = parseDoGroup();
 		auto node = arena_.make<WhileClause>();
@@ -433,11 +413,12 @@ namespace wbsh {
 	NodePtr Parser::parseFor() {
 		std::size_t start = srcOffsetHere();
 		SourceLoc loc = peek().loc;
-		advance();   // consume `for`
+		advance();
 		if (peek().kind != TokKind::Word) {
 			error(peek(), "expected variable name after `for`");
 			return nullptr;
 		}
+
 		std::string var = peek().text;
 		advance();
 		skipNewlines();
@@ -451,18 +432,20 @@ namespace wbsh {
 			{
 				items.push_back(tokenToWord(advance()));
 			}
+
 			if (!match(TokKind::Semi) && !match(TokKind::Newline)) {
 				if (!checkReserved("do"))
 					error(peek(), "expected `;` or newline after for-in word list");
 			}
+
 			skipNewlines();
 		}
 		else {
-			// Allow optional separator before `do`.
 			if (match(TokKind::Semi) || match(TokKind::Newline)) {
 				skipNewlines();
 			}
 		}
+
 		auto body = parseDoGroup();
 		auto node = arena_.make<ForClause>();
 		node->loc = loc;
@@ -479,11 +462,12 @@ namespace wbsh {
 	NodePtr Parser::parseCase() {
 		std::size_t start = srcOffsetHere();
 		SourceLoc loc = peek().loc;
-		advance();   // consume `case`
+		advance();
 		if (peek().kind != TokKind::Word) {
 			error(peek(), "expected word after `case`");
 			return nullptr;
 		}
+
 		Word subject = tokenToWord(advance());
 		skipNewlines();
 		expectReserved("in", "expected `in`");
@@ -495,13 +479,12 @@ namespace wbsh {
 
 		while (!atEnd() && !checkReserved("esac")) {
 			CaseClause::Item item;
-			// Optional opening (
 			match(TokKind::LParen);
-			// Patterns separated by `|`
 			while (peek().kind == TokKind::Word) {
 				item.patterns.push_back(tokenToWord(advance()));
 				if (!match(TokKind::Pipe)) break;
 			}
+
 			expect(TokKind::RParen, "expected `)` after case pattern(s)");
 			skipNewlines();
 			if (!checkReserved("esac")
@@ -511,13 +494,15 @@ namespace wbsh {
 			{
 				item.body = parseList(false);
 			}
+
 			if (match(TokKind::DSemi))         item.term = CaseClause::Term::DSemi;
 			else if (match(TokKind::SemiAmp))  item.term = CaseClause::Term::SemiAmp;
 			else if (match(TokKind::DSemiAmp)) item.term = CaseClause::Term::DSemiAmp;
-			else                               item.term = CaseClause::Term::DSemi;   // implicit
+			else                               item.term = CaseClause::Term::DSemi;
 			skipNewlines();
 			node->items.push_back(std::move(item));
 		}
+
 		expectReserved("esac", "expected `esac`");
 		Redirection r;
 		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
@@ -530,7 +515,6 @@ namespace wbsh {
 	}
 
 	DBracketCond::Expr* Parser::parseDBracketExpr() {
-		// `||`-separated terms.
 		auto left = parseDBracketAnd();
 		while (!atDBracketEnd() && check(TokKind::OrIf)) {
 			advance();
@@ -541,11 +525,11 @@ namespace wbsh {
 			e->b = right;
 			left = e;
 		}
+
 		return left;
 	}
 
 	DBracketCond::Expr* Parser::parseDBracketAnd() {
-		// `&&`-separated factors.
 		auto left = parseDBracketUnary();
 		while (!atDBracketEnd() && check(TokKind::AndIf)) {
 			advance();
@@ -556,6 +540,7 @@ namespace wbsh {
 			e->b = right;
 			left = e;
 		}
+
 		return left;
 	}
 
@@ -567,10 +552,10 @@ namespace wbsh {
 			e->a = inner;
 			return e;
 		}
+
 		return parseDBracketPrimary();
 	}
 
-	// `-X` unary file-test / string-test operator inside `[[ ... ]]`.
 	static bool isDBracketUnaryOp(const std::string& s) {
 		if (s.size() != 2 || s[0] != '-') return false;
 		static const char ops[] = "abcdefghknoprstuwxzGLNOSU";
@@ -578,8 +563,6 @@ namespace wbsh {
 		return false;
 	}
 
-	// Binary operators usable inside `[[ ... ]]` other than `<` / `>` (which
-	// arrive as their own token kinds).
 	static bool isDBracketBinaryOp(const std::string& s) {
 		return s == "==" || s == "!=" || s == "=" || s == "=~"
 		    || s == "-eq" || s == "-ne" || s == "-lt" || s == "-le"
@@ -587,8 +570,6 @@ namespace wbsh {
 		    || s == "-ef" || s == "-nt" || s == "-ot";
 	}
 
-	// Render a token as its operator string ("<" / ">" / a literal word), or
-	// empty if it can't be one.
 	static std::string dBracketOpAsString(const Token& t) {
 		if (t.kind == TokKind::Less)  return "<";
 		if (t.kind == TokKind::Great) return ">";
@@ -597,13 +578,10 @@ namespace wbsh {
 		    && t.segments[0].kind == WordSegment::Kind::Literal) {
 			return t.segments[0].text;
 		}
+
 		return {};
 	}
 
-	// Try to parse a leading `-X OPERAND` unary primary, when the token after
-	// OPERAND is a connective or closer. Returns true (with @p e populated)
-	// when consumed; returns false when no unary form applies — the caller
-	// then falls back to the binary / single-operand parse.
 	bool Parser::tryParseDBracketUnary(DBracketCond::Expr& e) {
 		if (peek().kind != TokKind::Word
 		    || peek().segments.size() != 1
@@ -635,8 +613,10 @@ namespace wbsh {
 			if (!match(TokKind::RParen)) {
 				error(peek(), "expected `)` inside [[ ... ]]");
 			}
+
 			return inner;
 		}
+
 		auto e = arena_.make<DBracketCond::Expr>();
 		e->k = DBracketCond::Expr::K::Prim;
 
@@ -646,6 +626,7 @@ namespace wbsh {
 			error(peek(), "expected operand in [[ ... ]]");
 			return e;
 		}
+
 		e->lhs = tokenToWord(advance());
 
 		const std::string opstr = dBracketOpAsString(peek());
@@ -659,16 +640,17 @@ namespace wbsh {
 				error(peek(), "expected right operand in [[ ... ]]");
 				return e;
 			}
+
 			e->rhs = tokenToWord(advance());
 		}
-		// else: single-word truthiness test (op stays "")
+
 		return e;
 	}
 
 	NodePtr Parser::parseDBracket() {
 		std::size_t start = srcOffsetHere();
 		SourceLoc loc = peek().loc;
-		advance();   // consume `[[`
+		advance();
 		auto node = arena_.make<DBracketCond>();
 		node->loc = loc;
 		if (atDBracketEnd()) {
@@ -676,9 +658,11 @@ namespace wbsh {
 		} else {
 			node->root = parseDBracketExpr();
 		}
+
 		if (!matchReserved("]]")) {
 			error(peek(), "expected `]]`");
 		}
+
 		Redirection r;
 		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
 		stampSpan(*node, start);
@@ -686,8 +670,6 @@ namespace wbsh {
 	}
 
 	NodePtr Parser::parseFunctionRest(std::string name, SourceLoc loc) {
-		// `loc` already points at the start of the function definition. Use
-		// the span up to the current end-of-stream position.
 		std::size_t start = loc.offset;
 		skipNewlines();
 		auto body = parseCommand();
@@ -695,30 +677,22 @@ namespace wbsh {
 			error(peek(), "expected function body");
 			return nullptr;
 		}
+
 		auto fn = arena_.make<FunctionDef>();
 		fn->loc = loc;
 		fn->name = std::move(name);
 		fn->body = body;
 		stampSpan(*fn, start);
-		// Snapshot the body slice from source so the executor can serialise
-		// it later, even after the AST is moved or the source is freed.
 		if (fn->body && source_ && !source_->empty()
 		    && fn->body->src_end > fn->body->src_start
 		    && fn->body->src_end <= source_->size()) {
 			fn->body_text = source_->substr(fn->body->src_start,
 				fn->body->src_end - fn->body->src_start);
 		}
+
 		return fn;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Simple command
-	// ---------------------------------------------------------------------------
-
-	// Try to parse one item inside an `arr=(...)` array literal. Detects the
-	// `[key]=value` form by inspecting the raw token text. Falls back to a
-	// plain unkeyed value for anything else. Caller has already verified
-	// that `peek()` is a Word token.
 	void Parser::parseArrayLiteralItem(Assignment& a) {
 		Word w = tokenToWord(advance());
 		Assignment::Keyed item;
@@ -740,8 +714,6 @@ namespace wbsh {
 				item.key.segments.push_back(std::move(ks));
 				item.has_key = true;
 
-				// Everything after `]=` is the value's first segment,
-				// followed by any further segments from the same token.
 				const std::string val_text = lit.substr(close + 2);
 				if (!val_text.empty()) {
 					WordSegment vs;
@@ -749,23 +721,22 @@ namespace wbsh {
 					vs.text = val_text;
 					item.value.segments.push_back(std::move(vs));
 				}
+
 				for (std::size_t k = 1; k < w.segments.size(); ++k) {
 					item.value.segments.push_back(w.segments[k]);
 				}
+
 				item.value.raw = w.raw;
 				a.keyed_items.push_back(std::move(item));
 				return;
 			}
 		}
-		// Plain unkeyed value.
+
 		Assignment::Keyed unkeyed;
 		unkeyed.value = std::move(w);
 		a.keyed_items.push_back(std::move(unkeyed));
 	}
 
-	// Consume `(...)` for `arr=(...)` array literals. Caller has already
-	// consumed `arr=` (with empty value) and the opening `(`. On unexpected
-	// tokens an error is reported and parsing skips to the closing `)`.
 	void Parser::parseArrayLiteralBody(Assignment& a) {
 		a.is_array = true;
 		skipNewlines();
@@ -774,36 +745,33 @@ namespace wbsh {
 				advance();
 				continue;
 			}
+
 			if (peek().kind != TokKind::Word) {
 				error(peek(), "unexpected token in array literal");
 				break;
 			}
+
 			parseArrayLiteralItem(a);
 		}
+
 		if (!match(TokKind::RParen)) {
 			error(peek(), "expected `)` to close array literal");
 		}
 	}
 
-	// True iff `a` is a scalar `name=` with an empty RHS — the tell-tale
-	// pre-state of an `arr=(...)` array literal once the `name=` portion
-	// has been consumed.
 	static bool isEmptyScalarAssignmentSlot(const Assignment& a) {
 		return a.value.segments.empty() && !a.has_subscript;
 	}
 
-	// Try to parse a leading assignment (or array literal) at the current
-	// position. Returns true if one was consumed and pushed onto `cmd`.
 	bool Parser::tryConsumeLeadingAssignment(SimpleCommand& cmd) {
 		Assignment a;
-		if (!extractAssignment(peek(), a)) return false;
+		if (!tryExtractAssignment(peek(), a)) return false;
 		advance();
-		// `name=(...)` array literal: when the scalar parse left an empty
-		// value and the next token is `(`, switch to array mode.
 		if (isEmptyScalarAssignmentSlot(a) && peek().kind == TokKind::LParen) {
-			advance();   // consume `(`
+			advance();
 			parseArrayLiteralBody(a);
 		}
+
 		cmd.assignments.push_back(std::move(a));
 		return true;
 	}
@@ -815,17 +783,15 @@ namespace wbsh {
 		bool seen_word = false;
 
 		while (!atEnd()) {
-			// Redirection (with or without leading IO_NUMBER).
 			if (atRedirOp() || peek().kind == TokKind::IoNumber) {
 				Redirection r;
 				if (!tryParseRedirection(r)) break;
 				cmd->redirs.push_back(std::move(r));
 				continue;
 			}
+
 			if (peek().kind != TokKind::Word) break;
 
-			// Leading assignments only — once a non-assignment word is
-			// seen, every subsequent Word is just a command argument.
 			if (!seen_word && tryConsumeLeadingAssignment(*cmd)) continue;
 
 			cmd->words.push_back(tokenToWord(advance()));
@@ -835,12 +801,11 @@ namespace wbsh {
 		if (cmd->words.empty() && cmd->assignments.empty() && cmd->redirs.empty()) {
 			return nullptr;
 		}
+
 		stampSpan(*cmd, start);
 		return cmd;
 	}
 
-	// Scan `s0` for the leading `[A-Za-z_][A-Za-z0-9_]*` identifier. Returns
-	// the offset just past the name (0 == not a name).
 	static std::size_t scanAssignmentNameLength(const std::string& s0) {
 		if (s0.empty()) return 0;
 		const unsigned char c0 = static_cast<unsigned char>(s0[0]);
@@ -851,13 +816,10 @@ namespace wbsh {
 		{
 			++i;
 		}
+
 		return i;
 	}
 
-	// Walk `t.segments` to locate the `]` that closes the subscript started
-	// at (cur_seg, cur_pos). Returns false if the segments don't actually
-	// form a `name[...]=` shape; on true, fills *out_close_seg and
-	// *out_close_pos.
 	static bool findSubscriptCloseBracket(const Token& t,
 	                                      std::size_t cur_seg, std::size_t cur_pos,
 	                                      std::size_t* out_close_seg,
@@ -872,19 +834,14 @@ namespace wbsh {
 			*out_close_pos = rb;
 			return true;
 		}
+
 		return false;
 	}
 
-	// After locating `]`, check whether `]=` (op_len 1) or `]+=` (op_len 2)
-	// follows. Returns the operator length on match (1 for replace, 2 for
-	// append) or 0 if the token doesn't form a valid `name[k]=...` shape.
-	// The operator may live entirely in `close_seg` or span into the next
-	// literal segment.
 	static std::size_t subscriptAssignOpLen(const Token& t,
 	                                        std::size_t close_seg,
 	                                        std::size_t close_pos) {
 		const auto& close_text = t.segments[close_seg].text;
-		// Same segment: `]=...` or `]+=...`.
 		if (close_pos + 1 < close_text.size()) {
 			if (close_text[close_pos + 1] == '=') return 1;
 			if (close_text[close_pos + 1] == '+'
@@ -892,9 +849,10 @@ namespace wbsh {
 			    && close_text[close_pos + 2] == '=') {
 				return 2;
 			}
+
 			return 0;
 		}
-		// `]` ends close_seg; the operator begins the next literal segment.
+
 		if (close_seg + 1 >= t.segments.size()) return 0;
 		const auto& nxt = t.segments[close_seg + 1];
 		if (nxt.kind != WordSegment::Kind::Literal || nxt.text.empty()) return 0;
@@ -902,11 +860,10 @@ namespace wbsh {
 		if (nxt.text.size() >= 2 && nxt.text[0] == '+' && nxt.text[1] == '=') {
 			return 2;
 		}
+
 		return 0;
 	}
 
-	// Append the subscript content (stripping the surrounding `[` and `]`)
-	// from segments[cur_seg..close_seg] onto `out_subscript`.
 	static void buildSubscriptWord(const Token& t,
 	                               std::size_t cur_seg, std::size_t cur_pos,
 	                               std::size_t close_seg, std::size_t close_pos,
@@ -933,9 +890,6 @@ namespace wbsh {
 		}
 	}
 
-	// Append the value portion (everything after the `]<op>` where `<op>`
-	// is `=` or `+=`) from `t` onto `out_value`. `op_len` is 1 for `=` and
-	// 2 for `+=`.
 	static void buildValueWordAfterSubscript(const Token& t,
 	                                         std::size_t close_seg,
 	                                         std::size_t close_pos,
@@ -950,21 +904,18 @@ namespace wbsh {
 		};
 		const auto& close_text = t.segments[close_seg].text;
 		if (close_pos + 1 < close_text.size()) {
-			// `]<op>` lives in close_seg; value starts at close_pos+1+op_len.
 			push_literal(close_text.substr(close_pos + 1 + op_len));
 			for (std::size_t k = close_seg + 1; k < t.segments.size(); ++k)
 				out_value.segments.push_back(t.segments[k]);
 			return;
 		}
-		// `]` ends close_seg; `<op>` is the first op_len chars of nxt.
+
 		const auto& nxt = t.segments[close_seg + 1];
 		push_literal(nxt.text.substr(op_len));
 		for (std::size_t k = close_seg + 2; k < t.segments.size(); ++k)
 			out_value.segments.push_back(t.segments[k]);
 	}
 
-	// Plain `name=value` shape: build out.value from t.segments using the
-	// known position of the `=` inside segment 0.
 	static void buildSimpleAssignmentValue(const Token& t, std::size_t name_end,
 	                                       Assignment& out) {
 		const std::string& s0 = t.segments[0].text;
@@ -974,6 +925,7 @@ namespace wbsh {
 			seg.text = s0.substr(name_end + 1);
 			out.value.segments.push_back(std::move(seg));
 		}
+
 		for (std::size_t k = 1; k < t.segments.size(); ++k)
 			out.value.segments.push_back(t.segments[k]);
 
@@ -983,7 +935,7 @@ namespace wbsh {
 			: t.text.substr(eqpos + 1);
 	}
 
-	bool Parser::extractAssignment(const Token& t, Assignment& out) const {
+	bool Parser::tryExtractAssignment(const Token& t, Assignment& out) const {
 		if (t.kind != TokKind::Word || t.segments.empty()) return false;
 		const auto& first = t.segments[0];
 		if (first.kind != WordSegment::Kind::Literal) return false;
@@ -1007,19 +959,15 @@ namespace wbsh {
 			return true;
 		}
 
-		// Plain `name=...` (the common case).
 		if (name_end < s0.size() && s0[name_end] == '=') {
 			buildSimpleAssignmentValue(t, name_end, out);
 			return true;
 		}
 
-		// Subscripted `name[...]=...` or `name[...]+=...`. Subscript may
-		// span multiple segments (`m[$key]=v` lexes as Lit("m["),
-		// SimpleVar("key"), Lit("]=v")).
 		if (name_end >= s0.size() || s0[name_end] != '[') return false;
 
 		const std::size_t cur_seg = 0;
-		const std::size_t cur_pos = name_end + 1;   // skip the `[`
+		const std::size_t cur_pos = name_end + 1;
 		std::size_t close_seg = 0;
 		std::size_t close_pos = 0;
 		if (!findSubscriptCloseBracket(t, cur_seg, cur_pos, &close_seg, &close_pos))
@@ -1041,10 +989,6 @@ namespace wbsh {
 		return true;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Redirections
-	// ---------------------------------------------------------------------------
-
 	bool Parser::tryParseRedirection(Redirection& out) {
 		std::size_t saved = pos_;
 		int fd = -1;
@@ -1052,10 +996,12 @@ namespace wbsh {
 			if (!parseInt(peek().text, fd)) fd = -1;
 			advance();
 		}
+
 		if (!atRedirOp()) {
 			pos_ = saved;
 			return false;
 		}
+
 		auto kind = peek().kind;
 		auto map_op = [](TokKind k) {
 			switch (k) {
@@ -1081,12 +1027,14 @@ namespace wbsh {
 			error(peek(), "expected word after redirection operator");
 			return false;
 		}
+
 		const Token& t = peek();
 		out.target = tokenToWord(t);
 		if (kind == TokKind::DLess || kind == TokKind::DLessDash) {
 			out.heredoc_body = t.heredoc_body;
 			out.heredoc_quoted = t.heredoc_quoted;
 		}
+
 		advance();
 		return true;
 	}

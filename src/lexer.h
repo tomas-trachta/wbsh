@@ -23,8 +23,6 @@
 
 namespace wbsh {
 
-	// ----- Tokens ---------------------------------------------------------------
-
 	/**
 	 * @brief Lexical token kind.
 	 *
@@ -39,7 +37,6 @@ namespace wbsh {
 		Newline,
 		EndOfInput,
 
-		// Control / list operators
 		AndIf,           // &&
 		OrIf,            // ||
 		DSemi,           // ;;
@@ -52,7 +49,6 @@ namespace wbsh {
 		LParen,          // (
 		RParen,          // )
 
-		// Redirection operators
 		Less,            // <
 		Great,           // >
 		DLess,           // <<
@@ -67,7 +63,6 @@ namespace wbsh {
 		AmpDGreat,       // &>>
 	};
 
-	/// Human-readable name for a TokKind (for diagnostics / debug dumps).
 	const char* tokKindName(TokKind k);
 
 	/**
@@ -79,7 +74,6 @@ namespace wbsh {
 	 * expander stage later.
 	 */
 	struct WordSegment {
-		/// Segment kind — describes what produced this slice of the word.
 		enum class Kind {
 			Literal,         ///< Raw literal characters.
 			Escaped,         ///< Single backslash-escaped char; text holds the char.
@@ -98,7 +92,6 @@ namespace wbsh {
 		char proc_dir = 0;                  ///< `'<'` or `'>'` for ProcSubst, 0 otherwise.
 	};
 
-	/// Human-readable name for a WordSegment::Kind.
 	const char* segKindName(WordSegment::Kind k);
 
 	/**
@@ -126,9 +119,6 @@ namespace wbsh {
 		std::string heredoc_body;           ///< Slurped body (excludes terminator line).
 	};
 
-	// ----- Lexer ----------------------------------------------------------------
-
-	/// Lexer diagnostic.
 	struct LexError {
 		SourceLoc loc;          ///< Where in the source the problem was detected.
 		std::string message;    ///< Human-readable description.
@@ -143,25 +133,15 @@ namespace wbsh {
 	 */
 	class Lexer {
 	public:
-		/// Construct a Lexer over @p input (takes ownership of the buffer).
 		explicit Lexer(std::string input);
 
-		/**
-		 * @brief Tokenize the entire input.
-		 *
-		 * @return Vector of tokens. The vector is always terminated
-		 *         with a TokKind::EndOfInput token.
-		 *
-		 * @note Errors are accumulated, not thrown. Inspect errors()
-		 *       afterwards.
-		 */
+		/// Tokenize the entire input. The result is always terminated
+		/// with a TokKind::EndOfInput token.
 		std::vector<Token> tokenize();
 
-		/// Diagnostics accumulated during the last tokenize() call.
 		const std::vector<LexError>& errors() const { return errors_; }
 
 	private:
-		// ---- Character stream helpers ----
 		char peek(std::size_t n = 0) const;
 		char advance();                       // consume + return current char
 		bool eof() const;
@@ -170,7 +150,6 @@ namespace wbsh {
 		void skipLineContinuations();         // collapse "\\\n"
 		void error(const SourceLoc& at, std::string msg);
 
-		// ---- Top-level dispatch ----
 		void scanToken();
 		void scanOperator();                  // assumes current char starts an operator
 		void emitOperator(SourceLoc start, TokKind kind, const char* text);
@@ -224,21 +203,14 @@ namespace wbsh {
 		void copyBackquotedRun  (std::string& out);
 		void copyDollarParenRun (std::string& out, int* paren_depth);
 
-		// ---- Heredoc handling ----
-		// Examine `delimiter_token` (the WORD that followed <<). Stash a flag for
-		// when we hit a newline; afterwards the body is collected until a line
-		// matches the delimiter.
-		void recordHeredoc(Token& delim, bool strip_tabs);
 		void collectHeredocBodies();          // run after each "logical" newline
 
-		// ---- State ----
 		std::string src_;
 		std::size_t pos_ = 0;
 		SourceLoc loc_{};
 		std::vector<Token> tokens_;
 		std::vector<LexError> errors_;
 
-		// Per-line state.
 		bool at_line_start_ = true;
 
 		// Pending heredoc delimiters waiting for their body to be read after the

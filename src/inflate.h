@@ -16,17 +16,8 @@
 
 namespace wbsh {
 
-/**
- * @brief Inflate a raw DEFLATE bitstream.
- *
- * @param in     Pointer to the compressed bytes (RFC 1951 raw stream,
- *               not the gzip / zlib wrapper).
- * @param in_len Number of input bytes available at @p in.
- * @param out    Destination buffer; appended to (existing contents
- *               are kept).
- *
- * @return true on success, false on malformed input.
- */
+/// Inflate a raw DEFLATE bitstream (RFC 1951, not the gzip / zlib
+/// wrapper) and append to @p out. False on malformed input.
 bool inflateRaw(const std::uint8_t* in, std::size_t in_len, std::vector<std::uint8_t>& out);
 
 }  // namespace wbsh

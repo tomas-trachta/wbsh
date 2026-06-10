@@ -17,19 +17,8 @@
 
 namespace wbsh {
 
-	/**
-	 * @brief Pretty-print a token vector to @p os.
-	 *
-	 * One line per token with kind, raw text, and source location.
-	 */
 	void dumpTokens(std::ostream& os, const std::vector<Token>& tokens);
 
-	/**
-	 * @brief Pretty-print an AST subtree rooted at @p node to @p os.
-	 *
-	 * Recursively walks Pipeline / List / compound-command children;
-	 * formats redirections, words, and assignments inline.
-	 */
 	void dumpAst(std::ostream& os, const Node& node);
 
 }  // namespace wbsh

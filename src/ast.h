@@ -28,8 +28,6 @@
 
 namespace wbsh {
 
-	// ----- Words & redirections -------------------------------------------------
-
 	/**
 	 * @brief A shell WORD: a sequence of segments with location info.
 	 *
@@ -43,7 +41,6 @@ namespace wbsh {
 		SourceLoc loc;                      ///< Position in the source.
 	};
 
-	/// Redirection operator kind.
 	enum class RedirOp {
 		Less,        ///< `<`
 		Great,       ///< `>`
@@ -59,7 +56,6 @@ namespace wbsh {
 		TLess,       ///< `<<<` here-string.
 	};
 
-	/// Human-readable operator spelling for a RedirOp.
 	const char* redirOpName(RedirOp o);
 
 	/**
@@ -87,14 +83,9 @@ namespace wbsh {
 	struct Assignment {
 		std::string name;               ///< Variable name.
 		Word value;                     ///< Scalar value; may be empty (`foo=`).
-		// True when the assignment used `+=` instead of `=`. Append-mode
-		// scalars concatenate onto the existing value; append-mode array
-		// literals add elements rather than replacing the array.
 		bool append = false;
-		// Indexed-element form: foo[2]=val. has_subscript false means scalar.
 		bool has_subscript = false;     ///< True when written as `name[expr]=value`.
 		Word subscript;                 ///< Subscript text; expanded at exec time.
-		// Array-literal form: foo=(a b c) or foo=([2]=x [4]=y).
 		bool is_array = false;          ///< True for `name=(...)` form.
 		std::vector<Word> array_items;  ///< Unkeyed array items.
 		/**
@@ -114,8 +105,6 @@ namespace wbsh {
 		SourceLoc loc;                  ///< Position of the assignment.
 	};
 
-	// ----- AST ------------------------------------------------------------------
-
 	/**
 	 * @brief Base class for every AST node.
 	 *
@@ -126,7 +115,6 @@ namespace wbsh {
 	 * the owning Arena, so no vtable pointer is paid per node.
 	 */
 	struct Node {
-		/// Concrete subclass tag.
 		enum class Kind {
 			SimpleCommand,  ///< `simple_command` — words + assignments + redirs.
 			Pipeline,       ///< `cmd | cmd | cmd` (with optional `!` and `time`).
@@ -160,10 +148,8 @@ namespace wbsh {
 	/// Arena of the producing Parser owns the pointee.
 	using NodePtr = Node*;
 
-	/// Human-readable name for a Node::Kind (debug dumps, errors).
 	const char* nodeKindName(Node::Kind k);
 
-	/// `name=val ... cmd arg1 ... [redirs]` — a leaf command node.
 	struct SimpleCommand : Node {
 		SimpleCommand() : Node(Kind::SimpleCommand) {}
 		std::vector<Assignment> assignments;    ///< Pre-command assignments.
@@ -171,17 +157,9 @@ namespace wbsh {
 		std::vector<Redirection> redirs;        ///< Attached redirections.
 	};
 
-	/// `[!] [time] cmd | cmd | cmd` — pipeline of N commands (N >= 1).
 	struct Pipeline : Node {
 		Pipeline() : Node(Kind::Pipeline) {}
 		bool bang = false;                  ///< `!`-prefixed: invert exit status.
-		/**
-		 * @brief `time` reserved-word prefix.
-		 *
-		 * When set, the executor wraps the whole pipeline in a
-		 * `steady_clock` measurement and prints the elapsed real
-		 * time on stderr after it finishes.
-		 */
 		bool timed = false;
 		std::vector<NodePtr> commands;      ///< N pipeline elements.
 		/**
@@ -193,9 +171,7 @@ namespace wbsh {
 		std::vector<bool> stderr_to_stdout;
 	};
 
-	/// `lhs && rhs` or `lhs || rhs`.
 	struct AndOr : Node {
-		/// Connective operator.
 		enum class Op { AndIf, OrIf };
 		AndOr() : Node(Kind::AndOr) {}
 		NodePtr left = nullptr;     ///< Left operand.
@@ -203,36 +179,30 @@ namespace wbsh {
 		Op op = Op::AndIf;          ///< `&&` (default) or `||`.
 	};
 
-	/// One entry in a List node — a command plus its terminator semantics.
 	struct ListItem {
 		NodePtr command = nullptr;  ///< Pipeline, AndOr, or compound command directly.
 		bool background = false;    ///< True if terminated with `&` instead of `;`.
 	};
 
-	/// Sequence of commands separated by `;`, `&`, or newlines.
 	struct List : Node {
 		List() : Node(Kind::List) {}
 		std::vector<ListItem> items;    ///< Items in source order.
 	};
 
-	/// `{ list; }` — runs in the current shell.
 	struct BraceGroup : Node {
 		BraceGroup() : Node(Kind::BraceGroup) {}
 		NodePtr body = nullptr;             ///< Inner List.
 		std::vector<Redirection> redirs;    ///< Redirections applied to the group.
 	};
 
-	/// `( list )` — runs in a subshell.
 	struct Subshell : Node {
 		Subshell() : Node(Kind::Subshell) {}
 		NodePtr body = nullptr;             ///< Inner List.
 		std::vector<Redirection> redirs;    ///< Redirections applied to the subshell.
 	};
 
-	/// `if … then … [elif …]* [else …] fi`.
 	struct IfClause : Node {
 		IfClause() : Node(Kind::IfClause) {}
-		/// One `if` / `elif` arm (cond + body).
 		struct Branch {
 			NodePtr cond = nullptr;
 			NodePtr body = nullptr;
@@ -242,7 +212,6 @@ namespace wbsh {
 		std::vector<Redirection> redirs;    ///< Redirections on the whole clause.
 	};
 
-	/// `while … do … done` and `until … do … done` (distinguished by `until`).
 	struct WhileClause : Node {
 		WhileClause() : Node(Kind::WhileClause) {}
 		bool until = false;                 ///< True iff this is `until`, not `while`.
@@ -251,7 +220,6 @@ namespace wbsh {
 		std::vector<Redirection> redirs;    ///< Redirections on the loop.
 	};
 
-	/// `for var [in words]; do … done`.
 	struct ForClause : Node {
 		ForClause() : Node(Kind::ForClause) {}
 		std::string var;                    ///< Loop variable.
@@ -261,9 +229,7 @@ namespace wbsh {
 		std::vector<Redirection> redirs;    ///< Redirections on the loop.
 	};
 
-	/// `case subject in pat) body;; … esac`.
 	struct CaseClause : Node {
-		/// How the previous case item terminated.
 		enum class Term {
 			DSemi,      ///< `;;`
 			SemiAmp,    ///< `;&`  (fall through unconditionally to next)
@@ -271,7 +237,6 @@ namespace wbsh {
 		};
 		CaseClause() : Node(Kind::CaseClause) {}
 		Word subject;                       ///< Word being matched against.
-		/// One pattern arm.
 		struct Item {
 			std::vector<Word> patterns;     ///< Pipe-separated pattern alternatives.
 			NodePtr body = nullptr;         ///< List, or null for an empty body.
@@ -281,19 +246,9 @@ namespace wbsh {
 		std::vector<Redirection> redirs;    ///< Redirections on the whole `case`.
 	};
 
-	/**
-	 * @brief `[[ … ]]` — bash conditional expression.
-	 *
-	 * Evaluated without word splitting or pathname expansion on its
-	 * operand words; supports unary file tests, binary string and
-	 * arithmetic operators, regex match (`=~`), and Boolean
-	 * `&&` / `||` / `!`.
-	 */
 	struct DBracketCond : Node {
 		DBracketCond() : Node(Kind::DBracket) {}
-		/// One node in the `[[ … ]]` expression tree.
 		struct Expr {
-			/// Expression node kind.
 			enum class K { And, Or, Not, Prim };
 			K k = K::Prim;                  ///< Node kind.
 			Expr* a = nullptr;              ///< And/Or: left; Not: only operand.
@@ -314,7 +269,6 @@ namespace wbsh {
 		std::vector<Redirection> redirs;    ///< Redirections (rare; legal in bash).
 	};
 
-	/// `name() { body; }` function definition.
 	struct FunctionDef : Node {
 		FunctionDef() : Node(Kind::FunctionDef) {}
 		std::string name;                   ///< Function name.

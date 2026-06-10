@@ -177,6 +177,7 @@
     <ClInclude Include="src\environment.h" />
     <ClInclude Include="src\expander.h" />
     <ClInclude Include="src\executor.h" />
+    <ClInclude Include="src\fnmatch.h" />
     <ClInclude Include="src\pathconv.h" />
     <ClInclude Include="src\lineedit.h" />
     <ClInclude Include="src\awk.h" />
@@ -188,6 +189,7 @@
     <ClInclude Include="src\arena.h" />
     <ClInclude Include="src\numparse.h" />
     <ClInclude Include="src\regexutil.h" />
+    <ClInclude Include="src\strscan.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp" />
@@ -198,7 +200,10 @@
     <ClCompile Include="src\executor.cpp" />
     <ClCompile Include="src\builtins.cpp" />
     <ClCompile Include="src\coreutils.cpp" />
+    <ClCompile Include="src\coreutils_archive.cpp" />
     <ClCompile Include="src\coreutils_bc.cpp" />
+    <ClCompile Include="src\coreutils_encoding.cpp" />
+    <ClCompile Include="src\coreutils_text.cpp" />
     <ClCompile Include="src\coreutils_curl.cpp" />
     <ClCompile Include="src\coreutils_hash.cpp" />
     <ClCompile Include="src\pathconv.cpp" />

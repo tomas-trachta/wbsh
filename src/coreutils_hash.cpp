@@ -6,9 +6,6 @@
  * Computes file hashes using BCrypt on Windows. On other platforms the
  * builtins emit "hash failed" since we don't ship our own SHA / MD5
  * implementations.
- *
- * Split out of coreutils.cpp to keep the bcrypt dependency localised.
- * The single public entry point is registerHashBuiltins().
  */
 
 #include "coreutils_internal.h"
@@ -35,10 +32,6 @@ namespace wbsh {
 	namespace hash_detail {
 
 #ifdef _WIN32
-		// Hash the contents of `fp` with the algorithm identified by `algId`
-		// (one of BCRYPT_MD5_ALGORITHM, BCRYPT_SHA*_ALGORITHM). Writes the
-		// lowercase hex digest into `hex_out`. Returns false on any BCrypt
-		// failure.
 		static bool computeHashHex(LPCWSTR algId, FILE* fp, std::string& hex_out) {
 			BCRYPT_ALG_HANDLE hAlg = nullptr;
 			if (BCryptOpenAlgorithmProvider(&hAlg, algId, nullptr, 0) != 0)
@@ -53,12 +46,14 @@ namespace wbsh {
 				BCryptCloseAlgorithmProvider(hAlg, 0);
 				return false;
 			}
+
 			unsigned char buf[8192];
 			while (true) {
 				const std::size_t n = std::fread(buf, 1, sizeof(buf), fp);
 				if (n == 0) break;
 				BCryptHashData(hHash, buf, static_cast<ULONG>(n), 0);
 			}
+
 			std::vector<unsigned char> bytes(hashLen);
 			BCryptFinishHash(hHash, bytes.data(), hashLen, 0);
 			BCryptDestroyHash(hHash);
@@ -70,6 +65,7 @@ namespace wbsh {
 				std::snprintf(hex, sizeof(hex), "%02x", bytes[i]);
 				hex_out += hex;
 			}
+
 			return true;
 		}
 #endif  // _WIN32
@@ -77,7 +73,7 @@ namespace wbsh {
 #ifdef _WIN32
 		using HashAlgId = LPCWSTR;
 #else
-		using HashAlgId = const wchar_t*;   // unused
+		using HashAlgId = const wchar_t*;
 #endif
 
 		static int hashImpl(Executor& exec, const std::vector<std::string>& args,
@@ -88,6 +84,7 @@ namespace wbsh {
 				if (!a.empty() && a[0] == '-' && a != "-") continue;
 				files.push_back(a);
 			}
+
 			if (files.empty()) files.push_back("-");
 
 			int rc = 0;
@@ -100,6 +97,7 @@ namespace wbsh {
 					rc = 1;
 					continue;
 				}
+
 				std::string hex;
 #ifdef _WIN32
 				const bool ok = computeHashHex(algId, fp, hex);
@@ -113,8 +111,10 @@ namespace wbsh {
 					rc = 1;
 					continue;
 				}
+
 				std::printf("%s  %s\n", hex.c_str(), f.c_str());
 			}
+
 			std::fflush(stdout);
 			return rc;
 		}
@@ -123,12 +123,15 @@ namespace wbsh {
 		static int builtin_md5sum(Executor& e, const std::vector<std::string>& a) {
 			return hashImpl(e, a, BCRYPT_MD5_ALGORITHM, "md5sum");
 		}
+
 		static int builtin_sha1sum(Executor& e, const std::vector<std::string>& a) {
 			return hashImpl(e, a, BCRYPT_SHA1_ALGORITHM, "sha1sum");
 		}
+
 		static int builtin_sha256sum(Executor& e, const std::vector<std::string>& a) {
 			return hashImpl(e, a, BCRYPT_SHA256_ALGORITHM, "sha256sum");
 		}
+
 		static int builtin_sha512sum(Executor& e, const std::vector<std::string>& a) {
 			return hashImpl(e, a, BCRYPT_SHA512_ALGORITHM, "sha512sum");
 		}
@@ -136,12 +139,15 @@ namespace wbsh {
 		static int builtin_md5sum(Executor& e, const std::vector<std::string>& a) {
 			return hashImpl(e, a, nullptr, "md5sum");
 		}
+
 		static int builtin_sha1sum(Executor& e, const std::vector<std::string>& a) {
 			return hashImpl(e, a, nullptr, "sha1sum");
 		}
+
 		static int builtin_sha256sum(Executor& e, const std::vector<std::string>& a) {
 			return hashImpl(e, a, nullptr, "sha256sum");
 		}
+
 		static int builtin_sha512sum(Executor& e, const std::vector<std::string>& a) {
 			return hashImpl(e, a, nullptr, "sha512sum");
 		}

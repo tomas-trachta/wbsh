@@ -28,7 +28,6 @@ namespace wbsh {
 		std::size_t offset = 0;     ///< 0-based byte offset into the source.
 	};
 
-	/// Format a SourceLoc as `"line:column"` for diagnostic messages.
 	inline std::string toString(const SourceLoc& l) {
 		return std::to_string(l.line) + ":" + std::to_string(l.column);
 	}

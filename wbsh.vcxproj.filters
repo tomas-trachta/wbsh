@@ -23,6 +23,7 @@
     <ClInclude Include="src\environment.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\expander.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\executor.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\fnmatch.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\pathconv.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\lineedit.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\setup.h"><Filter>Header Files</Filter></ClInclude>
@@ -31,6 +32,7 @@
     <ClInclude Include="src\arena.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\numparse.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\regexutil.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\strscan.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -41,6 +43,9 @@
     <ClCompile Include="src\executor.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_text.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_encoding.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_archive.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\pathconv.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\setup.cpp"><Filter>Source Files</Filter></ClCompile>

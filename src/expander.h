@@ -51,8 +51,7 @@ namespace wbsh {
 		 *
 		 * The Executor reports a pending `exit` / `return` / `break` /
 		 * `continue` signal here so the Expander stops expanding the
-		 * rest of the word — mirroring the way the old control-flow
-		 * exceptions used to abort an in-progress expansion.
+		 * rest of the word.
 		 */
 		virtual bool interrupted() const { return false; }
 	};
@@ -73,16 +72,8 @@ namespace wbsh {
 	 */
 	class Expander {
 	public:
-		/// Construct over @p env, dispatching `$(...)` through @p sub.
 		Expander(Environment& env, CommandSubstitutor* sub = nullptr);
 
-		/**
-		 * @brief Full expansion of a command-position word.
-		 *
-		 * Performs brace, tilde, parameter, command, arithmetic,
-		 * ANSI-C, word splitting, pathname expansion, and quote
-		 * removal.
-		 */
 		std::vector<std::string> expandWord(const Word& w);
 
 		/**
@@ -113,7 +104,6 @@ namespace wbsh {
 		 */
 		std::string expandHeredoc(const std::string& body, bool quoted);
 
-		/// Evaluate a `$((…))` arithmetic expression.
 		long long evalArith(const std::string& body);
 
 		/**
@@ -126,7 +116,6 @@ namespace wbsh {
 		 */
 		bool failed() const { return !pending_error_.empty(); }
 
-		/// Consume and return the pending error message (empty if none).
 		std::string takeError() {
 			std::string m = std::move(pending_error_);
 			pending_error_.clear();
@@ -202,8 +191,7 @@ namespace wbsh {
 	private:
 
 		// Record an expansion error. First error wins so the diagnostic
-		// matches what the first failure point saw (the way the first
-		// throw used to).
+		// matches what the first failure point saw.
 		void fail(std::string msg) {
 			if (pending_error_.empty()) pending_error_ = std::move(msg);
 		}
@@ -219,20 +207,15 @@ namespace wbsh {
 		std::vector<std::string> pending_temp_files_;
 		std::string pending_error_;
 
-		// ---- Rendering ----
 		Tagged renderWord(const Word& w);
 		void   renderSegment(const WordSegment& s, Tagged& out, bool inside_dq);
-		// Sub-renderers for the bulkier WordSegment kinds. Kept private —
-		// renderSegment dispatches into them.
 		void   renderArrayFields(const std::vector<std::string>& elems,
 		                         bool star, bool inside_dq, Tagged& out);
 		void   renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq);
 		void   renderProcSubstSegment(const WordSegment& s, Tagged& out);
 		void   renderDollarAt(Tagged& out, bool inside_dq);
 
-		// ---- Parameter / command / arith ----
 		std::string lookupParam(const std::string& name);
-		// Helpers consumed by lookupParam:
 		std::string joinPositionals(char form) const;
 		bool        lookupSpecialChar(char c, std::string& out);
 		bool        lookupDynamicSpecial(const std::string& name, std::string& out) const;
@@ -244,16 +227,10 @@ namespace wbsh {
 		                              const std::string& subscript,
 		                              bool star_join_ifs);
 		std::string starSeparator(bool star_join_ifs) const;
-		// Count of elements: ${#name[@]} / ${#name[*]}.
 		std::size_t arrayLength(const std::string& name) const;
-		// Indices / keys: ${!name[@]}.
 		std::vector<std::string> arrayKeys(const std::string& name) const;
-		// All values, in iteration order. Used by renderSegment for
-		// field-aware emission of `${name[@]}`.
 		std::vector<std::string> arrayValues(const std::string& name) const;
 		std::string expandParam(const std::string& body, bool quoted_ctx);
-		// Helpers used internally by expandParam — broken out so the main
-		// dispatcher fits on one screen.
 		std::string expandParamLengthForm(const std::string& body);
 		std::string expandParamIndicesForm(const std::string& body);
 		std::string evalParamDefaultOp(char op, bool colon,
@@ -263,8 +240,6 @@ namespace wbsh {
 		std::string evalArraySlice(const std::string& name, const std::string& args);
 		std::string evalParamReplace(const std::string& cur,
 		                             const std::string& args, bool all);
-		// State for expandParamApplyOp — bundled so the operator-dispatch
-		// helper doesn't need 5+ parameters.
 		struct ParamOpCtx {
 			const std::string& name;
 			const std::string& subscript;
@@ -298,15 +273,12 @@ namespace wbsh {
 		bool        isSpecialParam1(char c) const;
 	private:
 
-		// ---- Tilde ----
 		Word applyTildeExpansion(const Word& w);
 
-		// ---- Splitting / globbing / quote removal ----
 		std::vector<Tagged> splitWords(const Tagged& t);
 		std::vector<std::string> globExpand(const Tagged& t);
 		std::string quoteRemove(const Tagged& t);
 
-		// ---- Helpers for ${...} ----
 		std::string substringExpand(const std::string& val, const std::string& args);
 		std::string stripPrefix(const std::string& val, const std::string& pat, bool greedy);
 		std::string stripSuffix(const std::string& val, const std::string& pat, bool greedy);

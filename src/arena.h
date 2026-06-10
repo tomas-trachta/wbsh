@@ -26,7 +26,6 @@
 
 namespace wbsh {
 
-	/// Bump-pointer arena with destructor registration. Move-only.
 	class Arena {
 	public:
 		Arena() = default;
@@ -47,11 +46,7 @@ namespace wbsh {
 		}
 		~Arena() { destroyAll(); }
 
-		/**
-		 * @brief Construct a T inside the arena.
-		 *
-		 * @return Borrowed pointer, valid for the arena's lifetime.
-		 */
+		/// Returns a borrowed pointer, valid for the arena's lifetime.
 		template <typename T, typename... Args>
 		T* make(Args&&... args) {
 			// Chunks come from new[] and are aligned to the default new
@@ -69,7 +64,6 @@ namespace wbsh {
 		}
 
 	private:
-		// One registered destructor: the object plus a type-erased ~T call.
 		struct Dtor {
 			void* obj;
 			void (*fn)(void*);

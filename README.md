@@ -7,9 +7,10 @@ the box.
 
 ![wbsh running the test suite in Windows Terminal](./preview.png)
 
-> Status: **alpha** — most of the surface area below is implemented, but
-> wbsh has not yet had a tagged 1.0 release, the test suite is light, and
-> behavior may change. Use at your own risk for non-critical workflows.
+> Status: **early but released.** Tagged 1.0.x releases exist and a
+> 44-script golden test suite runs on every build, but there is no CI yet
+> and behavior may still change between minor versions. Use at your own
+> risk for critical workflows.
 
 ---
 
@@ -39,7 +40,8 @@ MinTTY). wbsh aims to be cleaner integration for modern Windows:
 
 ### Installer (recommended)
 
-Download `wbsh-setup-x64.exe` from the [Releases](#) page and run it. The
+Download `wbsh-setup-x64.exe` from the
+[Releases](https://github.com/tomas-trachta/wbsh/releases) page and run it. The
 installer is **per-user** (no UAC) and offers two opt-in tasks:
 
 - Add `wbsh` to your user `PATH`.
@@ -63,14 +65,10 @@ Pending — not yet published.
 
 ```sh
 $ wbsh
-wbsh -- bash front-end + executor (Windows)
-   type `exit` or press Ctrl-D to quit
+ wbsh 1.0.8 — a Bash-compatible shell for Windows
+   type `exit` or press `Ctrl-D` to quit
 trach@DESKTOP /c/Users/trach (main)$ ls
 Documents  Downloads  Desktop  ...
-
-trach@DESKTOP /c/Users/trach (main)$ for f in *.cpp; do echo "$f -> $(wc -l < "$f") lines"; done
-src/main.cpp -> 980 lines
-src/parser.cpp -> 1240 lines
 ```
 
 Pipelines, redirection, control flow, functions, command substitution,
@@ -115,8 +113,11 @@ when developing wbsh itself. Pass `-r` to actually execute scripts.
 ## Line editing
 
 Interactive sessions run through a raw-mode line editor with persistent
-history, kill ring, programmable + filename + per-tool tab completion, and
-reverse-incremental search. The key bindings follow readline / bash:
+history, kill ring, programmable + filename + per-tool tab completion
+(git, docker, npm, cargo, kubectl), reverse-incremental search, and
+PowerShell-style inline predictions — the rest of the best matching
+history entry is shown as dim ghost text, and entries whose last run
+failed are never suggested. The key bindings follow readline / bash:
 
 | Keys | Action |
 |------|--------|
@@ -124,6 +125,7 @@ reverse-incremental search. The key bindings follow readline / bash:
 | `Backspace` / `Delete`               | delete left / right |
 | `Tab`                                | complete; second `Tab` lists candidates |
 | `← / →` or `Ctrl-B / Ctrl-F`         | move cursor by one character |
+| `→` at end of line                   | accept the inline prediction |
 | `Home / End` or `Ctrl-A / Ctrl-E`    | jump to start / end of line |
 | `↑ / ↓` or `Ctrl-P / Ctrl-N`         | walk history |
 | `Ctrl-R`                             | reverse-incremental history search |
@@ -172,8 +174,9 @@ PS1='\[\e[35;1m\]\w\[\e[0m\]\g \$ '
 | `PATH`      | Stored in POSIX form (`/c/Users/...`). Auto-translated for spawns. |
 | `HOME`      | Defaults to `%USERPROFILE%`, normalized to POSIX form.          |
 | `HISTFILE`  | History file (default `$HOME/.wbsh_history`).                   |
-| `HISTSIZE`  | Max in-memory history entries.                                  |
 | `COLUMNS`, `LINES` | Auto-updated on window resize; fires the `WINCH` trap.   |
+| `WBSH_GIT_NO_DIRTY` | Set to skip the `git status` working-tree check in the `\g` prompt (useful on huge repos). |
+| `WBSH_NO_PATHCONV`, `MSYS_NO_PATHCONV` | Set (also as a `VAR=1 cmd` prefix) to suppress POSIX→Win32 argument translation for spawned commands. |
 
 ### `PS1` / `PS2` escapes
 
@@ -187,7 +190,7 @@ PS1='\[\e[35;1m\]\w\[\e[0m\]\g \$ '
 | `\t`   | `HH:MM:SS` |
 | `\s`   | literal `wbsh` |
 | `\n` `\r` `\a` `\e` `\\` `\$` | the obvious things |
-| `\[` `\]` | non-printing region markers (currently elided) |
+| `\[` `\]` | non-printing region markers (accepted and dropped; the editor measures rendered width itself) |
 
 Default `PS1` (with color):
 
@@ -251,7 +254,7 @@ Debug VC++ runtime (`/MDd`) and is not redistributable.
 
 ```powershell
 .\installer\build.ps1                        # reads WbshVersion from wbsh.vcxproj
-.\installer\build.ps1 -Version 0.2.0         # one-off override
+.\installer\build.ps1 -Version 1.0.8         # one-off override
 ```
 
 This builds Release|x64, stages `wbsh.exe` plus the VC++ runtime DLLs,
@@ -264,28 +267,43 @@ installed) `installer\output\wbsh-setup-x64.exe`.
 
 ```
 src/
-  main.cpp          REPL, CLI dispatch, prompt expansion, console setup
-  lexer.cpp/h       POSIX shell tokenizer
-  parser.cpp/h      Recursive-descent parser → AST
-  ast.h             AST node definitions
-  expander.cpp/h    Parameter / arithmetic / command / glob / brace expansion
-  executor.cpp/h    Pipeline + redirection + process spawn + control flow
-  environment.cpp/h Variable + export semantics
-  builtins.cpp      Shell builtins (cd, export, declare, trap, jobs, …)
-  coreutils.cpp     Bundled coreutils (ls, grep, sed, awk, tar, gzip, curl, …)
-  awk.cpp/h         Embedded awk implementation
-  inflate.cpp/h     gzip/zip decoder
-  lineedit.cpp/h    Line editor: history, kill ring, completion hooks
-  pathconv.cpp/h    POSIX ↔ Windows path translation
-  printer.cpp/h     Token / AST dump pretty-printer
-  source.h          Source-location helpers shared by lexer/parser
+  main.cpp               Entry point: UTF-8 argv decoding, CLI dispatch
+  repl.cpp/h             Interactive REPL: console setup, prompt, signals
+  lineedit.cpp/h         Raw-mode line editor: history, completion,
+                         reverse search, inline predictions
+  script.cpp/h           Non-interactive runner (-c / file / stdin)
+  setup.cpp/h            Startup env seeding: PATH repair, git/docker discovery
+  lexer.cpp/h            POSIX shell tokenizer
+  parser.cpp/h           Recursive-descent parser → AST
+  ast.h                  AST node definitions
+  arena.h                Bump allocator that owns the AST nodes
+  printer.cpp/h          Token / AST dump pretty-printer
+  expander.cpp/h         Parameter / arithmetic / command / glob / brace expansion
+  executor.cpp/h         Pipelines, redirection, process spawn, control flow
+  environment.cpp/h      Variables, exports, arrays, shell options
+  builtins.cpp           Shell builtins (cd, export, declare, trap, jobs, …)
+  coreutils.cpp          File / system coreutils + shared helpers
+  coreutils_text.cpp     sort, uniq, grep, sed, find, xargs, …
+  coreutils_archive.cpp  tar, gzip, gunzip, zcat, zip, unzip
+  coreutils_encoding.cpp base64, xxd, od
+  coreutils_bc.cpp       bc calculator
+  coreutils_curl.cpp     curl (WinHTTP)
+  coreutils_hash.cpp     md5sum / sha1sum / sha256sum / sha512sum (BCrypt)
+  awk.cpp/h              Embedded awk implementation
+  inflate.cpp/h          DEFLATE decoder used by gunzip / zcat / unzip
+  pathconv.cpp/h         POSIX ↔ Windows path translation
+  fnmatch.h              Glob pattern matcher (expansion, case, ${var#pat})
+  numparse.h             Error-as-value numeric parsing
+  regexutil.h            Error-as-value std::regex adapters
+  source.h               Source locations shared by lexer / parser
 
-tests/              Hand-written .sh smoke scripts (run via run.sh)
-
+tests/                   Shell-script suite + golden files (run-all.sh)
+tools/check_style.py     Mechanical style checker (runs before every build)
+docs/                    Doxygen config + generated API reference
 installer/
-  wbsh.iss          Inno Setup script (per-user, PATH, context menu)
-  wbsh-here.cmd     Wrapper used by the "Open wbsh here" verb
-  build.ps1         Driver: builds Release, stages payload, runs ISCC
+  wbsh.iss               Inno Setup script (per-user, PATH, context menu)
+  wbsh-here.cmd          Wrapper used by the "Open wbsh here" verb
+  build.ps1              Builds Release, stages payload, runs ISCC
 ```
 
 ---
@@ -294,13 +312,19 @@ installer/
 
 ```sh
 # After building wbsh.exe, from the tests/ directory:
-..\x64\Release\wbsh.exe -r run.sh
+../x64/Release/wbsh.exe -r run-all.sh                  # assert every script exits 0
+WBSH_GOLDEN=1 ../x64/Release/wbsh.exe -r run-all.sh    # also diff against expected/
 ```
 
-Each `tests/*.sh` script is a hand-written smoke check exercising one
-slice of behavior (pipelines, redirection, expansion, control flow, etc.).
-There is currently **no automated test runner or CI**; contributions to add
-one are welcome.
+The suite is 44 hand-written `tests/*.sh` scripts, each exercising one
+slice of behavior (pipelines, redirection, expansion, control flow,
+individual builtins). Golden mode additionally diffs combined
+stdout+stderr against `tests/expected/<name>.out`. The scripts run
+*inside wbsh itself*, so the suite is an end-to-end check of the whole
+lexer → parser → expander → executor pipeline.
+
+There is currently **no CI**; contributions to add one are welcome. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the golden / record workflow.
 
 ---
 
@@ -341,10 +365,11 @@ to integrate. If you need a real Linux environment, use WSL.
 Major bets that are in progress or planned:
 
 - True ConPTY for child processes (real PTY semantics, not just inherited console).
-- Tab completion (programmable + filename + command + variable).
-- Full job control (`Ctrl-Z`, `fg`, `bg`).
-- Process substitution (`<(...)`, `>(...)`).
-- Optional package manager for adding tools.
+- Real job control — `Ctrl-Z` suspend and stopped jobs (`fg` / `bg` exist
+  but there is no stop/continue on Windows yet).
+- Output process substitution `>(...)` — input-side `<(...)` already works.
+- CI: build Release + run the golden suite on every push.
+- winget / scoop publication.
 - Code-signed releases.
 
 ---

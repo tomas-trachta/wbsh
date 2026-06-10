@@ -22,10 +22,20 @@
 #endif
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace wbsh {
+
+	/**
+	 * @brief Walk up from the cwd to the enclosing repository's git dir.
+	 *
+	 * Resolves the `.git`-file indirection used by linked worktrees and
+	 * submodules. Returns an empty path when not inside a repository.
+	 * Used by the prompt's `\g` expansion and the git Tab completions.
+	 */
+	std::filesystem::path findGitDir();
 
 	/**
 	 * @brief Substring search over shell history, used by reverse-i-search.
@@ -84,7 +94,6 @@ namespace wbsh {
 	 */
 	class LineEditor {
 	public:
-		/// Construct over a borrowed Environment and Executor.
 		LineEditor(Environment& env, Executor& exec);
 
 		/**
@@ -102,9 +111,7 @@ namespace wbsh {
 		bool readLine(const std::string& prompt, std::string& out);
 
 	private:
-		// Raw-TTY path (Windows console).
 		bool readLineRaw(const std::string& prompt, std::string& out);
-		// Cooked / piped fallback.
 		bool readLineCooked(std::string& out);
 
 #ifdef _WIN32
@@ -124,9 +131,10 @@ namespace wbsh {
 		bool revsearchHandleKey(const ::KEY_EVENT_RECORD& k,
 		                        std::string& query, std::size_t& match_index,
 		                        bool& cancel, bool& submit);
+		void revsearchStepOlder(const std::string& query, std::size_t& match_index);
+		void revsearchStepNewer(const std::string& query, std::size_t& match_index);
 #endif
 
-		// ---- Helpers used by the raw path ----
 		void redraw();
 		void emit(const std::string& s);
 		void handleEnter(std::string& out, bool& done);
@@ -159,7 +167,6 @@ namespace wbsh {
 		// match and falls through to normal editing. Windows-only; a no-op
 		// stub on other platforms.
 		void runReverseSearch(std::string& out, bool& done, bool& eof);
-		// Repaint the search prompt and the (possibly empty) matched line.
 		void revsearchRefresh(const std::string& query, std::size_t match_index);
 
 		// Ctrl-V: pull CF_UNICODETEXT off the clipboard, strip newlines,
@@ -170,7 +177,6 @@ namespace wbsh {
 		// surrogate. Windows-only; a no-op stub on other platforms.
 		void insertWideCharFromConsole(wchar_t ch);
 
-		// ---- Completion ----
 		struct Tok {
 			std::size_t start;   // byte offset in buffer_
 			std::size_t end;
@@ -206,7 +212,6 @@ namespace wbsh {
 		void printMatches(const std::vector<std::string>& matches);
 		std::string longestCommonPrefix(const std::vector<std::string>& v);
 
-		// ---- State ----
 		Environment& env_;
 		Executor& exec_;
 
