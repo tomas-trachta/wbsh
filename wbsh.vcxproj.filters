@@ -28,6 +28,9 @@
     <ClInclude Include="src\setup.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\repl.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\script.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\arena.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\numparse.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\regexutil.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp"><Filter>Source Files</Filter></ClCompile>

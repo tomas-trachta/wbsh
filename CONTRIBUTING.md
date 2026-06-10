@@ -24,7 +24,9 @@ open an issue or a PR against this file.
 
 The longer-form C++ conventions wbsh uses are an adaptation of
 [`coding_standards/c_coding_standards.md`][cs] — tabs, `#pragma once`,
-`camelCase`, exceptions over status-code returns. Project conventions win
+`camelCase`. One deliberate deviation: wbsh reports errors as values
+(status returns, error flags, `std::error_code`), not exceptions — see
+the "Errors" bullet in the style cheatsheet. Project conventions win
 over the standard when they conflict.
 
 [cs]: https://github.com/trachtot/coding_standards
@@ -41,9 +43,9 @@ get the shape of the codebase:
 | Stage | File(s) | What it does |
 |---|---|---|
 | Lex | `src/lexer.cpp/h` | POSIX shell tokenizer. Handles quoting, here-docs, `$(...)`, balanced-paren scanning. Outputs `Token` + structured `WordSegment` lists. |
-| Parse | `src/parser.cpp/h`, `src/ast.h` | Recursive-descent parser. Produces a `Node` AST with `Kind`-tagged variants (pipeline, if, for, function, simple command, …). |
+| Parse | `src/parser.cpp/h`, `src/ast.h`, `src/arena.h` | Recursive-descent parser. Produces a `Node` AST with `Kind`-tagged variants (pipeline, if, for, function, simple command, …). Nodes are bump-allocated from the parser's `Arena` and linked with raw borrow pointers; whoever needs the AST to outlive the parser takes the arena (`Parser::takeArena`, `Executor::adoptArena`). |
 | Expand | `src/expander.cpp/h` | Parameter / arithmetic / command / glob / brace / tilde expansion. Calls back into the executor via `CommandSubstitutor` for `$(...)`. |
-| Execute | `src/executor.cpp/h` | Walks the AST. Owns the runtime registries (builtins, functions, aliases, jobs, traps, dirstack, completion specs). Spawns external processes via Win32 `CreateProcess`. Control flow propagates through typed exceptions: `LoopBreak`, `LoopContinue`, `FunctionReturn`, `ShellExit`. |
+| Execute | `src/executor.cpp/h` | Walks the AST. Owns the runtime registries (builtins, functions, aliases, jobs, traps, dirstack, completion specs). Spawns external processes via Win32 `CreateProcess`. Control flow (`break`, `continue`, `return`, `exit`) propagates as a value: a pending `FlowSignal` on the Executor that every frame checks after running a child and the owning frame consumes. |
 | Env | `src/environment.cpp/h` | Variables, exports, scopes, array and assoc-array storage. |
 | Paths | `src/pathconv.cpp/h` | `/c/Users/...` ↔ `C:\Users\...` translation; applied at the spawn boundary when invoking native Windows `.exe`. |
 | Builtins | `src/builtins.cpp` | Shell builtins (`cd`, `export`, `declare`, `read`, `trap`, `getopts`, `complete`, …). |
@@ -196,10 +198,21 @@ C++. The points you'll bump into most often:
   comment.
 - **Memory.** Prefer RAII / `std::unique_ptr` / `std::vector` over manual
   `new`/`delete`. The codebase has effectively no raw owning pointers
-  outside Win32 handle wrappers.
-- **Errors.** wbsh uses exceptions for non-local control flow (`ShellExit`,
-  `FunctionReturn`, `LoopBreak`, `LoopContinue`). Match that pattern in
-  new code rather than threading status codes through.
+  outside Win32 handle wrappers. Node-heavy trees (the shell AST, awk's
+  Expr/Stmt trees) are bump-allocated from an `Arena` (`src/arena.h`):
+  nodes hold raw borrow pointers to each other and the arena owns them
+  all — keep the arena alive, not the individual nodes. Don't
+  heap-allocate AST nodes individually.
+- **Errors.** wbsh reports errors as values — no exceptions. Shell control
+  flow (`exit`, `return`, `break`, `continue`) is a `FlowSignal` carried on
+  the `Executor`; check `flowPending()` after running child nodes and
+  consume the signal in the frame that owns the construct. Expansion
+  errors are a pending message on the `Expander` (`failed()` /
+  `takeError()`). Numeric parsing goes through `numparse.h` (never bare
+  `std::stoi`-family calls), filesystem calls use the `std::error_code`
+  overloads, and `std::regex` only ever via `regexutil.h` — whose two
+  adapters are the single designated exception boundary in the codebase.
+  Don't add `try`/`catch`/`throw` anywhere else.
 
 When in doubt, find a recent function in the same file that does something
 similar and copy its shape.

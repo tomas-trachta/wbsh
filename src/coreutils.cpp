@@ -43,6 +43,8 @@
 #include "coreutils_internal.h"
 #include "executor.h"
 #include "inflate.h"
+#include "numparse.h"
+#include "regexutil.h"
 
 namespace wbsh {
 
@@ -389,9 +391,7 @@ namespace wbsh {
 			return false;
 		}
 		for (const auto& de : it) {
-			std::string name;
-			try { name = pathToUtf8(de.path().filename()); }
-			catch (...) { continue; }
+			std::string name = pathToUtf8(de.path().filename());
 			LsEntry e = collect(target, name);
 			if (!opts.all && e.is_hidden) continue;
 			items.push_back(std::move(e));
@@ -790,13 +790,15 @@ namespace wbsh {
 		const std::string& a = args[i];
 		if (a.size() > 2 && a[0] == '-' && a[1] == short_flag[0]
 		    && std::isdigit((unsigned char)a[2])) {
-			try { out = std::stol(a.substr(2)); ++i; return 0; }
-			catch (...) { return -1; }
+			int v = 0;
+			if (!parseInt(a.substr(2), v)) return -1;
+			out = v; ++i; return 0;
 		}
 		if (a == short_flag || a == std::string("-") + short_flag) {
 			if (i + 1 >= args.size()) return -1;
-			try { out = std::stol(args[i + 1]); i += 2; return 0; }
-			catch (...) { return -1; }
+			int v = 0;
+			if (!parseInt(args[i + 1], v)) return -1;
+			out = v; i += 2; return 0;
 		}
 		return 1;
 	}
@@ -814,8 +816,9 @@ namespace wbsh {
 			}
 			if (a == "--") { for (++i; i < args.size(); ++i) files.push_back(args[i]); break; }
 			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
-				try { n = std::stol(a.substr(1)); }
-				catch (...) { perr("head", "bad N"); return 1; }
+				int v = 0;
+				if (!parseInt(a.substr(1), v)) { perr("head", "bad N"); return 1; }
+				n = v;
 				++i; continue;
 			}
 			files.push_back(a);
@@ -851,8 +854,9 @@ namespace wbsh {
 			}
 			if (a == "--") { for (++i; i < args.size(); ++i) files.push_back(args[i]); break; }
 			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
-				try { n = std::stol(a.substr(1)); }
-				catch (...) { perr("tail", "bad N"); return 1; }
+				int v = 0;
+				if (!parseInt(a.substr(1), v)) { perr("tail", "bad N"); return 1; }
+				n = v;
 				++i; continue;
 			}
 			files.push_back(a);
@@ -1050,19 +1054,16 @@ namespace wbsh {
 	static int builtin_sleep(Executor&, const std::vector<std::string>& args) {
 		if (args.empty()) { perr("sleep", "missing operand"); return 1; }
 		double secs = 0.0;
-		try {
-			const std::string& a = args[0];
-			char suffix = (!a.empty()) ? a.back() : '\0';
-			std::string num = (suffix == 's' || suffix == 'm' || suffix == 'h')
-				? a.substr(0, a.size() - 1) : a;
-			secs = std::stod(num);
-			if (suffix == 'm') secs *= 60.0;
-			else if (suffix == 'h') secs *= 3600.0;
-		}
-		catch (...) {
+		const std::string& a = args[0];
+		char suffix = (!a.empty()) ? a.back() : '\0';
+		std::string num = (suffix == 's' || suffix == 'm' || suffix == 'h')
+			? a.substr(0, a.size() - 1) : a;
+		if (!parseDouble(num, secs)) {
 			perr("sleep", args[0] + ": invalid time interval");
 			return 1;
 		}
+		if (suffix == 'm') secs *= 60.0;
+		else if (suffix == 'h') secs *= 3600.0;
 		std::this_thread::sleep_for(std::chrono::milliseconds(
 			static_cast<long long>(secs * 1000.0)));
 		return 0;
@@ -1169,8 +1170,8 @@ namespace wbsh {
 		auto cmp = [&](const std::string& a, const std::string& b) {
 			if (opt.numeric) {
 				double da = 0, db = 0;
-				try { da = std::stod(a); } catch (...) {}
-				try { db = std::stod(b); } catch (...) {}
+				parseDouble(a, da);
+				parseDouble(b, db);
 				if (da != db) return da < db;
 				return a < b;
 			}
@@ -1357,23 +1358,22 @@ namespace wbsh {
 				if (tok.empty()) continue;
 				int a = 0, b = 0;
 				auto dash = tok.find('-');
-				try {
-					if (dash == std::string::npos) {
-						a = std::stoi(tok); b = a;
-					}
-					else if (dash == 0) {
-						a = 1;
-						b = std::stoi(tok.substr(1));
-					}
-					else if (dash + 1 == tok.size()) {
-						a = std::stoi(tok.substr(0, dash)); b = -1;
-					}
-					else {
-						a = std::stoi(tok.substr(0, dash));
-						b = std::stoi(tok.substr(dash + 1));
-					}
+				if (dash == std::string::npos) {
+					if (!parseInt(tok, a)) return false;
+					b = a;
 				}
-				catch (...) { return false; }
+				else if (dash == 0) {
+					a = 1;
+					if (!parseInt(tok.substr(1), b)) return false;
+				}
+				else if (dash + 1 == tok.size()) {
+					if (!parseInt(tok.substr(0, dash), a)) return false;
+					b = -1;
+				}
+				else {
+					if (!parseInt(tok.substr(0, dash), a)) return false;
+					if (!parseInt(tok.substr(dash + 1), b)) return false;
+				}
 				ranges.emplace_back(a, b);
 			}
 			return !ranges.empty();
@@ -1664,15 +1664,17 @@ namespace wbsh {
 			}
 			else nums.push_back(a);
 		}
-		try {
-			if (nums.size() == 1) { last = std::stod(nums[0]); }
-			else if (nums.size() == 2) { first = std::stod(nums[0]); last = std::stod(nums[1]); }
-			else if (nums.size() == 3) {
-				first = std::stod(nums[0]); inc = std::stod(nums[1]); last = std::stod(nums[2]);
-			}
-			else { perr("seq", "usage: seq [LAST | FIRST LAST | FIRST INC LAST]"); return 1; }
+		bool num_ok = true;
+		if (nums.size() == 1) { num_ok = parseDouble(nums[0], last); }
+		else if (nums.size() == 2) {
+			num_ok = parseDouble(nums[0], first) && parseDouble(nums[1], last);
 		}
-		catch (...) { perr("seq", "invalid number"); return 1; }
+		else if (nums.size() == 3) {
+			num_ok = parseDouble(nums[0], first) && parseDouble(nums[1], inc)
+			    && parseDouble(nums[2], last);
+		}
+		else { perr("seq", "usage: seq [LAST | FIRST LAST | FIRST INC LAST]"); return 1; }
+		if (!num_ok) { perr("seq", "invalid number"); return 1; }
 		if (inc == 0) { perr("seq", "increment must be non-zero"); return 1; }
 		bool integer = std::floor(first) == first && std::floor(inc) == inc
 		    && std::floor(last) == last;
@@ -1873,27 +1875,24 @@ namespace wbsh {
 			return 0;
 		}
 		if (args.size() == 4 && args[0] == "substr") {
-			try {
-				int p = std::stoi(args[2]);
-				int n = std::stoi(args[3]);
-				if (p < 1) p = 1;
-				std::size_t start = static_cast<std::size_t>(p - 1);
-				if (start >= args[1].size()) { std::printf("\n"); return 1; }
-				std::printf("%s\n", args[1].substr(start, n).c_str());
-				return 0;
-			}
-			catch (...) { return 2; }
+			int p = 0, n = 0;
+			if (!parseInt(args[2], p) || !parseInt(args[3], n)) return 2;
+			if (p < 1) p = 1;
+			std::size_t start = static_cast<std::size_t>(p - 1);
+			if (start >= args[1].size()) { std::printf("\n"); return 1; }
+			std::printf("%s\n", args[1].substr(start, n).c_str());
+			return 0;
 		}
 		if (args.size() == 3) {
 			const std::string& l  = args[0];
 			const std::string& op = args[1];
 			const std::string& r  = args[2];
-			try {
-				long long li = std::stoll(l), ri = std::stoll(r);
+			long long li = 0, ri = 0;
+			if (parseLL(l, li) && parseLL(r, ri)) {
 				int rc = exprBinaryIntOp(li, ri, op);
 				if (rc >= 0) return rc;
 			}
-			catch (...) {
+			else {
 				int rc = exprBinaryStringOp(l, r, op);
 				if (rc >= 0) return rc;
 			}
@@ -2114,9 +2113,8 @@ namespace wbsh {
 		if (!o.fixed) {
 			std::regex::flag_type flags = std::regex::ECMAScript;
 			if (o.icase) flags |= std::regex::icase;
-			try { re = std::regex(o.pattern, flags); }
-			catch (const std::regex_error& e) {
-				perr("grep", std::string("bad pattern: ") + e.what());
+			if (!compileRegex(re, o.pattern, flags)) {
+				perr("grep", "bad pattern: " + o.pattern);
 				return 2;
 			}
 		}
@@ -2163,13 +2161,11 @@ namespace wbsh {
 				continue;
 			}
 			if (a == "-maxdepth" && i + 1 < args.size()) {
-				try {
-					o.max_depth = std::stoi(args[++i]);
-					++i;
-				} catch (...) {
+				if (!parseInt(args[++i], o.max_depth)) {
 					perr("find", "bad -maxdepth");
 					return 1;
 				}
+				++i;
 				continue;
 			}
 			if (!a.empty() && a[0] == '-') {
@@ -2201,8 +2197,9 @@ namespace wbsh {
 			default:  r.push_back(c); break;
 			}
 		}
-		try { return std::regex_match(name, std::regex(r, std::regex::ECMAScript)); }
-		catch (...) { return false; }
+		std::regex re;
+		if (!compileRegex(re, "^(?:" + r + ")$")) return false;
+		return searchRegex(name, re);
 	}
 
 	static bool findTypeMatches(char type_filter, const fs::path& p) {
@@ -2563,8 +2560,8 @@ namespace wbsh {
 			const std::string& a = args[i];
 			if (a == "-d" || a == "--decode") { decode = true; continue; }
 			if (a == "-w" && i + 1 < args.size()) {
-				try { wrap = std::stoul(args[++i]); }
-				catch (...) {}
+				unsigned long w = 0;
+				if (parseUL(args[++i], w)) wrap = w;
 				continue;
 			}
 			if (!a.empty() && a[0] == '-' && a != "-") continue;
@@ -2695,12 +2692,12 @@ namespace wbsh {
 			if (a == "-u" || a == "--unified") { o.unified = true; continue; }
 			if (a.size() > 2 && a.compare(0, 2, "-U") == 0) {
 				o.unified = true;
-				try { o.context = std::stoi(a.substr(2)); } catch (...) {}
+				parseInt(a.substr(2), o.context);
 				continue;
 			}
 			if (a == "-U" && i + 1 < args.size()) {
 				o.unified = true;
-				try { o.context = std::stoi(args[++i]); } catch (...) {}
+				parseInt(args[++i], o.context);
 				continue;
 			}
 			if (!a.empty() && a[0] == '-') continue;
@@ -3186,18 +3183,15 @@ namespace wbsh {
 		if (!sedScanPattern(cmd, delim, i, pat, err)) return false;
 		sedScanReplacement(cmd, delim, i, rep);
 		std::string flags = (i < cmd.size()) ? cmd.substr(i) : std::string();
-		try {
-			// POSIX sed defaults to BRE; -E / -r selects ERE. We always
-			// compile under std::regex::extended — MSVC's std::regex::basic
-			// implementation has greediness bugs with back-to-back negated
-			// classes (`[^X]* [^X]*`). For BRE inputs we translate the
-			// pattern to ERE syntax first; the resulting regex behaves
-			// the same per POSIX semantics but rides on the working engine.
-			const std::string compiled_pat = extended ? pat : translateBreToErePattern(pat);
-			out.re = std::regex(compiled_pat, std::regex::extended);
-		}
-		catch (const std::regex_error& e) {
-			err = std::string("regex: ") + e.what();
+		// POSIX sed defaults to BRE; -E / -r selects ERE. We always
+		// compile under std::regex::extended — MSVC's std::regex::basic
+		// implementation has greediness bugs with back-to-back negated
+		// classes (`[^X]* [^X]*`). For BRE inputs we translate the
+		// pattern to ERE syntax first; the resulting regex behaves
+		// the same per POSIX semantics but rides on the working engine.
+		const std::string compiled_pat = extended ? pat : translateBreToErePattern(pat);
+		if (!compileRegex(out.re, compiled_pat, std::regex::extended)) {
+			err = "regex: invalid pattern: " + pat;
 			return false;
 		}
 		out.repl = rep;
@@ -4192,7 +4186,7 @@ namespace wbsh {
 			if (a == "-p" || a == "--plain")       o.plain = true;
 			else if (a == "-r" || a == "--revert") o.reverse = true;
 			else if (a == "-c" && i + 1 < args.size()) {
-				try { o.cols = std::stoi(args[++i]); } catch (...) {}
+				parseInt(args[++i], o.cols);
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
 				perr("xxd", "unknown option: " + a);
@@ -4420,13 +4414,13 @@ namespace wbsh {
 			else if (a == "-c" || a == "--characters") by_bytes = false;
 			else if (a == "-s" || a == "--spaces") o.wrap_spaces = true;
 			else if (a == "-w" && i + 1 < args.size()) {
-				try { o.width = std::stoi(args[++i]); } catch (...) {}
+				parseInt(args[++i], o.width);
 			}
 			else if (a.size() > 2 && a.compare(0, 2, "-w") == 0) {
-				try { o.width = std::stoi(a.substr(2)); } catch (...) {}
+				parseInt(a.substr(2), o.width);
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-" && std::isdigit((unsigned char)a[1])) {
-				try { o.width = std::stoi(a.substr(1)); } catch (...) {}
+				parseInt(a.substr(1), o.width);
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
 				perr("fold", "unknown option: " + a);
@@ -4602,16 +4596,13 @@ namespace wbsh {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if ((a == "-t" || a == "--tabs") && i + 1 < args.size()) {
-				try { tabstop = std::stoi(args[++i]); }
-				catch (...) {}
+				parseInt(args[++i], tabstop);
 			}
 			else if (a.size() > 2 && a.compare(0, 2, "-t") == 0) {
-				try { tabstop = std::stoi(a.substr(2)); }
-				catch (...) {}
+				parseInt(a.substr(2), tabstop);
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-" && std::isdigit((unsigned char)a[1])) {
-				try { tabstop = std::stoi(a.substr(1)); }
-				catch (...) {}
+				parseInt(a.substr(1), tabstop);
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
 				perr("expand", "unknown option: " + a); return 1;
@@ -4657,10 +4648,10 @@ namespace wbsh {
 			const std::string& a = args[i];
 			if (a == "-a" || a == "--all") o.all = true;
 			else if ((a == "-t" || a == "--tabs") && i + 1 < args.size()) {
-				try { o.tabstop = std::stoi(args[++i]); } catch (...) {}
+				parseInt(args[++i], o.tabstop);
 			}
 			else if (a.size() > 2 && a.compare(0, 2, "-t") == 0) {
-				try { o.tabstop = std::stoi(a.substr(2)); } catch (...) {}
+				parseInt(a.substr(2), o.tabstop);
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-") {
 				perr("unexpand", "unknown option: " + a);
@@ -4858,22 +4849,21 @@ namespace wbsh {
 	// 1 on bad numeric arg, or -1 if @p cap is not one of these.
 	static int tputParameterizedCap(const std::string& cap, const std::vector<std::string>& args) {
 		if (cap == "cup" && args.size() >= 3) {
-			int row, col;
-			try { row = std::stoi(args[1]); col = std::stoi(args[2]); }
-			catch (...) { return 1; }
+			int row = 0, col = 0;
+			if (!parseInt(args[1], row) || !parseInt(args[2], col)) return 1;
 			std::printf("\x1b[%d;%dH", row + 1, col + 1);
 			return 0;
 		}
 		if ((cap == "setaf" || cap == "setf") && args.size() >= 2) {
-			int n;
-			try { n = std::stoi(args[1]); } catch (...) { return 1; }
+			int n = 0;
+			if (!parseInt(args[1], n)) return 1;
 			if (n >= 0 && n < 8) std::printf("\x1b[%dm", 30 + n);
 			else                 std::printf("\x1b[39m");
 			return 0;
 		}
 		if ((cap == "setab" || cap == "setb") && args.size() >= 2) {
-			int n;
-			try { n = std::stoi(args[1]); } catch (...) { return 1; }
+			int n = 0;
+			if (!parseInt(args[1], n)) return 1;
 			if (n >= 0 && n < 8) std::printf("\x1b[%dm", 40 + n);
 			else                 std::printf("\x1b[49m");
 			return 0;
@@ -5054,24 +5044,23 @@ namespace wbsh {
 				return 0;
 			}
 			if (a == "-s" && i + 1 < args.size()) {
-				try { signum = std::stoi(args[++i]); }
-				catch (...) {}
+				parseInt(args[++i], signum);
 				continue;
 			}
 			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
-				try { signum = std::stoi(a.substr(1)); }
-				catch (...) {}
+				parseInt(a.substr(1), signum);
 				continue;
 			}
 			if (a == "-9" || a == "-KILL") { signum = 9;  continue; }
 			if (a == "-15" || a == "-TERM") { signum = 15; continue; }
 			if (a == "-2" || a == "-INT") { signum = 2;  continue; }
 			if (a == "-1" || a == "-HUP") { signum = 1;  continue; }
-			try { pids.push_back(std::stoi(a)); }
-			catch (...) {
+			int pid = 0;
+			if (!parseInt(a, pid)) {
 				std::fprintf(stderr, "wbsh: kill: %s: arguments must be PIDs\n", a.c_str());
 				return 1;
 			}
+			pids.push_back(pid);
 		}
 		if (pids.empty()) {
 			perr("kill", "usage: kill [-SIG] PID...");
@@ -5107,11 +5096,11 @@ namespace wbsh {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "-n" && i + 1 < args.size()) {
-				try { n_per = std::stoi(args[++i]); } catch (...) { return false; }
+				if (!parseInt(args[++i], n_per)) return false;
 				continue;
 			}
 			if (a.size() > 2 && a.compare(0, 2, "-n") == 0) {
-				try { n_per = std::stoi(a.substr(2)); } catch (...) { return false; }
+				if (!parseInt(a.substr(2), n_per)) return false;
 				continue;
 			}
 			if (a == "--") {

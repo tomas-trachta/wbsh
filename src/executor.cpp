@@ -29,7 +29,6 @@
 #include <fstream>
 #include <regex>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <sys/stat.h>
 #include <unordered_set>
@@ -37,7 +36,9 @@
 #include <vector>
 
 #include "lexer.h"
+#include "numparse.h"
 #include "parser.h"
+#include "regexutil.h"
 
 namespace wbsh {
 
@@ -397,8 +398,8 @@ namespace wbsh {
 	}
 
 	int Executor::execute(const Node& root) {
-		// Let ShellExit propagate so the REPL can tear down (run EXIT trap,
-		// save history, etc.) and main can return cleanly.
+		// An Exit signal is left pending so the REPL can tear down (run
+		// the EXIT trap, save history, etc.) and main can return cleanly.
 		return execNode(root);
 	}
 
@@ -472,6 +473,7 @@ namespace wbsh {
 			} else {
 				status = execNode(*it.command);
 			}
+			if (flowPending()) return status;
 			setLastStatus(status);
 
 			// `set -e`: abort on the first failing command unless we're
@@ -481,7 +483,8 @@ namespace wbsh {
 			if (env_.errexit() && status != 0
 			    && errexit_suppress_ == 0
 			    && !it.background) {
-				throw ShellExit{ status };
+				raiseExit(status);
+				return status;
 			}
 		}
 		return status;
@@ -490,17 +493,17 @@ namespace wbsh {
 	int Executor::execAndOr(const AndOr& a) {
 		// errexit doesn't fire on the LEFT side of `&&` / `||`.
 		pushErrexitSuppress();
-		int l = 0;
-		try { l = execNode(*a.left); }
-		catch (...) { popErrexitSuppress(); throw; }
+		const int l = execNode(*a.left);
 		popErrexitSuppress();
+		if (flowPending()) return l;
 		setLastStatus(l);
 		if (a.op == AndOr::Op::AndIf) {
 			if (l != 0) return l;
 		} else {
 			if (l == 0) return l;
 		}
-		int r = execNode(*a.right);
+		const int r = execNode(*a.right);
+		if (flowPending()) return r;
 		setLastStatus(r);
 		return r;
 	}
@@ -618,6 +621,13 @@ namespace wbsh {
 				break;
 			}
 			processes.push_back(proc);
+			// A `$(...)` inside this element's expansion may have raised
+			// break / continue / exit — stop launching further stages and
+			// let the signal propagate after cleanup.
+			if (flowPending()) {
+				launch_ok = false;
+				break;
+			}
 		}
 
 		// Close the parent's copies of every pipe end. With these gone, EOF
@@ -638,6 +648,7 @@ namespace wbsh {
 
 		if (p.commands.size() == 1) {
 			int r = execNode(*p.commands[0]);
+			if (flowPending()) return r;
 			if (p.bang) r = (r == 0) ? 1 : 0;
 			return r;
 		}
@@ -668,14 +679,13 @@ namespace wbsh {
 
 		std::vector<std::string> argv;
 		for (const auto& w : sc.words) {
-			try {
-				auto fields = expander_.expandWord(w);
-				for (auto& f : fields) argv.push_back(std::move(f));
-			} catch (const ExpandError& e) {
-				std::fprintf(stderr, "wbsh: %s\n", e.what());
+			auto fields = expander_.expandWord(w);
+			if (expander_.failed()) {
+				std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 				*tried = true;
 				return INVALID_HANDLE_VALUE;
 			}
+			for (auto& f : fields) argv.push_back(std::move(f));
 		}
 		if (argv.empty()) return INVALID_HANDLE_VALUE;
 		// Builtins / functions / aliases are interpreter-side concepts —
@@ -702,7 +712,7 @@ namespace wbsh {
 	static std::string extractNodeSourceSlice(const Node& elem,
 	                                          const std::string& fallback) {
 		const std::string* src = elem.source_text
-			? elem.source_text.get()
+			? elem.source_text
 			: (fallback.empty() ? nullptr : &fallback);
 		if (!src || elem.src_end <= elem.src_start
 		    || elem.src_end > src->size()) {
@@ -761,9 +771,11 @@ namespace wbsh {
 			if (r.op != RedirOp::DLess && r.op != RedirOp::DLessDash) continue;
 			if (!slice.empty() && slice.back() != '\n') slice.push_back('\n');
 			slice += r.heredoc_body;   // body lines already terminated with '\n'
-			std::string delim;
-			try { delim = expander_.expandStringValue(r.target); }
-			catch (...) { delim.clear(); }
+			std::string delim = expander_.expandStringValue(r.target);
+			if (expander_.failed()) {
+				expander_.takeError();
+				delim.clear();
+			}
 			slice += delim;
 			slice.push_back('\n');
 		}
@@ -822,8 +834,12 @@ namespace wbsh {
 		// for THIS command, not for the surrounding shell).
 		std::vector<std::pair<std::string, std::string>> temp_env;
 		for (const auto& as : sc.assignments) {
-			try { temp_env.emplace_back(as.name, expander_.expandStringValue(as.value)); }
-			catch (const ExpandError&) { /* skip */ }
+			std::string val = expander_.expandStringValue(as.value);
+			if (expander_.failed()) {
+				expander_.takeError();   // skip this assignment
+				continue;
+			}
+			temp_env.emplace_back(as.name, std::move(val));
 		}
 
 		std::vector<std::string> a = prepareExternalArgv(argv, exec_path, temp_env);
@@ -877,12 +893,9 @@ namespace wbsh {
 		if (path.size() > fd_pfx.size()
 		    && path.compare(0, fd_pfx.size(), fd_pfx) == 0)
 		{
-			try {
-				const int n = std::stoi(path.substr(fd_pfx.size()));
-				return _dup(n);
-			} catch (...) {
-				return -1;
-			}
+			int n = 0;
+			if (!parseInt(path.substr(fd_pfx.size()), n)) return -1;
+			return _dup(n);
 		}
 		return -1;
 	}
@@ -959,24 +972,40 @@ namespace wbsh {
 		return true;
 	}
 
+	// Expand a redirection target word, converting a pending expansion
+	// error (unbound var under `set -u`, `${x:?msg}`) into a diagnostic
+	// plus `false` so the whole redirection batch fails cleanly.
+	bool Executor::expandRedirTarget(const Word& target, std::string& out) {
+		out = expander_.expandStringValue(target);
+		if (expander_.failed()) {
+			std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+			return false;
+		}
+		return true;
+	}
+
 	bool Executor::applyLessRedir(const Redirection& r, int target, RedirState& s) {
-		const std::string path = expander_.expandStringValue(r.target);
+		std::string path;
+		if (!expandRedirTarget(r.target, path)) return false;
 		return redirectFdFromPath(path, _O_RDONLY, target, s);
 	}
 
 	bool Executor::applyTruncOrClobber(const Redirection& r, int target, RedirState& s) {
-		const std::string path = expander_.expandStringValue(r.target);
+		std::string path;
+		if (!expandRedirTarget(r.target, path)) return false;
 		return redirectFdFromPath(path, _O_WRONLY | _O_CREAT | _O_TRUNC, target, s);
 	}
 
 	bool Executor::applyAppendRedir(const Redirection& r, int target, RedirState& s) {
-		const std::string path = expander_.expandStringValue(r.target);
+		std::string path;
+		if (!expandRedirTarget(r.target, path)) return false;
 		return redirectFdFromPath(path, _O_WRONLY | _O_CREAT | _O_APPEND, target, s);
 	}
 
 	// `&> path` — redirect both stdout (1) and stderr (2) to `path`, truncating.
 	bool Executor::applyAmpGreatRedir(const Redirection& r, RedirState& s) {
-		const std::string path = expander_.expandStringValue(r.target);
+		std::string path;
+		if (!expandRedirTarget(r.target, path)) return false;
 		const int fd = openRedirSourceFd(path, _O_WRONLY | _O_CREAT | _O_TRUNC);
 		if (fd < 0) {
 			std::fprintf(stderr, "wbsh: %s: %s\n", path.c_str(), std::strerror(errno));
@@ -990,7 +1019,8 @@ namespace wbsh {
 
 	// `&>> path` — redirect both stdout and stderr to `path`, appending.
 	bool Executor::applyAmpDGreatRedir(const Redirection& r, RedirState& s) {
-		const std::string path = expander_.expandStringValue(r.target);
+		std::string path;
+		if (!expandRedirTarget(r.target, path)) return false;
 		const int fd = openRedirSourceFd(path, _O_WRONLY | _O_CREAT | _O_APPEND);
 		if (fd < 0) {
 			std::fprintf(stderr, "wbsh: %s: %s\n", path.c_str(), std::strerror(errno));
@@ -1003,28 +1033,29 @@ namespace wbsh {
 	}
 
 	bool Executor::applyLessGreatRedir(const Redirection& r, int target, RedirState& s) {
-		const std::string path = expander_.expandStringValue(r.target);
+		std::string path;
+		if (!expandRedirTarget(r.target, path)) return false;
 		return redirectFdFromPath(path, _O_RDWR | _O_CREAT, target, s);
 	}
 
 	// `<&N` / `>&N` — duplicate the existing fd `N` onto `target`. The special
 	// form `<&-` / `>&-` instead closes `target`.
 	bool Executor::applyDupRedir(const Redirection& r, int target, RedirState& s) {
-		const std::string what = expander_.expandStringValue(r.target);
+		std::string what;
+		if (!expandRedirTarget(r.target, what)) return false;
 		if (what == "-") {
 			saveFd(s, target);
 			_close(target);
 			return true;
 		}
-		try {
-			const int from_fd = std::stoi(what);
-			saveFd(s, target);
-			_dup2(from_fd, target);
-			return true;
-		} catch (...) {
+		int from_fd = 0;
+		if (!parseInt(what, from_fd)) {
 			std::fprintf(stderr, "wbsh: %s: bad fd\n", what.c_str());
 			return false;
 		}
+		saveFd(s, target);
+		_dup2(from_fd, target);
+		return true;
 	}
 
 	// Spill `body` into a temp file, redirect `target` to read from it, and
@@ -1050,11 +1081,16 @@ namespace wbsh {
 
 	bool Executor::applyHeredocRedir(const Redirection& r, int target, RedirState& s) {
 		std::string body = expander_.expandHeredoc(r.heredoc_body, r.heredoc_quoted);
+		if (expander_.failed()) {
+			std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+			return false;
+		}
 		return installRedirFromTempBody(std::move(body), target, s);
 	}
 
 	bool Executor::applyHerestringRedir(const Redirection& r, int target, RedirState& s) {
-		std::string body = expander_.expandStringValue(r.target);
+		std::string body;
+		if (!expandRedirTarget(r.target, body)) return false;
 		body.push_back('\n');
 		return installRedirFromTempBody(std::move(body), target, s);
 	}
@@ -1081,6 +1117,10 @@ namespace wbsh {
 			case RedirOp::TLess:       ok = applyHerestringRedir (r, target, s); break;
 			}
 			if (!ok) return false;
+			// A command substitution inside a target / heredoc body may
+			// have raised break / continue / return — fail the batch so
+			// the caller unwinds (it undoes the partial state we saved).
+			if (flowPending()) return false;
 		}
 		return true;
 	}
@@ -1103,57 +1143,58 @@ namespace wbsh {
 
 	bool Executor::expandSimpleCmdAssigns(const SimpleCommand& sc, SimpleCmdAssigns& out) {
 		for (const auto& a : sc.assignments) {
-			try {
-				if (a.is_array) {
-					ArrayAssign aa;
-					aa.name = a.name;
-					aa.append = a.append;
-					for (const auto& k : a.keyed_items) {
-						std::string val = expander_.expandStringValue(k.value);
-						if (k.has_key) {
-							aa.sparse = true;
-							std::string key = expander_.expandStringValue(k.key);
-							aa.keyed.emplace_back(std::move(key), std::move(val));
-						} else {
-							// Unkeyed array items get the same word-splitting +
-							// globbing a normal command word would, so
-							// `arr=($x)` splits like an external argv.
-							auto fields = expander_.expandWord(k.value);
-							for (auto& f : fields) aa.items.push_back(std::move(f));
-						}
+			if (a.is_array) {
+				ArrayAssign aa;
+				aa.name = a.name;
+				aa.append = a.append;
+				for (const auto& k : a.keyed_items) {
+					std::string val = expander_.expandStringValue(k.value);
+					if (k.has_key) {
+						aa.sparse = true;
+						std::string key = expander_.expandStringValue(k.key);
+						aa.keyed.emplace_back(std::move(key), std::move(val));
+					} else {
+						// Unkeyed array items get the same word-splitting +
+						// globbing a normal command word would, so
+						// `arr=($x)` splits like an external argv.
+						auto fields = expander_.expandWord(k.value);
+						for (auto& f : fields) aa.items.push_back(std::move(f));
 					}
-					out.array.push_back(std::move(aa));
-				} else if (a.has_subscript) {
-					ElemAssign ea;
-					ea.name = a.name;
-					ea.subscript = a.subscript;
-					ea.value = expander_.expandStringValue(a.value);
-					ea.append = a.append;
-					out.elem.push_back(std::move(ea));
-				} else {
-					ScalarAssign sa;
-					sa.name = a.name;
-					sa.value = expander_.expandStringValue(a.value);
-					sa.append = a.append;
-					out.scalar.push_back(std::move(sa));
+					if (expander_.failed()) break;
 				}
-			} catch (const ExpandError& e) {
-				std::fprintf(stderr, "wbsh: %s\n", e.what());
+				out.array.push_back(std::move(aa));
+			} else if (a.has_subscript) {
+				ElemAssign ea;
+				ea.name = a.name;
+				ea.subscript = a.subscript;
+				ea.value = expander_.expandStringValue(a.value);
+				ea.append = a.append;
+				out.elem.push_back(std::move(ea));
+			} else {
+				ScalarAssign sa;
+				sa.name = a.name;
+				sa.value = expander_.expandStringValue(a.value);
+				sa.append = a.append;
+				out.scalar.push_back(std::move(sa));
+			}
+			if (expander_.failed()) {
+				std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 				return false;
 			}
+			if (flowPending()) return false;
 		}
 		return true;
 	}
 
 	bool Executor::expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv) {
 		for (const auto& w : sc.words) {
-			try {
-				auto fields = expander_.expandWord(w);
-				for (auto& f : fields) argv.push_back(std::move(f));
-			} catch (const ExpandError& e) {
-				std::fprintf(stderr, "wbsh: %s\n", e.what());
+			auto fields = expander_.expandWord(w);
+			if (expander_.failed()) {
+				std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 				return false;
 			}
+			if (flowPending()) return false;
+			for (auto& f : fields) argv.push_back(std::move(f));
 		}
 		return true;
 	}
@@ -1170,17 +1211,20 @@ namespace wbsh {
 			Lexer alex(val);
 			auto atokens = alex.tokenize();
 			std::vector<std::string> repl;
-			for (const auto& t : atokens) {
+			for (auto& t : atokens) {
 				if (t.kind != TokKind::Word) continue;
 				Word w;
-				w.segments = t.segments;
-				w.raw = t.text;
-				try {
-					auto fields = expander_.expandWord(w);
-					for (auto& f : fields) repl.push_back(std::move(f));
-				} catch (const ExpandError&) {
-					repl.push_back(t.text);
+				// Tokens are local and visited once — steal instead of
+				// deep-copying the segment list.
+				w.segments = std::move(t.segments);
+				w.raw = std::move(t.text);
+				auto fields = expander_.expandWord(w);
+				if (expander_.failed()) {
+					expander_.takeError();
+					repl.push_back(w.raw);   // t.text was moved into w.raw
+					continue;
 				}
+				for (auto& f : fields) repl.push_back(std::move(f));
 			}
 			if (repl.empty()) break;
 			argv.erase(argv.begin());
@@ -1252,9 +1296,8 @@ namespace wbsh {
 			// slot after the largest existing index.
 			long long next_idx = nextIndexedAppendSlot(env, aa.name);
 			for (const auto& k : aa.keyed) {
-				long long idx;
-				try { idx = exp.evalArith(k.first); }
-				catch (...) { idx = next_idx; }
+				long long idx = 0;
+				if (!exp.tryEvalArith(k.first, idx)) idx = next_idx;
 				env.setIndexedElement(aa.name, idx, k.second);
 				next_idx = idx + 1;
 			}
@@ -1267,9 +1310,8 @@ namespace wbsh {
 			std::map<long long, std::string> sparse;
 			long long next_idx = 0;
 			for (const auto& k : aa.keyed) {
-				long long idx;
-				try { idx = exp.evalArith(k.first); }
-				catch (...) { idx = next_idx; }
+				long long idx = 0;
+				if (!exp.tryEvalArith(k.first, idx)) idx = next_idx;
 				sparse[idx] = k.second;
 				next_idx = idx + 1;
 			}
@@ -1283,14 +1325,15 @@ namespace wbsh {
 	// Apply a single `arr[idx]=val` element assignment to the live env.
 	static void applyElemAssignToEnv(Environment& env, Expander& exp,
 	                                 const Executor::ElemAssign& ea) {
-		std::string sub_str;
-		try { sub_str = exp.expandStringValue(ea.subscript); }
-		catch (...) { sub_str = std::string(); }
+		std::string sub_str = exp.expandStringValue(ea.subscript);
+		if (exp.failed()) {
+			exp.takeError();
+			sub_str.clear();
+		}
 		const bool is_assoc = env.isAssocArray(ea.name);
 		long long idx = 0;
 		if (!is_assoc) {
-			try { idx = exp.evalArith(sub_str); }
-			catch (...) { idx = 0; }
+			if (!exp.tryEvalArith(sub_str, idx)) idx = 0;
 		}
 		std::string final_val = ea.value;
 		if (ea.append) {
@@ -1469,14 +1512,11 @@ namespace wbsh {
 		}
 		traceXtrace(argv);
 
-		int status = 0;
-		try {
-			status = runResolvedCommand(argv, assigns);
-		} catch (...) {
-			undoRedirections(rs);
-			throw;
-		}
+		const int status = runResolvedCommand(argv, assigns);
 		undoRedirections(rs);
+		// break / continue / return / exit raised by the command: leave
+		// the temp files and `$?` for the frame that consumes the signal.
+		if (flowPending()) return status;
 
 		// Clean up `<(...)` temp files produced by THIS command's expansion.
 		// Files above the watermark belong to an outer caller that will
@@ -1861,8 +1901,9 @@ namespace wbsh {
 		}
 		for (auto& n : to_unset) env_.unset(n);
 
-		// Restore prior values. Original code used `forceSet` only on the
-		// exception path; preserve that asymmetry.
+		// Restore prior values. The original exception-based code used
+		// `forceSet` only when unwinding a pending signal; preserve that
+		// asymmetry.
 		for (auto& kv : snap.saved_vars) {
 			if (force_set) env_.forceSet(kv.first, kv.second);
 			else           env_.set(kv.first, kv.second);
@@ -1911,17 +1952,13 @@ namespace wbsh {
 		env_.setShellName(path);
 		env_.setPositional(std::vector<std::string>(argv.begin() + 1, argv.end()));
 
-		int status = 0;
-		try {
-			status = executeText(body, path);
-		} catch (ShellExit& e) {
-			// `exit` inside a script terminates the script, not our shell.
-			status = e.status;
-		} catch (...) {
-			restoreShellScriptScope(snap, /*force_set=*/true);
-			throw;
-		}
-		restoreShellScriptScope(snap, /*force_set=*/false);
+		int status = executeText(body, path);
+		// `exit` inside a script terminates the script, not our shell.
+		consumeFlow(FlowSignal::Kind::Exit, &status);
+		// Any other signal still pending (return / break / continue from
+		// the script's top level) propagates to our caller; mirror the
+		// old exception path's forceSet restore in that case.
+		restoreShellScriptScope(snap, /*force_set=*/flowPending());
 		return status;
 	}
 
@@ -1933,12 +1970,7 @@ namespace wbsh {
 		RedirState rs;
 		if (!applyRedirections(bg.redirs, rs)) { undoRedirections(rs); return 1; }
 		int status = 0;
-		try {
-			if (bg.body) status = execNode(*bg.body);
-		} catch (...) {
-			undoRedirections(rs);
-			throw;
-		}
+		if (bg.body) status = execNode(*bg.body);
 		undoRedirections(rs);
 		return status;
 	}
@@ -1986,20 +2018,14 @@ namespace wbsh {
 		if (!applyRedirections(ss.redirs, rs)) { undoRedirections(rs); return 1; }
 
 		int status = 0;
-		try {
-			if (ss.body) status = execNode(*ss.body);
-		} catch (ShellExit& e) {
-			// `exit` inside a subshell exits only the subshell.
-			status = e.status;
-		} catch (...) {
-			undoRedirections(rs);
-			restoreSubshellScope(snap);
-			throw;
-		}
+		if (ss.body) status = execNode(*ss.body);
+		// `exit` inside a subshell exits only the subshell.
+		consumeFlow(FlowSignal::Kind::Exit, &status);
 		undoRedirections(rs);
 
-		// Fire the subshell's own EXIT trap (if any) before its state goes away.
-		fireExitTrap();
+		// Other signals propagate without firing the subshell's EXIT trap
+		// (matching the old unwind path).
+		if (!flowPending()) fireExitTrap();
 		restoreSubshellScope(snap);
 		return status;
 	}
@@ -2008,28 +2034,46 @@ namespace wbsh {
 		RedirState rs;
 		if (!applyRedirections(ic.redirs, rs)) { undoRedirections(rs); return 1; }
 		int status = 0;
-		try {
-			bool fired = false;
-			for (const auto& br : ic.branches) {
-				int c;
-				pushErrexitSuppress();
-				try { c = br.cond ? execNode(*br.cond) : 0; }
-				catch (...) { popErrexitSuppress(); throw; }
-				popErrexitSuppress();
-				setLastStatus(c);
-				if (c == 0) {
-					if (br.body) status = execNode(*br.body);
-					fired = true;
-					break;
-				}
+		bool fired = false;
+		for (const auto& br : ic.branches) {
+			pushErrexitSuppress();
+			const int c = br.cond ? execNode(*br.cond) : 0;
+			popErrexitSuppress();
+			if (flowPending()) { fired = true; break; }
+			setLastStatus(c);
+			if (c != 0) continue;
+			if (br.body) {
+				const int s = execNode(*br.body);
+				if (!flowPending()) status = s;
 			}
-			if (!fired && ic.else_body) status = execNode(*ic.else_body);
-		} catch (...) {
-			undoRedirections(rs);
-			throw;
+			fired = true;
+			break;
+		}
+		if (!fired && ic.else_body) {
+			const int s = execNode(*ic.else_body);
+			if (!flowPending()) status = s;
 		}
 		undoRedirections(rs);
 		return status;
+	}
+
+	LoopFlowAction Executor::dispatchLoopFlow() {
+		switch (flow_.kind) {
+		case FlowSignal::Kind::Continue:
+			if (--flow_.count > 0) return LoopFlowAction::Propagate;
+			clearFlow();
+			return LoopFlowAction::NextIter;
+		case FlowSignal::Kind::Break:
+			if (--flow_.count > 0) return LoopFlowAction::Propagate;
+			clearFlow();
+			return LoopFlowAction::ExitLoop;
+		case FlowSignal::Kind::Return:
+		case FlowSignal::Kind::Exit:
+			return LoopFlowAction::Propagate;
+		case FlowSignal::Kind::None:
+		default:
+			return LoopFlowAction::Normal;
+		}
 	}
 
 	int Executor::execWhile(const WhileClause& wc) {
@@ -2037,30 +2081,19 @@ namespace wbsh {
 		if (!applyRedirections(wc.redirs, rs)) { undoRedirections(rs); return 1; }
 		int status = 0;
 		++loop_depth_;
-		try {
-			while (true) {
-				int c;
-				pushErrexitSuppress();
-				try { c = wc.cond ? execNode(*wc.cond) : 0; }
-				catch (...) { popErrexitSuppress(); throw; }
-				popErrexitSuppress();
-				setLastStatus(c);
-				bool keep = wc.until ? (c != 0) : (c == 0);
-				if (!keep) break;
-				try {
-					if (wc.body) status = execNode(*wc.body);
-				} catch (LoopContinue& lc) {
-					if (--lc.count > 0) { --loop_depth_; undoRedirections(rs); throw; }
-					continue;
-				} catch (LoopBreak& lb) {
-					if (--lb.count > 0) { --loop_depth_; undoRedirections(rs); throw; }
-					break;
-				}
-			}
-		} catch (...) {
-			--loop_depth_;
-			undoRedirections(rs);
-			throw;
+		while (true) {
+			pushErrexitSuppress();
+			const int c = wc.cond ? execNode(*wc.cond) : 0;
+			popErrexitSuppress();
+			if (flowPending()) break;   // signal from the condition: propagate
+			setLastStatus(c);
+			const bool keep = wc.until ? (c != 0) : (c == 0);
+			if (!keep) break;
+			const int s = wc.body ? execNode(*wc.body) : 0;
+			if (!flowPending()) status = s;
+			const LoopFlowAction act = dispatchLoopFlow();
+			if (act == LoopFlowAction::NextIter) continue;
+			if (act == LoopFlowAction::ExitLoop || act == LoopFlowAction::Propagate) break;
 		}
 		--loop_depth_;
 		undoRedirections(rs);
@@ -2075,36 +2108,30 @@ namespace wbsh {
 		std::vector<std::string> values;
 		if (fc.has_in) {
 			for (const auto& w : fc.items) {
-				try {
-					auto fields = expander_.expandWord(w);
-					for (auto& f : fields) values.push_back(std::move(f));
-				} catch (const ExpandError& e) {
-					std::fprintf(stderr, "wbsh: %s\n", e.what());
+				auto fields = expander_.expandWord(w);
+				if (expander_.failed()) {
+					std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 					--loop_depth_;
 					undoRedirections(rs);
 					return 1;
 				}
+				if (flowPending()) {
+					--loop_depth_;
+					undoRedirections(rs);
+					return status;
+				}
+				for (auto& f : fields) values.push_back(std::move(f));
 			}
 		} else {
 			values = env_.positional();
 		}
-		try {
-			for (const auto& v : values) {
-				env_.set(fc.var, v);
-				try {
-					if (fc.body) status = execNode(*fc.body);
-				} catch (LoopContinue& lc) {
-					if (--lc.count > 0) { --loop_depth_; undoRedirections(rs); throw; }
-					continue;
-				} catch (LoopBreak& lb) {
-					if (--lb.count > 0) { --loop_depth_; undoRedirections(rs); throw; }
-					break;
-				}
-			}
-		} catch (...) {
-			--loop_depth_;
-			undoRedirections(rs);
-			throw;
+		for (const auto& v : values) {
+			env_.set(fc.var, v);
+			const int s = fc.body ? execNode(*fc.body) : 0;
+			if (!flowPending()) status = s;
+			const LoopFlowAction act = dispatchLoopFlow();
+			if (act == LoopFlowAction::NextIter) continue;
+			if (act == LoopFlowAction::ExitLoop || act == LoopFlowAction::Propagate) break;
 		}
 		--loop_depth_;
 		undoRedirections(rs);
@@ -2119,46 +2146,46 @@ namespace wbsh {
 		RedirState rs;
 		if (!applyRedirections(cc.redirs, rs)) { undoRedirections(rs); return 1; }
 		int status = 0;
-		try {
-			std::string subject;
-			try { subject = expander_.expandStringValue(cc.subject); }
-			catch (const ExpandError& e) {
-				std::fprintf(stderr, "wbsh: %s\n", e.what());
-				undoRedirections(rs);
-				return 1;
-			}
-			bool matched = false;
-			for (std::size_t i = 0; i < cc.items.size(); ++i) {
-				const auto& it = cc.items[i];
-				bool m = false;
-				for (const auto& pw : it.patterns) {
-					std::string pat;
-					try { pat = expander_.expandStringValue(pw); }
-					catch (const ExpandError&) { continue; }
-					if (patternMatches(pat, subject)) { m = true; break; }
-				}
-				if (!m) continue;
-				matched = true;
-				if (it.body) status = execNode(*it.body);
-				if (it.term == CaseClause::Term::DSemi) break;
-				if (it.term == CaseClause::Term::SemiAmp) {
-					// Fall through to next item unconditionally.
-					if (i + 1 < cc.items.size()) {
-						const auto& nx = cc.items[i + 1];
-						if (nx.body) status = execNode(*nx.body);
-					}
-					break;
-				}
-				if (it.term == CaseClause::Term::DSemiAmp) {
-					// Continue testing remaining items.
+		const std::string subject = expander_.expandStringValue(cc.subject);
+		if (expander_.failed()) {
+			std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+			undoRedirections(rs);
+			return 1;
+		}
+		for (std::size_t i = 0; i < cc.items.size(); ++i) {
+			const auto& it = cc.items[i];
+			bool m = false;
+			for (const auto& pw : it.patterns) {
+				const std::string pat = expander_.expandStringValue(pw);
+				if (expander_.failed()) {
+					expander_.takeError();   // bad pattern: skip it
 					continue;
+				}
+				if (patternMatches(pat, subject)) { m = true; break; }
+			}
+			if (!m) continue;
+			if (it.body) {
+				const int s = execNode(*it.body);
+				if (!flowPending()) status = s;
+			}
+			if (flowPending()) break;
+			if (it.term == CaseClause::Term::DSemi) break;
+			if (it.term == CaseClause::Term::SemiAmp) {
+				// Fall through to next item unconditionally.
+				if (i + 1 < cc.items.size()) {
+					const auto& nx = cc.items[i + 1];
+					if (nx.body) {
+						const int s = execNode(*nx.body);
+						if (!flowPending()) status = s;
+					}
 				}
 				break;
 			}
-			(void)matched;
-		} catch (...) {
-			undoRedirections(rs);
-			throw;
+			if (it.term == CaseClause::Term::DSemiAmp) {
+				// Continue testing remaining items.
+				continue;
+			}
+			break;
 		}
 		undoRedirections(rs);
 		return status;
@@ -2210,9 +2237,9 @@ namespace wbsh {
 	// `-eq` / `-ne` / `-lt` / `-le` / `-gt` / `-ge` integer comparisons.
 	static bool evalDBracketArithOp(const std::string& op,
 	                                const std::string& lhs, const std::string& rhs) {
-		long long li, ri;
-		try { li = std::stoll(lhs); ri = std::stoll(rhs); }
-		catch (...) { return false; }
+		long long li = 0;
+		long long ri = 0;
+		if (!parseLL(lhs, li) || !parseLL(rhs, ri)) return false;
 		if (op == "-eq") return li == ri;
 		if (op == "-ne") return li != ri;
 		if (op == "-lt") return li <  ri;
@@ -2249,11 +2276,13 @@ namespace wbsh {
 		case K::Prim: break;
 		}
 		std::string lhs = exp.expandStringValue(e.lhs);
+		if (exp.failed()) return false;
 		if (e.op.empty()) return !lhs.empty();
 		if (e.op.size() == 2 && e.op[0] == '-') {
 			return evalDBracketUnaryTest(e.op[1], lhs, pc);
 		}
 		std::string rhs = exp.expandStringValue(e.rhs);
+		if (exp.failed()) return false;
 		auto lower = [](std::string s) {
 			for (auto& c : s) c = (char)std::tolower((unsigned char)c);
 			return s;
@@ -2264,14 +2293,11 @@ namespace wbsh {
 			return evalDBracketStringOp(e.op, clhs, crhs);
 		}
 		if (e.op == "=~") {
-			try {
-				auto flags = std::regex::ECMAScript;
-				if (nocasematch) flags = flags | std::regex::icase;
-				std::regex re(rhs, flags);
-				return std::regex_search(lhs, re);
-			} catch (const std::regex_error&) {
-				return false;
-			}
+			auto flags = std::regex::ECMAScript;
+			if (nocasematch) flags = flags | std::regex::icase;
+			std::regex re;
+			if (!compileRegex(re, rhs, flags)) return false;
+			return searchRegex(lhs, re);
 		}
 		if (e.op == "-eq" || e.op == "-ne" || e.op == "-lt"
 		    || e.op == "-le" || e.op == "-gt" || e.op == "-ge")
@@ -2292,6 +2318,11 @@ namespace wbsh {
 		else if (!dc.root) status = 1;
 		else status = evalDBracketExpr(*dc.root, expander_, path_conv_,
 		                               env_.nocasematch()) ? 0 : 1;
+		// Expansion errors inside the condition fail the test loudly.
+		if (expander_.failed()) {
+			std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+			status = 1;
+		}
 		undoRedirections(rs);
 		setLastStatus(status);
 		return status;
@@ -2328,16 +2359,9 @@ namespace wbsh {
 		++func_depth_;
 		scope_stack_.emplace_back();
 		int status = 0;
-		try {
-			if (fd->body) status = execNode(*fd->body);
-		} catch (FunctionReturn& r) {
-			status = r.status;
-		} catch (...) {
-			popLocalScope();
-			--func_depth_;
-			env_.setPositional(saved_positional);
-			throw;
-		}
+		if (fd->body) status = execNode(*fd->body);
+		// `return` unwinds to here; break / continue / exit keep going.
+		consumeFlow(FlowSignal::Kind::Return, &status);
 		popLocalScope();
 		--func_depth_;
 		env_.setPositional(saved_positional);
@@ -2427,9 +2451,10 @@ namespace wbsh {
 		if (it == trap_handlers_.end()) return;
 		std::string cmd = it->second;
 		trap_handlers_.erase(it);   // prevent re-entry
-		try { executeText(cmd, "<EXIT trap>"); }
-		catch (ShellExit&) { /* swallow exit-from-EXIT-trap */ }
-		catch (...) {}
+		executeText(cmd, "<EXIT trap>");
+		// Swallow any signal the trap raised (exit-from-EXIT-trap etc.) —
+		// the shell is already tearing down.
+		clearFlow();
 	}
 
 	// Maximum kept history entries. Applied after every mutation that can
@@ -2498,8 +2523,7 @@ namespace wbsh {
 			if (v2) {
 				const std::size_t tab = line.find('\t');
 				if (tab == std::string::npos) continue;
-				try { status = std::stoi(line.substr(0, tab)); }
-				catch (...) { continue; }
+				if (!parseInt(line.substr(0, tab), status)) continue;
 				cmd = line.substr(tab + 1);
 				if (cmd.empty()) continue;
 			}
@@ -2657,18 +2681,17 @@ namespace wbsh {
 				origin.c_str(), e.loc.line, e.loc.column, e.message.c_str());
 		}
 		Parser parser(std::move(tokens), source_text);
-		auto root = parser.parseProgram();
+		Node* root = parser.parseProgram();
 		for (const auto& e : parser.errors()) {
 			std::fprintf(stderr, "wbsh: %s:%zu:%zu: %s\n",
 				origin.c_str(), e.loc.line, e.loc.column, e.message.c_str());
 		}
 		if (!root) return 1;
-		// Hold the AST alive: any FunctionDefs registered during this call
-		// keep raw pointers into `root`. Without this, sourced functions
-		// would dangle the moment executeText returns.
-		Node* root_ptr = root.get();
-		owned_asts_.push_back(std::move(root));
-		return execute(*root_ptr);
+		// Hold the AST's arena alive: any FunctionDefs registered during
+		// this call keep raw pointers into it. Without this, sourced
+		// functions would dangle the moment executeText returns.
+		owned_arenas_.push_back(parser.takeArena());
+		return execute(*root);
 	}
 
 	std::string Executor::run(const std::string& body) {
@@ -2694,20 +2717,18 @@ namespace wbsh {
 		int saved = _dup(1);
 		_dup2(fd, 1);
 		_close(fd);
-		try {
-			executeText(body, "<command-substitution>");
-		} catch (ShellExit&) {
-			// Subshell semantics: exit terminates the substitution only.
-		} catch (...) {
-			std::fflush(stdout);
-			_dup2(saved, 1);
-			_close(saved);
-			_wremove(utf8ToWide(tmp).c_str());
-			throw;
-		}
+		executeText(body, "<command-substitution>");
+		// Subshell semantics: exit terminates the substitution only.
+		consumeFlow(FlowSignal::Kind::Exit);
 		std::fflush(stdout);
 		_dup2(saved, 1);
 		_close(saved);
+		// break / continue / return keep unwinding: drop the output, the
+		// enclosing expansion aborts via CommandSubstitutor::interrupted().
+		if (flowPending()) {
+			_wremove(utf8ToWide(tmp).c_str());
+			return {};
+		}
 		std::string out = readAllText(tmp);
 		_wremove(utf8ToWide(tmp).c_str());
 		return out;

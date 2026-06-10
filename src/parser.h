@@ -15,6 +15,7 @@
  * faithful `declare -f` output.
  */
 
+#include "arena.h"
 #include "ast.h"
 #include "lexer.h"
 
@@ -41,13 +42,23 @@ namespace wbsh {
 	public:
 		/// Parse without a source-text reference (no node slicing).
 		explicit Parser(std::vector<Token> tokens);
-		/// Parse with an owned source-text copy.
+		/// Parse with an owned source-text copy (interned in the arena).
 		Parser(std::vector<Token> tokens, std::string source_text);
-		/// Parse with a shared, pre-existing source-text buffer.
-		Parser(std::vector<Token> tokens, std::shared_ptr<const std::string> source);
 
 		/// Parse a complete program; returns the top-level List node.
+		/// The node tree is owned by this parser's Arena — see takeArena().
 		NodePtr parseProgram();
+
+		/**
+		 * @brief Transfer ownership of the AST's backing memory.
+		 *
+		 * Everything parseProgram() produced — nodes and the interned
+		 * source text — lives in this arena. Callers that keep the AST
+		 * beyond the parser's lifetime (the executor adopting function
+		 * definitions, for example) must take and hold it. The parser
+		 * must not be used again afterwards.
+		 */
+		Arena takeArena() { return std::move(arena_); }
 
 		/// Diagnostics accumulated during parsing.
 		const std::vector<ParseError>& errors() const { return errors_; }
@@ -101,10 +112,10 @@ namespace wbsh {
 		NodePtr parseFunctionRest(std::string name, SourceLoc loc);
 		NodePtr parseDoGroup();
 		NodePtr parseDBracket();
-		std::unique_ptr<DBracketCond::Expr> parseDBracketExpr();
-		std::unique_ptr<DBracketCond::Expr> parseDBracketAnd();
-		std::unique_ptr<DBracketCond::Expr> parseDBracketUnary();
-		std::unique_ptr<DBracketCond::Expr> parseDBracketPrimary();
+		DBracketCond::Expr* parseDBracketExpr();
+		DBracketCond::Expr* parseDBracketAnd();
+		DBracketCond::Expr* parseDBracketUnary();
+		DBracketCond::Expr* parseDBracketPrimary();
 		bool tryParseDBracketUnary(DBracketCond::Expr& e);
 		bool atDBracketEnd() const;
 		NodePtr parseCompoundListUntilReserved(std::initializer_list<const char*> stops);
@@ -123,9 +134,12 @@ namespace wbsh {
 
 		// ---- State ----
 		std::vector<Token> toks_;
-		// Shared-ownership source text. Lives at least as long as any AST
-		// node the parser produces; each node receives this same shared_ptr.
-		std::shared_ptr<const std::string> source_;
+		// Owns every node this parser produces plus the interned source
+		// text; transferred out via takeArena() when the AST outlives us.
+		Arena arena_;
+		// Borrowed pointer to the arena-interned source text; stamped
+		// onto every node so slice extraction uses the right buffer.
+		const std::string* source_ = nullptr;
 		std::size_t pos_ = 0;
 		std::vector<ParseError> errors_;
 	};

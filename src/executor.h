@@ -12,11 +12,13 @@
  * `<(...)` bodies in the current shell context.
  *
  * Control flow (`break`, `continue`, `return`, `exit`) is propagated
- * by throwing the LoopBreak / LoopContinue / FunctionReturn /
- * ShellExit tag types, which are caught at the appropriate enclosing
- * frame.
+ * as a value: the raising builtin stores a FlowSignal on the
+ * Executor, every frame checks flowPending() after running a child,
+ * and the frame that owns the construct (loop, function call,
+ * subshell, script, top-level driver) consumes the signal.
  */
 
+#include "arena.h"
 #include "ast.h"
 #include "environment.h"
 #include "expander.h"
@@ -34,14 +36,43 @@
 
 namespace wbsh {
 
-	/// Thrown by `break N;` to unwind out of N enclosing loops.
-	struct LoopBreak       { int count = 1; };
-	/// Thrown by `continue N;` to skip to the next iteration of an outer loop.
-	struct LoopContinue    { int count = 1; };
-	/// Thrown by `return [N]` from inside a function body.
-	struct FunctionReturn  { int status = 0; };
-	/// Thrown by the `exit` builtin to unwind to the top-level driver.
-	struct ShellExit       { int status = 0; };
+	/**
+	 * @brief Non-local control-flow signal, carried as a value.
+	 *
+	 * Raised by the `break` / `continue` / `return` / `exit` builtins
+	 * (and by `set -e`) instead of throwing. The signal lives on the
+	 * Executor; frames between the raise site and the construct that
+	 * owns it propagate by returning early, and the owning frame
+	 * (loop, function call, subshell, script, top-level driver)
+	 * consumes it via Executor::consumeFlow().
+	 */
+	struct FlowSignal {
+		/// What kind of unwinding is in progress.
+		enum class Kind {
+			None,       ///< No signal pending — normal execution.
+			Break,      ///< `break N` — unwind N enclosing loops.
+			Continue,   ///< `continue N` — next iteration of the Nth loop.
+			Return,     ///< `return [N]` — unwind to the function call.
+			Exit,       ///< `exit [N]` — unwind to the shell driver.
+		};
+		Kind kind = Kind::None;
+		int  status = 0;    ///< Return / Exit payload.
+		int  count = 1;     ///< Break / Continue: loop levels left to unwind.
+	};
+
+	/**
+	 * @brief What a loop should do after running its body.
+	 *
+	 * Result of Executor::dispatchLoopFlow(), the shared loop-body
+	 * epilogue that consumes Break / Continue signals aimed at the
+	 * current loop (decrementing multi-level `break N` counts).
+	 */
+	enum class LoopFlowAction {
+		Normal,      ///< No signal — fall through to the next iteration.
+		NextIter,    ///< `continue` consumed — jump to the next iteration.
+		ExitLoop,    ///< `break` consumed — leave the loop normally.
+		Propagate,   ///< Signal belongs to an outer frame — unwind.
+	};
 
 	class Executor;
 	/// Signature of a registered shell builtin / coreutil. Plain function
@@ -66,8 +97,10 @@ namespace wbsh {
 		/**
 		 * @brief Top-level entry — execute a parsed program.
 		 *
-		 * @return Exit status of the last command, or whatever
-		 *         `exit` set if it was invoked.
+		 * @return Exit status of the last command. When the program
+		 *         invoked `exit`, an Exit FlowSignal is left pending
+		 *         for the caller (REPL / script driver) to consume
+		 *         via consumeFlow().
 		 */
 		int execute(const Node& root);
 
@@ -222,11 +255,12 @@ namespace wbsh {
 		// AST and keeps it alive for the lifetime of the call.
 		int executeText(const std::string& source_text, const std::string& origin);
 
-		// Hand AST ownership to the executor. Used by the REPL: each line
-		// is parsed locally, but functions defined there must outlive the
-		// iteration that ran them. Multi-call safe; ASTs accumulate.
-		void adoptAst(NodePtr root) {
-			if (root) owned_asts_.push_back(std::move(root));
+		// Hand AST ownership to the executor by adopting the Arena that
+		// backs it (see Parser::takeArena). Used by the REPL: each line
+		// is parsed locally, but functions defined there must outlive
+		// the iteration that ran them. Multi-call safe; arenas accumulate.
+		void adoptArena(Arena arena) {
+			owned_arenas_.push_back(std::move(arena));
 		}
 
 		// The original source the AST was parsed from. Used by the pipeline
@@ -259,6 +293,55 @@ namespace wbsh {
 		int  errexitSuppress() const { return errexit_suppress_; }
 		void pushErrexitSuppress() { ++errexit_suppress_; }
 		void popErrexitSuppress()  { --errexit_suppress_; }
+
+		// ---- Control-flow signal (break / continue / return / exit) ----
+		/// Is a control-flow signal pending? Frames that don't own the
+		/// signal check this after running a child and return early.
+		bool flowPending() const { return flow_.kind != FlowSignal::Kind::None; }
+		/// The pending signal (Kind::None when nothing is pending).
+		const FlowSignal& flow() const { return flow_; }
+		/// Drop the pending signal unconditionally.
+		void clearFlow() { flow_ = FlowSignal{}; }
+		/// `break N` — raised by the break builtin.
+		void raiseBreak(int count) {
+			flow_.kind = FlowSignal::Kind::Break;
+			flow_.status = 0;
+			flow_.count = count;
+		}
+		/// `continue N` — raised by the continue builtin.
+		void raiseContinue(int count) {
+			flow_.kind = FlowSignal::Kind::Continue;
+			flow_.status = 0;
+			flow_.count = count;
+		}
+		/// `return [N]` — raised by the return builtin.
+		void raiseReturn(int status) {
+			flow_.kind = FlowSignal::Kind::Return;
+			flow_.status = status;
+			flow_.count = 1;
+		}
+		/// `exit [N]` — raised by the exit builtin and `set -e`.
+		void raiseExit(int status) {
+			flow_.kind = FlowSignal::Kind::Exit;
+			flow_.status = status;
+			flow_.count = 1;
+		}
+		/**
+		 * @brief Consume the pending signal if it is of kind @p k.
+		 *
+		 * @param payload Optional: receives the signal's status.
+		 * @return true when a signal of kind @p k was pending (now
+		 *         cleared); false otherwise (signal left untouched).
+		 */
+		bool consumeFlow(FlowSignal::Kind k, int* payload = nullptr) {
+			if (flow_.kind != k) return false;
+			if (payload) *payload = flow_.status;
+			clearFlow();
+			return true;
+		}
+		/// CommandSubstitutor: tell the Expander to stop expanding when
+		/// a `$(...)` body raised break / continue / return / exit.
+		bool interrupted() const override { return flowPending(); }
 
 		// Scoped variable declaration. Used by the `local` builtin: records
 		// the prior state of `name` so it can be restored when the current
@@ -324,6 +407,10 @@ namespace wbsh {
 		int execFunctionDef(const FunctionDef& fd);
 		int execDBracket(const DBracketCond& dc);
 
+		// Loop-body epilogue: consume a Break / Continue signal aimed at
+		// the current loop and report what the loop should do next.
+		LoopFlowAction dispatchLoopFlow();
+
 		// Helpers.
 		struct RedirState {
 			// Saved fds: target_fd -> dup'd backup fd
@@ -340,6 +427,10 @@ namespace wbsh {
 		// either installs the redirection (saving the prior fd into `s`) and
 		// returns true, or prints a diagnostic and returns false.
 		void saveFd(RedirState& s, int fd) const;
+		// Expand a redirection target word. On expansion failure prints a
+		// `wbsh: <msg>` diagnostic and returns false (the redirection —
+		// and with it the command — then fails with status 1).
+		bool expandRedirTarget(const Word& target, std::string& out);
 		// Open a virtual `/dev/{stdin,stdout,stderr,fd/N}` path as a fresh fd,
 		// or return -1 if `path` is not a recognised dev-fd alias.
 		static int dupSpecialDevFd(const std::string& path);
@@ -389,8 +480,9 @@ namespace wbsh {
 		// State snapshotted at the start of a shell-script invocation
 		// (`./script.sh` and similar). Restored after the script returns,
 		// regardless of whether it returned normally, called `exit`, or
-		// threw out. The asymmetry between the normal- and exception-path
-		// restore (set vs forceSet) is preserved from the original code.
+		// left a flow signal pending. The asymmetry between the normal-
+		// and propagating-signal restore (set vs forceSet) is preserved
+		// from the original exception-based code.
 		struct ShellScriptScope {
 			std::unordered_map<std::string, std::string> saved_vars;
 			std::vector<std::string> saved_pos;
@@ -525,15 +617,17 @@ namespace wbsh {
 		std::vector<Job> jobs_;
 		int next_job_id_ = 0;
 		int getopts_subindex_ = 1;
-		// ASTs that the executor must keep alive (e.g. those parsed via
-		// `source` / `eval` / inherited `WBSH_FUNCTIONS` evaluations) so the
-		// raw FunctionDef* pointers in `functions_` stay valid.
-		std::vector<NodePtr> owned_asts_;
+		// Arenas backing every AST the executor must keep alive (e.g.
+		// those parsed via `source` / `eval` / inherited `WBSH_FUNCTIONS`
+		// evaluations) so the raw FunctionDef* pointers in `functions_`
+		// stay valid. One arena per executed parse, never freed early.
+		std::vector<Arena> owned_arenas_;
 		std::vector<std::vector<ScopeEntry>> scope_stack_;
 		int  last_status_ = 0;
 		int  loop_depth_ = 0;
 		int  func_depth_ = 0;
 		int  errexit_suppress_ = 0;
+		FlowSignal flow_;
 	};
 
 	/// Register every shell builtin (defined in builtins.cpp).

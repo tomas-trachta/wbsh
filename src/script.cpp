@@ -84,9 +84,10 @@ namespace wbsh {
 			bool commit = sc.words.empty();
 			for (const auto& a : sc.assignments) {
 				indent(os, depth + 1);
-				std::string v;
-				try { v = exp.expandStringValue(a.value); }
-				catch (const ExpandError& e) { os << "<expand error: " << e.what() << ">"; }
+				std::string v = exp.expandStringValue(a.value);
+				if (exp.failed()) {
+					os << "<expand error: " << exp.takeError() << ">";
+				}
 				if (commit) env.set(a.name, v);
 				os << "Assign " << a.name << "=";
 				escape(os, v);
@@ -97,17 +98,15 @@ namespace wbsh {
 				os << "Word raw=";
 				escape(os, w.raw);
 				os << " ->";
-				try {
-					auto fields = exp.expandWord(w);
-					if (fields.empty()) {
-						os << " (vanished)";
-					}
-					for (const auto& f : fields) {
-						os << ' ';
-						escape(os, f);
-					}
-				} catch (const ExpandError& e) {
-					os << " <expand error: " << e.what() << ">";
+				auto fields = exp.expandWord(w);
+				if (exp.failed()) {
+					os << " <expand error: " << exp.takeError() << ">";
+				} else if (fields.empty()) {
+					os << " (vanished)";
+				}
+				for (const auto& f : fields) {
+					os << ' ';
+					escape(os, f);
 				}
 				os << "\n";
 			}
@@ -116,11 +115,13 @@ namespace wbsh {
 				os << "Redir " << redirOpName(r.op);
 				if (r.fd != -1) os << " fd=" << r.fd;
 				os << " target=";
-				try { escape(os, exp.expandStringValue(r.target)); }
-				catch (const ExpandError& e) { os << "<expand error: " << e.what() << ">"; }
+				const std::string target = exp.expandStringValue(r.target);
+				if (exp.failed()) os << "<expand error: " << exp.takeError() << ">";
+				else              escape(os, target);
 				if (r.op == RedirOp::DLess || r.op == RedirOp::DLessDash) {
 					os << " body=";
 					escape(os, exp.expandHeredoc(r.heredoc_body, r.heredoc_quoted));
+					if (exp.failed()) exp.takeError();
 				}
 				os << "\n";
 			}
@@ -148,12 +149,12 @@ namespace wbsh {
 		if (f.has_in) {
 			indent(os, depth + 1); os << "items:";
 			for (const auto& w : f.items) {
-				try {
-					auto fields = exp.expandWord(w);
-					for (const auto& s : fields) { os << ' '; escape(os, s); }
-				} catch (const ExpandError& e) {
-					os << " <error: " << e.what() << ">";
+				auto fields = exp.expandWord(w);
+				if (exp.failed()) {
+					os << " <error: " << exp.takeError() << ">";
+					continue;
 				}
+				for (const auto& s : fields) { os << ' '; escape(os, s); }
 			}
 			os << "\n";
 		}
@@ -164,14 +165,21 @@ namespace wbsh {
 	static void walkExpandCase(const CaseClause& c, Expander& exp, Environment& env,
 	                           std::ostream& os, int depth) {
 		indent(os, depth); os << "Case subject=";
-		try { escape(os, exp.expandStringValue(c.subject)); }
-		catch (const ExpandError& e) { os << "<error: " << e.what() << ">"; }
+		const std::string subject = exp.expandStringValue(c.subject);
+		if (exp.failed()) os << "<error: " << exp.takeError() << ">";
+		else              escape(os, subject);
 		os << "\n";
 		for (const auto& it : c.items) {
 			indent(os, depth + 1); os << "patterns:";
 			for (const auto& p : it.patterns) {
-				try { os << ' '; escape(os, exp.expandStringValue(p)); }
-				catch (const ExpandError&) { os << " <err>"; }
+				os << ' ';
+				const std::string pat = exp.expandStringValue(p);
+				if (exp.failed()) {
+					exp.takeError();
+					os << "<err>";
+				} else {
+					escape(os, pat);
+				}
 			}
 			os << "\n";
 			if (it.body) {
@@ -298,11 +306,9 @@ namespace wbsh {
 			Executor exec(env);
 			exec.setSourceText(src);
 			absorbInheritedState(env, exec);
-			try {
-				return exec.execute(*root);
-			} catch (ShellExit& e) {
-				return e.status;
-			}
+			int status = exec.execute(*root);
+			exec.consumeFlow(FlowSignal::Kind::Exit, &status);
+			return status;
 		}
 
 		return (parser.errors().empty() && lex.errors().empty()) ? 0 : 1;

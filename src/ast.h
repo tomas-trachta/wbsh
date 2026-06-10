@@ -5,18 +5,24 @@
  * @brief Abstract Syntax Tree node definitions for the wbsh shell.
  *
  * Defines Word, Redirection, Assignment, and the Node hierarchy used
- * by the parser and executor. Each Node carries its location and the
- * shared-ownership source string it was parsed from, so the executor
- * can slice the original text for self-spawned subshells and for
- * `declare -f` output.
+ * by the parser and executor. Each Node carries its location and a
+ * borrowed pointer to the source string it was parsed from, so the
+ * executor can slice the original text for self-spawned subshells and
+ * for `declare -f` output.
  *
  * The Node hierarchy uses tagged unions (Node::Kind) rather than RTTI
  * because the executor dispatches with a switch on `kind`.
+ *
+ * Ownership: nodes live in the Arena of the Parser that produced them
+ * (see arena.h). All inter-node pointers — including the source-text
+ * pointer, which targets an arena-interned copy — are borrows into
+ * that arena, so keeping the Arena alive keeps the whole tree (and
+ * its source) valid. There is no per-node heap allocation, no vtable,
+ * and no reference counting.
  */
 
 #include "lexer.h"
 
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -114,9 +120,10 @@ namespace wbsh {
 	 * @brief Base class for every AST node.
 	 *
 	 * Carries the discriminating `kind`, source location, byte-range
-	 * span into the original source, and a shared-ownership pointer
-	 * to that source string. The executor downcasts on `kind`; there
-	 * is no virtual dispatch beyond the destructor.
+	 * span into the original source, and a borrowed pointer to that
+	 * source string. The executor downcasts on `kind`; there is no
+	 * virtual dispatch at all — concrete destructors are invoked by
+	 * the owning Arena, so no vtable pointer is paid per node.
 	 */
 	struct Node {
 		/// Concrete subclass tag.
@@ -143,14 +150,15 @@ namespace wbsh {
 		 *
 		 * Multiple ASTs can coexist (main script, inherited functions,
 		 * sourced files); each node carries its own source so slice
-		 * extraction always uses the right text.
+		 * extraction always uses the right text. Borrowed: the string
+		 * is interned in the same Arena that owns the node.
 		 */
-		std::shared_ptr<const std::string> source_text;
+		const std::string* source_text = nullptr;
 		explicit Node(Kind k) : kind(k) {}
-		virtual ~Node() = default;
 	};
-	/// Owning pointer used everywhere a child node is held.
-	using NodePtr = std::unique_ptr<Node>;
+	/// Borrowed pointer used everywhere a child node is held. The
+	/// Arena of the producing Parser owns the pointee.
+	using NodePtr = Node*;
 
 	/// Human-readable name for a Node::Kind (debug dumps, errors).
 	const char* nodeKindName(Node::Kind k);
@@ -190,15 +198,15 @@ namespace wbsh {
 		/// Connective operator.
 		enum class Op { AndIf, OrIf };
 		AndOr() : Node(Kind::AndOr) {}
-		NodePtr left;               ///< Left operand.
-		NodePtr right;              ///< Right operand.
+		NodePtr left = nullptr;     ///< Left operand.
+		NodePtr right = nullptr;    ///< Right operand.
 		Op op = Op::AndIf;          ///< `&&` (default) or `||`.
 	};
 
 	/// One entry in a List node — a command plus its terminator semantics.
 	struct ListItem {
-		NodePtr command;        ///< Pipeline, AndOr, or compound command directly.
-		bool background = false;///< True if terminated with `&` instead of `;`.
+		NodePtr command = nullptr;  ///< Pipeline, AndOr, or compound command directly.
+		bool background = false;    ///< True if terminated with `&` instead of `;`.
 	};
 
 	/// Sequence of commands separated by `;`, `&`, or newlines.
@@ -210,14 +218,14 @@ namespace wbsh {
 	/// `{ list; }` — runs in the current shell.
 	struct BraceGroup : Node {
 		BraceGroup() : Node(Kind::BraceGroup) {}
-		NodePtr body;                       ///< Inner List.
+		NodePtr body = nullptr;             ///< Inner List.
 		std::vector<Redirection> redirs;    ///< Redirections applied to the group.
 	};
 
 	/// `( list )` — runs in a subshell.
 	struct Subshell : Node {
 		Subshell() : Node(Kind::Subshell) {}
-		NodePtr body;                       ///< Inner List.
+		NodePtr body = nullptr;             ///< Inner List.
 		std::vector<Redirection> redirs;    ///< Redirections applied to the subshell.
 	};
 
@@ -225,9 +233,12 @@ namespace wbsh {
 	struct IfClause : Node {
 		IfClause() : Node(Kind::IfClause) {}
 		/// One `if` / `elif` arm (cond + body).
-		struct Branch { NodePtr cond; NodePtr body; };
+		struct Branch {
+			NodePtr cond = nullptr;
+			NodePtr body = nullptr;
+		};
 		std::vector<Branch> branches;       ///< `[0]` = if, `[1..]` = elif.
-		NodePtr else_body;                  ///< Optional `else` body.
+		NodePtr else_body = nullptr;        ///< Optional `else` body.
 		std::vector<Redirection> redirs;    ///< Redirections on the whole clause.
 	};
 
@@ -235,8 +246,8 @@ namespace wbsh {
 	struct WhileClause : Node {
 		WhileClause() : Node(Kind::WhileClause) {}
 		bool until = false;                 ///< True iff this is `until`, not `while`.
-		NodePtr cond;                       ///< Loop guard.
-		NodePtr body;                       ///< Loop body.
+		NodePtr cond = nullptr;             ///< Loop guard.
+		NodePtr body = nullptr;             ///< Loop body.
 		std::vector<Redirection> redirs;    ///< Redirections on the loop.
 	};
 
@@ -246,7 +257,7 @@ namespace wbsh {
 		std::string var;                    ///< Loop variable.
 		bool has_in = false;                ///< False => iterates `"$@"`.
 		std::vector<Word> items;            ///< Word list after `in`.
-		NodePtr body;                       ///< Loop body.
+		NodePtr body = nullptr;             ///< Loop body.
 		std::vector<Redirection> redirs;    ///< Redirections on the loop.
 	};
 
@@ -263,7 +274,7 @@ namespace wbsh {
 		/// One pattern arm.
 		struct Item {
 			std::vector<Word> patterns;     ///< Pipe-separated pattern alternatives.
-			NodePtr body;                   ///< List, or null for an empty body.
+			NodePtr body = nullptr;         ///< List, or null for an empty body.
 			Term term = Term::DSemi;        ///< Terminator after this arm.
 		};
 		std::vector<Item> items;            ///< Pattern arms in source order.
@@ -285,8 +296,8 @@ namespace wbsh {
 			/// Expression node kind.
 			enum class K { And, Or, Not, Prim };
 			K k = K::Prim;                  ///< Node kind.
-			std::unique_ptr<Expr> a;        ///< And/Or: left; Not: only operand.
-			std::unique_ptr<Expr> b;        ///< And/Or: right (else null).
+			Expr* a = nullptr;              ///< And/Or: left; Not: only operand.
+			Expr* b = nullptr;              ///< And/Or: right (else null).
 			/**
 			 * @brief Operator name for `Prim` nodes.
 			 *
@@ -299,7 +310,7 @@ namespace wbsh {
 			Word lhs;                       ///< Left / only operand.
 			Word rhs;                       ///< Right operand (binary ops only).
 		};
-		std::unique_ptr<Expr> root;         ///< Expression tree root.
+		Expr* root = nullptr;               ///< Expression tree root.
 		std::vector<Redirection> redirs;    ///< Redirections (rare; legal in bash).
 	};
 
@@ -307,7 +318,7 @@ namespace wbsh {
 	struct FunctionDef : Node {
 		FunctionDef() : Node(Kind::FunctionDef) {}
 		std::string name;                   ///< Function name.
-		NodePtr body;                       ///< Typically a BraceGroup or Subshell.
+		NodePtr body = nullptr;             ///< Typically a BraceGroup or Subshell.
 		/**
 		 * @brief Pre-sliced source text for the body.
 		 *

@@ -18,8 +18,8 @@
 #include "pathconv.h"
 
 #include <cstdint>
-#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wbsh {
@@ -46,11 +46,15 @@ namespace wbsh {
 		 * don't distinguish raw and trimmed output.
 		 */
 		virtual std::string runRaw(const std::string& body) { return run(body); }
-	};
-
-	/// Thrown by the Expander on unrecoverable expansion errors.
-	struct ExpandError : std::runtime_error {
-		using std::runtime_error::runtime_error;
+		/**
+		 * @brief Did a substitution raise shell control flow?
+		 *
+		 * The Executor reports a pending `exit` / `return` / `break` /
+		 * `continue` signal here so the Expander stops expanding the
+		 * rest of the word — mirroring the way the old control-flow
+		 * exceptions used to abort an in-progress expansion.
+		 */
+		virtual bool interrupted() const { return false; }
 	};
 
 	/**
@@ -59,6 +63,13 @@ namespace wbsh {
 	 * Constructed with the active Environment (variables, options) and
 	 * an optional CommandSubstitutor. Methods correspond to the
 	 * different contexts in which a Word can be expanded.
+	 *
+	 * Errors are reported as values: an unrecoverable expansion error
+	 * (unbound variable under `set -u`, a failed `${name:?msg}`) sets a
+	 * pending error message instead of throwing. Callers check failed()
+	 * after any expansion call and consume the message with takeError();
+	 * the error sticks until consumed so it survives intermediate
+	 * helper frames.
 	 */
 	class Expander {
 	public:
@@ -106,6 +117,43 @@ namespace wbsh {
 		long long evalArith(const std::string& body);
 
 		/**
+		 * @brief Is a fatal expansion error pending?
+		 *
+		 * Set by `set -u` violations and failed `${name:?msg}` forms.
+		 * The flag sticks until takeError() consumes it, so every
+		 * caller that detects a failure must consume the message —
+		 * even when it intends to ignore it.
+		 */
+		bool failed() const { return !pending_error_.empty(); }
+
+		/// Consume and return the pending error message (empty if none).
+		std::string takeError() {
+			std::string m = std::move(pending_error_);
+			pending_error_.clear();
+			return m;
+		}
+
+		/**
+		 * @brief evalArith() for contexts that swallow arithmetic errors.
+		 *
+		 * Used for array subscripts, slice bounds, and similar places
+		 * where a bad expression falls back to a default instead of
+		 * failing the command. Returns false on failure, consuming the
+		 * error iff THIS evaluation raised it; with an error already
+		 * pending it refuses to evaluate and leaves that error alone.
+		 */
+		bool tryEvalArith(const std::string& body, long long& out) {
+			if (failed()) return false;
+			const long long v = evalArith(body);
+			if (failed()) {
+				takeError();
+				return false;
+			}
+			out = v;
+			return true;
+		}
+
+		/**
 		 * @brief Watermark of pending `<(...)` temp files.
 		 *
 		 * Used by the executor to scope temp-file cleanup so nested
@@ -142,14 +190,34 @@ namespace wbsh {
 				text.push_back(c);
 				flags.push_back(f);
 			}
+			// Pre-size both parallel buffers; rendered output is usually
+			// at least as long as the source spelling, so reserving the
+			// raw length avoids most mid-render reallocations.
+			void reserve(std::size_t n) {
+				text.reserve(n);
+				flags.reserve(n);
+			}
 		};
 
 	private:
+
+		// Record an expansion error. First error wins so the diagnostic
+		// matches what the first failure point saw (the way the first
+		// throw used to).
+		void fail(std::string msg) {
+			if (pending_error_.empty()) pending_error_ = std::move(msg);
+		}
+		// True when expansion should stop early: an error is pending or
+		// a command substitution raised shell control flow.
+		bool aborting() const {
+			return failed() || (sub_ && sub_->interrupted());
+		}
 
 		Environment& env_;
 		CommandSubstitutor* sub_;
 		PathConv path_conv_;
 		std::vector<std::string> pending_temp_files_;
+		std::string pending_error_;
 
 		// ---- Rendering ----
 		Tagged renderWord(const Word& w);

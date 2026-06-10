@@ -644,7 +644,7 @@ namespace wbsh {
 	}
 
 	// Source ~/.wbshrc for user customisation (aliases, env, prompt). May
-	// throw ShellExit if the rc file calls `exit`.
+	// leave an Exit FlowSignal pending if the rc file calls `exit`.
 	static void sourceWbshrc(const Environment& env, Executor& exec) {
 		std::string home_dir = env.get("HOME");
 		if (home_dir.empty()) return;
@@ -760,9 +760,9 @@ namespace wbsh {
 
 	// Lex+parse the accumulated buffer. If incomplete, mark the state and
 	// return so the next iteration prompts with PS2. Otherwise print any
-	// errors and (when both lex/parse were clean) execute. ShellExit
-	// thrown by execute is allowed to propagate to runInteractive, which
-	// returns it as the shell's exit status.
+	// errors and (when both lex/parse were clean) execute. An Exit signal
+	// raised by execute is left pending for runInteractive, which consumes
+	// it and returns it as the shell's exit status.
 	static void parseAndMaybeExecute(Executor& exec, ReplState& s) {
 		Lexer lex(s.buffer);
 		auto tokens = lex.tokenize();
@@ -778,12 +778,23 @@ namespace wbsh {
 		printLexParseErrors(lex.errors(), parser.errors());
 
 		if (root && parser.errors().empty() && lex.errors().empty()) {
-			Node* root_ptr = root.get();
-			exec.adoptAst(std::move(root));
+			// Adopt the backing arena first: functions defined by this
+			// line must outlive the parser (and this iteration).
+			exec.adoptArena(parser.takeArena());
 			exec.setSourceText(s.buffer);
-			exec.execute(*root_ptr);   // may throw ShellExit
+			exec.execute(*root);   // may leave an Exit signal pending
 		}
 		s.buffer.clear();
+	}
+
+	// Check for a pending Exit signal after running user code. When one is
+	// consumed, writes its status to *exit_status and returns true (caller
+	// saves history and leaves the REPL). Any other stray signal is dropped
+	// — break / continue / return can't reach a prompt.
+	static bool shellExited(Executor& exec, int* exit_status) {
+		if (exec.consumeFlow(FlowSignal::Kind::Exit, exit_status)) return true;
+		exec.clearFlow();
+		return false;
 	}
 
 	// =========================================================================
@@ -803,11 +814,11 @@ namespace wbsh {
 		printBanner(state);
 		initHistFile(env, exec, state);
 
-		try {
-			sourceWbshrc(env, exec);
-		} catch (ShellExit& e) {
+		sourceWbshrc(env, exec);
+		int rc_status = 0;
+		if (shellExited(exec, &rc_status)) {
 			saveHistory(exec, state);
-			return e.status;
+			return rc_status;
 		}
 
 		LineEditor editor(env, exec);
@@ -835,19 +846,19 @@ namespace wbsh {
 			if (!line.empty()) exec.addHistoryEntry(line);
 			appendToBuffer(state, line);
 
-			try {
-				parseAndMaybeExecute(exec, state);
-				// When the buffer became a complete statement and ran,
-				// attribute the resulting exit status to the entry just
-				// typed so the inline-prediction filter can hide failed
-				// commands on the next prompt (and across sessions).
-				if (!state.waiting_for_more && !line.empty()) {
-					exec.markLastHistoryStatus(exec.lastStatus());
-				}
-			} catch (ShellExit& e) {
+			parseAndMaybeExecute(exec, state);
+			int exit_status = 0;
+			if (shellExited(exec, &exit_status)) {
 				exec.fireExitTrap();
 				saveHistory(exec, state);
-				return e.status;
+				return exit_status;
+			}
+			// When the buffer became a complete statement and ran,
+			// attribute the resulting exit status to the entry just
+			// typed so the inline-prediction filter can hide failed
+			// commands on the next prompt (and across sessions).
+			if (!state.waiting_for_more && !line.empty()) {
+				exec.markLastHistoryStatus(exec.lastStatus());
 			}
 		}
 	}

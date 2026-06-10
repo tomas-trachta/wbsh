@@ -19,6 +19,8 @@ extern char** environ;
 #include <cstdlib>
 #include <utility>
 
+#include "numparse.h"
+
 namespace wbsh {
 
 	Environment::Environment() {
@@ -40,12 +42,13 @@ namespace wbsh {
 		// Dynamic special parameters: assignment is a state poke, not a
 		// stored value. Reads always synthesise.
 		if (name == "RANDOM") {
-			try { setRandomSeed(static_cast<unsigned int>(std::stoul(value))); }
-			catch (...) {}
+			unsigned long seed = 0;
+			if (parseUL(value, seed)) setRandomSeed(static_cast<unsigned int>(seed));
 			return;
 		}
 		if (name == "SECONDS") {
-			try { setSecondsOffset(std::stoll(value)); } catch (...) {}
+			long long secs = 0;
+			if (parseLL(value, secs)) setSecondsOffset(secs);
 			return;
 		}
 		if (name == "LINENO" || name == "BASHPID") {

@@ -185,6 +185,9 @@
     <ClInclude Include="src\repl.h" />
     <ClInclude Include="src\script.h" />
     <ClInclude Include="src\coreutils_internal.h" />
+    <ClInclude Include="src\arena.h" />
+    <ClInclude Include="src\numparse.h" />
+    <ClInclude Include="src\regexutil.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp" />

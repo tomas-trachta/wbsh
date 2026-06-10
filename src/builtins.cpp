@@ -31,6 +31,7 @@
 #include "executor.h"
 #include "lexer.h"
 #include "lineedit.h"
+#include "numparse.h"
 #include "parser.h"
 
 namespace wbsh {
@@ -40,13 +41,11 @@ namespace wbsh {
 	static long long toIntSafe(const std::string& s, bool& ok) {
 		ok = false;
 		if (s.empty()) return 0;
-		try {
-			std::size_t idx = 0;
-			long long v = std::stoll(s, &idx, 10);
-			if (idx != s.size()) return 0;
-			ok = true;
-			return v;
-		} catch (...) { return 0; }
+		long long v = 0;
+		std::size_t idx = 0;
+		if (!parseLL(s, v, 10, &idx) || idx != s.size()) return 0;
+		ok = true;
+		return v;
 	}
 
 	// Parse args[0] as a small int. Returns `fallback` when args is empty,
@@ -342,7 +341,9 @@ namespace wbsh {
 	// ---- exit / return / break / continue ----
 
 	static int builtin_exit(Executor& exec, const std::vector<std::string>& args) {
-		throw ShellExit{ firstArgAsInt(args, exec.lastStatus()) };
+		const int status = firstArgAsInt(args, exec.lastStatus());
+		exec.raiseExit(status);
+		return status;
 	}
 
 	static int builtin_return(Executor& exec, const std::vector<std::string>& args) {
@@ -350,7 +351,9 @@ namespace wbsh {
 			printerr("return: can only `return' from a function or sourced script");
 			return 1;
 		}
-		throw FunctionReturn{ firstArgAsInt(args, exec.lastStatus()) };
+		const int status = firstArgAsInt(args, exec.lastStatus());
+		exec.raiseReturn(status);
+		return status;
 	}
 
 	static int builtin_break(Executor& exec, const std::vector<std::string>& args) {
@@ -358,7 +361,8 @@ namespace wbsh {
 			printerr("break: only meaningful in a `for', `while', or `until' loop");
 			return 0;
 		}
-		throw LoopBreak{ firstArgAsInt(args, 1, /*require_positive=*/true) };
+		exec.raiseBreak(firstArgAsInt(args, 1, /*require_positive=*/true));
+		return 0;
 	}
 
 	static int builtin_continue(Executor& exec, const std::vector<std::string>& args) {
@@ -366,7 +370,8 @@ namespace wbsh {
 			printerr("continue: only meaningful in a `for', `while', or `until' loop");
 			return 0;
 		}
-		throw LoopContinue{ firstArgAsInt(args, 1, /*require_positive=*/true) };
+		exec.raiseContinue(firstArgAsInt(args, 1, /*require_positive=*/true));
+		return 0;
 	}
 
 	// ---- export / unset / shift ----
@@ -522,7 +527,11 @@ namespace wbsh {
 			joined.push_back('\'');
 		}
 		int rc = exec.executeText(joined, "<exec>");
-		throw ShellExit{ rc };
+		// `exec cmd` ends the shell with cmd's status. If the executed
+		// text itself raised a signal (e.g. called `exit`), keep that
+		// signal instead of overwriting it.
+		if (!exec.flowPending()) exec.raiseExit(rc);
+		return rc;
 	}
 
 	static int builtin_eval(Executor& exec, const std::vector<std::string>& args) {
@@ -556,9 +565,9 @@ namespace wbsh {
 		if (args.size() > 1) {
 			exec.env().setPositional({ args.begin() + 1, args.end() });
 		}
-		int r = 0;
-		try { r = exec.executeText(body, args[0]); }
-		catch (FunctionReturn& fr) { r = fr.status; }   // `return' from sourced top-level
+		int r = exec.executeText(body, args[0]);
+		// `return' from sourced top-level ends the source, not a function.
+		exec.consumeFlow(FlowSignal::Kind::Return, &r);
 		exec.env().setPositional(std::move(saved));
 		return r;
 	}
@@ -1112,17 +1121,17 @@ namespace wbsh {
 			const std::string& a = args[i];
 			if (a == "-t") strip_newline = true;
 			else if (a == "-n" && i + 1 < args.size()) {
-				try { max_lines = std::stoll(args[++i]); } catch (...) {}
+				parseLL(args[++i], max_lines);
 			}
 			else if (a == "-O" && i + 1 < args.size()) {
-				try { origin = std::stoll(args[++i]); } catch (...) {}
+				parseLL(args[++i], origin);
 			}
 			else if (a == "-s" && i + 1 < args.size()) {
-				try { skip = std::stoll(args[++i]); } catch (...) {}
+				parseLL(args[++i], skip);
 			}
 			else if (a == "-u" && i + 1 < args.size()) {
 				// File descriptor — we only support 0 (stdin) here.
-				try { (void)std::stoi(args[++i]); } catch (...) {}
+				++i;
 			}
 			else if (!a.empty() && a[0] == '-' && a != "-" && a != "--") {
 				std::fprintf(stderr, "wbsh: mapfile: unknown option: %s\n", a.c_str());
@@ -1237,12 +1246,8 @@ namespace wbsh {
 		// Read $OPTIND from the env and clamp to >= 1.
 		static int loadOptind(Executor& exec) {
 			int v = 1;
-			try {
-				const std::string s = exec.env().get("OPTIND");
-				if (!s.empty()) v = std::stoi(s);
-			} catch (...) {
-				v = 1;
-			}
+			const std::string s = exec.env().get("OPTIND");
+			if (!s.empty() && !parseInt(s, v)) v = 1;
 			return v < 1 ? 1 : v;
 		}
 
@@ -1416,15 +1421,15 @@ namespace wbsh {
 		int rc = 0;
 		for (const auto& a : args) {
 			int id = -1;
-			try {
-				if (!a.empty() && a[0] == '%') id = std::stoi(a.substr(1));
-				else {
-					long long pid = std::stoll(a);
-					for (auto& j : exec.jobsTable()) {
-						if (j.pid == pid) { id = j.id; break; }
-					}
+			if (!a.empty() && a[0] == '%') {
+				if (!parseInt(a.substr(1), id)) { rc = 1; continue; }
+			} else {
+				long long pid = 0;
+				if (!parseLL(a, pid)) { rc = 1; continue; }
+				for (auto& j : exec.jobsTable()) {
+					if (j.pid == pid) { id = j.id; break; }
 				}
-			} catch (...) { rc = 1; continue; }
+			}
 			if (id < 0) { rc = 1; continue; }
 			int s = exec.waitForJob(id);
 			if (s >= 0) rc = s;
@@ -1436,9 +1441,7 @@ namespace wbsh {
 		if (args.empty()) { exec.jobsTable().clear(); return 0; }
 		for (const auto& a : args) {
 			int id = -1;
-			try {
-				if (!a.empty() && a[0] == '%') id = std::stoi(a.substr(1));
-			} catch (...) { continue; }
+			if (!a.empty() && a[0] == '%' && !parseInt(a.substr(1), id)) continue;
 			auto& v = exec.jobsTable();
 			v.erase(std::remove_if(v.begin(), v.end(),
 				[&](const Executor::Job& j) { return j.id == id; }), v.end());
@@ -1455,10 +1458,8 @@ namespace wbsh {
 				if (it->running) { id = it->id; break; }
 			}
 		} else {
-			try {
-				const std::string& a = args[0];
-				if (!a.empty() && a[0] == '%') id = std::stoi(a.substr(1));
-			} catch (...) {}
+			const std::string& a = args[0];
+			if (!a.empty() && a[0] == '%' && !parseInt(a.substr(1), id)) id = -1;
 		}
 		if (id < 0) { printerr("fg: no current job"); return 1; }
 		int s = exec.waitForJob(id);
@@ -1702,9 +1703,7 @@ namespace wbsh {
 			std::filesystem::directory_iterator it(win, ec);
 			if (ec) continue;
 			for (auto& e : it) {
-				std::string n;
-				try { n = pathToUtf8(e.path().filename()); }
-				catch (...) { continue; }
+				std::string n = pathToUtf8(e.path().filename());
 				// Strip .exe / .cmd / .bat for nicer suggestions.
 				auto ends_with = [&](const std::string& suf) {
 					if (n.size() < suf.size()) return false;
@@ -1861,9 +1860,7 @@ namespace wbsh {
 		if (ec) return;
 
 		for (auto& e : it) {
-			std::string n;
-			try { n = pathToUtf8(e.path().filename()); }
-			catch (...) { continue; }
+			std::string n = pathToUtf8(e.path().filename());
 			if (n.empty() || n[0] == '.') continue;
 			if (n.compare(0, leaf.size(), leaf) != 0) continue;
 			const bool isdir = e.is_directory(ec);
@@ -2032,8 +2029,7 @@ namespace wbsh {
 		if (args.empty()) return 1;
 		long long last = 0;
 		for (const auto& e : args) {
-			try { last = exec.expander().evalArith(e); }
-			catch (...) { return 1; }
+			if (!exec.expander().tryEvalArith(e, last)) return 1;
 		}
 		return last != 0 ? 0 : 1;
 	}
@@ -2063,7 +2059,7 @@ namespace wbsh {
 		}
 		if (args.size() == 1 && !args[0].empty() && args[0][0] != '-') {
 			int v = 0;
-			try { v = std::stoi(args[0], nullptr, 8); } catch (...) { return 1; }
+			if (!parseInt(args[0], v, 8)) return 1;
 			char buf[16];
 			std::snprintf(buf, sizeof(buf), "%04o", v & 0777);
 			exec.env().set("_WBSH_UMASK", buf);

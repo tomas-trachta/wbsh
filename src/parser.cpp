@@ -7,8 +7,9 @@
 
 #include <cctype>
 #include <cstring>
-#include <stdexcept>
 #include <utility>
+
+#include "numparse.h"
 
 namespace wbsh {
 
@@ -56,10 +57,7 @@ namespace wbsh {
 
 	Parser::Parser(std::vector<Token> tokens, std::string source_text)
 		: toks_(std::move(tokens))
-		, source_(std::make_shared<const std::string>(std::move(source_text))) {}
-
-	Parser::Parser(std::vector<Token> tokens, std::shared_ptr<const std::string> source)
-		: toks_(std::move(tokens)), source_(std::move(source)) {}
+		, source_(arena_.make<std::string>(std::move(source_text))) {}
 
 	const Token& Parser::peek(std::size_t n) const {
 		if (pos_ + n >= toks_.size()) return toks_.back();
@@ -195,14 +193,14 @@ namespace wbsh {
 
 	NodePtr Parser::parseList(bool /*top_level*/) {
 		std::size_t start = srcOffsetHere();
-		auto list = std::make_unique<List>();
+		auto list = arena_.make<List>();
 		list->loc = peek().loc;
 		skipNewlines();
 		while (!atEnd()) {
 			auto andor = parseAndOr();
 			if (!andor) break;
 			ListItem it;
-			it.command = std::move(andor);
+			it.command = andor;
 			bool had_sep = false;
 			if (match(TokKind::Amp)) { it.background = true; had_sep = true; }
 			else if (match(TokKind::Semi)) { had_sep = true; }
@@ -232,14 +230,14 @@ namespace wbsh {
 				error(peek(), "expected pipeline after && / ||");
 				break;
 			}
-			auto ao = std::make_unique<AndOr>();
+			auto ao = arena_.make<AndOr>();
 			ao->op = op;
 			ao->loc = left->loc;
-			ao->left = std::move(left);
-			ao->right = std::move(right);
+			ao->left = left;
+			ao->right = right;
 			ao->src_start = start;
 			ao->src_end = srcOffsetEnd();
-			left = std::move(ao);
+			left = ao;
 		}
 		// If no &&/|| chain, left already has its own span.
 		if (left && left->src_end == 0) left->src_end = srcOffsetEnd();
@@ -276,11 +274,11 @@ namespace wbsh {
 		if (!bang && !timed && !check(TokKind::Pipe) && !check(TokKind::PipeAmp)) {
 			return first;
 		}
-		auto pipe = std::make_unique<Pipeline>();
+		auto pipe = arena_.make<Pipeline>();
 		pipe->bang = bang;
 		pipe->timed = timed;
 		pipe->loc = first->loc;
-		pipe->commands.push_back(std::move(first));
+		pipe->commands.push_back(first);
 		while (check(TokKind::Pipe) || check(TokKind::PipeAmp)) {
 			bool amp = check(TokKind::PipeAmp);
 			advance();
@@ -291,7 +289,7 @@ namespace wbsh {
 				break;
 			}
 			pipe->stderr_to_stdout.push_back(amp);
-			pipe->commands.push_back(std::move(next));
+			pipe->commands.push_back(next);
 		}
 		stampSpan(*pipe, start);
 		return pipe;
@@ -353,9 +351,9 @@ namespace wbsh {
 		advance();   // consume `{`
 		auto body = parseList(false);
 		expectReserved("}", "expected `}`");
-		auto bg = std::make_unique<BraceGroup>();
+		auto bg = arena_.make<BraceGroup>();
 		bg->loc = loc;
-		bg->body = std::move(body);
+		bg->body = body;
 		Redirection r;
 		while (tryParseRedirection(r)) bg->redirs.push_back(std::move(r));
 		stampSpan(*bg, start);
@@ -368,9 +366,9 @@ namespace wbsh {
 		advance();   // consume `(`
 		auto body = parseList(false);
 		expect(TokKind::RParen, "expected `)`");
-		auto ss = std::make_unique<Subshell>();
+		auto ss = arena_.make<Subshell>();
 		ss->loc = loc;
-		ss->body = std::move(body);
+		ss->body = body;
 		Redirection r;
 		while (tryParseRedirection(r)) ss->redirs.push_back(std::move(r));
 		stampSpan(*ss, start);
@@ -385,15 +383,15 @@ namespace wbsh {
 		expectReserved("then", "expected `then`");
 		auto then_body = parseList(false);
 
-		auto node = std::make_unique<IfClause>();
+		auto node = arena_.make<IfClause>();
 		node->loc = loc;
-		node->branches.push_back({ std::move(cond), std::move(then_body) });
+		node->branches.push_back({ cond, then_body });
 
 		while (matchReserved("elif")) {
 			auto c = parseList(false);
 			expectReserved("then", "expected `then` after elif condition");
 			auto b = parseList(false);
-			node->branches.push_back({ std::move(c), std::move(b) });
+			node->branches.push_back({ c, b });
 		}
 		if (matchReserved("else")) {
 			node->else_body = parseList(false);
@@ -421,11 +419,11 @@ namespace wbsh {
 		advance();   // consume while/until
 		auto cond = parseList(false);
 		auto body = parseDoGroup();
-		auto node = std::make_unique<WhileClause>();
+		auto node = arena_.make<WhileClause>();
 		node->loc = loc;
 		node->until = until;
-		node->cond = std::move(cond);
-		node->body = std::move(body);
+		node->cond = cond;
+		node->body = body;
 		Redirection r;
 		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
 		stampSpan(*node, start);
@@ -466,12 +464,12 @@ namespace wbsh {
 			}
 		}
 		auto body = parseDoGroup();
-		auto node = std::make_unique<ForClause>();
+		auto node = arena_.make<ForClause>();
 		node->loc = loc;
 		node->var = std::move(var);
 		node->has_in = has_in;
 		node->items = std::move(items);
-		node->body = std::move(body);
+		node->body = body;
 		Redirection r;
 		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
 		stampSpan(*node, start);
@@ -491,7 +489,7 @@ namespace wbsh {
 		expectReserved("in", "expected `in`");
 		skipNewlines();
 
-		auto node = std::make_unique<CaseClause>();
+		auto node = arena_.make<CaseClause>();
 		node->loc = loc;
 		node->subject = std::move(subject);
 
@@ -531,42 +529,42 @@ namespace wbsh {
 		return isReserved(peek(), "]]");
 	}
 
-	std::unique_ptr<DBracketCond::Expr> Parser::parseDBracketExpr() {
+	DBracketCond::Expr* Parser::parseDBracketExpr() {
 		// `||`-separated terms.
 		auto left = parseDBracketAnd();
 		while (!atDBracketEnd() && check(TokKind::OrIf)) {
 			advance();
 			auto right = parseDBracketAnd();
-			auto e = std::make_unique<DBracketCond::Expr>();
+			auto e = arena_.make<DBracketCond::Expr>();
 			e->k = DBracketCond::Expr::K::Or;
-			e->a = std::move(left);
-			e->b = std::move(right);
-			left = std::move(e);
+			e->a = left;
+			e->b = right;
+			left = e;
 		}
 		return left;
 	}
 
-	std::unique_ptr<DBracketCond::Expr> Parser::parseDBracketAnd() {
+	DBracketCond::Expr* Parser::parseDBracketAnd() {
 		// `&&`-separated factors.
 		auto left = parseDBracketUnary();
 		while (!atDBracketEnd() && check(TokKind::AndIf)) {
 			advance();
 			auto right = parseDBracketUnary();
-			auto e = std::make_unique<DBracketCond::Expr>();
+			auto e = arena_.make<DBracketCond::Expr>();
 			e->k = DBracketCond::Expr::K::And;
-			e->a = std::move(left);
-			e->b = std::move(right);
-			left = std::move(e);
+			e->a = left;
+			e->b = right;
+			left = e;
 		}
 		return left;
 	}
 
-	std::unique_ptr<DBracketCond::Expr> Parser::parseDBracketUnary() {
+	DBracketCond::Expr* Parser::parseDBracketUnary() {
 		if (matchReserved("!")) {
 			auto inner = parseDBracketUnary();
-			auto e = std::make_unique<DBracketCond::Expr>();
+			auto e = arena_.make<DBracketCond::Expr>();
 			e->k = DBracketCond::Expr::K::Not;
-			e->a = std::move(inner);
+			e->a = inner;
 			return e;
 		}
 		return parseDBracketPrimary();
@@ -630,7 +628,7 @@ namespace wbsh {
 		return true;
 	}
 
-	std::unique_ptr<DBracketCond::Expr> Parser::parseDBracketPrimary() {
+	DBracketCond::Expr* Parser::parseDBracketPrimary() {
 		if (check(TokKind::LParen)) {
 			advance();
 			auto inner = parseDBracketExpr();
@@ -639,7 +637,7 @@ namespace wbsh {
 			}
 			return inner;
 		}
-		auto e = std::make_unique<DBracketCond::Expr>();
+		auto e = arena_.make<DBracketCond::Expr>();
 		e->k = DBracketCond::Expr::K::Prim;
 
 		if (tryParseDBracketUnary(*e)) return e;
@@ -671,7 +669,7 @@ namespace wbsh {
 		std::size_t start = srcOffsetHere();
 		SourceLoc loc = peek().loc;
 		advance();   // consume `[[`
-		auto node = std::make_unique<DBracketCond>();
+		auto node = arena_.make<DBracketCond>();
 		node->loc = loc;
 		if (atDBracketEnd()) {
 			error(peek(), "[[: empty conditional expression");
@@ -697,10 +695,10 @@ namespace wbsh {
 			error(peek(), "expected function body");
 			return nullptr;
 		}
-		auto fn = std::make_unique<FunctionDef>();
+		auto fn = arena_.make<FunctionDef>();
 		fn->loc = loc;
 		fn->name = std::move(name);
-		fn->body = std::move(body);
+		fn->body = body;
 		stampSpan(*fn, start);
 		// Snapshot the body slice from source so the executor can serialise
 		// it later, even after the AST is moved or the source is freed.
@@ -812,7 +810,7 @@ namespace wbsh {
 
 	NodePtr Parser::parseSimpleCommand() {
 		const std::size_t start = srcOffsetHere();
-		auto cmd = std::make_unique<SimpleCommand>();
+		auto cmd = arena_.make<SimpleCommand>();
 		cmd->loc = peek().loc;
 		bool seen_word = false;
 
@@ -1051,8 +1049,7 @@ namespace wbsh {
 		std::size_t saved = pos_;
 		int fd = -1;
 		if (peek().kind == TokKind::IoNumber) {
-			try { fd = std::stoi(peek().text); }
-			catch (...) { fd = -1; }
+			if (!parseInt(peek().text, fd)) fd = -1;
 			advance();
 		}
 		if (!atRedirOp()) {

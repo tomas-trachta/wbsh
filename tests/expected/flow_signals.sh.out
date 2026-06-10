@@ -1,0 +1,35 @@
+=== break N / continue N ===
+1a
+1c
+2a
+=== while break/continue ===
+n=1
+n=3
+=== function return ===
+rc=42
+rc=7
+=== exit in subshell ===
+subshell rc=9
+=== exit in cmd subst ===
+v=before
+=== set -e ===
+errexit rc=1
+cond ok
+orside ok
+=== set -u ===
+wbsh: undefined_var_xyz: unbound variable
+after nounset
+=== ${x:?msg} ===
+wbsh: custom message
+after qmark
+=== awk flow ===
+got a
+got c
+1
+2
+awk rc=5
+1
+3
+1
+3
+4

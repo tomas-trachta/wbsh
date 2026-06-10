@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "executor.h"
+#include "numparse.h"
 #include "pathconv.h"
 
 namespace wbsh {
@@ -257,8 +258,9 @@ namespace wbsh {
 					return v;
 				}
 				if (isNumber(t)) {
-					try { return std::stod(t); }
-					catch (...) { return 0; }
+					double v = 0;
+					parseDouble(t, v);
+					return v;
 				}
 				if (isName(t)) {
 					if (lex.peek() == "(") {

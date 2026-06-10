@@ -12,6 +12,9 @@ checked without parsing C++ properly:
   - No anonymous namespaces (`namespace { ... }`).
   - Every header has `#pragma once`.
   - Function bodies are at most 60 lines (heuristic; see below).
+  - No exceptions: `try` / `catch` / `throw` are forbidden everywhere
+    except src/regexutil.h, the designated std::regex exception
+    boundary. wbsh reports errors as values (see CONTRIBUTING.md).
 
 The function-length check is a heuristic. It strips comments and string
 literals, then walks brace pairs and flags a `{...}` as a function body
@@ -223,6 +226,11 @@ def find_function_bodies(stripped: str) -> Iterable[tuple[int, int]]:
 
 ANON_NS_RE = re.compile(r"\bnamespace\s*\{")
 PRAGMA_ONCE_RE = re.compile(r"^\s*#\s*pragma\s+once\b", re.MULTILINE)
+# Matches code (comments/strings are stripped first), so doc text about
+# "throwing" APIs doesn't trip it. Old-style `throw()` specifiers would
+# match too — wbsh has none, and new code must use noexcept anyway.
+EXCEPTION_RE = re.compile(r"\btry\s*\{|\bcatch\s*\(|\bthrow\b")
+EXCEPTION_BOUNDARY_FILES = {"regexutil.h"}
 
 
 def _visual_columns(line: str) -> int:
@@ -291,6 +299,14 @@ def check_file(path: Path) -> list[Issue]:
         issues.append(Issue(path, line_no, "anon-namespace",
                             "anonymous namespace (use `static` or a named "
                             "sub-namespace)", "error"))
+
+    if path.name not in EXCEPTION_BOUNDARY_FILES:
+        for m in EXCEPTION_RE.finditer(stripped_text):
+            line_no = stripped_text[: m.start()].count("\n") + 1
+            issues.append(Issue(path, line_no, "no-exceptions",
+                                "try/catch/throw is forbidden (errors are "
+                                "values; see CONTRIBUTING.md \"Errors\")",
+                                "error"))
 
     if path.suffix in (".h", ".hpp"):
         if not PRAGMA_ONCE_RE.search(text):

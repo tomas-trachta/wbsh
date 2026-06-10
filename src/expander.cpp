@@ -21,12 +21,12 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "lexer.h"
+#include "numparse.h"
 
 namespace wbsh {
 
@@ -379,11 +379,9 @@ namespace wbsh {
 			if (name.empty()) return 0;
 			std::string v = env_.get(name);
 			if (v.empty()) return 0;
-			try {
-				std::size_t idx = 0;
-				long long iv = std::stoll(v, &idx, 0);
-				if (idx == v.size()) return iv;
-			} catch (...) {}
+			long long iv = 0;
+			std::size_t idx = 0;
+			if (parseLL(v, iv, 0, &idx) && idx == v.size()) return iv;
 			if (depth_ > 16) return 0;   // recursion guard
 			ArithEval inner(v, env_, outer_, depth_ + 1);
 			return inner.run();
@@ -485,6 +483,7 @@ namespace wbsh {
 	long long Expander::evalArith(const std::string& body) {
 		// Pre-pass: expand $-forms inside the body (bash recurses into $((...)) bodies).
 		std::string expanded = expandHeredoc(body, /*quoted=*/false);
+		if (aborting()) return 0;   // error / control flow pending — caller checks
 		ArithEval ev(expanded, env_, this, 0);
 		return ev.run();
 	}
@@ -661,7 +660,7 @@ namespace wbsh {
 		std::string out;
 		const std::size_t end = body.size();
 		std::size_t i = 0;
-		while (i < end) {
+		while (i < end && !aborting()) {
 			const char c = body[i];
 
 			if (c == '\\' && i + 1 < end) {
@@ -926,9 +925,9 @@ namespace wbsh {
 			}
 		}
 		if (all_digits) {
-			std::size_t idx = 0;
-			try { idx = static_cast<std::size_t>(std::stoul(name)); }
-			catch (...) { idx = 0; }
+			unsigned long parsed = 0;
+			if (!parseUL(name, parsed)) parsed = 0;
+			const std::size_t idx = static_cast<std::size_t>(parsed);
 			if (idx == 0) return env_.shellName();
 			if (idx <= env_.positional().size()) return env_.positional()[idx - 1];
 			return {};
@@ -939,7 +938,7 @@ namespace wbsh {
 
 		if (!env_.has(name)) {
 			if (env_.nounset()) {
-				throw ExpandError(name + ": unbound variable");
+				fail(name + ": unbound variable");
 			}
 			return {};
 		}
@@ -1003,8 +1002,7 @@ namespace wbsh {
 				return joinAllArrayValues(*ia, sep);
 			}
 			long long idx = 0;
-			try { idx = evalArith(subscript); }
-			catch (...) { return {}; }
+			if (!tryEvalArith(subscript, idx)) return {};
 			const auto it = ia->find(idx);
 			return it == ia->end() ? std::string() : it->second;
 		}
@@ -1021,8 +1019,7 @@ namespace wbsh {
 		// Scalar treated as a 1-element indexed array at index 0.
 		if (whole_array) return lookupParam(name);
 		long long idx = 0;
-		try { idx = evalArith(subscript); }
-		catch (...) { return {}; }
+		if (!tryEvalArith(subscript, idx)) return {};
 		return idx == 0 ? lookupParam(name) : std::string();
 	}
 
@@ -1152,7 +1149,8 @@ namespace wbsh {
 			std::string msg = arg.empty()
 				? (name + ": parameter null or not set")
 				: expandHeredoc(arg, false);
-			throw ExpandError(msg);
+			fail(std::move(msg));
+			return {};
 		}
 		default:
 			return cur;
@@ -1181,13 +1179,13 @@ namespace wbsh {
 
 		const long long n = static_cast<long long>(elems.size());
 		long long off = 0;
-		try { off = evalArith(off_s); } catch (...) { off = 0; }
+		if (!tryEvalArith(off_s, off)) off = 0;
 		if (off < 0) off = std::max<long long>(0, n + off);
 		if (off > n) off = n;
 
 		long long take = n - off;
 		if (!len_s.empty()) {
-			try { take = evalArith(len_s); } catch (...) { take = 0; }
+			if (!tryEvalArith(len_s, take)) take = 0;
 			if (take < 0) take = std::max<long long>(0, n + take - off);
 			if (take > n - off) take = n - off;
 		}
@@ -1440,6 +1438,7 @@ namespace wbsh {
 
 	Expander::Tagged Expander::renderWord(const Word& w) {
 		Tagged t;
+		t.reserve(w.raw.size());
 		for (const auto& s : w.segments) {
 			if (s.kind == WordSegment::Kind::SingleQuoted ||
 			    s.kind == WordSegment::Kind::DoubleQuoted ||
@@ -1449,6 +1448,10 @@ namespace wbsh {
 			}
 		}
 		for (const auto& s : w.segments) {
+			// Stop rendering once an expansion error or a control-flow
+			// signal from a command substitution is pending — the old
+			// exceptions aborted mid-word the same way.
+			if (aborting()) break;
 			renderSegment(s, t, /*inside_dq=*/false);
 		}
 		return t;
@@ -1569,7 +1572,10 @@ namespace wbsh {
 			for (char c : s.text) out.push(c, F_QUOTED);
 			break;
 		case K::DoubleQuoted:
-			for (const auto& n : s.nested) renderSegment(n, out, /*inside_dq=*/true);
+			for (const auto& n : s.nested) {
+				if (aborting()) break;
+				renderSegment(n, out, /*inside_dq=*/true);
+			}
 			break;
 		case K::DollarSingle: {
 			const std::string ic = interpretAnsiC(s.text);
@@ -1765,9 +1771,7 @@ namespace wbsh {
 			     cur.increment(ec))
 			{
 				if (ec) break;
-				std::string name;
-				try { name = pathToUtf8(cur->path().filename()); }
-				catch (...) { continue; }
+				const std::string name = pathToUtf8(cur->path().filename());
 				// Skip dotfiles AND don't descend into them — bash behaviour.
 				if (!name.empty() && name[0] == '.') {
 					cur.disable_recursion_pending();
@@ -1821,9 +1825,7 @@ namespace wbsh {
 			if (ec) continue;
 			std::vector<std::string> matches;
 			for (auto& entry : it) {
-				std::string name;
-				try { name = pathToUtf8(entry.path().filename()); }
-				catch (...) { continue; }
+				const std::string name = pathToUtf8(entry.path().filename());
 				if (name.empty()) continue;
 				// Hide dotfiles unless the pattern itself starts with `.`
 				// or `dotglob` is on.
@@ -1949,9 +1951,11 @@ namespace wbsh {
 
 		std::vector<std::string> alts;
 		if (isInteger(from) && isInteger(to)) {
-			long long a = std::stoll(from);
-			long long b = std::stoll(to);
-			long long step = stepS.empty() ? 1 : std::stoll(stepS);
+			long long a = 0;
+			long long b = 0;
+			long long step = 1;
+			if (!parseLL(from, a) || !parseLL(to, b)) return alts;
+			if (!stepS.empty() && !parseLL(stepS, step)) return alts;
 			if (step == 0) step = 1;
 			if ((a < b && step < 0) || (a > b && step > 0)) step = -step;
 			int width = 0;
@@ -1980,7 +1984,8 @@ namespace wbsh {
 		{
 			int a = static_cast<unsigned char>(from[0]);
 			int b = static_cast<unsigned char>(to[0]);
-			int step = stepS.empty() ? 1 : std::stoi(stepS);
+			int step = 1;
+			if (!stepS.empty() && !parseInt(stepS, step)) return alts;
 			if (step == 0) step = 1;
 			if ((a < b && step < 0) || (a > b && step > 0)) step = -step;
 			for (int v = a; (step > 0) ? (v <= b) : (v >= b); v += step) {
@@ -2051,13 +2056,16 @@ namespace wbsh {
 		}
 		std::vector<std::string> out;
 		for (const auto& alt : braced) {
+			if (aborting()) break;
 			Lexer lex(alt);
 			auto tokens = lex.tokenize();
-			for (const auto& t : tokens) {
+			for (auto& t : tokens) {
 				if (t.kind != TokKind::Word) continue;
 				Word w2;
-				w2.segments = t.segments;
-				w2.raw = t.text;
+				// The token vector is local and visited once — steal the
+				// segment list instead of deep-copying every segment.
+				w2.segments = std::move(t.segments);
+				w2.raw = std::move(t.text);
 				w2.loc = w.loc;
 				auto fields = expandWordPostBrace(w2);
 				for (auto& f : fields) out.push_back(std::move(f));

@@ -125,14 +125,14 @@ namespace wbsh {
 		for (std::size_t i = 0; i < ic.branches.size(); ++i) {
 			indent(os, depth + 1);
 			os << (i == 0 ? "if-cond\n" : "elif-cond\n");
-			dumpListBody(os, depth + 2, ic.branches[i].cond.get());
+			dumpListBody(os, depth + 2, ic.branches[i].cond);
 			indent(os, depth + 1);
 			os << "then\n";
-			dumpListBody(os, depth + 2, ic.branches[i].body.get());
+			dumpListBody(os, depth + 2, ic.branches[i].body);
 		}
 		if (ic.else_body) {
 			indent(os, depth + 1); os << "else\n";
-			dumpListBody(os, depth + 2, ic.else_body.get());
+			dumpListBody(os, depth + 2, ic.else_body);
 		}
 		for (const auto& r : ic.redirs) dumpRedir(os, depth + 1, r);
 	}
@@ -140,9 +140,9 @@ namespace wbsh {
 	static void dumpWhileClause(std::ostream& os, int depth, const WhileClause& w) {
 		indent(os, depth + 1);
 		os << (w.until ? "until-cond\n" : "while-cond\n");
-		dumpListBody(os, depth + 2, w.cond.get());
+		dumpListBody(os, depth + 2, w.cond);
 		indent(os, depth + 1); os << "do\n";
-		dumpListBody(os, depth + 2, w.body.get());
+		dumpListBody(os, depth + 2, w.body);
 		for (const auto& r : w.redirs) dumpRedir(os, depth + 1, r);
 	}
 
@@ -154,7 +154,7 @@ namespace wbsh {
 			for (const auto& w : f.items) dumpWord(os, depth + 2, "Word", w);
 		}
 		indent(os, depth + 1); os << "do\n";
-		dumpListBody(os, depth + 2, f.body.get());
+		dumpListBody(os, depth + 2, f.body);
 		for (const auto& r : f.redirs) dumpRedir(os, depth + 1, r);
 	}
 
@@ -175,7 +175,7 @@ namespace wbsh {
 			indent(os, depth + 2); os << "patterns:\n";
 			for (const auto& p : it.patterns) dumpWord(os, depth + 3, "Word", p);
 			indent(os, depth + 2); os << "body:\n";
-			dumpListBody(os, depth + 3, it.body.get());
+			dumpListBody(os, depth + 3, it.body);
 		}
 		for (const auto& r : c.redirs) dumpRedir(os, depth + 1, r);
 	}
@@ -251,12 +251,12 @@ namespace wbsh {
 			return;
 		case Node::Kind::BraceGroup: {
 			const auto& bg = static_cast<const BraceGroup&>(n);
-			dumpCompoundWithRedirs(os, depth, bg.body.get(), bg.redirs);
+			dumpCompoundWithRedirs(os, depth, bg.body, bg.redirs);
 			return;
 		}
 		case Node::Kind::Subshell: {
 			const auto& ss = static_cast<const Subshell&>(n);
-			dumpCompoundWithRedirs(os, depth, ss.body.get(), ss.redirs);
+			dumpCompoundWithRedirs(os, depth, ss.body, ss.redirs);
 			return;
 		}
 		case Node::Kind::IfClause:

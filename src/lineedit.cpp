@@ -390,9 +390,7 @@ namespace wbsh {
 			fs::directory_iterator it(base, ec);
 			if (ec) continue;
 			for (const auto& de : it) {
-				std::string name;
-				try { name = pathToUtf8(de.path().filename()); }
-				catch (...) { continue; }
+				const std::string name = pathToUtf8(de.path().filename());
 				std::string nice = stripExt(name);
 				if (nice.compare(0, prefix.size(), prefix) == 0) {
 					set.insert(nice);
@@ -434,9 +432,7 @@ namespace wbsh {
 		fs::directory_iterator it(native, ec);
 		if (ec) return matches;
 		for (const auto& de : it) {
-			std::string name;
-			try { name = pathToUtf8(de.path().filename()); }
-			catch (...) { continue; }
+			const std::string name = pathToUtf8(de.path().filename());
 			if (name.empty()) continue;
 			if (name.compare(0, base.size(), base) != 0) continue;
 			// Hide dotfiles unless the user is explicitly typing a leading dot.
@@ -508,11 +504,14 @@ namespace wbsh {
 				env.set("COMP_LINE", line);
 				env.set("COMP_POINT", std::to_string(line.size()));
 				env.unset("COMPREPLY");
-				try {
-					std::vector<std::string> args = { head, prefix,
-						prev.size() > 1 ? prev.back() : std::string() };
-					exec_.callFunction(spec->function, args);
-				} catch (...) { /* swallow */ }
+				std::vector<std::string> args = { head, prefix,
+					prev.size() > 1 ? prev.back() : std::string() };
+				exec_.callFunction(spec->function, args);
+				// A completion function calling exit / break / return must
+				// not tear down the interactive shell — drop any signal
+				// (and stray expansion error) it left behind.
+				exec_.clearFlow();
+				if (exec_.expander().failed()) exec_.expander().takeError();
 				if (auto* arr = env.getIndexedArray("COMPREPLY")) {
 					for (const auto& kv : *arr) {
 						const std::string& s = kv.second;
