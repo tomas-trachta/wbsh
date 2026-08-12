@@ -2495,6 +2495,7 @@ namespace wbsh {
 		registerBcBuiltin(exec);
 		registerHashBuiltins(exec);
 		registerCurlBuiltin(exec);
+		registerFzfBuiltin(exec);
 	}
 
 }  // namespace wbsh

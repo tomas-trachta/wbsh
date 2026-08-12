@@ -300,7 +300,6 @@ namespace wbsh {
 	}
 
 	static int builtin_cd(Executor& exec, const std::vector<std::string>& args) {
-		namespace fs = std::filesystem;
 		std::string target;
 		if (args.empty()) target = exec.env().get("HOME");
 		else if (args[0] == "-") {
@@ -308,19 +307,11 @@ namespace wbsh {
 			if (target.empty()) { printerr("cd: OLDPWD not set"); return 1; }
 			std::printf("%s\n", exec.pathConv().toPosix(target).c_str());
 		} else target = args[0];
-		fs::path win_target = utf8ToPath(exec.pathConv().toWin32(target));
-		std::error_code ec;
-		fs::current_path(win_target, ec);
-		if (ec) {
-			std::fprintf(stderr, "wbsh: cd: %s: %s\n", target.c_str(), ec.message().c_str());
-			return 1;
-		}
 
-		std::string old_pwd = exec.env().get("PWD");
-		auto cwd = fs::current_path(ec);
-		if (!ec) {
-			if (!old_pwd.empty()) exec.env().set("OLDPWD", old_pwd);
-			exec.env().set("PWD", exec.pathConv().toPosix(pathToUtf8(cwd)));
+		std::string err;
+		if (!changeDirectory(exec, target, err)) {
+			std::fprintf(stderr, "wbsh: cd: %s: %s\n", target.c_str(), err.c_str());
+			return 1;
 		}
 
 		return 0;

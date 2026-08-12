@@ -219,7 +219,21 @@ Default `PS1` (with color):
 `unexpand`, `comm`, `yes`, `nproc`, `tput`, `mktemp`, `kill`, `sed`, `awk` /
 `gawk`, `bc`, `gzip`, `gunzip`, `zcat`, `zip`, `unzip`, `stat`, `chmod`, `ln`,
 `cmp`, `diff`, `du`, `df`, `md5sum`, `sha1sum`, `sha256sum`, `sha512sum`,
-`base64`, `curl`, `tar`.
+`base64`, `curl`, `tar`, `fzf`.
+
+`fzf` is an interactive fuzzy picker in the spirit of
+[junegunn/fzf](https://github.com/junegunn/fzf): pipe candidate lines into
+it (`ls | fzf`, `history | fzf`, …), type to narrow them incrementally,
+and the selected line is printed to stdout on Enter. With no piped input
+it lists the current directory tree. It talks to the console device
+directly (`CONIN$`/`CONOUT$`), so it works mid-pipeline even though its own
+stdin/stdout are redirected. Since it's a builtin (not a subprocess), a
+bare `fzf` typed at the prompt acts on the pick instead of just printing
+it: a directory `cd`s straight into it, and a file opens through its
+file association (double-click semantics), falling back to the classic
+"Open With" picker if Windows has none. `cd "$(fzf)"`, `vim $(fzf)`, and
+other captured/piped uses keep printing the selection so they stay
+composable.
 
 `git`, `vim`/`vi`, `less`, `ssh`, etc. are not bundled — wbsh expects them on
 PATH and auto-discovers `git` from the standard install locations

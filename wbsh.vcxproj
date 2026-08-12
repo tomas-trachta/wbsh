@@ -206,6 +206,7 @@
     <ClCompile Include="src\coreutils_text.cpp" />
     <ClCompile Include="src\coreutils_curl.cpp" />
     <ClCompile Include="src\coreutils_hash.cpp" />
+    <ClCompile Include="src\fzf.cpp" />
     <ClCompile Include="src\pathconv.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\awk.cpp" />

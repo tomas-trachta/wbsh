@@ -1408,6 +1408,23 @@ namespace wbsh {
 		return dirs;
 	}
 
+	bool changeDirectory(Executor& exec, const std::string& target, std::string& err) {
+		namespace fs = std::filesystem;
+		fs::path win_target = utf8ToPath(exec.pathConv().toWin32(target));
+		std::error_code ec;
+		fs::current_path(win_target, ec);
+		if (ec) { err = ec.message(); return false; }
+
+		std::string old_pwd = exec.env().get("PWD");
+		auto cwd = fs::current_path(ec);
+		if (!ec) {
+			if (!old_pwd.empty()) exec.env().set("OLDPWD", old_pwd);
+			exec.env().set("PWD", exec.pathConv().toPosix(pathToUtf8(cwd)));
+		}
+
+		return true;
+	}
+
 	std::string Executor::findExecutable(const std::string& name) {
 		namespace fs = std::filesystem;
 		if (isAbsoluteOrRelativePath(name)) {

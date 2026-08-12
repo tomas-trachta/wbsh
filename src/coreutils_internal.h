@@ -50,4 +50,6 @@ namespace wbsh {
 
 	void registerHashBuiltins(Executor& exec);
 
+	void registerFzfBuiltin(Executor& exec);
+
 }  // namespace wbsh

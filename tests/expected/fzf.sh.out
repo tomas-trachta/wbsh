@@ -1,0 +1,3 @@
+=== fzf: empty stdin has no candidates, exits 1 with no output
+rc=1
+=== done

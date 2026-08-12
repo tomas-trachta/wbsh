@@ -443,3 +443,6 @@ tests/_run_tmp/
 # these, but they're checked in so the runner can diff against them.
 !tests/expected/
 !tests/expected/*.out
+# Machine-local editor / tooling files.
+*.sublime-*
+compile_commands.json

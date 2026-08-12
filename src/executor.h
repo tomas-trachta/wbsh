@@ -89,6 +89,19 @@ namespace wbsh {
 	std::vector<std::string> splitPathList(const std::string& path);
 
 	/**
+	 * @brief Change the process's working directory and update PWD/OLDPWD.
+	 *
+	 * Shared by the `cd` builtin and anything else that needs `cd`'s exact
+	 * env-var bookkeeping (currently `fzf`'s directory-jump on Enter).
+	 *
+	 * @param target Path to change into, POSIX-or-Win32 (same convention
+	 *               as other builtins). Not resolved via `-`/HOME lookup.
+	 * @param[out] err Set to the OS error message on failure.
+	 * @return true on success.
+	 */
+	bool changeDirectory(Executor& exec, const std::string& target, std::string& err);
+
+	/**
 	 * @brief AST executor and runtime registry.
 	 *
 	 * Constructed with a borrowed Environment. Owns the live tables
