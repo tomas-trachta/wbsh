@@ -93,21 +93,34 @@ namespace wbsh {
 		return history.size();
 	}
 
-	std::string findInlinePrediction(const std::vector<std::string>& history,
-	                                 const std::vector<int>& history_status,
-	                                 const std::string& prefix) {
-		if (prefix.empty()) return {};
+	// Newest-first scan for the first history entry that begins with
+	// `prefix` and is strictly longer than it, skipping entries whose exit
+	// status was non-zero. Returns the matching entry's index (history.size()
+	// when nothing matches) so callers can cache and incrementally extend
+	// the match on subsequent keystrokes instead of rescanning.
+	static std::size_t findInlinePredictionIndexed(const std::vector<std::string>& history,
+	                                               const std::vector<int>& history_status,
+	                                               const std::string& prefix) {
+		if (prefix.empty()) return history.size();
 		for (std::size_t i = history.size(); i > 0; --i) {
 			const std::size_t idx = i - 1;
 			if (idx < history_status.size() && history_status[idx] != 0) continue;
 			const std::string& entry = history[idx];
 			if (entry.size() > prefix.size()
 			    && entry.compare(0, prefix.size(), prefix) == 0) {
-				return entry.substr(prefix.size());
+				return idx;
 			}
 		}
 
-		return {};
+		return history.size();
+	}
+
+	std::string findInlinePrediction(const std::vector<std::string>& history,
+	                                 const std::vector<int>& history_status,
+	                                 const std::string& prefix) {
+		const std::size_t idx = findInlinePredictionIndexed(history, history_status, prefix);
+		if (idx >= history.size()) return {};
+		return history[idx].substr(prefix.size());
 	}
 
 	fs::path findGitDir() {
@@ -150,6 +163,7 @@ namespace wbsh {
 		last_tab_word_.clear();
 		last_cursor_row_ = 0;
 		suggestion_.clear();
+		suggestion_cache_idx_ = static_cast<std::size_t>(-1);
 		revsearch_active_ = false;
 		prompt_raw_ = prompt;
 #ifdef _WIN32
@@ -241,11 +255,30 @@ namespace wbsh {
 
 	void LineEditor::refreshSuggestion() {
 		suggestion_.clear();
-		if (revsearch_active_) return;
-		if (buffer_.empty() || cursor_ != buffer_.size()) return;
-		suggestion_ = findInlinePrediction(exec_.history(),
-		                                   exec_.historyStatus(),
-		                                   buffer_);
+		if (revsearch_active_ || buffer_.empty() || cursor_ != buffer_.size()) {
+			suggestion_cache_idx_ = static_cast<std::size_t>(-1);
+			return;
+		}
+
+		const auto& history = exec_.history();
+
+		// Fast path: if the cached match still begins with the (possibly
+		// grown or shrunk) buffer, reuse it instead of rescanning the
+		// whole history on every keystroke.
+		if (suggestion_cache_idx_ < history.size()) {
+			const std::string& entry = history[suggestion_cache_idx_];
+			if (entry.size() > buffer_.size()
+			    && entry.compare(0, buffer_.size(), buffer_) == 0) {
+				suggestion_ = entry.substr(buffer_.size());
+				return;
+			}
+		}
+
+		suggestion_cache_idx_ =
+			findInlinePredictionIndexed(history, exec_.historyStatus(), buffer_);
+		if (suggestion_cache_idx_ < history.size()) {
+			suggestion_ = history[suggestion_cache_idx_].substr(buffer_.size());
+		}
 	}
 
 	bool LineEditor::acceptInlineSuggestion() {
@@ -366,6 +399,27 @@ namespace wbsh {
 		return name;
 	}
 
+	const std::set<std::string>& LineEditor::pathCommandNames() {
+		const std::string path = env_.get("PATH");
+		if (path == path_command_cache_path_) return path_command_cache_;
+
+		path_command_cache_.clear();
+		const std::vector<std::string> dirs = splitPathList(path);
+		for (const auto& d : dirs) {
+			if (d.empty()) continue;
+			std::error_code ec;
+			fs::path base = utf8ToPath(exec_.pathConv().toWin32(d));
+			fs::directory_iterator it(base, ec);
+			if (ec) continue;
+			for (const auto& de : it) {
+				path_command_cache_.insert(stripExeExtension(pathToUtf8(de.path().filename())));
+			}
+		}
+
+		path_command_cache_path_ = path;
+		return path_command_cache_;
+	}
+
 	std::vector<std::string> LineEditor::commandCompletions(const std::string& prefix) {
 		std::set<std::string> set;
 		for (const auto& n : exec_.builtinNames()) {
@@ -376,19 +430,8 @@ namespace wbsh {
 			if (n.compare(0, prefix.size(), prefix) == 0) set.insert(n);
 		}
 
-		const std::vector<std::string> dirs = splitPathList(env_.get("PATH"));
-		for (const auto& d : dirs) {
-			if (d.empty()) continue;
-			std::error_code ec;
-			fs::path base = utf8ToPath(exec_.pathConv().toWin32(d));
-			fs::directory_iterator it(base, ec);
-			if (ec) continue;
-			for (const auto& de : it) {
-				std::string nice = stripExeExtension(pathToUtf8(de.path().filename()));
-				if (nice.compare(0, prefix.size(), prefix) == 0) {
-					set.insert(std::move(nice));
-				}
-			}
+		for (const auto& n : pathCommandNames()) {
+			if (n.compare(0, prefix.size(), prefix) == 0) set.insert(n);
 		}
 
 		return std::vector<std::string>(set.begin(), set.end());

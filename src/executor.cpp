@@ -1434,14 +1434,25 @@ namespace wbsh {
 
 		const std::string path = env_.get("PATH");
 		if (path.empty()) return {};
-		const std::vector<std::string> dirs = splitPathList(path);
 
+		if (path != exec_path_cache_path_) {
+			exec_path_cache_.clear();
+			exec_path_cache_path_ = path;
+		}
+
+		auto cached = exec_path_cache_.find(name);
+		if (cached != exec_path_cache_.end()) return cached->second;
+
+		const std::vector<std::string> dirs = splitPathList(path);
 		for (const auto& d : dirs) {
 			if (d.empty()) continue;
 			fs::path base = utf8ToPath(path_conv_.toWin32(d));
 			base /= utf8ToPath(name);
 			std::string r = tryExecutableWithExtensions(base);
-			if (!r.empty()) return r;
+			if (!r.empty()) {
+				exec_path_cache_.emplace(name, r);
+				return r;
+			}
 		}
 
 		return {};

@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -186,6 +187,11 @@ namespace wbsh {
 		std::vector<std::string> completionsFor(const std::string& prefix,
 		                                        bool command_pos);
 		std::vector<std::string> commandCompletions(const std::string& prefix);
+		// PATH-derived executable names (extension-stripped), memoized
+		// across Tab presses and rebuilt only when PATH itself changes —
+		// consecutive Tabs on the same prefix no longer re-list every
+		// PATH directory from disk.
+		const std::set<std::string>& pathCommandNames();
 		std::vector<std::string> pathCompletions(const std::string& prefix);
 
 		// Per-tool argument completion. Each looks at the token sequence up
@@ -240,6 +246,16 @@ namespace wbsh {
 		// modal owns the prompt, gated by revsearch_active_.
 		std::string suggestion_;
 		bool revsearch_active_ = false;
+		// History index behind the current suggestion_, or history.size()
+		// (via SIZE_MAX, clamped in refreshSuggestion's bounds check) when
+		// there is none. Lets refreshSuggestion() extend/shrink the same
+		// match across consecutive keystrokes without rescanning history.
+		std::size_t suggestion_cache_idx_ = static_cast<std::size_t>(-1);
+
+		// Cache backing pathCommandNames(): the set of PATH-visible
+		// executable basenames, plus the PATH string it was built from.
+		std::set<std::string> path_command_cache_;
+		std::string path_command_cache_path_;
 	};
 
 }  // namespace wbsh

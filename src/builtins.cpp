@@ -1993,14 +1993,15 @@ namespace wbsh {
 		return 1;
 	}
 
-	static int builtin_hash(Executor&, const std::vector<std::string>& args) {
+	static int builtin_hash(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
 			std::printf("hash: no commands hashed\n");
 			return 0;
 		}
 
 		for (const auto& a : args) {
-			if (a == "-r" || a == "-l" || a == "-d") continue;
+			if (a == "-r") { exec.clearExecutablePathCache(); continue; }
+			if (a == "-l" || a == "-d") continue;
 			if (a == "-p" || a == "-t") continue;
 		}
 

@@ -346,6 +346,11 @@ namespace wbsh {
 		// .exe/.cmd/.bat resolution. Used by `type`, `command -v`, etc.
 		std::string findExecutable(const std::string& name);
 
+		// Drop the PATH-lookup memoization built up by findExecutable().
+		// Used by `hash -r` to force re-resolution after PATH-visible
+		// executables change on disk (installs, PATHEXT edits, etc.).
+		void clearExecutablePathCache() { exec_path_cache_.clear(); }
+
 		// Pre-expanded assignment forms used by execSimpleCommand. Built from
 		// the SimpleCommand AST's `assignments` list before the command runs.
 		// Public because the implementation file's small helper functions
@@ -598,6 +603,12 @@ namespace wbsh {
 		std::vector<std::string> dir_stack_;
 		std::unordered_map<std::string, std::string> trap_handlers_;
 		std::unordered_map<std::string, CompletionSpec> completion_specs_;
+		// findExecutable() memoizes name -> resolved path here (bash-style
+		// command hash) so repeated invocations of the same command skip
+		// re-walking PATH and re-probing the filesystem. Invalidated
+		// wholesale whenever PATH itself changes.
+		std::unordered_map<std::string, std::string> exec_path_cache_;
+		std::string exec_path_cache_path_;
 		std::vector<Job> jobs_;
 		int next_job_id_ = 0;
 		int getopts_subindex_ = 1;
