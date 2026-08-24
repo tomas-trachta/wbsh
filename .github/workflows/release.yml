@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump version
+        id: bump
+        shell: pwsh
+        run: |
+          $projPath = 'wbsh.vcxproj'
+          $projXml = [xml](Get-Content $projPath)
+
+          $versionGroup = $projXml.Project.PropertyGroup | Where-Object { $_.WbshVersionMajor }
+          if (-not $versionGroup) {
+              throw "Could not find WbshVersionMajor/Minor/Patch in $projPath"
+          }
+          $vMajor = [int]$versionGroup.WbshVersionMajor.Trim()
+          $vMinor = [int]$versionGroup.WbshVersionMinor.Trim()
+          $vPatch = [int]$versionGroup.WbshVersionPatch.Trim() + 1
+          $newVersion = "$vMajor.$vMinor.$vPatch"
+
+          $raw = Get-Content $projPath -Raw
+          $raw = $raw -replace '(?<=<WbshVersionMajor>)\d+(?=</WbshVersionMajor>)', $vMajor
+          $raw = $raw -replace '(?<=<WbshVersionMinor>)\d+(?=</WbshVersionMinor>)', $vMinor
+          $raw = $raw -replace '(?<=<WbshVersionPatch>)\d+(?=</WbshVersionPatch>)', $vPatch
+          Set-Content -Path $projPath -Value $raw -NoNewline
+
+          $issPath = 'installer\wbsh.iss'
+          $iss = Get-Content $issPath -Raw
+          $iss = $iss -replace '#define AppVersion "\d+\.\d+\.\d+"', "#define AppVersion `"$newVersion`""
+          Set-Content -Path $issPath -Value $iss -NoNewline
+
+          Write-Host "Bumped version to $newVersion"
+          "version=$newVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Commit version bump
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add wbsh.vcxproj installer\wbsh.iss
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin HEAD:main
+          git push origin "v${{ steps.bump.outputs.version }}"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: .\installer\build.ps1
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.bump.outputs.version }}"
+          $assets = Get-ChildItem "installer\output" -Include *.exe, *.zip -Recurse
+          gh release create "v$version" $assets.FullName `
+            --title "wbsh $version" `
+            --generate-notes
