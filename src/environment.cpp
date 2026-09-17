@@ -150,6 +150,25 @@ namespace wbsh {
 		it->second[std::move(key)] = std::move(val);
 	}
 
+	void Environment::unsetElement(const std::string& name, long long idx,
+	                               const std::string& key) {
+		if (readonly_.count(name)) {
+			std::fprintf(stderr, "wbsh: %s: readonly variable\n", name.c_str());
+			return;
+		}
+
+		auto ait = assoc_.find(name);
+		if (ait != assoc_.end()) {
+			ait->second.erase(key);
+			return;
+		}
+
+		auto iit = indexed_.find(name);
+		if (iit != indexed_.end()) {
+			iit->second.erase(idx);
+		}
+	}
+
 	void Environment::unset(const std::string& name) {
 		vars_.erase(name);
 		indexed_.erase(name);

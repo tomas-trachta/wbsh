@@ -65,6 +65,12 @@ namespace wbsh {
 		return toIntSafe(s, ok);
 	}
 
+	static double toDoubleOrZero(const std::string& s) {
+		char* end = nullptr;
+		const double v = std::strtod(s.c_str(), &end);
+		return (end == s.c_str()) ? 0.0 : v;
+	}
+
 	static int builtin_true(Executor&, const std::vector<std::string>&) { return 0; }
 	static int builtin_false(Executor&, const std::vector<std::string>&) { return 1; }
 	static int builtin_colon(Executor&, const std::vector<std::string>&) { return 0; }
@@ -215,6 +221,16 @@ namespace wbsh {
 			std::string s2 = spec; s2.pop_back(); s2 += "ll";
 			s2.push_back(conv);
 			std::fprintf(stdout, s2.c_str(), static_cast<unsigned long long>(v));
+			break;
+		}
+		case 'f':
+		case 'F':
+		case 'e':
+		case 'E':
+		case 'g':
+		case 'G': {
+			const double v = toDoubleOrZero(arg_text);
+			std::fprintf(stdout, spec.c_str(), v);
 			break;
 		}
 		case 'c':
@@ -378,8 +394,25 @@ namespace wbsh {
 		return 0;
 	}
 
+	static bool unsetArrayElement(Executor& exec, const std::string& a) {
+		const std::size_t lb = a.find('[');
+		if (lb == std::string::npos || a.empty() || a.back() != ']') return false;
+
+		const std::string name = a.substr(0, lb);
+		const std::string sub = a.substr(lb + 1, a.size() - lb - 2);
+		if (!exec.env().isIndexedArray(name) && !exec.env().isAssocArray(name)) return false;
+
+		long long idx = 0;
+		if (!exec.env().isAssocArray(name)) exec.expander().tryEvalArith(sub, idx);
+		exec.env().unsetElement(name, idx, sub);
+		return true;
+	}
+
 	static int builtin_unset(Executor& exec, const std::vector<std::string>& args) {
-		for (const auto& a : args) exec.env().unset(a);
+		for (const auto& a : args) {
+			if (!unsetArrayElement(exec, a)) exec.env().unset(a);
+		}
+
 		return 0;
 	}
 

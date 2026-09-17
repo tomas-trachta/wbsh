@@ -135,6 +135,21 @@ namespace wbsh {
 		}
 	}
 
+	static void walkExpandWhile(const WhileClause& w, Expander& exp, Environment& env,
+	                            std::ostream& os, int depth) {
+		indent(os, depth); os << (w.until ? "Until\n" : "While\n");
+		indent(os, depth + 1); os << "cond:\n";
+		if (w.cond) walkAndExpand(*w.cond, exp, env, os, depth + 2);
+		indent(os, depth + 1); os << "do:\n";
+		if (w.body) walkAndExpand(*w.body, exp, env, os, depth + 2);
+	}
+
+	static void walkExpandFunctionDef(const FunctionDef& f, Expander& exp, Environment& env,
+	                                  std::ostream& os, int depth) {
+		indent(os, depth); os << "FunctionDef " << f.name << "\n";
+		if (f.body) walkAndExpand(*f.body, exp, env, os, depth + 1);
+	}
+
 	static void walkExpandFor(const ForClause& f, Expander& exp, Environment& env,
 	                          std::ostream& os, int depth) {
 		indent(os, depth); os << "For " << f.var << "\n";
@@ -224,25 +239,24 @@ namespace wbsh {
 		case Node::Kind::IfClause:
 			walkExpandIf(static_cast<const IfClause&>(n), exp, env, os, depth);
 			return;
-		case Node::Kind::WhileClause: {
-			const auto& w = static_cast<const WhileClause&>(n);
-			indent(os, depth); os << (w.until ? "Until\n" : "While\n");
-			indent(os, depth + 1); os << "cond:\n";
-			if (w.cond) walkAndExpand(*w.cond, exp, env, os, depth + 2);
-			indent(os, depth + 1); os << "do:\n";
-			if (w.body) walkAndExpand(*w.body, exp, env, os, depth + 2);
+		case Node::Kind::WhileClause:
+			walkExpandWhile(static_cast<const WhileClause&>(n), exp, env, os, depth);
 			return;
-		}
 		case Node::Kind::ForClause:
 			walkExpandFor(static_cast<const ForClause&>(n), exp, env, os, depth);
 			return;
 		case Node::Kind::CaseClause:
 			walkExpandCase(static_cast<const CaseClause&>(n), exp, env, os, depth);
 			return;
-		case Node::Kind::FunctionDef: {
-			const auto& f = static_cast<const FunctionDef&>(n);
-			indent(os, depth); os << "FunctionDef " << f.name << "\n";
-			if (f.body) walkAndExpand(*f.body, exp, env, os, depth + 1);
+		case Node::Kind::FunctionDef:
+			walkExpandFunctionDef(static_cast<const FunctionDef&>(n), exp, env, os, depth);
+			return;
+		case Node::Kind::DBracket:
+			indent(os, depth); os << "DBracket\n";
+			return;
+		case Node::Kind::ArithCommand: {
+			const auto& ac = static_cast<const ArithCommand&>(n);
+			indent(os, depth); os << "ArithCommand " << ac.expr << "\n";
 			return;
 		}
 		}

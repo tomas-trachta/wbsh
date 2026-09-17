@@ -99,9 +99,14 @@ namespace wbsh {
 		NodePtr parseSimpleCommand();
 		NodePtr parseBraceGroup();
 		NodePtr parseSubshell();
+		NodePtr parseArithCommand();
 		NodePtr parseIf();
 		NodePtr parseWhileUntil(bool until);
 		NodePtr parseFor();
+		NodePtr parseForArith(std::size_t start, SourceLoc loc);
+		NodePtr parseSelect();
+		bool parseInWordListHeader(std::string& var, bool& has_in,
+		                          std::vector<Word>& items, const char* keyword);
 		NodePtr parseCase();
 		NodePtr parseFunctionRest(std::string name, SourceLoc loc);
 		NodePtr parseDoGroup();

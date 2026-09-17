@@ -39,6 +39,9 @@ namespace wbsh {
 			vars_[name] = std::move(value);
 		}
 		void   unset(const std::string& name);
+		/// Erase one array element: `assoc[key]` if @p name is an assoc
+		/// array, else `indexed[idx]`. No-op if @p name isn't an array.
+		void   unsetElement(const std::string& name, long long idx, const std::string& key);
 		bool   has(const std::string& name) const;
 		std::string get(const std::string& name) const;
 

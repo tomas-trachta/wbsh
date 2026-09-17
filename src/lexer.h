@@ -48,6 +48,7 @@ namespace wbsh {
 		PipeAmp,         // |&     (bash, equivalent to 2>&1 |)
 		LParen,          // (
 		RParen,          // )
+		DArithCmd,       // ((...)) arithmetic command; text holds the body
 
 		Less,            // <
 		Great,           // >

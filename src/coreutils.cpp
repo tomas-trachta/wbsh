@@ -1131,6 +1131,25 @@ namespace wbsh {
 		return true;
 	}
 
+	// MSVC's strftime doesn't understand the glibc `%s` (epoch seconds)
+	// extension: on Windows it hands the format to the CRT's invalid-
+	// parameter handler, which aborts the whole process. Substitute it
+	// ourselves before the real strftime call ever sees it.
+	static std::string substituteDateEpochSpecifier(const std::string& fmt, std::time_t t) {
+		std::string out;
+		for (std::size_t i = 0; i < fmt.size(); ++i) {
+			if (fmt[i] == '%' && i + 1 < fmt.size() && fmt[i + 1] == 's') {
+				out += std::to_string(static_cast<long long>(t));
+				++i;
+				continue;
+			}
+
+			out += fmt[i];
+		}
+
+		return out;
+	}
+
 	static int builtin_date(Executor&, const std::vector<std::string>& args) {
 		std::string fmt = "%a %b %e %H:%M:%S %Y";
 		bool utc = false;
@@ -1146,6 +1165,7 @@ namespace wbsh {
 #else
 		if (utc) gmtime_r(&t, &tm); else localtime_r(&t, &tm);
 #endif
+		fmt = substituteDateEpochSpecifier(fmt, t);
 		char buf[256];
 		std::strftime(buf, sizeof(buf), fmt.c_str(), &tm);
 		std::printf("%s\n", buf);

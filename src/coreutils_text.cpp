@@ -1608,7 +1608,8 @@ namespace wbsh {
 	}
 
 	static bool parseXargsArgs(const std::vector<std::string>& args,
-	                           int& n_per, std::vector<std::string>& cmd) {
+	                           int& n_per, std::vector<std::string>& cmd,
+	                           std::string& replace_str) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& a = args[i];
 			if (a == "-n" && i + 1 < args.size()) {
@@ -1621,6 +1622,16 @@ namespace wbsh {
 				continue;
 			}
 
+			if (a == "-I" && i + 1 < args.size()) {
+				replace_str = args[++i];
+				continue;
+			}
+
+			if (a.size() > 2 && a.compare(0, 2, "-I") == 0) {
+				replace_str = a.substr(2);
+				continue;
+			}
+
 			if (a == "--") {
 				for (++i; i < args.size(); ++i) cmd.push_back(args[i]);
 				break;
@@ -1630,6 +1641,22 @@ namespace wbsh {
 		}
 
 		return true;
+	}
+
+	static std::string xargsSubstitute(const std::string& tmpl,
+	                                   const std::string& replace_str,
+	                                   const std::string& item) {
+		std::string out;
+		std::size_t pos = 0;
+		while (true) {
+			const std::size_t hit = tmpl.find(replace_str, pos);
+			if (hit == std::string::npos) { out += tmpl.substr(pos); break; }
+			out += tmpl.substr(pos, hit - pos);
+			out += item;
+			pos = hit + replace_str.size();
+		}
+
+		return out;
 	}
 
 	static std::vector<std::string> xargsReadItems() {
@@ -1682,12 +1709,20 @@ namespace wbsh {
 	static int builtin_xargs(Executor& exec, const std::vector<std::string>& args) {
 		int n_per = -1;   // -1 means "all in one batch"
 		std::vector<std::string> cmd;
-		if (!parseXargsArgs(args, n_per, cmd)) return 1;
+		std::string replace_str;
+		if (!parseXargsArgs(args, n_per, cmd, replace_str)) return 1;
 		if (cmd.empty()) cmd.push_back("echo");
 
 		std::vector<std::string> items = xargsReadItems();
 		int rc = 0;
-		if (n_per > 0) {
+		if (!replace_str.empty()) {
+			for (const auto& item : items) {
+				std::vector<std::string> argv;
+				for (const auto& c : cmd) argv.push_back(xargsSubstitute(c, replace_str, item));
+				int r = xargsInvokeBatch(exec, argv, {}, /*skip_empty=*/false);
+				if (r != 0) rc = r;
+			}
+		} else if (n_per > 0) {
 			for (std::size_t k = 0; k < items.size(); k += static_cast<std::size_t>(n_per)) {
 				std::vector<std::string> batch;
 				for (int j = 0; j < n_per && k + j < items.size(); ++j) {

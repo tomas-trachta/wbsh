@@ -7,6 +7,8 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 
+#  include <crtdbg.h>
+#  include <cstdint>
 #  include <fcntl.h>
 #  include <io.h>
 #  include <shellapi.h>
@@ -180,8 +182,24 @@ static ParseResult resolveSource(CliOptions& opts) {
 	return { true, 0 };
 }
 
+#ifdef _WIN32
+// By default the CRT's invalid-parameter handler aborts the whole
+// process on things a shell must treat as ordinary, recoverable
+// failures: `_dup`/`_dup2`/`_close` on a not-yet-open fd (routine
+// while juggling `exec 3>&-`-style descriptors), or `strftime` given
+// a glibc-only spec like `%s` that MSVC doesn't implement. Install a
+// no-op handler so those calls report failure (-1 / errno) instead of
+// tearing down the shell.
+static void noopInvalidParameterHandler(const wchar_t*, const wchar_t*,
+	const wchar_t*, unsigned int, uintptr_t) {
+}
+#endif /* _WIN32 */
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
+	_set_invalid_parameter_handler(noopInvalidParameterHandler);
+	_CrtSetReportMode(_CRT_ASSERT, 0);
+
 	std::vector<std::string> argv_utf8_storage;
 	std::vector<char*>       argv_ptrs;
 	rewriteArgvAsUtf8(argc, argv, argv_utf8_storage, argv_ptrs);

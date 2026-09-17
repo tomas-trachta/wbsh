@@ -41,6 +41,7 @@ namespace wbsh {
 		case Node::Kind::CaseClause: return "CaseClause";
 		case Node::Kind::FunctionDef: return "FunctionDef";
 		case Node::Kind::DBracket: return "DBracket";
+		case Node::Kind::ArithCommand: return "ArithCommand";
 		}
 
 		return "?";
@@ -287,8 +288,10 @@ namespace wbsh {
 		if (checkReserved("while")) return parseWhileUntil(false);
 		if (checkReserved("until")) return parseWhileUntil(true);
 		if (checkReserved("for"))   return parseFor();
+		if (checkReserved("select")) return parseSelect();
 		if (checkReserved("case"))  return parseCase();
 		if (checkReserved("[["))    return parseDBracket();
+		if (check(TokKind::DArithCmd)) return parseArithCommand();
 
 		if (checkReserved("function")) {
 			SourceLoc loc = peek().loc;
@@ -309,14 +312,18 @@ namespace wbsh {
 
 		if (check(TokKind::LParen)) return parseSubshell();
 
-		if (peek().kind == TokKind::Word
-			&& peek(1).kind == TokKind::LParen
-			&& peek(2).kind == TokKind::RParen)
 		{
-			std::string name = peek().text;
-			SourceLoc loc = peek().loc;
-			advance(); advance(); advance();
-			return parseFunctionRest(std::move(name), loc);
+			Assignment probe;
+			if (peek().kind == TokKind::Word
+				&& peek(1).kind == TokKind::LParen
+				&& peek(2).kind == TokKind::RParen
+				&& !tryExtractAssignment(peek(), probe))
+			{
+				std::string name = peek().text;
+				SourceLoc loc = peek().loc;
+				advance(); advance(); advance();
+				return parseFunctionRest(std::move(name), loc);
+			}
 		}
 
 		return parseSimpleCommand();
@@ -350,6 +357,19 @@ namespace wbsh {
 		while (tryParseRedirection(r)) ss->redirs.push_back(std::move(r));
 		stampSpan(*ss, start);
 		return ss;
+	}
+
+	NodePtr Parser::parseArithCommand() {
+		std::size_t start = srcOffsetHere();
+		SourceLoc loc = peek().loc;
+		auto node = arena_.make<ArithCommand>();
+		node->loc = loc;
+		node->expr = peek().text;
+		advance();
+		Redirection r;
+		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		stampSpan(*node, start);
+		return node;
 	}
 
 	NodePtr Parser::parseIf() {
@@ -410,21 +430,78 @@ namespace wbsh {
 		return node;
 	}
 
-	NodePtr Parser::parseFor() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
-		advance();
-		if (peek().kind != TokKind::Word) {
-			error(peek(), "expected variable name after `for`");
-			return nullptr;
+	// Splits the raw body of a `for (( init; cond; update ))` header on its
+	// top-level semicolons, respecting nested parens so that command
+	// substitutions or subexpressions containing `;` aren't split.
+	static std::vector<std::string> splitArithForHeader(const std::string& body) {
+		std::vector<std::string> parts;
+		std::string cur;
+		int depth = 0;
+		for (char c : body) {
+			if (c == '(') ++depth;
+			else if (c == ')') --depth;
+			if (c == ';' && depth == 0) {
+				parts.push_back(std::move(cur));
+				cur.clear();
+				continue;
+			}
+
+			cur.push_back(c);
 		}
 
-		std::string var = peek().text;
+		parts.push_back(std::move(cur));
+		return parts;
+	}
+
+	static std::string trimArith(const std::string& s) {
+		std::size_t b = s.find_first_not_of(" \t");
+		if (b == std::string::npos) return "";
+		std::size_t e = s.find_last_not_of(" \t");
+		return s.substr(b, e - b + 1);
+	}
+
+	NodePtr Parser::parseForArith(std::size_t start, SourceLoc loc) {
+		std::vector<std::string> parts = splitArithForHeader(peek().text);
+		advance();
+		skipNewlines();
+		match(TokKind::Semi);
+		skipNewlines();
+
+		auto node = arena_.make<ForClause>();
+		node->loc = loc;
+		node->is_arith = true;
+		if (parts.size() != 3) {
+			error(peek(), "expected `init; cond; update` inside `for ((...))`");
+		} else {
+			node->arith_init = trimArith(parts[0]);
+			node->arith_cond = trimArith(parts[1]);
+			node->arith_update = trimArith(parts[2]);
+		}
+
+		node->body = parseDoGroup();
+		Redirection r;
+		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		stampSpan(*node, start);
+		return node;
+	}
+
+	// Parses the `var [in word...]` header shared by `for var ...` and
+	// `select var ...`, up through (but not including) the `do` group.
+	// Returns false (with an error already recorded) if there's no
+	// variable name to read.
+	bool Parser::parseInWordListHeader(std::string& var, bool& has_in,
+	                                   std::vector<Word>& items,
+	                                   const char* keyword) {
+		if (peek().kind != TokKind::Word) {
+			error(peek(), std::string("expected variable name after `") + keyword + "`");
+			return false;
+		}
+
+		var = peek().text;
 		advance();
 		skipNewlines();
 
-		bool has_in = false;
-		std::vector<Word> items;
+		has_in = false;
 		if (matchReserved("in")) {
 			has_in = true;
 			while (peek().kind == TokKind::Word
@@ -435,16 +512,28 @@ namespace wbsh {
 
 			if (!match(TokKind::Semi) && !match(TokKind::Newline)) {
 				if (!checkReserved("do"))
-					error(peek(), "expected `;` or newline after for-in word list");
+					error(peek(), "expected `;` or newline after word list");
 			}
 
 			skipNewlines();
 		}
-		else {
-			if (match(TokKind::Semi) || match(TokKind::Newline)) {
-				skipNewlines();
-			}
+		else if (match(TokKind::Semi) || match(TokKind::Newline)) {
+			skipNewlines();
 		}
+
+		return true;
+	}
+
+	NodePtr Parser::parseFor() {
+		std::size_t start = srcOffsetHere();
+		SourceLoc loc = peek().loc;
+		advance();
+		if (check(TokKind::DArithCmd)) return parseForArith(start, loc);
+
+		std::string var;
+		bool has_in = false;
+		std::vector<Word> items;
+		if (!parseInWordListHeader(var, has_in, items, "for")) return nullptr;
 
 		auto body = parseDoGroup();
 		auto node = arena_.make<ForClause>();
@@ -453,6 +542,30 @@ namespace wbsh {
 		node->has_in = has_in;
 		node->items = std::move(items);
 		node->body = body;
+		Redirection r;
+		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		stampSpan(*node, start);
+		return node;
+	}
+
+	NodePtr Parser::parseSelect() {
+		std::size_t start = srcOffsetHere();
+		SourceLoc loc = peek().loc;
+		advance();
+
+		std::string var;
+		bool has_in = false;
+		std::vector<Word> items;
+		if (!parseInWordListHeader(var, has_in, items, "select")) return nullptr;
+
+		auto body = parseDoGroup();
+		auto node = arena_.make<ForClause>();
+		node->loc = loc;
+		node->var = std::move(var);
+		node->has_in = has_in;
+		node->items = std::move(items);
+		node->body = body;
+		node->is_select = true;
 		Redirection r;
 		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
 		stampSpan(*node, start);
@@ -558,7 +671,7 @@ namespace wbsh {
 
 	static bool isDBracketUnaryOp(const std::string& s) {
 		if (s.size() != 2 || s[0] != '-') return false;
-		static const char ops[] = "abcdefghknoprstuwxzGLNOSU";
+		static const char ops[] = "abcdefghknoprstuvwxzGLNOSU";
 		for (char c : ops) if (c == s[1]) return true;
 		return false;
 	}

@@ -651,6 +651,70 @@ namespace wbsh {
 		return out;
 	}
 
+	// Expands `$`/backtick interpolation exactly like expandHeredoc, but
+	// also performs quote removal: unescaped `'...'` runs are copied
+	// verbatim with the quotes dropped and no further expansion inside,
+	// and bare `"`/closing-`"` characters are dropped without ending
+	// expansion (their content already expands the same way a heredoc
+	// body does). Used for the argument/pattern words embedded in
+	// `${name:-word}`, `${name/pat/rep}`, `${name#pat}`, and friends,
+	// which — unlike a heredoc body — are ordinary shell words.
+	std::string Expander::expandParamWordArg(const std::string& body) {
+		std::string out;
+		const std::size_t end = body.size();
+		std::size_t i = 0;
+		while (i < end && !aborting()) {
+			const char c = body[i];
+
+			if (c == '\'') {
+				++i;
+				while (i < end && body[i] != '\'') out.push_back(body[i++]);
+				if (i < end) ++i;
+				continue;
+			}
+
+			if (c == '"') { ++i; continue; }
+
+			if (c == '\\' && i + 1 < end) {
+				consumeHeredocBackslash(body, i, out);
+				continue;
+			}
+
+			if (c == '$' && i + 1 < end) {
+				const char n1 = body[i + 1];
+				if (n1 == '{') { expandHeredocParamBraces(body, i, out); continue; }
+				if (n1 == '(') {
+					if (i + 2 < end && body[i + 2] == '(')
+						expandHeredocArith(body, i, out);
+					else
+						expandHeredocCmdSubst(body, i, out);
+					continue;
+				}
+
+				if (n1 == '[') { expandHeredocArithBracket(body, i, out); continue; }
+				if (isNameStart(n1) || std::isdigit(static_cast<unsigned char>(n1))
+				    || isSpecialParam1(n1)) {
+					expandHeredocSimpleParam(body, i, out);
+					continue;
+				}
+
+				out.push_back('$');
+				++i;
+				continue;
+			}
+
+			if (c == '`') {
+				expandHeredocBackquote(body, i, out);
+				continue;
+			}
+
+			out.push_back(c);
+			++i;
+		}
+
+		return out;
+	}
+
 	std::string Expander::runCmdSubst(const std::string& body) {
 		if (sub_) return sub_->run(body);
 		return {};
@@ -840,7 +904,7 @@ namespace wbsh {
 		return false;
 	}
 
-	std::string Expander::lookupParam(const std::string& name) {
+	std::string Expander::lookupParam(const std::string& name, bool suppress_nounset) {
 		if (name.empty()) return {};
 
 		if (name.size() == 1) {
@@ -869,7 +933,7 @@ namespace wbsh {
 		if (lookupDynamicSpecial(name, dyn)) return dyn;
 
 		if (!env_.has(name)) {
-			if (env_.nounset()) {
+			if (env_.nounset() && !suppress_nounset) {
 				fail(name + ": unbound variable");
 			}
 
@@ -933,6 +997,7 @@ namespace wbsh {
 
 			long long idx = 0;
 			if (!tryEvalArith(subscript, idx)) return {};
+			if (idx < 0 && !ia->empty()) idx = ia->rbegin()->first + idx + 1;
 			const auto it = ia->find(idx);
 			return it == ia->end() ? std::string() : it->second;
 		}
@@ -1054,12 +1119,12 @@ namespace wbsh {
 
 		switch (op) {
 		case '-':
-			return empty_or_unset ? expandHeredoc(arg, false) : cur;
+			return empty_or_unset ? expandParamWordArg(arg) : cur;
 		case '+':
-			return empty_or_unset ? std::string() : expandHeredoc(arg, false);
+			return empty_or_unset ? std::string() : expandParamWordArg(arg);
 		case '=': {
 			if (!empty_or_unset) return cur;
-			std::string v = expandHeredoc(arg, false);
+			std::string v = expandParamWordArg(arg);
 			env_.set(name, v);
 			return v;
 		}
@@ -1067,7 +1132,7 @@ namespace wbsh {
 			if (!empty_or_unset) return cur;
 			std::string msg = arg.empty()
 				? (name + ": parameter null or not set")
-				: expandHeredoc(arg, false);
+				: expandParamWordArg(arg);
 			fail(std::move(msg));
 			return {};
 		}
@@ -1164,16 +1229,76 @@ namespace wbsh {
 			                        ctx.body.substr(all ? op_pos + 2 : op_pos + 1), all);
 		}
 
+		if (op == '^' || op == ',') {
+			const bool all = (op_pos + 1 < ctx.body.size() && ctx.body[op_pos + 1] == op);
+			const std::string pat = expandHeredoc(
+				ctx.body.substr(all ? op_pos + 2 : op_pos + 1), false);
+			return applyCaseConv(ctx.named_value, op, all, pat);
+		}
+
 		return ctx.named_value;
+	}
+
+	std::string Expander::applyCaseConv(const std::string& val, char op, bool all,
+	                                    const std::string& pat) {
+		std::string out = val;
+		for (std::size_t k = 0; k < out.size(); ++k) {
+			if (!all && k > 0) break;
+			const char c = out[k];
+			if (!pat.empty() && !fnmatchFull(pat, std::string(1, c))) continue;
+			out[k] = (op == '^')
+				? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+				: static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		}
+
+		return out;
+	}
+
+	// `${!name}` indirection: resolve `name`'s value, then look up a
+	// parameter by that value. Returns false when `body` isn't a plain
+	// `!name` form (e.g. it's the `${!name[@]}` indices form instead).
+	bool Expander::tryExpandIndirectParam(const std::string& body, std::string& out) {
+		const std::string ref_name = body.substr(1);
+		bool plain_name = !ref_name.empty() && isNameStart(ref_name[0]);
+		for (char c : ref_name) {
+			if (!isNameCont(c)) { plain_name = false; break; }
+		}
+
+		if (!plain_name) return false;
+
+		const std::string target = lookupParam(ref_name);
+		out = (aborting() || target.empty()) ? std::string() : lookupParam(target);
+		return true;
+	}
+
+	// Peeks past `body[i]`'s operator (skipping a leading `:` for the
+	// `-`/`+`/`=`/`?` family) to tell whether that operator already
+	// handles an unset parameter itself, so the caller's lookup can
+	// skip `set -u`'s unbound-variable check on its behalf.
+	static bool paramOpHandlesUnset(const std::string& body, std::size_t i) {
+		char op = (i < body.size()) ? body[i] : '\0';
+		if (op == ':' && i + 1 < body.size()
+		    && (body[i + 1] == '-' || body[i + 1] == '+'
+		        || body[i + 1] == '=' || body[i + 1] == '?'))
+		{
+			op = body[i + 1];
+		}
+
+		return op == '-' || op == '+' || op == '=' || op == '?';
 	}
 
 	std::string Expander::expandParam(const std::string& body, bool /*quoted_ctx*/) {
 		if (body.empty()) return {};
 
 		if (body[0] == '#' && body.size() > 1) return expandParamLengthForm(body);
-		if (body[0] == '!' && body.size() > 4) {
-			std::string out = expandParamIndicesForm(body);
-			if (!out.empty()) return out;
+		if (body[0] == '!' && body.size() > 1) {
+			if (body.size() > 4) {
+				std::string out = expandParamIndicesForm(body);
+				if (!out.empty()) return out;
+			}
+
+			std::string out;
+			if (tryExpandIndirectParam(body, out)) return out;
 		}
 
 		std::string name;
@@ -1191,9 +1316,12 @@ namespace wbsh {
 			}
 		}
 
+		// `${name:-…}`, `${name-…}`, `${name:=…}`, `${name:?…}` (and their
+		// colon-less siblings) handle an unset `name` themselves, so the
+		// lookup here must not raise `set -u`'s unbound-variable error.
 		const std::string named = has_subscript
 			? lookupSubscripted(name, subscript, true)
-			: lookupParam(name);
+			: lookupParam(name, paramOpHandlesUnset(body, i));
 		if (i >= body.size()) return named;
 
 		char op = body[i];

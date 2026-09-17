@@ -341,6 +341,8 @@ namespace wbsh {
 		case Node::Kind::CaseClause:    return execCase(static_cast<const CaseClause&>(n));
 		case Node::Kind::FunctionDef:   return execFunctionDef(static_cast<const FunctionDef&>(n));
 		case Node::Kind::DBracket:      return execDBracket(static_cast<const DBracketCond&>(n));
+		case Node::Kind::ArithCommand:
+			return execArithCommand(static_cast<const ArithCommand&>(n));
 		}
 
 		return 0;
@@ -1894,36 +1896,160 @@ namespace wbsh {
 		return status;
 	}
 
+	int Executor::execForArith(const ForClause& fc) {
+		RedirState rs;
+		if (!applyRedirections(fc.redirs, rs)) { undoRedirections(rs); return 1; }
+		int status = 0;
+		++loop_depth_;
+
+		if (!fc.arith_init.empty()) {
+			expander_.evalArith(fc.arith_init);
+			if (expander_.failed()) {
+				std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+				--loop_depth_;
+				undoRedirections(rs);
+				return 1;
+			}
+		}
+
+		while (true) {
+			if (!fc.arith_cond.empty()) {
+				const long long c = expander_.evalArith(fc.arith_cond);
+				if (expander_.failed()) {
+					std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+					status = 1;
+					break;
+				}
+
+				if (c == 0) break;
+			}
+
+			const int s = fc.body ? execNode(*fc.body) : 0;
+			if (!flowPending()) status = s;
+			const LoopFlowAction act = dispatchLoopFlow();
+			if (act == LoopFlowAction::ExitLoop || act == LoopFlowAction::Propagate) break;
+
+			if (!fc.arith_update.empty()) {
+				expander_.evalArith(fc.arith_update);
+				if (expander_.failed()) {
+					std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+					status = 1;
+					break;
+				}
+			}
+		}
+
+		--loop_depth_;
+		undoRedirections(rs);
+		return status;
+	}
+
+	// Computes the word list a `for`/`select` header iterates over: the
+	// expanded `in word...` list, or `"$@"` when there's no `in` clause.
+	// Returns false if expansion failed or shell control flow (return
+	// from a function, etc.) fired mid-expansion; `*out_status` then
+	// holds what the caller should propagate.
+	bool Executor::expandForWordList(const ForClause& fc, std::vector<std::string>& values,
+	                                 int* out_status) {
+		*out_status = 0;
+		if (!fc.has_in) {
+			values = env_.positional();
+			return true;
+		}
+
+		for (const auto& w : fc.items) {
+			auto fields = expander_.expandWord(w);
+			if (expander_.failed()) {
+				std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+				*out_status = 1;
+				return false;
+			}
+
+			if (flowPending()) return false;
+			for (auto& f : fields) values.push_back(std::move(f));
+		}
+
+		return true;
+	}
+
 	int Executor::execFor(const ForClause& fc) {
+		if (fc.is_arith) return execForArith(fc);
+		if (fc.is_select) return execSelect(fc);
+
 		RedirState rs;
 		if (!applyRedirections(fc.redirs, rs)) { undoRedirections(rs); return 1; }
 		int status = 0;
 		++loop_depth_;
 		std::vector<std::string> values;
-		if (fc.has_in) {
-			for (const auto& w : fc.items) {
-				auto fields = expander_.expandWord(w);
-				if (expander_.failed()) {
-					std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
-					--loop_depth_;
-					undoRedirections(rs);
-					return 1;
-				}
-
-				if (flowPending()) {
-					--loop_depth_;
-					undoRedirections(rs);
-					return status;
-				}
-
-				for (auto& f : fields) values.push_back(std::move(f));
-			}
-		} else {
-			values = env_.positional();
+		if (!expandForWordList(fc, values, &status)) {
+			--loop_depth_;
+			undoRedirections(rs);
+			return status;
 		}
 
 		for (const auto& v : values) {
 			env_.set(fc.var, v);
+			const int s = fc.body ? execNode(*fc.body) : 0;
+			if (!flowPending()) status = s;
+			const LoopFlowAction act = dispatchLoopFlow();
+			if (act == LoopFlowAction::NextIter) continue;
+			if (act == LoopFlowAction::ExitLoop || act == LoopFlowAction::Propagate) break;
+		}
+
+		--loop_depth_;
+		undoRedirections(rs);
+		return status;
+	}
+
+	// A minimal line reader for `select`'s menu prompt: reads up to (and
+	// consuming) the next '\n', or to EOF. Returns false only on EOF
+	// with nothing read, matching `select`'s "stop the loop" signal.
+	static bool readSelectReplyLine(std::string& line) {
+		int c;
+		while ((c = std::fgetc(stdin)) != EOF) {
+			if (c == '\n') return true;
+			line.push_back(static_cast<char>(c));
+		}
+
+		return !line.empty();
+	}
+
+	static void printSelectMenu(const std::vector<std::string>& values) {
+		for (std::size_t k = 0; k < values.size(); ++k) {
+			std::fprintf(stderr, "%zu) %s\n", k + 1, values[k].c_str());
+		}
+	}
+
+	int Executor::execSelect(const ForClause& fc) {
+		RedirState rs;
+		if (!applyRedirections(fc.redirs, rs)) { undoRedirections(rs); return 1; }
+		int status = 0;
+		++loop_depth_;
+		std::vector<std::string> values;
+		if (!expandForWordList(fc, values, &status)) {
+			--loop_depth_;
+			undoRedirections(rs);
+			return status;
+		}
+
+		const std::string ps3 = env_.has("PS3") ? env_.get("PS3") : "#? ";
+		while (true) {
+			printSelectMenu(values);
+			std::fputs(ps3.c_str(), stderr);
+			std::fflush(stderr);
+
+			std::string line;
+			if (!readSelectReplyLine(line)) { status = 1; break; }
+			env_.set("REPLY", line);
+
+			long long choice = 0;
+			std::string chosen;
+			if (parseLL(line, choice) && choice >= 1
+			    && static_cast<std::size_t>(choice) <= values.size()) {
+				chosen = values[static_cast<std::size_t>(choice) - 1];
+			}
+
+			env_.set(fc.var, chosen);
 			const int s = fc.body ? execNode(*fc.body) : 0;
 			if (!flowPending()) status = s;
 			const LoopFlowAction act = dispatchLoopFlow();
@@ -2001,9 +2127,30 @@ namespace wbsh {
 	static bool evalDBracketExpr(const DBracketCond::Expr& e,
 	                             Expander& exp,
 	                             const PathConv& pc,
+	                             Environment& env,
 	                             bool nocasematch);
 
-	static bool evalDBracketUnaryTest(char op, const std::string& lhs, const PathConv& pc) {
+	static bool evalDBracketVarSet(const std::string& lhs, Environment& env) {
+		const std::size_t lb = lhs.find('[');
+		if (lb == std::string::npos || lhs.empty() || lhs.back() != ']') {
+			if (env.isIndexedArray(lhs) || env.isAssocArray(lhs)) return true;
+			return env.has(lhs);
+		}
+
+		const std::string name = lhs.substr(0, lb);
+		const std::string sub = lhs.substr(lb + 1, lhs.size() - lb - 2);
+		if (auto* aa = env.getAssocArray(name)) return aa->count(sub) != 0;
+		if (auto* ia = env.getIndexedArray(name)) {
+			long long idx = 0;
+			return parseLL(sub, idx) && ia->count(idx) != 0;
+		}
+
+		return false;
+	}
+
+	static bool evalDBracketUnaryTest(char op, const std::string& lhs, const PathConv& pc,
+	                                  Environment& env) {
+		if (op == 'v') return evalDBracketVarSet(lhs, env);
 		if (op == 'z') return lhs.empty();
 		if (op == 'n') return !lhs.empty();
 		std::string path = pc.toWin32(lhs);
@@ -2021,10 +2168,30 @@ namespace wbsh {
 		}
 	}
 
-	static bool evalDBracketStringOp(const std::string& op,
-	                                 const std::string& clhs, const std::string& crhs) {
-		if (op == "==" || op == "=") return clhs == crhs;
-		if (op == "!=") return clhs != crhs;
+	// `[[ x == pat ]]` glob-matches an unquoted RHS against x (bash
+	// treats it as a pattern, not a literal string) but compares
+	// literally when the RHS was quoted, e.g. `[[ x == "pat" ]]`.
+	static bool rhsWordIsPattern(const Word& rhs) {
+		for (const auto& seg : rhs.segments) {
+			if (seg.kind != WordSegment::Kind::SingleQuoted
+			    && seg.kind != WordSegment::Kind::DoubleQuoted) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	static bool evalDBracketStringOp(const std::string& op, const std::string& clhs,
+	                                 const std::string& crhs, bool rhs_is_pattern) {
+		if (op == "==" || op == "=") {
+			return rhs_is_pattern ? fnmatchFull(crhs, clhs) : clhs == crhs;
+		}
+
+		if (op == "!=") {
+			return rhs_is_pattern ? !fnmatchFull(crhs, clhs) : clhs != crhs;
+		}
+
 		if (op == "<")  return clhs <  crhs;
 		if (op == ">")  return clhs >  crhs;
 		return false;
@@ -2059,14 +2226,15 @@ namespace wbsh {
 	static bool evalDBracketExpr(const DBracketCond::Expr& e,
 	                             Expander& exp,
 	                             const PathConv& pc,
+	                             Environment& env,
 	                             bool nocasematch) {
 		using K = DBracketCond::Expr::K;
 		switch (e.k) {
-		case K::And: return evalDBracketExpr(*e.a, exp, pc, nocasematch)
-		                 && evalDBracketExpr(*e.b, exp, pc, nocasematch);
-		case K::Or:  return evalDBracketExpr(*e.a, exp, pc, nocasematch)
-		                 || evalDBracketExpr(*e.b, exp, pc, nocasematch);
-		case K::Not: return !evalDBracketExpr(*e.a, exp, pc, nocasematch);
+		case K::And: return evalDBracketExpr(*e.a, exp, pc, env, nocasematch)
+		                 && evalDBracketExpr(*e.b, exp, pc, env, nocasematch);
+		case K::Or:  return evalDBracketExpr(*e.a, exp, pc, env, nocasematch)
+		                 || evalDBracketExpr(*e.b, exp, pc, env, nocasematch);
+		case K::Not: return !evalDBracketExpr(*e.a, exp, pc, env, nocasematch);
 		case K::Prim: break;
 		}
 
@@ -2074,7 +2242,7 @@ namespace wbsh {
 		if (exp.failed()) return false;
 		if (e.op.empty()) return !lhs.empty();
 		if (e.op.size() == 2 && e.op[0] == '-') {
-			return evalDBracketUnaryTest(e.op[1], lhs, pc);
+			return evalDBracketUnaryTest(e.op[1], lhs, pc, env);
 		}
 
 		std::string rhs = exp.expandStringValue(e.rhs);
@@ -2086,7 +2254,7 @@ namespace wbsh {
 		std::string clhs = nocasematch ? lower(lhs) : lhs;
 		std::string crhs = nocasematch ? lower(rhs) : rhs;
 		if (e.op == "==" || e.op == "=" || e.op == "!=" || e.op == "<" || e.op == ">") {
-			return evalDBracketStringOp(e.op, clhs, crhs);
+			return evalDBracketStringOp(e.op, clhs, crhs, rhsWordIsPattern(e.rhs));
 		}
 
 		if (e.op == "=~") {
@@ -2116,11 +2284,30 @@ namespace wbsh {
 		int status;
 		if (!ok) status = 1;
 		else if (!dc.root) status = 1;
-		else status = evalDBracketExpr(*dc.root, expander_, path_conv_,
+		else status = evalDBracketExpr(*dc.root, expander_, path_conv_, env_,
 		                               env_.nocasematch()) ? 0 : 1;
 		if (expander_.failed()) {
 			std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
 			status = 1;
+		}
+
+		undoRedirections(rs);
+		setLastStatus(status);
+		return status;
+	}
+
+	int Executor::execArithCommand(const ArithCommand& ac) {
+		RedirState rs;
+		bool ok = applyRedirections(ac.redirs, rs);
+		int status = 1;
+		if (ok) {
+			const long long v = expander_.evalArith(ac.expr);
+			if (expander_.failed()) {
+				std::fprintf(stderr, "wbsh: %s\n", expander_.takeError().c_str());
+				status = 1;
+			} else {
+				status = (v != 0) ? 0 : 1;
+			}
 		}
 
 		undoRedirections(rs);

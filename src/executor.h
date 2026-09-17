@@ -400,9 +400,14 @@ namespace wbsh {
 		int execIf(const IfClause& ic);
 		int execWhile(const WhileClause& wc);
 		int execFor(const ForClause& fc);
+		int execForArith(const ForClause& fc);
+		int execSelect(const ForClause& fc);
+		bool expandForWordList(const ForClause& fc, std::vector<std::string>& values,
+		                       int* out_status);
 		int execCase(const CaseClause& cc);
 		int execFunctionDef(const FunctionDef& fd);
 		int execDBracket(const DBracketCond& dc);
+		int execArithCommand(const ArithCommand& ac);
 
 		// Loop-body epilogue: consume a Break / Continue signal aimed at
 		// the current loop and report what the loop should do next.

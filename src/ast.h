@@ -128,6 +128,7 @@ namespace wbsh {
 			CaseClause,     ///< `case … in …; esac`.
 			FunctionDef,    ///< `name() { … }` definition.
 			DBracket,       ///< `[[ … ]]` conditional.
+			ArithCommand,   ///< `(( … ))` arithmetic command.
 		};
 		Kind kind;                  ///< Concrete subclass tag.
 		SourceLoc loc;              ///< Position in the source.
@@ -227,6 +228,19 @@ namespace wbsh {
 		std::vector<Word> items;            ///< Word list after `in`.
 		NodePtr body = nullptr;             ///< Loop body.
 		std::vector<Redirection> redirs;    ///< Redirections on the loop.
+
+		bool is_arith = false;              ///< True for `for (( init; cond; update ))`.
+		std::string arith_init;             ///< Raw arithmetic text; empty => omitted.
+		std::string arith_cond;             ///< Raw arithmetic text; empty => always true.
+		std::string arith_update;           ///< Raw arithmetic text; empty => omitted.
+
+		bool is_select = false;             ///< True for `select var [in words]; do …; done`.
+	};
+
+	struct ArithCommand : Node {
+		ArithCommand() : Node(Kind::ArithCommand) {}
+		std::string expr;                   ///< Raw `(( … ))` body text.
+		std::vector<Redirection> redirs;    ///< Redirections on the command.
 	};
 
 	struct CaseClause : Node {

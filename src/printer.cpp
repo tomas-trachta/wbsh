@@ -149,6 +149,16 @@ namespace wbsh {
 	}
 
 	static void dumpForClause(std::ostream& os, int depth, const ForClause& f) {
+		if (f.is_arith) {
+			indent(os, depth + 1);
+			os << "arith init=\"" << f.arith_init << "\" cond=\"" << f.arith_cond
+				<< "\" update=\"" << f.arith_update << "\"\n";
+			indent(os, depth + 1); os << "do\n";
+			dumpListBody(os, depth + 2, f.body);
+			for (const auto& r : f.redirs) dumpRedir(os, depth + 1, r);
+			return;
+		}
+
 		indent(os, depth + 1);
 		os << "var " << f.var << "\n";
 		if (f.has_in) {
@@ -284,6 +294,13 @@ namespace wbsh {
 		case Node::Kind::DBracket:
 			dumpDBracket(os, depth, static_cast<const DBracketCond&>(n));
 			return;
+		case Node::Kind::ArithCommand: {
+			const auto& ac = static_cast<const ArithCommand&>(n);
+			indent(os, depth + 1);
+			os << "expr=\"" << ac.expr << "\"\n";
+			for (const auto& r : ac.redirs) dumpRedir(os, depth + 1, r);
+			return;
+		}
 		}
 	}
 

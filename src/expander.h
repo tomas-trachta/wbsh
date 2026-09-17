@@ -215,7 +215,8 @@ namespace wbsh {
 		void   renderProcSubstSegment(const WordSegment& s, Tagged& out);
 		void   renderDollarAt(Tagged& out, bool inside_dq);
 
-		std::string lookupParam(const std::string& name);
+		std::string lookupParam(const std::string& name, bool suppress_nounset = false);
+		bool tryExpandIndirectParam(const std::string& body, std::string& out);
 		std::string joinPositionals(char form) const;
 		bool        lookupSpecialChar(char c, std::string& out);
 		bool        lookupDynamicSpecial(const std::string& name, std::string& out) const;
@@ -282,6 +283,9 @@ namespace wbsh {
 		std::string substringExpand(const std::string& val, const std::string& args);
 		std::string stripPrefix(const std::string& val, const std::string& pat, bool greedy);
 		std::string stripSuffix(const std::string& val, const std::string& pat, bool greedy);
+		std::string applyCaseConv(const std::string& val, char op, bool all,
+		                          const std::string& pat);
+		std::string expandParamWordArg(const std::string& body);
 		std::string replacePattern(const std::string& val, const std::string& pat,
 		                           const std::string& rep, bool all,
 		                           bool anchor_start, bool anchor_end);

@@ -23,6 +23,7 @@ namespace wbsh {
 		case TokKind::PipeAmp: return "|&";
 		case TokKind::LParen: return "(";
 		case TokKind::RParen: return ")";
+		case TokKind::DArithCmd: return "((";
 		case TokKind::Less: return "<";
 		case TokKind::Great: return ">";
 		case TokKind::DLess: return "<<";
@@ -297,7 +298,20 @@ namespace wbsh {
 		case ';': scanSemiRun(start);   return;
 		case '<': scanLessRun(start);   return;
 		case '>': scanGreatRun(start);  return;
-		case '(': advance(); emitOperator(start, TokKind::LParen, "("); return;
+		case '(':
+			if (peek(1) == '(') {
+				advance(); advance();
+				Token tok;
+				tok.kind = TokKind::DArithCmd;
+				tok.loc = start;
+				tok.first_on_line = at_line_start_;
+				at_line_start_ = false;
+				tok.text = readBalancedDoubleParens();
+				tokens_.push_back(std::move(tok));
+				return;
+			}
+
+			advance(); emitOperator(start, TokKind::LParen, "("); return;
 		case ')': advance(); emitOperator(start, TokKind::RParen, ")"); return;
 		default:
 			error(start, std::string("unexpected character '") + c + "'");
