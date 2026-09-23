@@ -10,6 +10,7 @@
 
 #include <shellapi.h>
 
+#include <cctype>
 #include <objbase.h>
 #include <string>
 #include <vector>
@@ -38,6 +39,8 @@ namespace wbshterm {
 		int          rows       = 30;
 		unsigned int delay_ms   = 400;
 		unsigned int settle_ms  = 600;
+		int          scroll_lines = 0;
+		std::wstring selection;
 	};
 
 	static std::string narrow(const std::wstring& text) {
@@ -49,6 +52,23 @@ namespace wbshterm {
 		::WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
 			out.data(), needed, nullptr, nullptr);
 		return out;
+	}
+
+	// Reads the two hex digits after a \x, advancing past them. Anything
+	// shorter is taken literally, so a lone \x is not a parse error.
+	static char readHexByte(const std::string& text, std::size_t& index) {
+		int value = 0;
+		int digits = 0;
+
+		while (digits < 2 && index + 1 < text.size() && std::isxdigit(
+				static_cast<unsigned char>(text[index + 1])) != 0) {
+			const char digit = text[++index];
+			const int part = digit <= '9' ? digit - '0' : (std::tolower(digit) - 'a' + 10);
+			value = value * 16 + part;
+			++digits;
+		}
+
+		return digits == 0 ? 'x' : static_cast<char>(value);
 	}
 
 	static std::string unescape(const std::string& text) {
@@ -65,6 +85,7 @@ namespace wbshterm {
 			case 't':  out.push_back('\t'); break;
 			case 'e':  out.push_back('\x1b'); break;
 			case '\\': out.push_back('\\'); break;
+			case 'x':  out.push_back(readHexByte(text, i)); break;
 			default:   out.push_back('\\'); out.push_back(text[i]); break;
 			}
 		}
@@ -113,6 +134,7 @@ namespace wbshterm {
 			const bool needs_value = arg == L"--shell" || arg == L"--args" || arg == L"--feed"
 				|| arg == L"--snapshot" || arg == L"--selftest" || arg == L"--size"
 				|| arg == L"--record" || arg == L"--replay" || arg == L"--dump"
+				|| arg == L"--scroll" || arg == L"--select"
 				|| arg == L"--delay" || arg == L"--settle";
 			if (needs_value && i + 1 >= argc) return false;
 
@@ -121,6 +143,8 @@ namespace wbshterm {
 			if (arg == L"--feed")     { options.feed = unescape(narrow(argv[++i])); continue; }
 			if (arg == L"--record")   { options.record_path = argv[++i]; continue; }
 			if (arg == L"--dump")     { options.dump_path = argv[++i]; continue; }
+			if (arg == L"--scroll")   { options.scroll_lines = std::stoi(argv[++i]); continue; }
+			if (arg == L"--select")   { options.selection = argv[++i]; continue; }
 			if (arg == L"--replay") {
 				options.mode = Mode::Replay;
 				options.replay_path = argv[++i];
@@ -172,6 +196,26 @@ namespace wbshterm {
 		return command_line;
 	}
 
+	// "row:col-row:col" in absolute rows, for showing a selection in a
+	// snapshot without a mouse.
+	static void applySelection(const std::wstring& text, SnapshotRequest& request) {
+		if (text.empty()) return;
+
+		int values[4] = { 0, 0, 0, 0 };
+		std::size_t at = 0;
+		for (int index = 0; index < 4 && at < text.size(); ++index) {
+			std::size_t used = 0;
+			values[index] = std::stoi(text.substr(at), &used);
+			at += used + 1;
+		}
+
+		request.select        = true;
+		request.select_row    = values[0];
+		request.select_column = values[1];
+		request.select_to_row = values[2];
+		request.select_to_col = values[3];
+	}
+
 	static int runSnapshot(const Options& options) {
 		SnapshotRequest request;
 		request.command_line = shellCommandLine(options);
@@ -182,6 +226,8 @@ namespace wbshterm {
 		request.rows         = options.rows;
 		request.delay_ms     = options.delay_ms;
 		request.settle_ms    = options.settle_ms;
+		request.scroll_lines = options.scroll_lines;
+		applySelection(options.selection, request);
 
 		std::string error;
 		if (renderSnapshot(request, error)) return 0;

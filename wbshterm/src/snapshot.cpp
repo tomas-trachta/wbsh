@@ -88,8 +88,8 @@ namespace wbshterm {
 		}
 	}
 
-	static bool paintToBitmap(Renderer& renderer, const Screen& screen, IWICBitmap* bitmap,
-			std::string& out_error) {
+	static bool paintToBitmap(Renderer& renderer, const Screen& screen, const TerminalView& view,
+			IWICBitmap* bitmap, std::string& out_error) {
 		ComPtr<ID2D1RenderTarget> target;
 		const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
 			D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -103,7 +103,7 @@ namespace wbshterm {
 		}
 
 		target->BeginDraw();
-		renderer.draw(target.Get(), screen);
+		renderer.draw(target.Get(), screen, view);
 		if (FAILED(target->EndDraw())) {
 			out_error = "off-screen drawing failed";
 			return false;
@@ -118,7 +118,7 @@ namespace wbshterm {
 	}
 
 	static bool paintGridToFile(Renderer& renderer, const Screen& screen,
-			const std::wstring& path, std::string& out_error) {
+			const TerminalView& view, const std::wstring& path, std::string& out_error) {
 		const CellMetrics& cell = renderer.metrics();
 		const UINT width  = static_cast<UINT>(cell.width * static_cast<float>(screen.columns()));
 		const UINT height = static_cast<UINT>(cell.height * static_cast<float>(screen.rows()));
@@ -133,7 +133,7 @@ namespace wbshterm {
 			return false;
 		}
 
-		if (!paintToBitmap(renderer, screen, bitmap.Get(), out_error)) return false;
+		if (!paintToBitmap(renderer, screen, view, bitmap.Get(), out_error)) return false;
 		return savePng(factory.Get(), bitmap.Get(), path, width, height, out_error);
 	}
 
@@ -142,7 +142,9 @@ namespace wbshterm {
 
 		Renderer renderer;
 		if (!createRenderer(renderer, out_error)) return false;
-		return paintGridToFile(renderer, screen, path, out_error);
+
+		const TerminalView view;
+		return paintGridToFile(renderer, screen, view, path, out_error);
 	}
 
 	bool renderSnapshot(const SnapshotRequest& request, std::string& out_error) {
@@ -158,8 +160,16 @@ namespace wbshterm {
 
 		runUntilQuiet(session, request);
 
-		const bool painted = paintGridToFile(renderer, session.screen(), request.output_path,
-			out_error);
+		TerminalView view;
+		view.followOutput(session.screen());
+		if (request.scroll_lines != 0) view.scrollBy(request.scroll_lines, session.screen());
+		if (request.select) {
+			view.beginSelection({ request.select_row, request.select_column });
+			view.extendSelection({ request.select_to_row, request.select_to_col });
+		}
+
+		const bool painted = paintGridToFile(renderer, session.screen(), view,
+			request.output_path, out_error);
 		session.stop();
 		return painted;
 	}

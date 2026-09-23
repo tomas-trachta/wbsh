@@ -11,6 +11,7 @@
 namespace wbshterm {
 
 	static const int kTabWidth = 8;
+	static const std::size_t kScrollbackLimit = 10000;
 
 	static const std::uint32_t kAnsiPalette[16] = {
 		0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5,
@@ -66,6 +67,16 @@ namespace wbshterm {
 		const std::size_t index = static_cast<std::size_t>(row) * static_cast<std::size_t>(columns_)
 			+ static_cast<std::size_t>(column);
 		return cells_[index];
+	}
+
+	const Cell& Screen::cellAt(int absolute_row, int column) const {
+		const int history = scrollbackRows();
+		if (absolute_row >= history) return cell(absolute_row - history, column);
+
+		static const Cell blank;
+		const std::vector<Cell>& line = scrollback_[static_cast<std::size_t>(absolute_row)];
+		const std::size_t index = static_cast<std::size_t>(column);
+		return index < line.size() ? line[index] : blank;
 	}
 
 	bool Screen::rowDirty(int row) const {
@@ -183,9 +194,24 @@ namespace wbshterm {
 		markDirty(row);
 	}
 
+	void Screen::pushToScrollback(int row) {
+		if (alt_screen_) return;
+		if (scroll_top_ != 0 || scroll_bottom_ != rows_ - 1) return;
+
+		const std::size_t start =
+			static_cast<std::size_t>(row) * static_cast<std::size_t>(columns_);
+		scrollback_.emplace_back(cells_.begin() + static_cast<std::ptrdiff_t>(start),
+			cells_.begin() + static_cast<std::ptrdiff_t>(start)
+				+ static_cast<std::ptrdiff_t>(columns_));
+
+		while (scrollback_.size() > kScrollbackLimit) scrollback_.pop_front();
+	}
+
 	void Screen::scrollUp(int count) {
 		const int lines = std::max(1, count);
 		for (int step = 0; step < lines; ++step) {
+			pushToScrollback(scroll_top_);
+
 			for (int row = scroll_top_; row < scroll_bottom_; ++row) {
 				for (int column = 0; column < columns_; ++column) {
 					at(row, column) = cell(row + 1, column);
@@ -393,11 +419,42 @@ namespace wbshterm {
 		}
 	}
 
+	// The alt screen is a second grid with no history: vim and less draw
+	// there so the scrollback still holds what the shell printed before.
+	void Screen::enterAltScreen() {
+		if (alt_screen_) return;
+
+		primary_cells_  = cells_;
+		primary_cursor_ = cursor_;
+		alt_screen_     = true;
+
+		cells_.assign(cells_.size(), Cell());
+		moveCursor(0, 0);
+		markAllDirty();
+	}
+
+	void Screen::leaveAltScreen() {
+		if (!alt_screen_) return;
+
+		alt_screen_ = false;
+		if (primary_cells_.size() == cells_.size()) cells_ = primary_cells_;
+		cursor_ = primary_cursor_;
+		markAllDirty();
+	}
+
 	void Screen::applyPrivateMode(const VtSequence& sequence, bool enable) {
 		for (std::size_t i = 0; i < sequence.params.size(); ++i) {
 			switch (sequence.param(i, 0)) {
-			case 25: cursor_.visible = enable; break;
-			default: break;
+			case 1:    application_cursor_ = enable; break;
+			case 25:   cursor_.visible = enable; break;
+			case 47:
+			case 1047:
+			case 1049:
+				if (enable) enterAltScreen();
+				else leaveAltScreen();
+				break;
+			case 2004: bracketed_paste_ = enable; break;
+			default:   break;
 			}
 		}
 	}

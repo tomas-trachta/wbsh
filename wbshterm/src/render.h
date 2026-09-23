@@ -7,6 +7,7 @@
 
 #include "font.h"
 #include "screen.h"
+#include "view.h"
 
 #include <d2d1.h>
 #include <wrl/client.h>
@@ -19,6 +20,7 @@ namespace wbshterm {
 		std::uint32_t background = 0x1E1E1E;
 		std::uint32_t foreground = 0xD4D4D4;
 		std::uint32_t cursor     = 0xD4D4D4;
+		std::uint32_t selection  = 0x264F78;
 	};
 
 	/**
@@ -33,24 +35,30 @@ namespace wbshterm {
 		const CellMetrics& metrics() const { return font_.metrics(); }
 		const Theme& theme() const { return theme_; }
 
-		void draw(ID2D1RenderTarget* target, const Screen& screen);
+		void draw(ID2D1RenderTarget* target, const Screen& screen, const TerminalView& view);
 
 	private:
-		void drawRowBackgrounds(ID2D1RenderTarget* target, const Screen& screen, int row);
-		void drawRowText(ID2D1RenderTarget* target, const Screen& screen, int row);
+		bool prepareBrush(ID2D1RenderTarget* target);
+
+		void drawRowBackgrounds(ID2D1RenderTarget* target, const Screen& screen,
+			const TerminalView& view, int absolute_row, int viewport_row);
+		void drawRowText(ID2D1RenderTarget* target, const Screen& screen,
+			const TerminalView& view, int absolute_row, int viewport_row);
 		void drawRun(ID2D1RenderTarget* target, const std::wstring& text, const Cell& style,
 			int row, int column);
-		void drawCursor(ID2D1RenderTarget* target, const Screen& screen);
+		void drawCursor(ID2D1RenderTarget* target, const Screen& screen, const TerminalView& view);
 
+		std::uint32_t backgroundFor(const Screen& screen, const TerminalView& view,
+			int absolute_row, int column) const;
 		std::uint32_t resolveForeground(const Cell& cell) const;
 		std::uint32_t resolveBackground(const Cell& cell) const;
 		void setBrushColor(std::uint32_t rgb, float alpha);
 
-		Microsoft::WRL::ComPtr<ID2D1Factory>             factory_;
-		Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>     brush_;
-		ID2D1RenderTarget*                               brush_owner_ = nullptr;
-		FontSet                                          font_;
-		Theme                                            theme_;
+		Microsoft::WRL::ComPtr<ID2D1Factory>         factory_;
+		Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;
+		ID2D1RenderTarget*                           brush_owner_ = nullptr;
+		FontSet                                      font_;
+		Theme                                        theme_;
 	};
 
 } /* namespace wbshterm */

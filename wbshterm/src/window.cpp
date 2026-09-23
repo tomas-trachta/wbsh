@@ -6,6 +6,9 @@
 #include "window.h"
 
 #include <dwmapi.h>
+#include <windowsx.h>
+
+#include <algorithm>
 
 #pragma comment(lib, "dwmapi.lib")
 
@@ -16,6 +19,7 @@ namespace wbshterm {
 	static const float   kDefaultPointSize = 11.0f;
 	static const int     kDefaultColumns = 100;
 	static const int     kDefaultRows = 30;
+	static const int     kWheelLines = 3;
 
 	static std::string encodeUtf8(wchar_t character) {
 		char bytes[8] = {};
@@ -24,23 +28,63 @@ namespace wbshterm {
 		return length > 0 ? std::string(bytes, static_cast<std::size_t>(length)) : std::string();
 	}
 
-	// M2 owns the full encoder; this is the subset that makes the window
-	// usable by hand — history, line motion, and the keys wbsh's editor
-	// reads most.
-	static const char* specialKeySequence(WPARAM key) {
-		switch (key) {
-		case VK_UP:     return "\x1b[A";
-		case VK_DOWN:   return "\x1b[B";
-		case VK_RIGHT:  return "\x1b[C";
-		case VK_LEFT:   return "\x1b[D";
-		case VK_HOME:   return "\x1b[H";
-		case VK_END:    return "\x1b[F";
-		case VK_INSERT: return "\x1b[2~";
-		case VK_DELETE: return "\x1b[3~";
-		case VK_PRIOR:  return "\x1b[5~";
-		case VK_NEXT:   return "\x1b[6~";
-		default:        return nullptr;
+	static bool keyIsDown(int virtual_key) {
+		return (::GetKeyState(virtual_key) & 0x8000) != 0;
+	}
+
+	static KeyPress currentKeyPress(WPARAM key) {
+		KeyPress press;
+		press.virtual_key = static_cast<unsigned int>(key);
+		press.control     = keyIsDown(VK_CONTROL);
+		press.alt         = keyIsDown(VK_MENU);
+		press.shift       = keyIsDown(VK_SHIFT);
+		return press;
+	}
+
+	// Windows turns some of the keys handled here into a character message
+	// as well; those need swallowing, and the rest must not set the flag or
+	// it eats the next thing typed.
+	static bool alsoProducesCharacter(const KeyPress& press) {
+		switch (press.virtual_key) {
+		case VK_SPACE:
+		case VK_TAB:
+		case VK_BACK:
+		case VK_RETURN:
+		case VK_ESCAPE:
+			return true;
+		default:
+			return press.virtual_key >= '0' && press.virtual_key <= 'Z';
 		}
+	}
+
+	static bool isPasteShortcut(const KeyPress& press) {
+		if (press.virtual_key == 'V' && press.control) return true;
+		return press.virtual_key == VK_INSERT && press.shift && !press.control;
+	}
+
+	static std::string clipboardText() {
+		if (!::IsClipboardFormatAvailable(CF_UNICODETEXT)) return std::string();
+		if (!::OpenClipboard(nullptr)) return std::string();
+
+		std::string text;
+		const HANDLE handle = ::GetClipboardData(CF_UNICODETEXT);
+		const auto* wide = handle != nullptr
+			? static_cast<const wchar_t*>(::GlobalLock(handle))
+			: nullptr;
+
+		if (wide != nullptr) {
+			const int needed = ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0,
+				nullptr, nullptr);
+			if (needed > 1) {
+				text.resize(static_cast<std::size_t>(needed) - 1);
+				::WideCharToMultiByte(CP_UTF8, 0, wide, -1, text.data(), needed, nullptr, nullptr);
+			}
+
+			::GlobalUnlock(handle);
+		}
+
+		::CloseClipboard();
+		return text;
 	}
 
 	bool TerminalWindow::create(const std::wstring& command_line, std::string& out_error) {
@@ -70,7 +114,7 @@ namespace wbshterm {
 	bool TerminalWindow::registerClass(std::string& out_error) {
 		WNDCLASSEXW description{};
 		description.cbSize        = sizeof(description);
-		description.style         = CS_HREDRAW | CS_VREDRAW;
+		description.style         = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
 		description.lpfnWndProc   = &TerminalWindow::windowProc;
 		description.hInstance     = ::GetModuleHandleW(nullptr);
 		description.hCursor       = ::LoadCursorW(nullptr, IDC_IBEAM);
@@ -165,9 +209,18 @@ namespace wbshterm {
 		switch (message) {
 		case WM_PAINT:       onPaint(); return 0;
 		case WM_SIZE:        onResize(); return 0;
-		case WM_CHAR:        onText(static_cast<wchar_t>(wparam)); return 0;
-		case WM_KEYDOWN:     onSpecialKey(wparam); return 0;
+		case WM_CHAR:
+		case WM_SYSCHAR:     onText(static_cast<wchar_t>(wparam)); return 0;
+		case WM_KEYDOWN:
+		case WM_SYSKEYDOWN:
+			if (onKeyDown(wparam)) return 0;
+			break;
 		case WM_DPICHANGED:  onDpiChanged(wparam, lparam); return 0;
+		case WM_MOUSEWHEEL:  onMouseWheel(wparam); return 0;
+		case WM_LBUTTONDOWN:
+		case WM_LBUTTONDBLCLK: onMouseDown(lparam); return 0;
+		case WM_MOUSEMOVE:   onMouseMove(wparam, lparam); return 0;
+		case WM_LBUTTONUP:   onMouseUp(); return 0;
 		case WM_ERASEBKGND:  return 1;
 		case kMessagePtyData: onPtyData(); return 0;
 		case WM_CLOSE:       ::DestroyWindow(window_); return 0;
@@ -176,8 +229,121 @@ namespace wbshterm {
 			::PostQuitMessage(0);
 			return 0;
 		default:
-			return ::DefWindowProcW(window_, message, wparam, lparam);
+			break;
 		}
+
+		return ::DefWindowProcW(window_, message, wparam, lparam);
+	}
+
+	GridPoint TerminalWindow::pointFromMouse(LPARAM lparam) const {
+		const CellMetrics& cell = renderer_.metrics();
+		const float x = static_cast<float>(GET_X_LPARAM(lparam));
+		const float y = static_cast<float>(GET_Y_LPARAM(lparam));
+
+		const int column = std::min(std::max(static_cast<int>(x / cell.width), 0),
+			session_.screen().columns() - 1);
+		const int viewport_row = std::min(std::max(static_cast<int>(y / cell.height), 0),
+			session_.screen().rows() - 1);
+
+		GridPoint point;
+		point.row    = view_.topRow(session_.screen()) + viewport_row;
+		point.column = column;
+		return point;
+	}
+
+	// Two clicks in the same cell inside the double-click time select a
+	// word, three select the line; Windows only tells us about the second.
+	int TerminalWindow::clickCountAt(GridPoint point) {
+		const DWORD now = ::GetTickCount();
+		const bool same_place = point.row == last_click_.row && point.column == last_click_.column;
+		const bool in_time = now - last_click_time_ <= ::GetDoubleClickTime();
+
+		click_count_ = (same_place && in_time) ? click_count_ + 1 : 1;
+		last_click_ = point;
+		last_click_time_ = now;
+		return click_count_;
+	}
+
+	void TerminalWindow::onMouseDown(LPARAM lparam) {
+		const GridPoint point = pointFromMouse(lparam);
+		const int clicks = clickCountAt(point);
+
+		if (clicks >= 3) view_.selectLine(point, session_.screen());
+		else if (clicks == 2) view_.selectWord(point, session_.screen());
+		else view_.beginSelection(point);
+
+		::SetCapture(window_);
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::onMouseMove(WPARAM wparam, LPARAM lparam) {
+		if (!view_.selecting() || (wparam & MK_LBUTTON) == 0) return;
+
+		view_.extendSelection(pointFromMouse(lparam));
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::onMouseUp() {
+		if (::GetCapture() == window_) ::ReleaseCapture();
+		view_.endSelection();
+	}
+
+	void TerminalWindow::onMouseWheel(WPARAM wparam) {
+		const int notches = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
+		if (notches == 0) return;
+
+		view_.scrollBy(notches * kWheelLines, session_.screen());
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::copySelection() {
+		const std::string text = view_.selectedText(session_.screen());
+		if (text.empty()) return;
+
+		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(),
+			static_cast<int>(text.size()), nullptr, 0);
+		if (needed <= 0 || !::OpenClipboard(window_)) return;
+
+		::EmptyClipboard();
+		const HGLOBAL block = ::GlobalAlloc(GMEM_MOVEABLE,
+			(static_cast<std::size_t>(needed) + 1) * sizeof(wchar_t));
+		if (block != nullptr) {
+			auto* wide = static_cast<wchar_t*>(::GlobalLock(block));
+			::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+				wide, needed);
+			wide[needed] = L'\0';
+			::GlobalUnlock(block);
+			::SetClipboardData(CF_UNICODETEXT, block);
+		}
+
+		::CloseClipboard();
+	}
+
+	// Scrolling and copying belong to the window, not the shell, so these
+	// are taken before the key encoder ever sees them.
+	bool TerminalWindow::handleViewShortcut(const KeyPress& press) {
+		const int page = std::max(1, session_.screen().rows() - 1);
+
+		if (press.shift && !press.control && press.virtual_key == VK_PRIOR) {
+			view_.scrollBy(page, session_.screen());
+		} else if (press.shift && !press.control && press.virtual_key == VK_NEXT) {
+			view_.scrollBy(-page, session_.screen());
+		} else if (press.shift && press.control && press.virtual_key == VK_UP) {
+			view_.scrollBy(1, session_.screen());
+		} else if (press.shift && press.control && press.virtual_key == VK_DOWN) {
+			view_.scrollBy(-1, session_.screen());
+		} else if (press.control && press.shift && press.virtual_key == 'C') {
+			copySelection();
+			return true;
+		} else if (press.control && press.virtual_key == VK_INSERT) {
+			copySelection();
+			return true;
+		} else {
+			return false;
+		}
+
+		::InvalidateRect(window_, nullptr, FALSE);
+		return true;
 	}
 
 	void TerminalWindow::onPaint() {
@@ -186,7 +352,7 @@ namespace wbshterm {
 
 		if (target_) {
 			target_->BeginDraw();
-			renderer_.draw(target_.Get(), session_.screen());
+			renderer_.draw(target_.Get(), session_.screen(), view_);
 			if (target_->EndDraw() == D2DERR_RECREATE_TARGET) {
 				std::string ignored;
 				createTarget(ignored);
@@ -230,6 +396,7 @@ namespace wbshterm {
 
 	void TerminalWindow::onPtyData() {
 		if (session_.drainOutput()) {
+			view_.followOutput(session_.screen());
 			syncTitle();
 			::InvalidateRect(window_, nullptr, FALSE);
 		}
@@ -261,20 +428,65 @@ namespace wbshterm {
 		::SetWindowTextW(window_, wide.c_str());
 	}
 
+	KeyModes TerminalWindow::currentModes() const {
+		KeyModes modes;
+		modes.application_cursor = session_.screen().applicationCursorKeys();
+		modes.bracketed_paste    = session_.screen().bracketedPaste();
+		return modes;
+	}
+
+	// Alt-held characters arrive as WM_SYSCHAR and go out ESC-prefixed,
+	// which is how a terminal spells Meta.
 	void TerminalWindow::onText(wchar_t character) {
-		const std::string bytes = encodeUtf8(character);
+		if (swallow_next_char_) {
+			swallow_next_char_ = false;
+			return;
+		}
+
+		std::string bytes = encodeUtf8(character);
+		if (bytes.empty()) return;
+
+		if (keyIsDown(VK_MENU)) bytes.insert(bytes.begin(), '\x1b');
 		sendBytes(bytes.data(), bytes.size());
 	}
 
-	void TerminalWindow::onSpecialKey(WPARAM key) {
-		const char* sequence = specialKeySequence(key);
-		if (sequence == nullptr) return;
+	bool TerminalWindow::onKeyDown(WPARAM key) {
+		const KeyPress press = currentKeyPress(key);
+		swallow_next_char_ = false;
 
-		sendBytes(sequence, std::char_traits<char>::length(sequence));
+		if (handleViewShortcut(press)) {
+			swallow_next_char_ = alsoProducesCharacter(press);
+			return true;
+		}
+
+		if (isPasteShortcut(press)) {
+			pasteFromClipboard();
+			swallow_next_char_ = alsoProducesCharacter(press);
+			return true;
+		}
+
+		const std::string bytes = encodeKeyPress(press, currentModes());
+		if (bytes.empty()) return false;
+
+		sendBytes(bytes.data(), bytes.size());
+		swallow_next_char_ = alsoProducesCharacter(press);
+		return true;
+	}
+
+	void TerminalWindow::pasteFromClipboard() {
+		const std::string text = clipboardText();
+		if (text.empty()) return;
+
+		const std::string bytes = encodePaste(text, currentModes());
+		sendBytes(bytes.data(), bytes.size());
 	}
 
 	void TerminalWindow::sendBytes(const char* data, std::size_t length) {
 		if (length == 0) return;
+
+		view_.scrollToBottom();
+		view_.clearSelection();
+		::InvalidateRect(window_, nullptr, FALSE);
 		session_.writeInput(data, length);
 	}
 

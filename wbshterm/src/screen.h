@@ -8,6 +8,7 @@
 #include "vtparse.h"
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -55,9 +56,22 @@ namespace wbshterm {
 		int columns() const { return columns_; }
 		int rows() const { return rows_; }
 
+		/** Lines that have scrolled off the top and are still remembered. */
+		int scrollbackRows() const { return static_cast<int>(scrollback_.size()); }
+
+		/** Scrollback plus the live grid, the coordinate space the view uses. */
+		int totalRows() const { return scrollbackRows() + rows_; }
+
+		/** Addresses scrollback and grid alike; row 0 is the oldest line kept. */
+		const Cell& cellAt(int absolute_row, int column) const;
+
+		bool onAltScreen() const { return alt_screen_; }
+
 		const Cell& cell(int row, int column) const;
 		const CursorState& cursor() const { return cursor_; }
 		const std::string& title() const { return title_; }
+		bool applicationCursorKeys() const { return application_cursor_; }
+		bool bracketedPaste() const { return bracketed_paste_; }
 
 		bool rowDirty(int row) const;
 		void clearDirty();
@@ -87,6 +101,9 @@ namespace wbshterm {
 		void tab();
 
 		void scrollUp(int count);
+		void pushToScrollback(int row);
+		void enterAltScreen();
+		void leaveAltScreen();
 		void scrollDown(int count);
 		void clearRow(int row, int from_column, int to_column);
 
@@ -110,6 +127,10 @@ namespace wbshterm {
 		int  columns_ = 0;
 		int  rows_    = 0;
 		std::vector<Cell> cells_;
+		std::deque<std::vector<Cell>> scrollback_;
+		std::vector<Cell> primary_cells_;
+		CursorState       primary_cursor_;
+		bool              alt_screen_ = false;
 		std::vector<bool> dirty_;
 
 		CursorState cursor_;
@@ -121,6 +142,8 @@ namespace wbshterm {
 		int scroll_bottom_ = 0;
 
 		std::string   title_;
+		bool          application_cursor_ = false;
+		bool          bracketed_paste_    = false;
 		VtResponder*  responder_ = nullptr;
 	};
 

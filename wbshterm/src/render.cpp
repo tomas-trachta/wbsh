@@ -69,47 +69,57 @@ namespace wbshterm {
 		brush_->SetColor(toColorF(rgb, alpha));
 	}
 
-	void Renderer::draw(ID2D1RenderTarget* target, const Screen& screen) {
-		if (brush_owner_ != target) {
-			brush_.Reset();
-			if (FAILED(target->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White),
-					brush_.ReleaseAndGetAddressOf()))) {
-				return;
-			}
+	bool Renderer::prepareBrush(ID2D1RenderTarget* target) {
+		if (brush_owner_ == target && brush_) return true;
 
-			brush_owner_ = target;
+		brush_.Reset();
+		if (FAILED(target->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White),
+				brush_.ReleaseAndGetAddressOf()))) {
+			return false;
 		}
+
+		brush_owner_ = target;
+		return true;
+	}
+
+	void Renderer::draw(ID2D1RenderTarget* target, const Screen& screen,
+			const TerminalView& view) {
+		if (!prepareBrush(target)) return;
 
 		target->Clear(toColorF(theme_.background, 1.0f));
 
+		const int top = view.topRow(screen);
 		for (int row = 0; row < screen.rows(); ++row) {
-			drawRowBackgrounds(target, screen, row);
-			drawRowText(target, screen, row);
+			drawRowBackgrounds(target, screen, view, top + row, row);
+			drawRowText(target, screen, view, top + row, row);
 		}
 
-		drawCursor(target, screen);
+		drawCursor(target, screen, view);
 	}
 
-	void Renderer::drawRowBackgrounds(ID2D1RenderTarget* target, const Screen& screen, int row) {
+	std::uint32_t Renderer::backgroundFor(const Screen& screen, const TerminalView& view,
+			int absolute_row, int column) const {
+		if (view.isSelected(absolute_row, column)) return theme_.selection;
+		return resolveBackground(screen.cellAt(absolute_row, column));
+	}
+
+	void Renderer::drawRowBackgrounds(ID2D1RenderTarget* target, const Screen& screen,
+			const TerminalView& view, int absolute_row, int viewport_row) {
 		const CellMetrics& cell_box = font_.metrics();
 		int run_start = 0;
 
 		for (int column = 0; column <= screen.columns(); ++column) {
 			const bool at_end = column == screen.columns();
-			const bool breaks = at_end
-				|| resolveBackground(screen.cell(row, column))
-					!= resolveBackground(screen.cell(row, run_start));
+			const std::uint32_t run_color = backgroundFor(screen, view, absolute_row, run_start);
+			if (!at_end && backgroundFor(screen, view, absolute_row, column) == run_color) continue;
 
-			if (!breaks) continue;
-
-			const std::uint32_t color = resolveBackground(screen.cell(row, run_start));
-			if (color != theme_.background) {
-				setBrushColor(color, 1.0f);
+			if (run_color != theme_.background) {
+				setBrushColor(run_color, 1.0f);
 				const D2D1_RECT_F box = D2D1::RectF(
 					static_cast<float>(run_start) * cell_box.width,
-					static_cast<float>(row) * cell_box.height,
+					static_cast<float>(viewport_row) * cell_box.height,
 					static_cast<float>(column) * cell_box.width,
-					static_cast<float>(row + 1) * cell_box.height);
+					static_cast<float>(viewport_row + 1) * cell_box.height);
 				target->FillRectangle(box, brush_.Get());
 			}
 
@@ -117,16 +127,17 @@ namespace wbshterm {
 		}
 	}
 
-	void Renderer::drawRowText(ID2D1RenderTarget* target, const Screen& screen, int row) {
+	void Renderer::drawRowText(ID2D1RenderTarget* target, const Screen& screen,
+			const TerminalView& view, int absolute_row, int viewport_row) {
 		std::wstring run;
 		int run_start = 0;
 
 		for (int column = 0; column < screen.columns(); ++column) {
-			const Cell& cell = screen.cell(row, column);
-			const bool starts_run = run.empty();
+			const Cell& cell = screen.cellAt(absolute_row, column);
 
-			if (!starts_run && !sameStyle(cell, screen.cell(row, run_start))) {
-				drawRun(target, run, screen.cell(row, run_start), row, run_start);
+			if (!run.empty() && !sameStyle(cell, screen.cellAt(absolute_row, run_start))) {
+				drawRun(target, run, screen.cellAt(absolute_row, run_start), viewport_row,
+					run_start);
 				run.clear();
 			}
 
@@ -134,7 +145,11 @@ namespace wbshterm {
 			appendUtf16(run, cell.code);
 		}
 
-		if (!run.empty()) drawRun(target, run, screen.cell(row, run_start), row, run_start);
+		if (!run.empty()) {
+			drawRun(target, run, screen.cellAt(absolute_row, run_start), viewport_row, run_start);
+		}
+
+		(void)view;
 	}
 
 	void Renderer::drawRun(ID2D1RenderTarget* target, const std::wstring& text, const Cell& style,
@@ -169,9 +184,12 @@ namespace wbshterm {
 			brush_.Get(), 1.0f);
 	}
 
-	void Renderer::drawCursor(ID2D1RenderTarget* target, const Screen& screen) {
+	// Scrolled back into history there is no live cursor to show: the one
+	// on screen belongs to the bottom of the buffer.
+	void Renderer::drawCursor(ID2D1RenderTarget* target, const Screen& screen,
+			const TerminalView& view) {
 		const CursorState& cursor = screen.cursor();
-		if (!cursor.visible) return;
+		if (!cursor.visible || view.scrollOffset() != 0) return;
 		if (cursor.row >= screen.rows() || cursor.column >= screen.columns()) return;
 
 		const CellMetrics& cell_box = font_.metrics();

@@ -21,6 +21,16 @@ namespace wbshterm {
 		unsigned int delay_ms   = 400;
 		unsigned int settle_ms  = 600;
 		unsigned int timeout_ms = 15000;
+
+		/** Scroll back this many lines before painting, for scrollback shots. */
+		int scroll_lines = 0;
+
+		/** Selection to highlight, in absolute rows; ignored when unset. */
+		bool select        = false;
+		int  select_row    = 0;
+		int  select_column = 0;
+		int  select_to_row = 0;
+		int  select_to_col = 0;
 	};
 
 	/**

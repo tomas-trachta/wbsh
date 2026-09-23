@@ -5,8 +5,10 @@
  * @brief The terminal window: pty bytes in, painted grid out.
  */
 
+#include "keymap.h"
 #include "render.h"
 #include "session.h"
+#include "view.h"
 
 #include <string>
 
@@ -38,8 +40,18 @@ namespace wbshterm {
 		void onResize();
 		void onPtyData();
 		void onText(wchar_t character);
-		void onSpecialKey(WPARAM key);
+		bool onKeyDown(WPARAM key);
+		void pasteFromClipboard();
+		KeyModes currentModes() const;
 		void onDpiChanged(WPARAM wparam, LPARAM lparam);
+		void onMouseWheel(WPARAM wparam);
+		void onMouseDown(LPARAM lparam);
+		void onMouseMove(WPARAM wparam, LPARAM lparam);
+		void onMouseUp();
+		bool handleViewShortcut(const KeyPress& press);
+		void copySelection();
+		GridPoint pointFromMouse(LPARAM lparam) const;
+		int clickCountAt(GridPoint point);
 		void closeIfChildExited();
 
 		void sendBytes(const char* data, std::size_t length);
@@ -51,6 +63,11 @@ namespace wbshterm {
 		Session      session_;
 		std::wstring command_line_;
 		std::wstring shown_title_;
+		TerminalView view_;
+		GridPoint    last_click_;
+		DWORD        last_click_time_ = 0;
+		int          click_count_     = 0;
+		bool         swallow_next_char_ = false;
 
 		Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
 	};

@@ -46,7 +46,7 @@ function Invoke-ClBuild {
 
     $arguments = @(
         '/nologo', '/std:c++17', '/W4', '/WX', '/EHsc', '/permissive-',
-        '/D_CRT_SECURE_NO_WARNINGS', '/DWIN32_LEAN_AND_MEAN', '/DUNICODE', '/D_UNICODE'
+        '/D_CRT_SECURE_NO_WARNINGS', '/DWIN32_LEAN_AND_MEAN', '/DNOMINMAX', '/DUNICODE', '/D_UNICODE'
     ) + $optimization + $sources + @(
         "/Fe:$(Join-Path $OutputDir 'wbshterm.exe')",
         "/Fo:$OutputDir\",
