@@ -29,6 +29,7 @@ namespace wbshterm {
 		SetPadding,
 		OpenConfigFile,
 		OpenThemesFolder,
+		CopyLastOutput,
 	};
 
 	/**
@@ -51,7 +52,7 @@ namespace wbshterm {
 	 * The caller owns the returned menu and must DestroyMenu it.
 	 */
 	HMENU buildTerminalMenu(const Config& config, const std::vector<std::string>& themes,
-		bool has_selection);
+		bool has_selection, bool has_blocks);
 
 	/** Translates a command id from TrackPopupMenu into an intent. */
 	MenuChoice menuChoiceFor(int command_id, const std::vector<std::string>& themes);

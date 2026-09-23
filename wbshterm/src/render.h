@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "font.h"
+#include "picker.h"
 #include "screen.h"
 #include "view.h"
 
@@ -38,6 +39,9 @@ namespace wbshterm {
 
 		void draw(ID2D1RenderTarget* target, const Screen& screen, const TerminalView& view);
 
+		/** Paints the overlay over a drawn grid; does nothing when inactive. */
+		void drawPicker(ID2D1RenderTarget* target, const Screen& screen, const Picker& picker);
+
 	private:
 		bool prepareBrush(ID2D1RenderTarget* target);
 
@@ -48,6 +52,8 @@ namespace wbshterm {
 		void drawRun(ID2D1RenderTarget* target, const std::wstring& text, const Cell& style,
 			int row, int column);
 		void drawCursor(ID2D1RenderTarget* target, const Screen& screen, const TerminalView& view);
+		void drawPickerRow(ID2D1RenderTarget* target, const std::wstring& text, float top,
+			float width, bool highlighted);
 
 		std::uint32_t backgroundFor(const Screen& screen, const TerminalView& view,
 			int absolute_row, int column) const;

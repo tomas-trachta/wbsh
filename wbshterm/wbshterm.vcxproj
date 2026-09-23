@@ -25,6 +25,9 @@
     <RootNamespace>wbshterm</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
+  <!-- Version numbers live in version.props at the repo root, shared with
+       wbsh and both installers. -->
+  <Import Project="..\version.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
@@ -172,8 +175,19 @@
     </PreBuildEvent>
   </ItemDefinitionGroup>
 
+  <ItemDefinitionGroup>
+    <ResourceCompile>
+      <PreprocessorDefinitions>WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ResourceCompile Include="src\wbshterm.rc" />
+  </ItemGroup>
+
   <ItemGroup>
     <ClInclude Include="src\font.h" />
+    <ClInclude Include="src\picker.h" />
     <ClInclude Include="src\fetch.h" />
     <ClInclude Include="src\menu.h" />
     <ClInclude Include="src\theme.h" />
@@ -193,6 +207,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\font.cpp" />
+    <ClCompile Include="src\picker.cpp" />
     <ClCompile Include="src\fetch.cpp" />
     <ClCompile Include="src\menu.cpp" />
     <ClCompile Include="src\theme.cpp" />

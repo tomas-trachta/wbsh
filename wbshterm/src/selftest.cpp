@@ -10,6 +10,7 @@
 #include "fetch.h"
 #include "keymap.h"
 #include "menu.h"
+#include "picker.h"
 #include "view.h"
 #include "session.h"
 
@@ -113,7 +114,7 @@ namespace wbshterm {
 
 		static void checkTruecolorAndOsc(Report& report) {
 			Screen screen(10, 1);
-			feedToScreen(screen, "\x1b]0;my title\x07\x1b[38;2;10;20;30mX");
+			feedToScreen(screen, "\x1b]0;my title\a\x1b[38;2;10;20;30mX");
 
 			report.check("OSC 0 sets the title", screen.title() == "my title", screen.title());
 			report.check("SGR 38;2 sets rgb", screen.cell(0, 0).foreground == 0x0A141E, "");
@@ -532,7 +533,7 @@ namespace wbshterm {
 				config.palette.ansi[1] == 0xFF0000, "");
 
 			const std::vector<std::string> names = availableThemeNames(fixture.themes);
-			HMENU menu = buildTerminalMenu(config, names, false);
+			HMENU menu = buildTerminalMenu(config, names, false, false);
 			const MenuChoice chosen = choiceFromMenu(menu, L"midnight", names);
 			::DestroyMenu(menu);
 
@@ -613,7 +614,7 @@ namespace wbshterm {
 			findBuiltInTheme(config.theme_name, config.palette);
 
 			const std::vector<std::string> themes = builtInThemeNames();
-			HMENU menu = buildTerminalMenu(config, themes, true);
+			HMENU menu = buildTerminalMenu(config, themes, true, true);
 
 			const MenuChoice theme = choiceFromMenu(menu, L"dracula", themes);
 			const MenuChoice cursor = choiceFromMenu(menu, L"Underline", themes);
@@ -800,6 +801,196 @@ namespace wbshterm {
 			report.check("the startup panel can be switched off",
 				!off.startup_fetch && on.startup_fetch, "");
 			_wremove(path.c_str());
+		}
+
+		// The shell says where a prompt began, where its output began, and
+		// how it ended; the grid turns that into blocks it can navigate.
+		static void checkShellMarksMakeBlocks(Report& report) {
+			Screen screen(40, 6);
+			feedToScreen(screen,
+				"\x1b]633;A\a$ echo one\r\n\x1b]633;C\aone\r\n\x1b]633;D;0\a"
+				"\x1b]633;A\a$ false\r\n\x1b]633;C\a\x1b]633;D;1\a");
+
+			const std::vector<CommandBlock>& blocks = screen.commandBlocks();
+			if (blocks.size() != 2) {
+				report.check("each marked command becomes a block", false,
+					std::to_string(blocks.size()));
+				return;
+			}
+
+			const bool rows_ordered = blocks[0].prompt_row < blocks[0].output_row
+				&& blocks[0].output_row <= blocks[0].end_row
+				&& blocks[1].prompt_row >= blocks[0].end_row;
+
+			report.check("each marked command becomes a block", true, "");
+			report.check("a block knows where its output began", rows_ordered, "");
+			report.check("a block carries the exit status",
+				blocks[0].exit_status == 0 && blocks[1].exit_status == 1
+				&& blocks[0].finished && blocks[1].finished, "");
+		}
+
+		static void checkBlockNavigation(Report& report) {
+			Screen screen(40, 4);
+			for (int command = 0; command < 4; ++command) {
+				feedToScreen(screen, "\x1b]633;A\a$ cmd\r\n\x1b]633;C\aout\r\n\x1b]633;D;0\a");
+			}
+
+			TerminalView view;
+			view.followOutput(screen);
+
+			const int first_back = view.neighbouringCommandRow(screen, true);
+			report.check("there is a previous command to jump to", first_back >= 0,
+				std::to_string(first_back));
+			if (first_back < 0) return;
+
+			view.scrollToRow(first_back, screen);
+			const bool moved = view.topRow(screen) == first_back;
+
+			const int further = view.neighbouringCommandRow(screen, true);
+			const int forward = view.neighbouringCommandRow(screen, false);
+
+			report.check("jumping puts that command at the top", moved,
+				std::to_string(view.topRow(screen)));
+			report.check("jumping again goes further back", further >= 0 && further < first_back,
+				std::to_string(further));
+			report.check("jumping forward comes back down", forward > first_back,
+				std::to_string(forward));
+		}
+
+		static void checkBlockOutputSelection(Report& report) {
+			Screen screen(40, 8);
+			feedToScreen(screen,
+				"\x1b]633;A\a$ echo two\r\n\x1b]633;C\aalpha\r\nbeta\r\n\x1b]633;D;0\a");
+
+			TerminalView view;
+			view.followOutput(screen);
+
+			const std::vector<CommandBlock>& blocks = screen.commandBlocks();
+			if (blocks.empty()) {
+				report.check("the output of a command can be selected on its own", false, "");
+				return;
+			}
+
+			view.selectBlockOutput(blocks.back(), screen);
+			const std::string text = view.selectedText(screen);
+
+			report.check("the output of a command can be selected on its own",
+				text.find("alpha") != std::string::npos
+				&& text.find("beta") != std::string::npos
+				&& text.find("echo two") == std::string::npos, text);
+		}
+
+		static void checkWorkingDirectoryReport(Report& report) {
+			Screen screen(40, 4);
+			feedToScreen(screen, "\x1b]7;file:///C:/Users/me/My%20Code\a");
+
+			report.check("OSC 7 reports the working directory",
+				screen.workingDirectory() == "C:/Users/me/My Code", screen.workingDirectory());
+		}
+
+		static void checkFuzzyMatching(Report& report) {
+			int loose = 0;
+			int tight = 0;
+			int missing = 0;
+
+			const bool matches = fuzzyScore("scr", "src/screen.cpp", tight)
+				&& fuzzyScore("scr", "some/other/character.txt", loose);
+			const bool rejects = !fuzzyScore("zzz", "src/screen.cpp", missing);
+
+			report.check("a query matches as a subsequence", matches, "");
+			report.check("a query that is not there does not match", rejects, "");
+			report.check("adjacent matches score above scattered ones", tight > loose,
+				std::to_string(tight) + " vs " + std::to_string(loose));
+		}
+
+		static Picker pickerWith(const std::vector<std::string>& items) {
+			Picker picker;
+			picker.begin("fzf");
+			for (const std::string& item : items) picker.addItem(item);
+			picker.finish();
+			return picker;
+		}
+
+		static void checkPickerFiltering(Report& report) {
+			Picker picker = pickerWith({ "src/screen.cpp", "src/window.cpp", "README.md" });
+
+			const bool starts_open = picker.active() && picker.matches().size() == 3;
+
+			picker.typeCharacter(U'w');
+			picker.typeCharacter(U'i');
+			const bool narrowed = picker.matches().size() == 1
+				&& picker.chosen() == "src/window.cpp";
+
+			picker.backspace();
+			picker.backspace();
+			const bool restored = picker.matches().size() == 3;
+
+			picker.typeCharacter(U'q');
+			const bool empty = picker.matches().empty() && picker.chosen().empty();
+
+			report.check("the overlay opens with every item", starts_open,
+				std::to_string(picker.itemCount()));
+			report.check("typing narrows the list", narrowed, "");
+			report.check("deleting the query brings the list back", restored, "");
+			report.check("a query matching nothing chooses nothing", empty, "");
+		}
+
+		static void checkPickerSelection(Report& report) {
+			Picker picker = pickerWith({ "alpha", "beta", "gamma" });
+
+			const std::string first = picker.chosen();
+			picker.moveSelection(1);
+			const std::string second = picker.chosen();
+
+			picker.moveSelection(-5);
+			const bool clamped_top = picker.selected() == 0;
+			picker.moveSelection(99);
+			const bool clamped_bottom = picker.selected() == 2;
+
+			picker.cancel();
+			const bool closed = !picker.active() && picker.chosen().empty();
+
+			report.check("moving the selection changes the choice", first != second,
+				first + " then " + second);
+			report.check("the selection stops at both ends", clamped_top && clamped_bottom, "");
+			report.check("cancelling closes the overlay", closed, "");
+		}
+
+		class PickRecorder : public PickHandler {
+		public:
+			void pickBegin(const std::string& prompt) override { began = prompt; }
+			void pickItem(const std::string& text) override { items.push_back(text); }
+			void pickEnd() override { ended = true; }
+			void pickCancel() override { cancelled = true; }
+
+			std::string began;
+			std::vector<std::string> items;
+			bool ended = false;
+			bool cancelled = false;
+		};
+
+		// The request travels as OSC 1337, so the parts have to survive the
+		// encoding: spaces, semicolons and anything else in a file name.
+		static void checkPickRequestParsing(Report& report) {
+			Screen screen(40, 6);
+			PickRecorder recorder;
+			screen.setPickHandler(&recorder);
+
+			feedToScreen(screen,
+				"\x1b]1337;pick;begin;fzf\a"
+				"\x1b]1337;pick;item;src/screen.cpp\a"
+				"\x1b]1337;pick;item;My%20Notes%3Bdraft.md\a"
+				"\x1b]1337;pick;end\a");
+
+			const bool named = recorder.began == "fzf";
+			const bool both = recorder.items.size() == 2;
+			const bool decoded = both && recorder.items[1] == "My Notes;draft.md";
+
+			report.check("a pick request names its prompt", named, recorder.began);
+			report.check("every item arrives", both, std::to_string(recorder.items.size()));
+			report.check("an item survives encoding", decoded,
+				both ? recorder.items[1] : std::string());
+			report.check("the end of the list is announced", recorder.ended, "");
 		}
 
 		static KeyPress pressOf(unsigned int virtual_key, bool control, bool alt, bool shift) {
@@ -1047,6 +1238,82 @@ namespace wbshterm {
 			report.check("a pager does not discard scrollback", history_kept, "");
 		}
 
+		// Stands in for the window: collects the list the shell sends and
+		// answers with a choice, so the whole round trip runs headless.
+		class AutoPicker : public PickHandler {
+		public:
+			explicit AutoPicker(Session& session) : session_(session) {}
+
+			void pickBegin(const std::string&) override { picker_.begin("fzf"); }
+			void pickItem(const std::string& text) override { picker_.addItem(text); }
+			void pickCancel() override { picker_.cancel(); }
+
+			void pickEnd() override {
+				picker_.finish();
+				saw_list = true;
+				item_count = picker_.itemCount();
+
+				for (char letter : wanted) picker_.typeCharacter(static_cast<char32_t>(letter));
+				answered = picker_.chosen();
+
+				const std::string reply = answered + "\r";
+				session_.writeInput(reply.data(), reply.size());
+				picker_.cancel();
+			}
+
+			std::string wanted;
+			std::string answered;
+			std::size_t item_count = 0;
+			bool saw_list = false;
+
+		private:
+			Session& session_;
+			Picker   picker_;
+		};
+
+		static void checkPickRoundTrip(Report& report, const std::wstring& command_line) {
+			// Without this the shell draws its own picker and waits for keys
+			// that never come; the child inherits what is set here.
+			::SetEnvironmentVariableW(L"WBSHTERM_PICKER", L"1");
+
+			Session session;
+			std::string error;
+			if (!session.start(command_line, 100, 16, error)) {
+				report.check("the shell hands its picker to the terminal", false, error);
+				return;
+			}
+
+			AutoPicker picker(session);
+			picker.wanted = "tests";
+			session.screen().setPickHandler(&picker);
+
+			waitForText(session, "$", 8000);
+			runCommand(session, "cd wbshterm");
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+			session.drainOutput();
+
+			runCommand(session, "fzf");
+
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+			while (std::chrono::steady_clock::now() < deadline) {
+				session.drainOutput();
+				if (session.screen().workingDirectory().find("tests") != std::string::npos) break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			}
+
+			const std::string directory = session.screen().workingDirectory();
+
+			report.check("the shell hands its picker to the terminal",
+				picker.saw_list && picker.item_count > 0, std::to_string(picker.item_count));
+			report.check("the terminal's choice reaches the shell",
+				picker.answered == "tests", picker.answered);
+			report.check("the shell acts on what was chosen",
+				directory.find("wbshterm/tests") != std::string::npos
+				|| directory.find("wbshterm\\tests") != std::string::npos, directory);
+
+			session.stop();
+		}
+
 		// The banner promises Ctrl-D quits, so the window has to see the shell
 		// go away when it is pressed on an empty line.
 		static void checkCtrlDEndsTheSession(Report& report, const std::wstring& command_line) {
@@ -1072,6 +1339,25 @@ namespace wbshterm {
 			report.check("Ctrl-D on an empty line ends the session", ended,
 				session.screen().toText());
 			session.stop();
+		}
+
+		// Marks are worth nothing unless the shell actually sends them.
+		static void checkShellEmitsMarks(Report& report, Session& session) {
+			runCommand(session, "echo mark-probe");
+			waitForText(session, "mark-probe", 6000);
+
+			const std::vector<CommandBlock>& blocks = session.screen().commandBlocks();
+			bool finished_with_status = false;
+			for (const CommandBlock& block : blocks) {
+				if (block.finished && block.exit_status == 0) finished_with_status = true;
+			}
+
+			report.check("the shell marks its prompts", !blocks.empty(),
+				std::to_string(blocks.size()));
+			report.check("the shell reports how a command ended", finished_with_status, "");
+			report.check("the shell reports its working directory",
+				!session.screen().workingDirectory().empty(),
+				session.screen().workingDirectory());
 		}
 
 		// The encoder is only right if the shell's line editor agrees: Up
@@ -1118,6 +1404,7 @@ namespace wbshterm {
 				session.screen().toText());
 
 			checkHistoryRecall(report, session);
+			checkShellEmitsMarks(report, session);
 			checkBackspaceErases(report, session);
 			checkDeleteErases(report, session);
 			checkPagerReturnsToShell(report, session);
@@ -1155,6 +1442,14 @@ namespace wbshterm {
 		test::checkSplitSequence(report);
 		test::checkInsertDelete(report);
 		test::checkQueryReplies(report);
+		test::checkShellMarksMakeBlocks(report);
+		test::checkBlockNavigation(report);
+		test::checkBlockOutputSelection(report);
+		test::checkWorkingDirectoryReport(report);
+		test::checkFuzzyMatching(report);
+		test::checkPickerFiltering(report);
+		test::checkPickerSelection(report);
+		test::checkPickRequestParsing(report);
 		test::checkScrollbackKeepsLines(report);
 		test::checkAltScreenKeepsHistory(report);
 		test::checkViewScrolling(report);
@@ -1188,6 +1483,7 @@ namespace wbshterm {
 		test::checkTextKeysFallThrough(report);
 		test::checkPasteEncoding(report);
 		test::checkLiveSession(report, shell_command_line);
+		test::checkPickRoundTrip(report, shell_command_line);
 		test::checkCtrlDEndsTheSession(report, shell_command_line);
 
 		test::writeReport(report_path, report.text());

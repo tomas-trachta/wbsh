@@ -8,6 +8,7 @@
 #include "config.h"
 #include "keymap.h"
 #include "menu.h"
+#include "picker.h"
 #include "render.h"
 #include "session.h"
 #include "view.h"
@@ -24,11 +25,16 @@ namespace wbshterm {
 	 * create(): the reader posts a message and this class drains the
 	 * bytes, so the grid is only ever touched here.
 	 */
-	class TerminalWindow {
+	class TerminalWindow : public PickHandler {
 	public:
 		bool create(const std::wstring& command_line, const Config& config,
 			const std::wstring& config_path, std::string& out_error);
 		int runMessageLoop();
+
+		void pickBegin(const std::string& prompt) override;
+		void pickItem(const std::string& text) override;
+		void pickEnd() override;
+		void pickCancel() override;
 
 	private:
 		static LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wparam,
@@ -48,6 +54,8 @@ namespace wbshterm {
 		void onPtyData();
 		void onText(wchar_t character);
 		bool onKeyDown(WPARAM key);
+		bool pickerTakesKey(WPARAM key);
+		void answerPick(const std::string& choice);
 		void pasteFromClipboard();
 		KeyModes currentModes() const;
 		void onDpiChanged(WPARAM wparam, LPARAM lparam);
@@ -63,6 +71,9 @@ namespace wbshterm {
 		void stepFontSize(unsigned int virtual_key);
 		bool handleViewShortcut(const KeyPress& press);
 		void copySelection();
+		bool jumpToCommand(bool backwards);
+		void copyLastCommandOutput();
+		void syncWorkingDirectory();
 		GridPoint pointFromMouse(LPARAM lparam) const;
 		int clickCountAt(GridPoint point);
 		void closeIfChildExited();
@@ -81,6 +92,7 @@ namespace wbshterm {
 		unsigned long long config_stamp_ = 0;
 		bool         cursor_phase_ = true;
 		TerminalView view_;
+		Picker       picker_;
 		GridPoint    last_click_;
 		DWORD        last_click_time_ = 0;
 		int          click_count_     = 0;

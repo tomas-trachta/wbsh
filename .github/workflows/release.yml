@@ -23,28 +23,33 @@ jobs:
         id: bump
         shell: pwsh
         run: |
-          $projPath = 'wbsh.vcxproj'
-          $projXml = [xml](Get-Content $projPath)
+          # version.props is the one place the version lives: wbsh.vcxproj
+          # and wbshterm.vcxproj both import it, and installer\build.ps1
+          # reads it. The two .iss files carry their own copy for standalone
+          # ISCC runs, so they are kept in step here.
+          $propsPath = 'version.props'
+          $propsXml = [xml](Get-Content $propsPath)
 
-          $versionGroup = $projXml.Project.PropertyGroup | Where-Object { $_.WbshVersionMajor }
+          $versionGroup = $propsXml.Project.PropertyGroup | Where-Object { $_.WbshVersionMajor }
           if (-not $versionGroup) {
-              throw "Could not find WbshVersionMajor/Minor/Patch in $projPath"
+              throw "Could not find WbshVersionMajor/Minor/Patch in $propsPath"
           }
           $vMajor = [int]$versionGroup.WbshVersionMajor.Trim()
           $vMinor = [int]$versionGroup.WbshVersionMinor.Trim()
           $vPatch = [int]$versionGroup.WbshVersionPatch.Trim() + 1
           $newVersion = "$vMajor.$vMinor.$vPatch"
 
-          $raw = Get-Content $projPath -Raw
+          $raw = Get-Content $propsPath -Raw
           $raw = $raw -replace '(?<=<WbshVersionMajor>)\d+(?=</WbshVersionMajor>)', $vMajor
           $raw = $raw -replace '(?<=<WbshVersionMinor>)\d+(?=</WbshVersionMinor>)', $vMinor
           $raw = $raw -replace '(?<=<WbshVersionPatch>)\d+(?=</WbshVersionPatch>)', $vPatch
-          Set-Content -Path $projPath -Value $raw -NoNewline
+          Set-Content -Path $propsPath -Value $raw -NoNewline
 
-          $issPath = 'installer\wbsh.iss'
-          $iss = Get-Content $issPath -Raw
-          $iss = $iss -replace '#define AppVersion "\d+\.\d+\.\d+"', "#define AppVersion `"$newVersion`""
-          Set-Content -Path $issPath -Value $iss -NoNewline
+          foreach ($issPath in @('installer\wbsh.iss', 'installer\wbshterm.iss')) {
+              $iss = Get-Content $issPath -Raw
+              $iss = $iss -replace '#define AppVersion "\d+\.\d+\.\d+"', "#define AppVersion `"$newVersion`""
+              Set-Content -Path $issPath -Value $iss -NoNewline
+          }
 
           Write-Host "Bumped version to $newVersion"
           "version=$newVersion" >> $env:GITHUB_OUTPUT
@@ -54,7 +59,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add wbsh.vcxproj installer\wbsh.iss
+          git add version.props installer\wbsh.iss installer\wbshterm.iss
           git commit -m "chore: bump version to ${{ steps.bump.outputs.version }} [skip ci]"
           git tag "v${{ steps.bump.outputs.version }}"
           git push origin HEAD:main
@@ -64,9 +69,29 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - name: Build installer
+      - name: Build installers
         shell: pwsh
         run: .\installer\build.ps1
+
+      - name: Check the artifacts are all there
+        shell: pwsh
+        run: |
+          # A missing installer must fail the run rather than publish a
+          # release that quietly ships half of what it promises.
+          $version = "${{ steps.bump.outputs.version }}"
+          $expected = @(
+              "installer\output\wbsh-setup-x64.exe",
+              "installer\output\wbshterm-setup-x64.exe",
+              "installer\output\wbsh-$version-portable-x64.zip",
+              "installer\output\wbshterm-$version-portable-x64.zip"
+          )
+
+          $missing = $expected | Where-Object { -not (Test-Path $_) }
+          if ($missing) { throw "Missing release artifacts: $($missing -join ', ')" }
+
+          foreach ($path in $expected) {
+              "{0,-52} {1,8:N0} bytes" -f $path, (Get-Item $path).Length
+          }
 
       - name: Create GitHub release
         shell: pwsh

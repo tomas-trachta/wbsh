@@ -40,6 +40,20 @@ namespace wbshterm {
 		std::uint16_t attributes = kAttrNone;
 	};
 
+	/**
+	 * @brief One command, as the shell reported it through OSC 633.
+	 *
+	 * Rows are absolute, the same space the view scrolls in, so a block
+	 * keeps pointing at its own text as output arrives beneath it.
+	 */
+	struct CommandBlock {
+		int  prompt_row  = 0;
+		int  output_row  = -1;
+		int  end_row     = -1;
+		int  exit_status = -1;
+		bool finished    = false;
+	};
+
 	struct CursorState {
 		int  row     = 0;
 		int  column  = 0;
@@ -53,6 +67,17 @@ namespace wbshterm {
 	 * change are marked dirty for the renderer and cleared by
 	 * clearDirty(); a resize marks everything dirty.
 	 */
+	/** Where a pick request from the shell goes: the window's overlay. */
+	class PickHandler {
+	public:
+		virtual ~PickHandler() = default;
+
+		virtual void pickBegin(const std::string& prompt) = 0;
+		virtual void pickItem(const std::string& text) = 0;
+		virtual void pickEnd() = 0;
+		virtual void pickCancel() = 0;
+	};
+
 	class Screen : public VtSink {
 	public:
 		Screen(int columns, int rows);
@@ -75,6 +100,12 @@ namespace wbshterm {
 
 		bool onAltScreen() const { return alt_screen_; }
 
+		/** Commands the shell has marked, oldest first. */
+		const std::vector<CommandBlock>& commandBlocks() const { return blocks_; }
+
+		/** Working directory as last reported by OSC 7, or empty. */
+		const std::string& workingDirectory() const { return working_directory_; }
+
 		const Cell& cell(int row, int column) const;
 		const CursorState& cursor() const { return cursor_; }
 		const std::string& title() const { return title_; }
@@ -96,6 +127,9 @@ namespace wbshterm {
 		/** Answers device and cursor queries; without one they go unanswered. */
 		void setResponder(VtResponder* responder) { responder_ = responder; }
 
+		/** Without one, pick requests from the shell are ignored. */
+		void setPickHandler(PickHandler* handler) { pick_handler_ = handler; }
+
 	private:
 		Cell& at(int row, int column);
 		void markDirty(int row);
@@ -110,6 +144,11 @@ namespace wbshterm {
 
 		void scrollUp(int count);
 		void pushToScrollback(int row);
+		void noteShellMark(const std::string& body);
+		void noteWorkingDirectory(const std::string& body);
+		void notePickRequest(const std::string& body);
+		int  currentAbsoluteRow() const;
+		void shiftBlocksAfterTrim();
 		void carryContentForward(const std::vector<Cell>& old_cells, int old_columns,
 			int old_rows);
 		void enterAltScreen();
@@ -153,9 +192,12 @@ namespace wbshterm {
 		int scroll_bottom_ = 0;
 
 		std::string   title_;
+		std::string   working_directory_;
+		std::vector<CommandBlock> blocks_;
 		bool          application_cursor_ = false;
 		bool          bracketed_paste_    = false;
 		VtResponder*  responder_ = nullptr;
+		PickHandler*  pick_handler_ = nullptr;
 	};
 
 } /* namespace wbshterm */

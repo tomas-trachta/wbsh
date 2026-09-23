@@ -8,11 +8,13 @@
 #include "charwidth.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <string>
 
 namespace wbshterm {
 
 	static const int kTabWidth = 8;
+	static const std::size_t kMaxCommandBlocks = 500;
 
 	static const std::uint32_t kAnsiPalette[16] = {
 		0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5,
@@ -79,7 +81,10 @@ namespace wbshterm {
 			if (!alt_screen_) scrollback_.push_back(std::move(line));
 		}
 
-		while (scrollback_.size() > scrollback_limit_) scrollback_.pop_front();
+		while (scrollback_.size() > scrollback_limit_) {
+			scrollback_.pop_front();
+			shiftBlocksAfterTrim();
+		}
 
 		for (int row = 0; row < kept; ++row) {
 			const int source = old_rows - kept + row;
@@ -101,7 +106,10 @@ namespace wbshterm {
 
 	void Screen::setScrollbackLimit(int lines) {
 		scrollback_limit_ = static_cast<std::size_t>(std::max(0, lines));
-		while (scrollback_.size() > scrollback_limit_) scrollback_.pop_front();
+		while (scrollback_.size() > scrollback_limit_) {
+			scrollback_.pop_front();
+			shiftBlocksAfterTrim();
+		}
 	}
 
 	Cell& Screen::at(int row, int column) {
@@ -269,7 +277,10 @@ namespace wbshterm {
 			cells_.begin() + static_cast<std::ptrdiff_t>(start)
 				+ static_cast<std::ptrdiff_t>(columns_));
 
-			while (scrollback_.size() > scrollback_limit_) scrollback_.pop_front();
+			while (scrollback_.size() > scrollback_limit_) {
+			scrollback_.pop_front();
+			shiftBlocksAfterTrim();
+		}
 	}
 
 	void Screen::scrollUp(int count) {
@@ -333,12 +344,117 @@ namespace wbshterm {
 		}
 	}
 
+	static std::string percentDecode(const std::string& text);
+
+	int Screen::currentAbsoluteRow() const {
+		return scrollbackRows() + cursor_.row;
+	}
+
+	// Scrollback drops its oldest lines once it is full, which moves every
+	// absolute row down by one; the blocks have to move with them.
+	void Screen::shiftBlocksAfterTrim() {
+		for (CommandBlock& block : blocks_) {
+			--block.prompt_row;
+			if (block.output_row >= 0) --block.output_row;
+			if (block.end_row >= 0) --block.end_row;
+		}
+
+		while (!blocks_.empty() && blocks_.front().prompt_row < 0) {
+			blocks_.erase(blocks_.begin());
+		}
+	}
+
+	// OSC 633 marks: A starts a prompt, C starts the command's output, and
+	// D reports how it ended.
+	void Screen::noteShellMark(const std::string& body) {
+		if (body.empty()) return;
+
+		if (body[0] == 'A') {
+			CommandBlock block;
+			block.prompt_row = currentAbsoluteRow();
+			blocks_.push_back(block);
+			while (blocks_.size() > kMaxCommandBlocks) blocks_.erase(blocks_.begin());
+			return;
+		}
+
+		if (blocks_.empty()) return;
+
+		if (body[0] == 'C') {
+			blocks_.back().output_row = currentAbsoluteRow();
+			return;
+		}
+
+		if (body[0] != 'D') return;
+
+		blocks_.back().end_row = currentAbsoluteRow();
+		blocks_.back().finished = true;
+
+		const std::size_t separator = body.find(';');
+		if (separator == std::string::npos) return;
+
+		blocks_.back().exit_status = std::atoi(body.substr(separator + 1).c_str());
+	}
+
+	static std::string percentDecode(const std::string& text) {
+		std::string out;
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			if (text[i] != '%' || i + 2 >= text.size()) {
+				out.push_back(text[i]);
+				continue;
+			}
+
+			const std::string digits = text.substr(i + 1, 2);
+			out.push_back(static_cast<char>(std::strtol(digits.c_str(), nullptr, 16)));
+			i += 2;
+		}
+
+		return out;
+	}
+
+	// OSC 7 carries a file:// URL; the host part is of no use locally.
+	void Screen::noteWorkingDirectory(const std::string& body) {
+		static const std::string kPrefix = "file://";
+		if (body.rfind(kPrefix, 0) != 0) {
+			working_directory_ = percentDecode(body);
+			return;
+		}
+
+		const std::size_t slash = body.find('/', kPrefix.size());
+		if (slash == std::string::npos) return;
+
+		working_directory_ = percentDecode(body.substr(slash + 1));
+	}
+
+	// OSC 1337;pick;... is this terminal's own: the shell hands over a list
+	// and takes back what was chosen, instead of drawing a picker itself.
+	void Screen::notePickRequest(const std::string& body) {
+		if (pick_handler_ == nullptr) return;
+		if (body.rfind("pick;", 0) != 0) return;
+
+		const std::string rest = body.substr(5);
+		const std::size_t separator = rest.find(';');
+		const std::string verb = rest.substr(0, separator);
+		const std::string value = separator == std::string::npos
+			? std::string()
+			: percentDecode(rest.substr(separator + 1));
+
+		if (verb == "begin")  pick_handler_->pickBegin(value);
+		if (verb == "item")   pick_handler_->pickItem(value);
+		if (verb == "end")    pick_handler_->pickEnd();
+		if (verb == "cancel") pick_handler_->pickCancel();
+	}
+
 	void Screen::vtOsc(const std::string& text) {
 		const std::size_t separator = text.find(';');
 		if (separator == std::string::npos) return;
 
 		const std::string code = text.substr(0, separator);
-		if (code == "0" || code == "2") title_ = text.substr(separator + 1);
+		const std::string body = text.substr(separator + 1);
+
+		if (code == "0" || code == "2") title_ = body;
+		if (code == "7")   noteWorkingDirectory(body);
+		if (code == "633")  noteShellMark(body);
+		if (code == "1337") notePickRequest(body);
 	}
 
 	// vim and friends print a probe glyph, ask where the cursor ended up,

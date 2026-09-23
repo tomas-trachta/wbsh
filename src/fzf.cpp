@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -419,10 +420,96 @@ namespace wbsh {
 		return 0;
 	}
 
+	// A terminal that understands OSC 1337 draws the picker itself: the
+	// shell hands over the list and waits for the line it chose. Anywhere
+	// else this is skipped and the in-console picker runs as before.
+	static bool terminalDrawsPicker() {
+		const char* flag = std::getenv("WBSHTERM_PICKER");
+		return flag != nullptr && *flag != '0';
+	}
+
+	static std::string percentEncodeItem(const std::string& text) {
+		static const char* kHexDigits = "0123456789ABCDEF";
+
+		std::string encoded;
+		for (unsigned char letter : text) {
+			const bool plain = letter >= 0x20 && letter != 0x7F && letter != '%'
+				&& letter != ';';
+			if (plain) {
+				encoded.push_back(static_cast<char>(letter));
+				continue;
+			}
+
+			encoded.push_back('%');
+			encoded.push_back(kHexDigits[letter >> 4]);
+			encoded.push_back(kHexDigits[letter & 0x0F]);
+		}
+
+		return encoded;
+	}
+
+	static void sendPickRequest(const std::vector<std::string>& candidates) {
+		std::fputs("\x1b]1337;pick;begin;fzf\a", stdout);
+		for (const std::string& candidate : candidates) {
+			std::fputs(("\x1b]1337;pick;item;" + percentEncodeItem(candidate) + "\a").c_str(),
+				stdout);
+		}
+
+		std::fputs("\x1b]1337;pick;end\a", stdout);
+		std::fflush(stdout);
+	}
+
+	// The terminal replies by typing the choice, so this reads a line of key
+	// events; an empty one means the user backed out.
+	static bool readPickReply(std::string& selected) {
+		const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+		if (input == nullptr || input == INVALID_HANDLE_VALUE) return false;
+
+		std::string line;
+		for (;;) {
+			INPUT_RECORD record{};
+			DWORD read = 0;
+			if (!ReadConsoleInputW(input, &record, 1, &read) || read == 0) return false;
+			if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) continue;
+
+			const wchar_t letter = record.Event.KeyEvent.uChar.UnicodeChar;
+			if (letter == L'\r' || letter == L'\n') break;
+			if (letter == 0x1B) return false;
+			if (letter == 0) continue;
+
+			char bytes[8] = {};
+			const int length = WideCharToMultiByte(CP_UTF8, 0, &letter, 1, bytes,
+				static_cast<int>(sizeof(bytes)), nullptr, nullptr);
+			if (length > 0) line.append(bytes, static_cast<std::size_t>(length));
+		}
+
+		if (line.empty()) return false;
+
+		selected = line;
+		return true;
+	}
+
+	static int pickThroughTerminal(Executor& exec, const std::vector<std::string>& candidates) {
+		sendPickRequest(candidates);
+
+		std::string selected;
+		if (!readPickReply(selected)) return 130;
+
+		bool handled = false;
+		const int rc = fzfActOnSelection(exec, selected, handled);
+		if (handled) return rc;
+
+		std::fputs(selected.c_str(), stdout);
+		std::fputc('\n', stdout);
+		return 0;
+	}
+
 	static int builtin_fzf(Executor& exec, const std::vector<std::string>&) {
 		FzfSession s;
 		s.candidates = collectCandidates(exec);
 		if (s.candidates.empty()) return 1;
+
+		if (terminalDrawsPicker()) return pickThroughTerminal(exec, s.candidates);
 
 		if (!fzfOpenConsole(s)) {
 			perr("fzf", "not attached to a console");

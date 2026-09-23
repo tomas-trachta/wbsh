@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!-- Single source of truth for the version of everything in this repo.
+     wbsh.vcxproj and wbshterm\wbshterm.vcxproj both import this, the two
+     installers read it, and the release workflow bumps it here. Editing
+     the three numbers below is the whole job. -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Version">
+    <WbshVersionMajor>1</WbshVersionMajor>
+    <WbshVersionMinor>0</WbshVersionMinor>
+    <WbshVersionPatch>10</WbshVersionPatch>
+    <WbshVersion>$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)</WbshVersion>
+  </PropertyGroup>
+</Project>

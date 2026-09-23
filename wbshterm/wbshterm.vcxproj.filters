@@ -17,6 +17,9 @@
     <ClInclude Include="src\font.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\picker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\fetch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -68,6 +71,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\font.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\picker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\fetch.cpp">

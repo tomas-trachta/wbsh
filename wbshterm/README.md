@@ -4,11 +4,26 @@ A terminal for wbsh: a Win32 window that hosts an unmodified `wbsh.exe` on a
 pseudoconsole, parses its VT output into a cell grid, and paints that grid
 with Direct2D and DirectWrite.
 
-**M4 is done** — it is yours to make look right: nine colour schemes, any
-font, cursor style, padding, line height and opacity, all in a config file
-that reloads a second after you save it. Wide characters, emoji and CJK
-render at the right width in the right fonts. Rewrapping text on resize is
-the one M4 item left (see Remaining).
+**M5 is done** — the shell and the terminal talk to each other. wbsh marks
+its prompts and commands, so scrollback is navigable by command and a
+command's output can be copied on its own; the title bar follows the
+working directory; and `fzf` hands its list over to be drawn as a real
+overlay. Everything M4 brought — nine themes, any font, cursor styles, live
+config — is still here. One piece remains: rewrapping text on resize.
+
+## Install
+
+Grab `wbshterm-setup-x64.exe` from the
+[Releases](https://github.com/tomas-trachta/wbsh/releases) page. It is
+per-user, needs no administrator rights, installs to
+`%LOCALAPPDATA%\Programs\wbshterm`, and bundles `wbsh.exe` — the terminal
+looks for the shell next to itself first, so nothing else is needed.
+
+The optional tasks are a desktop shortcut, adding the folder to your `PATH`,
+and an "Open wbshterm here" entry in the Explorer right-click menu.
+`wbshterm-<version>-portable-x64.zip` is the same payload without an
+installer. Your settings and themes in `%APPDATA%\wbshterm` are left alone
+when you uninstall.
 
 ## Build and run
 
@@ -73,6 +88,7 @@ apart from a parsing bug by replaying the same bytes.
 | `config.h/.cpp` | The settings file: parsing, defaults, and the file written on first run. |
 | `theme.h/.cpp` | The built-in colour schemes. |
 | `menu.h/.cpp` | The right-click menu: what it offers, and what a click meant. |
+| `picker.h/.cpp` | The overlay list: fuzzy matching, filtering and selection. |
 | `charwidth.h/.cpp` | How many cells a character takes: zero, one or two. |
 | `session.h/.cpp` | Pty + parser + grid + reader thread; the grid is touched by one thread only. |
 | `font.h/.cpp` | DirectWrite faces and the measured cell box. |
@@ -223,6 +239,45 @@ agree about where the cursor is. Glyphs the main font lacks come from the
 `fallback` families, and colour emoji are drawn in colour where the target
 supports it.
 
+## What the shell tells the terminal
+
+This is the part a generic terminal cannot do. wbsh emits semantic marks —
+OSC 633, the same codes VS Code uses — around every prompt and command, and
+OSC 7 whenever the working directory changes. Terminals that do not know
+them ignore them, so wbsh loses nothing elsewhere.
+
+| The shell says | The terminal does |
+| --- | --- |
+| `OSC 633;A` | Remembers where this prompt began |
+| `OSC 633;C` | Remembers where the command's output began |
+| `OSC 633;D;<exit>` | Closes the block and records how it ended |
+| `OSC 7;file://…` | Puts the working directory in the title bar |
+| `OSC 1337;pick;…` | Draws the picker as an overlay and answers with the choice |
+
+That turns a wall of scrollback into a list of commands:
+
+| Action | Binding |
+| --- | --- |
+| Previous / next command | Ctrl+PageUp, Ctrl+PageDown |
+| Copy the last command's output | Right-click → Copy last command output |
+
+Jumping scrolls a command's prompt to the top of the window, so its output
+reads from there down. Copying the output takes exactly that — not the
+command line above it, not the prompt below.
+
+### The picker
+
+Run `fzf` and the list opens as an overlay along the bottom of the window
+rather than being painted with escape codes: type to filter, Up/Down or
+PageUp/PageDown to move, Enter to choose, Escape to back out. The shell
+sends its candidates over and waits; the terminal answers with the line
+that was picked, and `fzf` does what it always did with it — `cd` into a
+directory, open a file, print anything else.
+
+wbshterm advertises this by setting `WBSHTERM_PICKER=1` for the shell. Run
+wbsh anywhere else and the variable is absent, so its own in-console picker
+runs exactly as before.
+
 ## Scrollback and selection
 
 Lines that scroll off the top are kept — 10,000 of them — and the view
@@ -246,6 +301,7 @@ cursor is not painted while scrolled back, because it belongs to the live
 grid rather than to what is on screen.
 
 ## Remaining
+
 
 **Text does not rewrap when the window is resized.** Content is carried
 over — the grid keeps what fits and pushes the rest into scrollback — but a

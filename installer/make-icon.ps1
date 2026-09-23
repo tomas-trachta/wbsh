@@ -1,4 +1,4 @@
-# installer/make-icon.ps1 -- regenerate installer\wbsh.ico from scratch.
+﻿# installer/make-icon.ps1 -- regenerate installer\wbsh.ico from scratch.
 #
 # Renders the icon at the standard Windows sizes (16/24/32/48/64/128/256)
 # using System.Drawing, then packs the PNG-encoded frames into a multi-image
@@ -7,7 +7,12 @@
 # time.
 [CmdletBinding()]
 param(
-    [string]$OutPath = (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'wbsh.ico')
+    [string]$OutPath = (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'wbsh.ico'),
+    # The glyph and its colour, so a sibling product gets its own icon
+    # without a second copy of this script. Defaults draw wbsh's.
+    [string]$Glyph = '$',
+    [int[]]$GlyphColor = @(80, 230, 130),
+    [single]$GlyphScale = 0.66
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,15 +61,16 @@ function Render-Frame([int]$size) {
     }
 
     # Green "$" glyph, centered.
-    $fontSize = [single]($size * 0.66)
+    $fontSize = [single]($size * $GlyphScale)
     $font = New-Object System.Drawing.Font($family, $fontSize, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-    $glyph = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 80, 230, 130))
+    $glyph = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(
+        255, $GlyphColor[0], $GlyphColor[1], $GlyphColor[2]))
     $sf = New-Object System.Drawing.StringFormat
     $sf.Alignment     = [System.Drawing.StringAlignment]::Center
     $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
     # Nudge baseline up slightly -- glyph metrics put "$" visually low.
     $rect = New-Object System.Drawing.RectangleF(0, [single](-$size * 0.04), [single]$size, [single]$size)
-    $g.DrawString('$', $font, $glyph, $rect, $sf)
+    $g.DrawString($Glyph, $font, $glyph, $rect, $sf)
     $glyph.Dispose()
     $font.Dispose()
     $sf.Dispose()

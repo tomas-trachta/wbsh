@@ -31,6 +31,19 @@ namespace wbshterm {
 
 		void scrollBy(int lines, const Screen& screen);
 		void scrollToBottom();
+
+		/** Puts @p absolute_row at the top of the window, as far as it can. */
+		void scrollToRow(int absolute_row, const Screen& screen);
+
+		/**
+		 * @brief The command before or after the one at the top of the window.
+		 *
+		 * @return The row to scroll to, or -1 when there is no such command.
+		 */
+		int neighbouringCommandRow(const Screen& screen, bool backwards) const;
+
+		/** Selects the output of @p block, for copying it in one go. */
+		void selectBlockOutput(const CommandBlock& block, const Screen& screen);
 		int scrollOffset() const { return scroll_offset_; }
 
 		/** Absolute row shown at the top of the window. */

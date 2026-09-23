@@ -26,17 +26,10 @@
     <RootNamespace>wbsh</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
-  <!-- Single source of truth for the wbsh version. installer/build.ps1
-       reads WbshVersion from this file; the C++ and RC compilers receive
-       it as preprocessor defines (see ClCompile / ResourceCompile blocks
-       below). Bumping the version means editing only the three lines
-       below. -->
-  <PropertyGroup Label="Version">
-    <WbshVersionMajor>1</WbshVersionMajor>
-    <WbshVersionMinor>0</WbshVersionMinor>
-    <WbshVersionPatch>10</WbshVersionPatch>
-    <WbshVersion>$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)</WbshVersion>
-  </PropertyGroup>
+  <!-- The version lives in version.props so wbsh, wbshterm and both
+       installers cannot drift apart. installer\build.ps1 reads it and the
+       release workflow bumps it there. -->
+  <Import Project="version.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>

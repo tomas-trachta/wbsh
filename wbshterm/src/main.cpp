@@ -285,6 +285,12 @@ namespace wbshterm {
 		::SetEnvironmentVariableW(L"WBSH_INIT_COMMAND", command.c_str());
 	}
 
+	// Tells the shell this terminal draws pickers itself. Separate from the
+	// startup panel: turning that off must not take the overlay with it.
+	static void announcePickerSupport() {
+		::SetEnvironmentVariableW(L"WBSHTERM_PICKER", L"1");
+	}
+
 	static int runWindow(const Options& options) {
 		const std::wstring config_path = options.config_path.empty()
 			? defaultConfigPath()
@@ -300,6 +306,7 @@ namespace wbshterm {
 		}
 
 		ensureThemesDirectory(themesDirectory(config_path));
+		announcePickerSupport();
 		if (config.startup_fetch) announceStartupCommand();
 
 		TerminalWindow window;

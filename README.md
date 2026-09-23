@@ -49,11 +49,22 @@ installer is **per-user** (no UAC) and offers two opt-in tasks:
 
 Default install location is `%LOCALAPPDATA%\Programs\wbsh`.
 
+### wbshterm, the terminal
+
+Every release also ships `wbshterm-setup-x64.exe`: a window that hosts wbsh
+on a pseudoconsole, with themes, a config file, scrollback and selection,
+and shell integration wbsh drives itself. **It bundles `wbsh.exe`**, so it
+works on its own — installing both is fine, they live in separate folders
+and uninstall independently. See [wbshterm/README.md](wbshterm/README.md).
+
+Default install location is `%LOCALAPPDATA%\Programs\wbshterm`.
+
 ### Portable ZIP
 
 Download `wbsh-<version>-portable-x64.zip`, extract, and run `wbsh.exe`.
 No registry, no PATH changes, no install. Ships the same VC++ runtime
-DLLs alongside the binary.
+DLLs alongside the binary. `wbshterm-<version>-portable-x64.zip` does the
+same for the terminal, with the shell beside it.
 
 ### winget / scoop
 

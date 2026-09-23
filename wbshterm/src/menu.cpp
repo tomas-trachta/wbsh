@@ -18,6 +18,7 @@ namespace wbshterm {
 	static const int kCommandBlink       = 102;
 	static const int kCommandOpenConfig  = 103;
 	static const int kCommandOpenThemes  = 104;
+	static const int kCommandLastOutput  = 105;
 
 	static const int kCommandThemeBase   = 200;
 	static const int kCommandCursorBase  = 300;
@@ -107,12 +108,14 @@ namespace wbshterm {
 	}
 
 	HMENU buildTerminalMenu(const Config& config, const std::vector<std::string>& themes,
-			bool has_selection) {
+			bool has_selection, bool has_blocks) {
 		HMENU menu = ::CreatePopupMenu();
 
 		::AppendMenuW(menu, MF_STRING | (has_selection ? 0 : MF_GRAYED), kCommandCopy,
 			L"Copy\tCtrl+Shift+C");
 		::AppendMenuW(menu, MF_STRING, kCommandPaste, L"Paste\tCtrl+V");
+		::AppendMenuW(menu, MF_STRING | (has_blocks ? 0 : MF_GRAYED), kCommandLastOutput,
+			L"Copy last command output");
 		::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
 		appendSubMenu(menu, buildThemeMenu(config, themes), L"Theme");
@@ -148,6 +151,11 @@ namespace wbshterm {
 
 		if (command_id == kCommandOpenThemes) {
 			choice.action = MenuAction::OpenThemesFolder;
+			return choice;
+		}
+
+		if (command_id == kCommandLastOutput) {
+			choice.action = MenuAction::CopyLastOutput;
 			return choice;
 		}
 

@@ -507,6 +507,55 @@ namespace wbsh {
 	WBSH_VSTR(WBSH_VERSION_MINOR) "." \
 	WBSH_VSTR(WBSH_VERSION_PATCH)
 
+	// Semantic marks (OSC 633, as VS Code and others use) tell a terminal
+	// where a prompt starts, where a command's output begins, and how it
+	// ended. Terminals that do not know them ignore the sequence, so this
+	// costs nothing elsewhere.
+	static void emitShellMark(const ReplState& s, const std::string& body) {
+		if (!s.color_ok) return;
+
+		std::fputs(("\x1b]633;" + body + "\x07").c_str(), stdout);
+		std::fflush(stdout);
+	}
+
+	static std::string percentEncodePath(const std::string& path) {
+		static const char* kHexDigits = "0123456789ABCDEF";
+
+		std::string encoded;
+		for (unsigned char letter : path) {
+			const bool plain = std::isalnum(letter) != 0 || letter == '/' || letter == '-'
+				|| letter == '_' || letter == '.' || letter == '~' || letter == ':';
+			if (plain) {
+				encoded.push_back(static_cast<char>(letter));
+				continue;
+			}
+
+			encoded.push_back('%');
+			encoded.push_back(kHexDigits[letter >> 4]);
+			encoded.push_back(kHexDigits[letter & 0x0F]);
+		}
+
+		return encoded;
+	}
+
+	// OSC 7 reports the working directory, so a terminal can show it without
+	// parsing the prompt.
+	static void emitWorkingDirectory(const ReplState& s, Executor& exec) {
+		if (!s.color_ok) return;
+
+		std::error_code ec;
+		const std::filesystem::path here = std::filesystem::current_path(ec);
+		if (ec) return;
+
+		std::string path = pathToUtf8(here);
+		for (char& letter : path) {
+			if (letter == '\\') letter = '/';
+		}
+
+		std::fputs(("\x1b]7;file:///" + percentEncodePath(path) + "\x07").c_str(), stdout);
+		std::fflush(stdout);
+	}
+
 	static void printBanner(const ReplState& s) {
 		if (s.color_ok) {
 			std::fputs(
@@ -700,6 +749,9 @@ namespace wbsh {
 		while (true) {
 			pumpAsyncEvents(env, exec, state);
 
+			emitWorkingDirectory(state, exec);
+			emitShellMark(state, "A");
+
 			std::string prompt = buildPrompt(env, exec, state);
 			std::string line;
 			if (!editor.readLine(prompt, line)) {
@@ -720,7 +772,9 @@ namespace wbsh {
 			if (!line.empty()) exec.addHistoryEntry(line);
 			appendToBuffer(state, line);
 
+			emitShellMark(state, "C");
 			parseAndMaybeExecute(exec, state);
+			emitShellMark(state, "D;" + std::to_string(exec.lastStatus()));
 			int exit_status = 0;
 			if (shellExited(exec, &exit_status)) {
 				exec.fireExitTrap();

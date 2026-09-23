@@ -5,6 +5,8 @@
 
 #include "render.h"
 
+#include <algorithm>
+
 #pragma comment(lib, "d2d1.lib")
 
 namespace wbshterm {
@@ -119,6 +121,68 @@ namespace wbshterm {
 			int absolute_row, int column) const {
 		if (view.isSelected(absolute_row, column)) return config_.palette.selection;
 		return resolveBackground(screen.cellAt(absolute_row, column));
+	}
+
+	static std::wstring widenForPicker(const std::string& text) {
+		std::wstring wide;
+		for (unsigned char letter : text) wide.push_back(static_cast<wchar_t>(letter));
+		return wide;
+	}
+
+	void Renderer::drawPickerRow(ID2D1RenderTarget* target, const std::wstring& text, float top,
+			float width, bool highlighted) {
+		const CellMetrics& cell = font_.metrics();
+		const float left = padding();
+
+		if (highlighted) {
+			setBrushColor(config_.palette.selection, 1.0f);
+			target->FillRectangle(D2D1::RectF(left, top, left + width, top + cell.height),
+				brush_.Get());
+		}
+
+		setBrushColor(config_.palette.foreground, 1.0f);
+		target->DrawText(text.c_str(), static_cast<UINT32>(text.size()), font_.format(false, false),
+			D2D1::RectF(left, top, left + width, top + cell.height), brush_.Get(), text_options_);
+	}
+
+	// The overlay sits at the bottom, over whatever the grid was showing, so
+	// the command being typed stays visible above it.
+	void Renderer::drawPicker(ID2D1RenderTarget* target, const Screen& screen,
+			const Picker& picker) {
+		if (!picker.active() || !prepareBrush(target)) return;
+
+		const CellMetrics& cell = font_.metrics();
+		const int visible_rows = std::min(static_cast<int>(picker.matches().size()), 10);
+		const int rows = visible_rows + 1;
+
+		const float width = static_cast<float>(screen.columns()) * cell.width;
+		const float height = static_cast<float>(rows) * cell.height;
+		const float top = padding() + static_cast<float>(screen.rows()) * cell.height - height;
+
+		setBrushColor(config_.palette.background, 1.0f);
+		target->FillRectangle(
+			D2D1::RectF(padding(), top, padding() + width, top + height), brush_.Get());
+
+		setBrushColor(config_.palette.cursor, 1.0f);
+		target->DrawLine(D2D1::Point2F(padding(), top), D2D1::Point2F(padding() + width, top),
+			brush_.Get(), 1.0f);
+
+		const std::string header = "  " + picker.prompt() + " > " + picker.query()
+			+ "    [" + std::to_string(picker.matches().size()) + "/"
+			+ std::to_string(picker.itemCount()) + "]";
+		drawPickerRow(target, widenForPicker(header), top, width, false);
+
+		const int first = std::max(0, picker.selected() - visible_rows + 1);
+		for (int row = 0; row < visible_rows; ++row) {
+			const int match = first + row;
+			if (match >= static_cast<int>(picker.matches().size())) break;
+
+			const bool current = match == picker.selected();
+			const std::string line = (current ? "> " : "  ")
+				+ picker.item(picker.matches()[static_cast<std::size_t>(match)]);
+			drawPickerRow(target, widenForPicker(line),
+				top + static_cast<float>(row + 1) * cell.height, width, current);
+		}
 	}
 
 	void Renderer::drawRowBackgrounds(ID2D1RenderTarget* target, const Screen& screen,

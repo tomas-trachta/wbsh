@@ -112,6 +112,7 @@ namespace wbshterm {
 		int rows    = config_.window.rows;
 		gridSizeFromClient(columns, rows);
 
+		session_.screen().setPickHandler(this);
 		session_.wakeWith(window_, kMessagePtyData);
 		if (!session_.start(command_line_, columns, rows, out_error)) return false;
 
@@ -371,6 +372,28 @@ namespace wbshterm {
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
+	// Ctrl+PageUp / Ctrl+PageDown walk the prompts the shell marked, which
+	// is how a long scrollback becomes navigable rather than a wall.
+	bool TerminalWindow::jumpToCommand(bool backwards) {
+		const int row = view_.neighbouringCommandRow(session_.screen(), backwards);
+		if (row < 0) return false;
+
+		view_.scrollToRow(row, session_.screen());
+		return true;
+	}
+
+	void TerminalWindow::copyLastCommandOutput() {
+		const std::vector<CommandBlock>& blocks = session_.screen().commandBlocks();
+		for (auto block = blocks.rbegin(); block != blocks.rend(); ++block) {
+			if (!block->finished || block->output_row < 0) continue;
+
+			view_.selectBlockOutput(*block, session_.screen());
+			copySelection();
+			::InvalidateRect(window_, nullptr, FALSE);
+			return;
+		}
+	}
+
 	void TerminalWindow::copySelection() {
 		const std::string text = view_.selectedText(session_.screen());
 		if (text.empty()) return;
@@ -399,7 +422,11 @@ namespace wbshterm {
 	bool TerminalWindow::handleViewShortcut(const KeyPress& press) {
 		const int page = std::max(1, session_.screen().rows() - 1);
 
-		if (press.shift && !press.control && press.virtual_key == VK_PRIOR) {
+		if (press.control && !press.shift && press.virtual_key == VK_PRIOR) {
+			if (!jumpToCommand(true)) return true;
+		} else if (press.control && !press.shift && press.virtual_key == VK_NEXT) {
+			if (!jumpToCommand(false)) return true;
+		} else if (press.shift && !press.control && press.virtual_key == VK_PRIOR) {
 			view_.scrollBy(page, session_.screen());
 		} else if (press.shift && !press.control && press.virtual_key == VK_NEXT) {
 			view_.scrollBy(-page, session_.screen());
@@ -443,7 +470,8 @@ namespace wbshterm {
 		const std::vector<std::string> themes =
 			availableThemeNames(themesDirectory(config_path_));
 
-		HMENU menu = buildTerminalMenu(config_, themes, view_.hasSelection());
+		HMENU menu = buildTerminalMenu(config_, themes, view_.hasSelection(),
+			!session_.screen().commandBlocks().empty());
 		const int command = ::TrackPopupMenu(menu,
 			TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, where.x, where.y, 0, window_, nullptr);
 		::DestroyMenu(menu);
@@ -469,6 +497,11 @@ namespace wbshterm {
 
 		if (choice.action == MenuAction::OpenThemesFolder) {
 			openThemesFolder();
+			return;
+		}
+
+		if (choice.action == MenuAction::CopyLastOutput) {
+			copyLastCommandOutput();
 			return;
 		}
 
@@ -540,6 +573,7 @@ namespace wbshterm {
 		if (target_) {
 			target_->BeginDraw();
 			renderer_.draw(target_.Get(), session_.screen(), view_);
+			renderer_.drawPicker(target_.Get(), session_.screen(), picker_);
 			if (target_->EndDraw() == D2DERR_RECREATE_TARGET) {
 				std::string ignored;
 				createTarget(ignored);
@@ -601,7 +635,10 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::syncTitle() {
-		const std::string& title = session_.screen().title();
+		const std::string& directory = session_.screen().workingDirectory();
+		const std::string& title = directory.empty()
+			? session_.screen().title()
+			: directory;
 		if (title.empty()) return;
 
 		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, title.c_str(),
@@ -632,6 +669,12 @@ namespace wbshterm {
 			return;
 		}
 
+		if (picker_.active()) {
+			picker_.typeCharacter(character);
+			::InvalidateRect(window_, nullptr, FALSE);
+			return;
+		}
+
 		std::string bytes = encodeUtf8(character);
 		if (bytes.empty()) return;
 
@@ -639,7 +682,58 @@ namespace wbshterm {
 		sendBytes(bytes.data(), bytes.size());
 	}
 
+	void TerminalWindow::pickBegin(const std::string& prompt) {
+		picker_.begin(prompt);
+	}
+
+	void TerminalWindow::pickItem(const std::string& text) {
+		picker_.addItem(text);
+	}
+
+	void TerminalWindow::pickEnd() {
+		picker_.finish();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::pickCancel() {
+		picker_.cancel();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	// The shell is blocked waiting for a line, so every answer ends with a
+	// carriage return; an empty one means the user backed out.
+	void TerminalWindow::answerPick(const std::string& choice) {
+		picker_.cancel();
+
+		const std::string reply = choice + "\r";
+		session_.writeInput(reply.data(), reply.size());
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	bool TerminalWindow::pickerTakesKey(WPARAM key) {
+		if (!picker_.active()) return false;
+
+		switch (key) {
+		case VK_RETURN: answerPick(picker_.chosen()); return true;
+		case VK_ESCAPE: answerPick(std::string()); return true;
+		case VK_UP:     picker_.moveSelection(-1); break;
+		case VK_DOWN:   picker_.moveSelection(1); break;
+		case VK_PRIOR:  picker_.moveSelection(-10); break;
+		case VK_NEXT:   picker_.moveSelection(10); break;
+		case VK_BACK:   picker_.backspace(); break;
+		default:        return false;
+		}
+
+		::InvalidateRect(window_, nullptr, FALSE);
+		return true;
+	}
+
 	bool TerminalWindow::onKeyDown(WPARAM key) {
+		if (pickerTakesKey(key)) {
+			swallow_next_char_ = true;
+			return true;
+		}
+
 		const KeyPress press = currentKeyPress(key);
 		swallow_next_char_ = false;
 

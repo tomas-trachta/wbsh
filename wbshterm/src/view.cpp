@@ -50,6 +50,46 @@ namespace wbshterm {
 		scroll_offset_ = 0;
 	}
 
+	void TerminalView::scrollToRow(int absolute_row, const Screen& screen) {
+		const int bottom_top = screen.totalRows() - screen.rows();
+		scroll_offset_ = std::min(std::max(bottom_top - absolute_row, 0), maxScrollOffset(screen));
+	}
+
+	// Jumping moves between prompts, which is what a reader means by "the
+	// previous command" -- the line they typed, with its output below it.
+	int TerminalView::neighbouringCommandRow(const Screen& screen, bool backwards) const {
+		const std::vector<CommandBlock>& blocks = screen.commandBlocks();
+		const int here = topRow(screen);
+
+		if (backwards) {
+			int best = -1;
+			for (const CommandBlock& block : blocks) {
+				if (block.prompt_row < here) best = block.prompt_row;
+			}
+
+			return best;
+		}
+
+		for (const CommandBlock& block : blocks) {
+			if (block.prompt_row > here) return block.prompt_row;
+		}
+
+		return -1;
+	}
+
+	void TerminalView::selectBlockOutput(const CommandBlock& block, const Screen& screen) {
+		if (block.output_row < 0) return;
+
+		const int last = block.end_row > block.output_row
+			? block.end_row - 1
+			: block.output_row;
+
+		anchor_        = { block.output_row, 0 };
+		focus_         = { last, screen.columns() - 1 };
+		selecting_     = false;
+		has_selection_ = true;
+	}
+
 	int TerminalView::topRow(const Screen& screen) const {
 		const int bottom_top = screen.totalRows() - screen.rows();
 		return std::max(0, bottom_top - scroll_offset_);

@@ -6,6 +6,7 @@
 #include "snapshot.h"
 
 #include "config.h"
+#include "picker.h"
 #include "render.h"
 #include "session.h"
 
@@ -67,6 +68,16 @@ namespace wbshterm {
 		return true;
 	}
 
+	class SnapshotPicker : public PickHandler {
+	public:
+		void pickBegin(const std::string& prompt) override { picker.begin(prompt); }
+		void pickItem(const std::string& text) override { picker.addItem(text); }
+		void pickEnd() override { picker.finish(); }
+		void pickCancel() override { picker.cancel(); }
+
+		Picker picker;
+	};
+
 	static void runUntilQuiet(Session& session, const SnapshotRequest& request) {
 		const auto started = std::chrono::steady_clock::now();
 		auto last_change = started;
@@ -90,7 +101,7 @@ namespace wbshterm {
 	}
 
 	static bool paintToBitmap(Renderer& renderer, const Screen& screen, const TerminalView& view,
-			IWICBitmap* bitmap, std::string& out_error) {
+			const Picker& picker, IWICBitmap* bitmap, std::string& out_error) {
 		ComPtr<ID2D1RenderTarget> target;
 		const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
 			D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -105,6 +116,7 @@ namespace wbshterm {
 
 		target->BeginDraw();
 		renderer.draw(target.Get(), screen, view);
+		renderer.drawPicker(target.Get(), screen, picker);
 		if (FAILED(target->EndDraw())) {
 			out_error = "off-screen drawing failed";
 			return false;
@@ -127,7 +139,8 @@ namespace wbshterm {
 	}
 
 	static bool paintGridToFile(Renderer& renderer, const Screen& screen,
-			const TerminalView& view, const std::wstring& path, std::string& out_error) {
+			const TerminalView& view, const Picker& picker, const std::wstring& path,
+			std::string& out_error) {
 		const CellMetrics& cell = renderer.metrics();
 		const UINT width  = static_cast<UINT>(cell.width * static_cast<float>(screen.columns()));
 		const UINT height = static_cast<UINT>(cell.height * static_cast<float>(screen.rows()));
@@ -142,7 +155,9 @@ namespace wbshterm {
 			return false;
 		}
 
-		if (!paintToBitmap(renderer, screen, view, bitmap.Get(), out_error)) return false;
+		if (!paintToBitmap(renderer, screen, view, picker, bitmap.Get(), out_error)) {
+			return false;
+		}
 		return savePng(factory.Get(), bitmap.Get(), path, width, height, out_error);
 	}
 
@@ -156,7 +171,8 @@ namespace wbshterm {
 		if (!createRenderer(renderer, snapshotConfig(config), out_error)) return false;
 
 		const TerminalView view;
-		return paintGridToFile(renderer, screen, view, path, out_error);
+		const Picker picker;
+		return paintGridToFile(renderer, screen, view, picker, path, out_error);
 	}
 
 	bool renderSnapshot(const SnapshotRequest& request, std::string& out_error) {
@@ -164,6 +180,8 @@ namespace wbshterm {
 		if (!createRenderer(renderer, snapshotConfig(request.config), out_error)) return false;
 
 		Session session;
+		SnapshotPicker picker;
+		session.screen().setPickHandler(&picker);
 		if (!session.start(request.command_line, request.columns, request.rows, out_error)) {
 			return false;
 		}
@@ -180,7 +198,7 @@ namespace wbshterm {
 			view.extendSelection({ request.select_to_row, request.select_to_col });
 		}
 
-		const bool painted = paintGridToFile(renderer, session.screen(), view,
+		const bool painted = paintGridToFile(renderer, session.screen(), view, picker.picker,
 			request.output_path, out_error);
 		session.stop();
 		return painted;
