@@ -48,6 +48,9 @@ namespace wbshterm {
 
 		bool childAlive() const;
 
+		/** For waiting on the child; the session keeps ownership. */
+		HANDLE childHandle() const { return child_; }
+
 		/**
 		 * @brief Close the pseudoconsole so pending read() calls return 0.
 		 *

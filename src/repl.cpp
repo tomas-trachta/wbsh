@@ -550,6 +550,16 @@ namespace wbsh {
 		exec.executeText(ss.str(), rcfile);
 	}
 
+	// A host terminal can ask for one command to run once the session is
+	// up -- wbshterm uses it for its startup panel. Kept separate from
+	// .wbshrc so it cannot be lost by editing that file.
+	static void runInitCommand(const Environment& env, Executor& exec) {
+		const std::string command = env.get("WBSH_INIT_COMMAND");
+		if (command.empty()) return;
+
+		exec.executeText(command, "WBSH_INIT_COMMAND");
+	}
+
 	static void saveHistory(Executor& exec, const ReplState& s) {
 		if (!s.histfile.empty()) {
 			exec.saveHistoryToFile(exec.pathConv().toWin32(s.histfile));
@@ -679,6 +689,7 @@ namespace wbsh {
 		initHistFile(env, exec, state);
 
 		sourceWbshrc(env, exec);
+		runInitCommand(env, exec);
 		int rc_status = 0;
 		if (shellExited(exec, &rc_status)) {
 			saveHistory(exec, state);

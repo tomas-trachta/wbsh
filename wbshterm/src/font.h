@@ -5,8 +5,10 @@
  * @brief The monospace face, and the cell box its glyphs sit in.
  */
 
-#include <dwrite.h>
+#include <dwrite_2.h>
 #include <wrl/client.h>
+
+#include "config.h"
 
 #include <string>
 
@@ -27,7 +29,7 @@ namespace wbshterm {
 	 */
 	class FontSet {
 	public:
-		bool create(const std::wstring& family, float point_size, std::string& out_error);
+		bool create(const FontSettings& settings, std::string& out_error);
 
 		IDWriteTextFormat* format(bool bold, bool italic) const;
 		IDWriteFactory* factory() const { return factory_.Get(); }
@@ -35,6 +37,7 @@ namespace wbshterm {
 
 	private:
 		bool createFormats(const std::wstring& family, float size_dip, std::string& out_error);
+		void applyFallback(const std::vector<std::wstring>& families);
 		bool measureCell(std::string& out_error);
 
 		Microsoft::WRL::ComPtr<IDWriteFactory>    factory_;

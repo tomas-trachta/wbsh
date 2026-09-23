@@ -5,6 +5,7 @@
 
 #include "snapshot.h"
 
+#include "config.h"
 #include "render.h"
 #include "session.h"
 
@@ -112,9 +113,17 @@ namespace wbshterm {
 		return true;
 	}
 
-	static bool createRenderer(Renderer& renderer, std::string& out_error) {
-		return renderer.create(L"Cascadia Mono", 11.0f, out_error)
-			|| renderer.create(L"Consolas", 11.0f, out_error);
+	static bool createRenderer(Renderer& renderer, Config config, std::string& out_error) {
+		if (renderer.create(config, out_error)) return true;
+
+		config.font.family = L"Consolas";
+		return renderer.create(config, out_error);
+	}
+
+	static Config snapshotConfig(const Config& wanted) {
+		Config config = wanted;
+		config.window.padding = 0;
+		return config;
 	}
 
 	static bool paintGridToFile(Renderer& renderer, const Screen& screen,
@@ -140,8 +149,11 @@ namespace wbshterm {
 	bool renderScreenToPng(const Screen& screen, const std::wstring& path, std::string& out_error) {
 		::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+		Config config;
+		findBuiltInTheme(config.theme_name, config.palette);
+
 		Renderer renderer;
-		if (!createRenderer(renderer, out_error)) return false;
+		if (!createRenderer(renderer, snapshotConfig(config), out_error)) return false;
 
 		const TerminalView view;
 		return paintGridToFile(renderer, screen, view, path, out_error);
@@ -149,7 +161,7 @@ namespace wbshterm {
 
 	bool renderSnapshot(const SnapshotRequest& request, std::string& out_error) {
 		Renderer renderer;
-		if (!createRenderer(renderer, out_error)) return false;
+		if (!createRenderer(renderer, snapshotConfig(request.config), out_error)) return false;
 
 		Session session;
 		if (!session.start(request.command_line, request.columns, request.rows, out_error)) {

@@ -45,7 +45,7 @@ function Invoke-ClBuild {
     $sources = Get-ChildItem -Path $SourceDir -Filter *.cpp | ForEach-Object { $_.FullName }
 
     $arguments = @(
-        '/nologo', '/std:c++17', '/W4', '/WX', '/EHsc', '/permissive-',
+        '/nologo', '/std:c++17', '/W4', '/WX', '/EHsc', '/permissive-', '/utf-8',
         '/D_CRT_SECURE_NO_WARNINGS', '/DWIN32_LEAN_AND_MEAN', '/DNOMINMAX', '/DUNICODE', '/D_UNICODE'
     ) + $optimization + $sources + @(
         "/Fe:$(Join-Path $OutputDir 'wbshterm.exe')",

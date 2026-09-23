@@ -35,34 +35,46 @@ namespace wbshterm {
 		text.push_back(static_cast<wchar_t>(0xDC00 + (offset & 0x3FF)));
 	}
 
-	bool Renderer::create(const std::wstring& font_family, float point_size,
-			std::string& out_error) {
-		const HRESULT hr = ::D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
-			factory_.GetAddressOf());
-		if (FAILED(hr)) {
-			out_error = "D2D1CreateFactory failed";
-			return false;
+	bool Renderer::create(const Config& config, std::string& out_error) {
+		config_ = config;
+
+		if (!factory_) {
+			const HRESULT hr = ::D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+				factory_.GetAddressOf());
+			if (FAILED(hr)) {
+				out_error = "D2D1CreateFactory failed";
+				return false;
+			}
 		}
 
-		return font_.create(font_family, point_size, out_error);
+		return font_.create(config.font, out_error);
+	}
+
+	void Renderer::applyConfig(const Config& config) {
+		config_ = config;
+	}
+
+	// A palette slot is resolved here rather than when the text was written,
+	// so a theme change repaints everything already on screen.
+	std::uint32_t Renderer::resolveColor(std::uint32_t color, std::uint32_t fallback) const {
+		if (color == kDefaultColor) return fallback;
+		if ((color & 0xFF000000u) != kPaletteColor) return color;
+
+		return config_.palette.ansi[color & 0x0Fu];
 	}
 
 	std::uint32_t Renderer::resolveForeground(const Cell& cell) const {
-		const std::uint32_t color = cell.foreground == kDefaultColor
-			? theme_.foreground
-			: cell.foreground;
+		const std::uint32_t color = resolveColor(cell.foreground, config_.palette.foreground);
 		if ((cell.attributes & kAttrReverse) == 0) return color;
 
-		return cell.background == kDefaultColor ? theme_.background : cell.background;
+		return resolveColor(cell.background, config_.palette.background);
 	}
 
 	std::uint32_t Renderer::resolveBackground(const Cell& cell) const {
-		const std::uint32_t color = cell.background == kDefaultColor
-			? theme_.background
-			: cell.background;
+		const std::uint32_t color = resolveColor(cell.background, config_.palette.background);
 		if ((cell.attributes & kAttrReverse) == 0) return color;
 
-		return cell.foreground == kDefaultColor ? theme_.foreground : cell.foreground;
+		return resolveColor(cell.foreground, config_.palette.foreground);
 	}
 
 	void Renderer::setBrushColor(std::uint32_t rgb, float alpha) {
@@ -79,6 +91,12 @@ namespace wbshterm {
 		}
 
 		brush_owner_ = target;
+
+		Microsoft::WRL::ComPtr<ID2D1DeviceContext> context;
+		color_fonts_ = SUCCEEDED(target->QueryInterface(IID_PPV_ARGS(context.GetAddressOf())));
+		text_options_ = color_fonts_
+			? (D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT)
+			: D2D1_DRAW_TEXT_OPTIONS_CLIP;
 		return true;
 	}
 
@@ -86,7 +104,7 @@ namespace wbshterm {
 			const TerminalView& view) {
 		if (!prepareBrush(target)) return;
 
-		target->Clear(toColorF(theme_.background, 1.0f));
+		target->Clear(toColorF(config_.palette.background, 1.0f));
 
 		const int top = view.topRow(screen);
 		for (int row = 0; row < screen.rows(); ++row) {
@@ -99,7 +117,7 @@ namespace wbshterm {
 
 	std::uint32_t Renderer::backgroundFor(const Screen& screen, const TerminalView& view,
 			int absolute_row, int column) const {
-		if (view.isSelected(absolute_row, column)) return theme_.selection;
+		if (view.isSelected(absolute_row, column)) return config_.palette.selection;
 		return resolveBackground(screen.cellAt(absolute_row, column));
 	}
 
@@ -113,13 +131,14 @@ namespace wbshterm {
 			const std::uint32_t run_color = backgroundFor(screen, view, absolute_row, run_start);
 			if (!at_end && backgroundFor(screen, view, absolute_row, column) == run_color) continue;
 
-			if (run_color != theme_.background) {
+			if (run_color != config_.palette.background) {
 				setBrushColor(run_color, 1.0f);
+				const float pad = padding();
 				const D2D1_RECT_F box = D2D1::RectF(
-					static_cast<float>(run_start) * cell_box.width,
-					static_cast<float>(viewport_row) * cell_box.height,
-					static_cast<float>(column) * cell_box.width,
-					static_cast<float>(viewport_row + 1) * cell_box.height);
+					pad + static_cast<float>(run_start) * cell_box.width,
+					pad + static_cast<float>(viewport_row) * cell_box.height,
+					pad + static_cast<float>(column) * cell_box.width,
+					pad + static_cast<float>(viewport_row + 1) * cell_box.height);
 				target->FillRectangle(box, brush_.Get());
 			}
 
@@ -134,6 +153,7 @@ namespace wbshterm {
 
 		for (int column = 0; column < screen.columns(); ++column) {
 			const Cell& cell = screen.cellAt(absolute_row, column);
+			if ((cell.attributes & kAttrWideTail) != 0) continue;
 
 			if (!run.empty() && !sameStyle(cell, screen.cellAt(absolute_row, run_start))) {
 				drawRun(target, run, screen.cellAt(absolute_row, run_start), viewport_row,
@@ -161,20 +181,21 @@ namespace wbshterm {
 		}
 
 		const CellMetrics& cell_box = font_.metrics();
-		const float left = static_cast<float>(column) * cell_box.width;
-		const float top  = static_cast<float>(row) * cell_box.height;
+		const float pad = padding();
+		const float left = pad + static_cast<float>(column) * cell_box.width;
+		const float top  = pad + static_cast<float>(row) * cell_box.height;
 		const float alpha = (style.attributes & kAttrDim) != 0 ? kDimAlpha : 1.0f;
 
 		setBrushColor(resolveForeground(style), alpha);
 
 		const D2D1_RECT_F box = D2D1::RectF(left, top,
-			left + cell_box.width * static_cast<float>(text.size()) + cell_box.width,
+			left + cell_box.width * static_cast<float>(text.size() + 2),
 			top + cell_box.height);
 
 		IDWriteTextFormat* format = font_.format((style.attributes & kAttrBold) != 0,
 			(style.attributes & kAttrItalic) != 0);
 		target->DrawText(text.c_str(), static_cast<UINT32>(text.size()), format, box, brush_.Get(),
-			D2D1_DRAW_TEXT_OPTIONS_CLIP);
+			text_options_);
 
 		if ((style.attributes & kAttrUnderline) == 0) return;
 
@@ -192,11 +213,28 @@ namespace wbshterm {
 		if (!cursor.visible || view.scrollOffset() != 0) return;
 		if (cursor.row >= screen.rows() || cursor.column >= screen.columns()) return;
 
-		const CellMetrics& cell_box = font_.metrics();
-		const float left = static_cast<float>(cursor.column) * cell_box.width;
-		const float top  = static_cast<float>(cursor.row) * cell_box.height;
+		if (!cursor_phase_) return;
 
-		setBrushColor(theme_.cursor, 1.0f);
+		const CellMetrics& cell_box = font_.metrics();
+		const float pad = padding();
+		const float left = pad + static_cast<float>(cursor.column) * cell_box.width;
+		const float top  = pad + static_cast<float>(cursor.row) * cell_box.height;
+
+		setBrushColor(config_.palette.cursor, 1.0f);
+
+		if (config_.cursor.style == CursorStyle::Bar) {
+			target->FillRectangle(
+				D2D1::RectF(left, top, left + 2.0f, top + cell_box.height), brush_.Get());
+			return;
+		}
+
+		if (config_.cursor.style == CursorStyle::Underline) {
+			target->FillRectangle(
+				D2D1::RectF(left, top + cell_box.height - 2.0f, left + cell_box.width,
+					top + cell_box.height), brush_.Get());
+			return;
+		}
+
 		target->FillRectangle(
 			D2D1::RectF(left, top, left + cell_box.width, top + cell_box.height), brush_.Get());
 
@@ -209,8 +247,8 @@ namespace wbshterm {
 
 		IDWriteTextFormat* format = font_.format((cell.attributes & kAttrBold) != 0, false);
 		target->DrawText(text.c_str(), static_cast<UINT32>(text.size()), format,
-			D2D1::RectF(left, top, left + cell_box.width * 2.0f, top + cell_box.height),
-			brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+			D2D1::RectF(left, top, left + cell_box.width * 3.0f, top + cell_box.height),
+			brush_.Get(), text_options_);
 	}
 
 } /* namespace wbshterm */

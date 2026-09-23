@@ -17,6 +17,10 @@ namespace wbshterm {
 	/** Colors are 0x00RRGGBB, or this sentinel for "whatever the theme says". */
 	static const std::uint32_t kDefaultColor = 0xFF000000u;
 
+	/** An ANSI slot rather than a fixed colour: the theme resolves it at paint
+	    time, so changing themes recolours text already on screen. */
+	static const std::uint32_t kPaletteColor = 0xFE000000u;
+
 	enum CellAttr : std::uint16_t {
 		kAttrNone      = 0,
 		kAttrBold      = 1 << 0,
@@ -25,6 +29,8 @@ namespace wbshterm {
 		kAttrUnderline = 1 << 3,
 		kAttrReverse   = 1 << 4,
 		kAttrInvisible = 1 << 5,
+		kAttrWide      = 1 << 6,
+		kAttrWideTail  = 1 << 7,
 	};
 
 	struct Cell {
@@ -52,6 +58,8 @@ namespace wbshterm {
 		Screen(int columns, int rows);
 
 		void resize(int columns, int rows);
+		void setScrollbackLimit(int lines);
+		void clearAll();
 
 		int columns() const { return columns_; }
 		int rows() const { return rows_; }
@@ -102,6 +110,8 @@ namespace wbshterm {
 
 		void scrollUp(int count);
 		void pushToScrollback(int row);
+		void carryContentForward(const std::vector<Cell>& old_cells, int old_columns,
+			int old_rows);
 		void enterAltScreen();
 		void leaveAltScreen();
 		void scrollDown(int count);
@@ -128,6 +138,7 @@ namespace wbshterm {
 		int  rows_    = 0;
 		std::vector<Cell> cells_;
 		std::deque<std::vector<Cell>> scrollback_;
+		std::size_t       scrollback_limit_ = 10000;
 		std::vector<Cell> primary_cells_;
 		CursorState       primary_cursor_;
 		bool              alt_screen_ = false;

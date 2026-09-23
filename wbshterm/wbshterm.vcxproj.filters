@@ -17,6 +17,21 @@
     <ClInclude Include="src\font.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\fetch.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\menu.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\theme.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\charwidth.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\keymap.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -53,6 +68,21 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\font.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\fetch.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\menu.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\theme.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\config.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\charwidth.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\keymap.cpp">

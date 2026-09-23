@@ -5,13 +5,14 @@
 
 #include "screen.h"
 
+#include "charwidth.h"
+
 #include <algorithm>
 #include <string>
 
 namespace wbshterm {
 
 	static const int kTabWidth = 8;
-	static const std::size_t kScrollbackLimit = 10000;
 
 	static const std::uint32_t kAnsiPalette[16] = {
 		0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5,
@@ -20,7 +21,7 @@ namespace wbshterm {
 
 	static std::uint32_t indexedColor(int index) {
 		if (index < 0) return kDefaultColor;
-		if (index < 16) return kAnsiPalette[index];
+		if (index < 16) return kPaletteColor | static_cast<std::uint32_t>(index);
 
 		if (index < 232) {
 			const int offset = index - 16;
@@ -44,6 +45,10 @@ namespace wbshterm {
 	}
 
 	void Screen::resize(int columns, int rows) {
+		const std::vector<Cell> old_cells = cells_;
+		const int old_columns = columns_;
+		const int old_rows    = rows_;
+
 		columns_ = std::max(1, columns);
 		rows_    = std::max(1, rows);
 
@@ -52,9 +57,51 @@ namespace wbshterm {
 
 		scroll_top_    = 0;
 		scroll_bottom_ = rows_ - 1;
+		wrap_pending_  = false;
+
+		carryContentForward(old_cells, old_columns, old_rows);
+
 		cursor_.row    = std::min(cursor_.row, rows_ - 1);
 		cursor_.column = std::min(cursor_.column, columns_ - 1);
-		wrap_pending_  = false;
+	}
+
+	void Screen::carryContentForward(const std::vector<Cell>& old_cells, int old_columns,
+			int old_rows) {
+		if (old_cells.empty() || old_columns <= 0 || old_rows <= 0) return;
+
+		const int kept    = std::min(rows_, old_rows);
+		const int carried = std::min(columns_, old_columns);
+
+		for (int row = 0; row < old_rows - kept; ++row) {
+			std::vector<Cell> line(
+				old_cells.begin() + static_cast<std::ptrdiff_t>(row) * old_columns,
+				old_cells.begin() + static_cast<std::ptrdiff_t>(row + 1) * old_columns);
+			if (!alt_screen_) scrollback_.push_back(std::move(line));
+		}
+
+		while (scrollback_.size() > scrollback_limit_) scrollback_.pop_front();
+
+		for (int row = 0; row < kept; ++row) {
+			const int source = old_rows - kept + row;
+			const int target = rows_ - kept + row;
+			for (int column = 0; column < carried; ++column) {
+				at(target, column) = old_cells[
+					static_cast<std::size_t>(source) * static_cast<std::size_t>(old_columns)
+					+ static_cast<std::size_t>(column)];
+			}
+		}
+
+		cursor_.row += rows_ - old_rows;
+	}
+
+	void Screen::clearAll() {
+		cells_.assign(cells_.size(), Cell());
+		markAllDirty();
+	}
+
+	void Screen::setScrollbackLimit(int lines) {
+		scrollback_limit_ = static_cast<std::size_t>(std::max(0, lines));
+		while (scrollback_.size() > scrollback_limit_) scrollback_.pop_front();
 	}
 
 	Cell& Screen::at(int row, int column) {
@@ -119,16 +166,34 @@ namespace wbshterm {
 	}
 
 	void Screen::writeChar(char32_t code) {
+		const int width = characterWidth(code);
+		if (width == 0) return;
+
 		if (wrap_pending_) {
 			carriageReturn();
 			lineFeed();
 			wrap_pending_ = false;
 		}
 
+		if (width == 2 && cursor_.column + 1 >= columns_) {
+			clearRow(cursor_.row, cursor_.column, columns_ - 1);
+			carriageReturn();
+			lineFeed();
+		}
+
 		Cell& target = at(cursor_.row, cursor_.column);
 		target = pen_;
 		target.code = code;
+		if (width == 2) target.attributes |= kAttrWide;
 		markDirty(cursor_.row);
+
+		if (width == 2 && cursor_.column + 1 < columns_) {
+			Cell& tail = at(cursor_.row, cursor_.column + 1);
+			tail = pen_;
+			tail.code = U' ';
+			tail.attributes |= kAttrWideTail;
+			++cursor_.column;
+		}
 
 		advanceCursor();
 	}
@@ -204,7 +269,7 @@ namespace wbshterm {
 			cells_.begin() + static_cast<std::ptrdiff_t>(start)
 				+ static_cast<std::ptrdiff_t>(columns_));
 
-		while (scrollback_.size() > kScrollbackLimit) scrollback_.pop_front();
+			while (scrollback_.size() > scrollback_limit_) scrollback_.pop_front();
 	}
 
 	void Screen::scrollUp(int count) {
@@ -261,7 +326,7 @@ namespace wbshterm {
 			break;
 		case 'c':
 			pen_ = Cell();
-			resize(columns_, rows_);
+			clearAll();
 			moveCursor(0, 0);
 			break;
 		default: break;

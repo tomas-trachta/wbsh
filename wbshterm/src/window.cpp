@@ -6,19 +6,22 @@
 #include "window.h"
 
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <windowsx.h>
 
 #include <algorithm>
 
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace wbshterm {
 
 	static const wchar_t kClassName[] = L"wbshtermWindow";
 	static const UINT    kMessagePtyData = WM_APP + 1;
-	static const float   kDefaultPointSize = 11.0f;
-	static const int     kDefaultColumns = 100;
-	static const int     kDefaultRows = 30;
+	static const UINT_PTR kTimerBlink = 1;
+	static const UINT_PTR kTimerConfig = 2;
+	static const UINT     kBlinkMs = 530;
+	static const UINT     kConfigPollMs = 1000;
 	static const int     kWheelLines = 3;
 
 	static std::string encodeUtf8(wchar_t character) {
@@ -87,28 +90,95 @@ namespace wbshterm {
 		return text;
 	}
 
-	bool TerminalWindow::create(const std::wstring& command_line, std::string& out_error) {
+	bool TerminalWindow::create(const std::wstring& command_line, const Config& config,
+			const std::wstring& config_path, std::string& out_error) {
 		command_line_ = command_line;
+		config_       = config;
+		config_path_  = config_path;
+		config_stamp_ = settingsStamp(config_path, config_.theme_name);
 
-		if (!renderer_.create(L"Cascadia Mono", kDefaultPointSize, out_error)
-			&& !renderer_.create(L"Consolas", kDefaultPointSize, out_error)) {
-			return false;
+		if (!renderer_.create(config_, out_error)) {
+			Config fallback = config_;
+			fallback.font.family = L"Consolas";
+			if (!renderer_.create(fallback, out_error)) return false;
+			config_ = fallback;
 		}
 
 		if (!registerClass(out_error)) return false;
 		if (!createWindow(out_error)) return false;
 		if (!createTarget(out_error)) return false;
 
-		int columns = kDefaultColumns;
-		int rows = kDefaultRows;
+		int columns = config_.window.columns;
+		int rows    = config_.window.rows;
 		gridSizeFromClient(columns, rows);
 
 		session_.wakeWith(window_, kMessagePtyData);
 		if (!session_.start(command_line_, columns, rows, out_error)) return false;
 
+		session_.screen().setScrollbackLimit(config_.scrollback_lines);
+		applyWindowSettings();
+
+		::SetTimer(window_, kTimerBlink, kBlinkMs, nullptr);
+		::SetTimer(window_, kTimerConfig, kConfigPollMs, nullptr);
+
 		::ShowWindow(window_, SW_SHOW);
 		::UpdateWindow(window_);
 		return true;
+	}
+
+	// Opacity needs a layered window; setting it at 1.0 too would cost a
+	// redirection surface for nothing.
+	void TerminalWindow::applyWindowSettings() {
+		const LONG_PTR style = ::GetWindowLongPtrW(window_, GWL_EXSTYLE);
+		if (config_.window.opacity >= 0.999f) {
+			::SetWindowLongPtrW(window_, GWL_EXSTYLE, style & ~WS_EX_LAYERED);
+			return;
+		}
+
+		::SetWindowLongPtrW(window_, GWL_EXSTYLE, style | WS_EX_LAYERED);
+		const float clamped = config_.window.opacity < 0.2f ? 0.2f : config_.window.opacity;
+		::SetLayeredWindowAttributes(window_, 0, static_cast<BYTE>(clamped * 255.0f), LWA_ALPHA);
+	}
+
+	void TerminalWindow::reloadConfigIfChanged() {
+		if (config_path_.empty()) return;
+
+		const unsigned long long stamp = settingsStamp(config_path_, config_.theme_name);
+		if (stamp == config_stamp_) return;
+		config_stamp_ = stamp;
+
+		Config reloaded;
+		std::string error;
+		if (!loadConfig(config_path_, reloaded, error)) return;
+
+		const bool font_changed = reloaded.font.family != config_.font.family
+			|| reloaded.font.size != config_.font.size
+			|| reloaded.font.line_height != config_.font.line_height;
+
+		config_ = reloaded;
+		if (font_changed && !renderer_.create(config_, error)) return;
+
+		renderer_.applyConfig(config_);
+		session_.screen().setScrollbackLimit(config_.scrollback_lines);
+		applyWindowSettings();
+		onResize();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::onTimer(WPARAM timer) {
+		if (timer == kTimerConfig) {
+			reloadConfigIfChanged();
+			return;
+		}
+
+		if (!config_.cursor.blink) {
+			cursor_phase_ = true;
+			return;
+		}
+
+		cursor_phase_ = !cursor_phase_;
+		renderer_.setCursorVisible(cursor_phase_);
+		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	bool TerminalWindow::registerClass(std::string& out_error) {
@@ -131,9 +201,10 @@ namespace wbshterm {
 
 	bool TerminalWindow::createWindow(std::string& out_error) {
 		const CellMetrics& cell = renderer_.metrics();
+		const float pad = 2.0f * static_cast<float>(config_.window.padding);
 		RECT wanted = { 0, 0,
-			static_cast<LONG>(cell.width * kDefaultColumns),
-			static_cast<LONG>(cell.height * kDefaultRows) };
+			static_cast<LONG>(cell.width * static_cast<float>(config_.window.columns) + pad),
+			static_cast<LONG>(cell.height * static_cast<float>(config_.window.rows) + pad) };
 		::AdjustWindowRect(&wanted, WS_OVERLAPPEDWINDOW, FALSE);
 
 		window_ = ::CreateWindowExW(0, kClassName, L"wbsh", WS_OVERLAPPEDWINDOW,
@@ -182,9 +253,10 @@ namespace wbshterm {
 
 		const D2D1_SIZE_F size = target_->GetSize();
 		const CellMetrics& cell = renderer_.metrics();
+		const float pad = 2.0f * renderer_.padding();
 
-		out_columns = static_cast<int>(size.width / cell.width);
-		out_rows    = static_cast<int>(size.height / cell.height);
+		out_columns = static_cast<int>((size.width - pad) / cell.width);
+		out_rows    = static_cast<int>((size.height - pad) / cell.height);
 		if (out_columns < 1) out_columns = 1;
 		if (out_rows < 1) out_rows = 1;
 	}
@@ -221,7 +293,9 @@ namespace wbshterm {
 		case WM_LBUTTONDBLCLK: onMouseDown(lparam); return 0;
 		case WM_MOUSEMOVE:   onMouseMove(wparam, lparam); return 0;
 		case WM_LBUTTONUP:   onMouseUp(); return 0;
+		case WM_CONTEXTMENU: onContextMenu(lparam); return 0;
 		case WM_ERASEBKGND:  return 1;
+		case WM_TIMER:       onTimer(wparam); return 0;
 		case kMessagePtyData: onPtyData(); return 0;
 		case WM_CLOSE:       ::DestroyWindow(window_); return 0;
 		case WM_DESTROY:
@@ -237,8 +311,9 @@ namespace wbshterm {
 
 	GridPoint TerminalWindow::pointFromMouse(LPARAM lparam) const {
 		const CellMetrics& cell = renderer_.metrics();
-		const float x = static_cast<float>(GET_X_LPARAM(lparam));
-		const float y = static_cast<float>(GET_Y_LPARAM(lparam));
+		const float pad = renderer_.padding();
+		const float x = static_cast<float>(GET_X_LPARAM(lparam)) - pad;
+		const float y = static_cast<float>(GET_Y_LPARAM(lparam)) - pad;
 
 		const int column = std::min(std::max(static_cast<int>(x / cell.width), 0),
 			session_.screen().columns() - 1);
@@ -332,6 +407,12 @@ namespace wbshterm {
 			view_.scrollBy(1, session_.screen());
 		} else if (press.shift && press.control && press.virtual_key == VK_DOWN) {
 			view_.scrollBy(-1, session_.screen());
+		} else if (press.control && !press.alt
+				&& (press.virtual_key == VK_OEM_PLUS || press.virtual_key == VK_ADD
+					|| press.virtual_key == VK_OEM_MINUS || press.virtual_key == VK_SUBTRACT
+					|| press.virtual_key == '0')) {
+			stepFontSize(press.virtual_key);
+			return true;
 		} else if (press.control && press.shift && press.virtual_key == 'C') {
 			copySelection();
 			return true;
@@ -344,6 +425,112 @@ namespace wbshterm {
 
 		::InvalidateRect(window_, nullptr, FALSE);
 		return true;
+	}
+
+	// The menu is where customising lives for anyone who does not want to
+	// open a config file; every choice is written back to that file so it
+	// still applies tomorrow.
+	void TerminalWindow::onContextMenu(LPARAM lparam) {
+		POINT where = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+		if (where.x == -1 && where.y == -1) {
+			RECT client{};
+			::GetClientRect(window_, &client);
+			where.x = client.right / 2;
+			where.y = client.bottom / 2;
+			::ClientToScreen(window_, &where);
+		}
+
+		const std::vector<std::string> themes =
+			availableThemeNames(themesDirectory(config_path_));
+
+		HMENU menu = buildTerminalMenu(config_, themes, view_.hasSelection());
+		const int command = ::TrackPopupMenu(menu,
+			TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, where.x, where.y, 0, window_, nullptr);
+		::DestroyMenu(menu);
+
+		if (command != 0) runMenuChoice(menuChoiceFor(command, themes));
+	}
+
+	void TerminalWindow::runMenuChoice(const MenuChoice& choice) {
+		if (choice.action == MenuAction::Copy) {
+			copySelection();
+			return;
+		}
+
+		if (choice.action == MenuAction::Paste) {
+			pasteFromClipboard();
+			return;
+		}
+
+		if (choice.action == MenuAction::OpenConfigFile) {
+			openConfigFile();
+			return;
+		}
+
+		if (choice.action == MenuAction::OpenThemesFolder) {
+			openThemesFolder();
+			return;
+		}
+
+		if (!applyMenuChoice(choice, themesDirectory(config_path_), config_)) return;
+
+		std::string section;
+		std::string key;
+		std::string value;
+		if (!config_path_.empty() && settingForChoice(choice, config_, section, key, value)) {
+			updateConfigValue(config_path_, section, key, value);
+			config_stamp_ = settingsStamp(config_path_, config_.theme_name);
+		}
+
+		applyChangedConfig(choice.action == MenuAction::SetFontSize);
+	}
+
+	void TerminalWindow::applyChangedConfig(bool font_changed) {
+		std::string error;
+		if (font_changed && !renderer_.create(config_, error)) return;
+
+		renderer_.applyConfig(config_);
+		renderer_.setCursorVisible(true);
+		cursor_phase_ = true;
+		applyWindowSettings();
+		onResize();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::openThemesFolder() {
+		const std::wstring directory = themesDirectory(config_path_);
+		if (!ensureThemesDirectory(directory)) return;
+
+		::ShellExecuteW(window_, L"open", directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	}
+
+	void TerminalWindow::openConfigFile() {
+		if (config_path_.empty()) return;
+		if (configStamp(config_path_) == 0) writeDefaultConfig(config_path_);
+
+		::ShellExecuteW(window_, L"open", config_path_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	}
+
+	void TerminalWindow::stepFontSize(unsigned int virtual_key) {
+		const float previous = config_.font.size;
+
+		if (virtual_key == '0') config_.font.size = 11.0f;
+		else if (virtual_key == VK_OEM_MINUS || virtual_key == VK_SUBTRACT) {
+			config_.font.size -= 1.0f;
+		} else {
+			config_.font.size += 1.0f;
+		}
+
+		config_.font.size = std::min(std::max(config_.font.size, 6.0f), 48.0f);
+		if (config_.font.size == previous) return;
+
+		if (!config_path_.empty()) {
+			updateConfigValue(config_path_, "font", "size",
+				std::to_string(static_cast<int>(config_.font.size)));
+			config_stamp_ = settingsStamp(config_path_, config_.theme_name);
+		}
+
+		applyChangedConfig(true);
 	}
 
 	void TerminalWindow::onPaint() {
@@ -373,8 +560,8 @@ namespace wbshterm {
 			static_cast<UINT32>(client.right - client.left),
 			static_cast<UINT32>(client.bottom - client.top)));
 
-		int columns = kDefaultColumns;
-		int rows = kDefaultRows;
+		int columns = config_.window.columns;
+		int rows    = config_.window.rows;
 		gridSizeFromClient(columns, rows);
 
 		if (columns != session_.screen().columns() || rows != session_.screen().rows()) {
@@ -395,6 +582,8 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::onPtyData() {
+		closeIfChildExited();
+
 		if (session_.drainOutput()) {
 			view_.followOutput(session_.screen());
 			syncTitle();
@@ -486,6 +675,8 @@ namespace wbshterm {
 
 		view_.scrollToBottom();
 		view_.clearSelection();
+		cursor_phase_ = true;
+		renderer_.setCursorVisible(true);
 		::InvalidateRect(window_, nullptr, FALSE);
 		session_.writeInput(data, length);
 	}

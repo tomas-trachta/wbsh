@@ -5,12 +5,15 @@
  * @brief The terminal window: pty bytes in, painted grid out.
  */
 
+#include "config.h"
 #include "keymap.h"
+#include "menu.h"
 #include "render.h"
 #include "session.h"
 #include "view.h"
 
 #include <string>
+#include <vector>
 
 namespace wbshterm {
 
@@ -23,7 +26,8 @@ namespace wbshterm {
 	 */
 	class TerminalWindow {
 	public:
-		bool create(const std::wstring& command_line, std::string& out_error);
+		bool create(const std::wstring& command_line, const Config& config,
+			const std::wstring& config_path, std::string& out_error);
 		int runMessageLoop();
 
 	private:
@@ -35,6 +39,9 @@ namespace wbshterm {
 		bool createWindow(std::string& out_error);
 		bool createTarget(std::string& out_error);
 		void applyDarkTitleBar();
+		void applyWindowSettings();
+		void reloadConfigIfChanged();
+		void onTimer(WPARAM timer);
 
 		void onPaint();
 		void onResize();
@@ -48,6 +55,12 @@ namespace wbshterm {
 		void onMouseDown(LPARAM lparam);
 		void onMouseMove(WPARAM wparam, LPARAM lparam);
 		void onMouseUp();
+		void onContextMenu(LPARAM lparam);
+		void runMenuChoice(const MenuChoice& choice);
+		void applyChangedConfig(bool font_changed);
+		void openConfigFile();
+		void openThemesFolder();
+		void stepFontSize(unsigned int virtual_key);
 		bool handleViewShortcut(const KeyPress& press);
 		void copySelection();
 		GridPoint pointFromMouse(LPARAM lparam) const;
@@ -63,6 +76,10 @@ namespace wbshterm {
 		Session      session_;
 		std::wstring command_line_;
 		std::wstring shown_title_;
+		Config       config_;
+		std::wstring config_path_;
+		unsigned long long config_stamp_ = 0;
+		bool         cursor_phase_ = true;
 		TerminalView view_;
 		GridPoint    last_click_;
 		DWORD        last_click_time_ = 0;

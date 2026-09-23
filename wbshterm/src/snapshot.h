@@ -5,6 +5,7 @@
  * @brief Render a shell session to a PNG without opening a window.
  */
 
+#include "config.h"
 #include "screen.h"
 
 #include <string>
@@ -26,6 +27,9 @@ namespace wbshterm {
 		int scroll_lines = 0;
 
 		/** Selection to highlight, in absolute rows; ignored when unset. */
+		/** Colours, font and padding for the shot; defaults when unset. */
+		Config config;
+
 		bool select        = false;
 		int  select_row    = 0;
 		int  select_column = 0;

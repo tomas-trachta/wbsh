@@ -5,6 +5,8 @@
 
 #include "font.h"
 
+#include <iterator>
+
 #pragma comment(lib, "dwrite.lib")
 
 namespace wbshterm {
@@ -18,17 +20,63 @@ namespace wbshterm {
 		return formats[index].Get();
 	}
 
-	bool FontSet::create(const std::wstring& family, float point_size, std::string& out_error) {
+	bool FontSet::create(const FontSettings& settings, std::string& out_error) {
 		const HRESULT hr = ::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
-			__uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(factory_.GetAddressOf()));
+			__uuidof(IDWriteFactory2), reinterpret_cast<IUnknown**>(factory_.GetAddressOf()));
 		if (FAILED(hr)) {
 			out_error = "DWriteCreateFactory failed";
 			return false;
 		}
 
-		const float size_dip = point_size * kDipsPerInch / kPointsPerInch;
-		if (!createFormats(family, size_dip, out_error)) return false;
-		return measureCell(out_error);
+		const float size_dip = settings.size * kDipsPerInch / kPointsPerInch;
+		if (!createFormats(settings.family, size_dip, out_error)) return false;
+
+		applyFallback(settings.fallback);
+		if (!measureCell(out_error)) return false;
+
+		metrics_.height *= (settings.line_height > 0.1f ? settings.line_height : 1.0f);
+		return true;
+	}
+
+	// A monospace face has no emoji or CJK, and DirectWrite's own fallback
+	// does not reach them from a text format, so the mapping is spelled out:
+	// the configured families first, then the system's list for the rest.
+	void FontSet::applyFallback(const std::vector<std::wstring>& families) {
+		if (families.empty()) return;
+
+		Microsoft::WRL::ComPtr<IDWriteFactory2> factory2;
+		if (FAILED(factory_.As(&factory2))) return;
+
+		Microsoft::WRL::ComPtr<IDWriteFontFallbackBuilder> builder;
+		if (FAILED(factory2->CreateFontFallbackBuilder(builder.GetAddressOf()))) return;
+
+		static const DWRITE_UNICODE_RANGE kRanges[] = {
+			{ 0x0E000, 0x0F8FF },   // private use: Nerd Font and Powerline icons
+			{ 0x02190, 0x02BFF },   // arrows, symbols, geometric shapes
+			{ 0x03000, 0x0D7FF },   // CJK and Hangul
+			{ 0x0F900, 0x0FAFF },   // CJK compatibility
+			{ 0x0FE00, 0x0FFEF },   // variation selectors, fullwidth forms
+			{ 0x1F000, 0x1FAFF },   // emoji
+		};
+
+		for (const std::wstring& family : families) {
+			const WCHAR* name = family.c_str();
+			builder->AddMapping(kRanges, static_cast<UINT32>(std::size(kRanges)), &name, 1,
+				nullptr, nullptr, nullptr, 1.0f);
+		}
+
+		Microsoft::WRL::ComPtr<IDWriteFontFallback> system_fallback;
+		if (SUCCEEDED(factory2->GetSystemFontFallback(system_fallback.GetAddressOf()))) {
+			builder->AddMappings(system_fallback.Get());
+		}
+
+		Microsoft::WRL::ComPtr<IDWriteFontFallback> fallback;
+		if (FAILED(builder->CreateFontFallback(fallback.GetAddressOf()))) return;
+
+		for (Microsoft::WRL::ComPtr<IDWriteTextFormat>& format : formats_) {
+			Microsoft::WRL::ComPtr<IDWriteTextFormat1> format1;
+			if (SUCCEEDED(format.As(&format1))) format1->SetFontFallback(fallback.Get());
+		}
 	}
 
 	bool FontSet::createFormats(const std::wstring& family, float size_dip,

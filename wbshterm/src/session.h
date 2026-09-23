@@ -56,6 +56,7 @@ namespace wbshterm {
 
 	private:
 		void readLoop();
+		void watchChildLoop();
 		void appendBytes(const char* data, std::size_t length);
 		std::vector<char> takePending();
 		void recordChunk(const std::vector<char>& chunk);
@@ -66,6 +67,8 @@ namespace wbshterm {
 		VtParser   parser_{ screen_ };
 
 		std::thread       reader_;
+		std::thread       child_watch_;
+		HANDLE            stop_signal_ = nullptr;
 		std::mutex        buffer_lock_;
 		std::vector<char> pending_;
 		std::atomic<bool> stopping_{ false };

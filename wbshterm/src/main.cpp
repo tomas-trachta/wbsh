@@ -3,6 +3,8 @@
  * @brief Entry point: locate the shell, then window, snapshot or selftest.
  */
 
+#include "config.h"
+#include "fetch.h"
 #include "replay.h"
 #include "selftest.h"
 #include "snapshot.h"
@@ -24,6 +26,7 @@ namespace wbshterm {
 		Snapshot,
 		SelfTest,
 		Replay,
+		Fetch,
 	};
 
 	struct Options {
@@ -41,6 +44,7 @@ namespace wbshterm {
 		unsigned int settle_ms  = 600;
 		int          scroll_lines = 0;
 		std::wstring selection;
+		std::wstring config_path;
 	};
 
 	static std::string narrow(const std::wstring& text) {
@@ -134,7 +138,7 @@ namespace wbshterm {
 			const bool needs_value = arg == L"--shell" || arg == L"--args" || arg == L"--feed"
 				|| arg == L"--snapshot" || arg == L"--selftest" || arg == L"--size"
 				|| arg == L"--record" || arg == L"--replay" || arg == L"--dump"
-				|| arg == L"--scroll" || arg == L"--select"
+				|| arg == L"--scroll" || arg == L"--select" || arg == L"--config"
 				|| arg == L"--delay" || arg == L"--settle";
 			if (needs_value && i + 1 >= argc) return false;
 
@@ -145,6 +149,8 @@ namespace wbshterm {
 			if (arg == L"--dump")     { options.dump_path = argv[++i]; continue; }
 			if (arg == L"--scroll")   { options.scroll_lines = std::stoi(argv[++i]); continue; }
 			if (arg == L"--select")   { options.selection = argv[++i]; continue; }
+			if (arg == L"--config")   { options.config_path = argv[++i]; continue; }
+			if (arg == L"--fetch")    { options.mode = Mode::Fetch; continue; }
 			if (arg == L"--replay") {
 				options.mode = Mode::Replay;
 				options.replay_path = argv[++i];
@@ -216,6 +222,17 @@ namespace wbshterm {
 		request.select_to_col = values[3];
 	}
 
+	static Config loadSnapshotConfig(const Options& options) {
+		Config config;
+		findBuiltInTheme(config.theme_name, config.palette);
+
+		if (options.config_path.empty()) return config;
+
+		std::string error;
+		loadConfig(options.config_path, config, error);
+		return config;
+	}
+
 	static int runSnapshot(const Options& options) {
 		SnapshotRequest request;
 		request.command_line = shellCommandLine(options);
@@ -227,6 +244,7 @@ namespace wbshterm {
 		request.delay_ms     = options.delay_ms;
 		request.settle_ms    = options.settle_ms;
 		request.scroll_lines = options.scroll_lines;
+		request.config       = loadSnapshotConfig(options);
 		applySelection(options.selection, request);
 
 		std::string error;
@@ -234,6 +252,10 @@ namespace wbshterm {
 
 		reportFailure(error);
 		return 1;
+	}
+
+	static int runFetch(const Options& options) {
+		return printFetchPanel(loadSnapshotConfig(options));
 	}
 
 	static int runReplay(const Options& options) {
@@ -251,10 +273,38 @@ namespace wbshterm {
 		return 1;
 	}
 
+	// wbsh runs WBSH_INIT_COMMAND once its interactive session is up, which
+	// is the only way to get output into a console conhost owns: ask the
+	// shell to print it rather than drawing over its screen.
+	static void announceStartupCommand() {
+		wchar_t path[MAX_PATH] = {};
+		const DWORD length = ::GetModuleFileNameW(nullptr, path, MAX_PATH);
+		if (length == 0) return;
+
+		const std::wstring command = L"\"" + std::wstring(path, length) + L"\" --fetch";
+		::SetEnvironmentVariableW(L"WBSH_INIT_COMMAND", command.c_str());
+	}
+
 	static int runWindow(const Options& options) {
+		const std::wstring config_path = options.config_path.empty()
+			? defaultConfigPath()
+			: options.config_path;
+
+		Config config;
+		findBuiltInTheme(config.theme_name, config.palette);
+
+		std::string config_error;
+		if (!config_path.empty() && !loadConfig(config_path, config, config_error)) {
+			writeDefaultConfig(config_path);
+			loadConfig(config_path, config, config_error);
+		}
+
+		ensureThemesDirectory(themesDirectory(config_path));
+		if (config.startup_fetch) announceStartupCommand();
+
 		TerminalWindow window;
 		std::string error;
-		if (!window.create(shellCommandLine(options), error)) {
+		if (!window.create(shellCommandLine(options), config, config_path, error)) {
 			reportFailure(error);
 			return 1;
 		}
@@ -289,6 +339,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 	}
 
 	switch (options.mode) {
+	case wbshterm::Mode::Fetch:
+		return wbshterm::runFetch(options);
 	case wbshterm::Mode::Replay:
 		return wbshterm::runReplay(options);
 	case wbshterm::Mode::Snapshot:

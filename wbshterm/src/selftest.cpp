@@ -5,13 +5,18 @@
 
 #include "selftest.h"
 
+#include "charwidth.h"
+#include "config.h"
+#include "fetch.h"
 #include "keymap.h"
-#include "view.h"
+#include "menu.h"
 #include "view.h"
 #include "session.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <thread>
 
 namespace wbshterm {
@@ -50,6 +55,17 @@ namespace wbshterm {
 			return screen.toText();
 		}
 
+		static std::size_t countOccurrences(const std::string& haystack,
+				const std::string& needle) {
+			std::size_t count = 0;
+			for (std::size_t at = haystack.find(needle); at != std::string::npos;
+					at = haystack.find(needle, at + needle.size())) {
+				++count;
+			}
+
+			return count;
+		}
+
 		static std::string firstLine(const std::string& text) {
 			const std::size_t end = text.find('\n');
 			return end == std::string::npos ? text : text.substr(0, end);
@@ -84,13 +100,14 @@ namespace wbshterm {
 			Screen screen(10, 1);
 			feedToScreen(screen, "\x1b[31mR\x1b[1;32mG\x1b[0mP");
 
-			const bool red_is_red = screen.cell(0, 0).foreground == 0xCD3131;
+			const bool red_is_red = screen.cell(0, 0).foreground == (kPaletteColor | 1u);
 			const bool green_is_bold = (screen.cell(0, 1).attributes & kAttrBold) != 0
-				&& screen.cell(0, 1).foreground == 0x0DBC79;
+				&& screen.cell(0, 1).foreground == (kPaletteColor | 2u);
 			const bool reset_clears = screen.cell(0, 2).foreground == kDefaultColor
 				&& screen.cell(0, 2).attributes == kAttrNone;
 
-			report.check("SGR sets indexed colors", red_is_red && green_is_bold, "");
+			report.check("SGR keeps indexed colours as palette slots",
+				red_is_red && green_is_bold, "");
 			report.check("SGR 0 resets the pen", reset_clears, "");
 		}
 
@@ -277,6 +294,514 @@ namespace wbshterm {
 				view.selectedText(screen).empty(), "");
 		}
 
+		static void checkCharacterWidths(Report& report) {
+			const bool narrow = characterWidth(U'a') == 1 && characterWidth(U'~') == 1;
+			const bool wide = characterWidth(0x4E2D) == 2 && characterWidth(0x1F680) == 2
+				&& characterWidth(0xFF21) == 2;
+			const bool zero = characterWidth(0x0301) == 0 && characterWidth(0xFE0F) == 0;
+
+			report.check("latin text is one cell wide", narrow, "");
+			report.check("CJK and emoji are two cells wide", wide, "");
+			report.check("combining marks take no cell", zero, "");
+		}
+
+		static void checkWideCharactersTakeTwoCells(Report& report) {
+			Screen screen(10, 2);
+			feedToScreen(screen, "a\xE4\xB8\xAD" "b");
+
+			const bool lead = (screen.cell(0, 1).attributes & kAttrWide) != 0;
+			const bool tail = (screen.cell(0, 2).attributes & kAttrWideTail) != 0;
+			const bool after = screen.cell(0, 3).code == U'b';
+
+			report.check("a wide character claims two cells", lead && tail, "");
+			report.check("text after a wide character lands past it", after, "");
+		}
+
+		static void checkResizeKeepsContent(Report& report) {
+			Screen screen(20, 4);
+			feedToScreen(screen, "first\r\nsecond\r\nthird\r\n");
+
+			screen.resize(20, 3);
+			const std::string shrunk = screen.toText();
+
+			screen.resize(30, 6);
+			const std::string grown = screen.toText();
+
+			report.check("shrinking keeps the text that fits",
+				shrunk.find("third") != std::string::npos, shrunk);
+			report.check("growing keeps the text already there",
+				grown.find("second") != std::string::npos
+				&& grown.find("third") != std::string::npos, grown);
+			report.check("rows pushed off by a resize become scrollback",
+				screen.scrollbackRows() > 0, std::to_string(screen.scrollbackRows()));
+		}
+
+		static void checkThemesAreAvailable(Report& report) {
+			Palette palette;
+			const bool found = findBuiltInTheme("dracula", palette);
+			const bool coloured = palette.background == 0x282A36 && palette.ansi[1] == 0xFF5555;
+			const bool insensitive = findBuiltInTheme("Nord", palette);
+			const bool missing = !findBuiltInTheme("no-such-theme", palette);
+
+			report.check("built-in themes load by name", found && coloured, "");
+			report.check("theme names ignore case", insensitive, "");
+			report.check("an unknown theme is reported, not guessed", missing, "");
+			report.check("several themes ship", builtInThemeNames().size() >= 8,
+				std::to_string(builtInThemeNames().size()));
+		}
+
+		static void checkConfigRoundTrip(Report& report, const std::wstring& directory) {
+			const std::wstring path = directory + L"wbshterm-test.conf";
+			if (!writeDefaultConfig(path)) {
+				report.check("the default configuration file is written", false, "");
+				return;
+			}
+
+			report.check("the default configuration file is written", true, "");
+
+			Config config;
+			std::string error;
+			const bool loaded = loadConfig(path, config, error);
+			report.check("the default file parses", loaded, error);
+
+			FILE* file = nullptr;
+			if (_wfopen_s(&file, path.c_str(), L"wb") == 0 && file != nullptr) {
+				const char* text =
+					"[font]\nfamily = Consolas\nsize = 14\n"
+					"[cursor]\nstyle = bar\nblink = false\n"
+					"[window]\npadding = 24\nopacity = 0.85\n"
+					"[theme]\nname = nord\nforeground = #ABCDEF\n";
+				std::fwrite(text, 1, std::strlen(text), file);
+				std::fclose(file);
+			}
+
+			Config edited;
+			loadConfig(path, edited, error);
+
+			const bool font = edited.font.family == L"Consolas" && edited.font.size == 14.0f;
+			const bool cursor = edited.cursor.style == CursorStyle::Bar && !edited.cursor.blink;
+			const bool window = edited.window.padding == 24 && edited.window.opacity > 0.84f
+				&& edited.window.opacity < 0.86f;
+			const bool theme = edited.palette.background == 0x2E3440
+				&& edited.palette.foreground == 0xABCDEF;
+
+			report.check("the font is configurable", font, "");
+			report.check("the cursor style and blink are configurable", cursor, "");
+			report.check("padding and opacity are configurable", window, "");
+			report.check("a theme applies and single colours override it", theme, "");
+
+			_wremove(path.c_str());
+		}
+
+		// Every menu entry has to be reachable: walking the real menu is the
+		// only way to know the ids the window will actually receive.
+		static MenuChoice choiceFromMenu(HMENU menu, const std::wstring& label,
+				const std::vector<std::string>& themes) {
+			const int count = ::GetMenuItemCount(menu);
+			for (int i = 0; i < count; ++i) {
+				wchar_t text[128] = {};
+				::GetMenuStringW(menu, static_cast<UINT>(i), text, 128, MF_BYPOSITION);
+
+				HMENU child = ::GetSubMenu(menu, i);
+				if (child != nullptr) {
+					const MenuChoice found = choiceFromMenu(child, label, themes);
+					if (found.action != MenuAction::None) return found;
+					continue;
+				}
+
+				if (label == text) {
+					return menuChoiceFor(static_cast<int>(::GetMenuItemID(menu,
+						static_cast<UINT>(i))), themes);
+				}
+			}
+
+			return MenuChoice();
+		}
+
+		// A colour written above the theme name must not be swallowed by it:
+		static void checkThemeOverridesIgnoreOrder(Report& report,
+				const std::wstring& directory) {
+			const std::wstring path = directory + L"wbshterm-order.conf";
+
+			FILE* file = nullptr;
+			if (_wfopen_s(&file, path.c_str(), L"wb") != 0 || file == nullptr) {
+				report.check("overrides work whatever order they are written in", false, "");
+				return;
+			}
+
+			const char* text = "[theme]\nbackground = #7F0000\nansi1 = #010203\nname = nord\n";
+			std::fwrite(text, 1, std::strlen(text), file);
+			std::fclose(file);
+
+			Config config;
+			std::string error;
+			loadConfig(path, config, error);
+
+			const bool kept = config.palette.background == 0x7F0000
+				&& config.palette.ansi[1] == 0x010203;
+			const bool themed = config.palette.foreground == 0xD8DEE9;
+
+			report.check("overrides work whatever order they are written in", kept, "");
+			report.check("the named theme still fills in what was not overridden", themed, "");
+
+			_wremove(path.c_str());
+		}
+
+		static bool writeTextFile(const std::wstring& path, const char* text) {
+			FILE* file = nullptr;
+			if (_wfopen_s(&file, path.c_str(), L"wb") != 0 || file == nullptr) return false;
+
+			std::fwrite(text, 1, std::strlen(text), file);
+			std::fclose(file);
+			return true;
+		}
+
+		// A palette dropped in the themes folder is a theme: it gets a name from
+		// its file, shows up in the menu, and can replace a built-in.
+		struct ThemeFolderFixture {
+			std::wstring config_path;
+			std::wstring themes;
+			std::wstring mine;
+			std::wstring shadow;
+		};
+
+		static ThemeFolderFixture makeThemeFolder(const std::wstring& directory) {
+			ThemeFolderFixture fixture;
+			fixture.config_path = directory + L"wbshterm-folder.conf";
+			fixture.themes      = themesDirectory(fixture.config_path);
+			fixture.mine        = fixture.themes + L"\\midnight.conf";
+			fixture.shadow      = fixture.themes + L"\\nord.conf";
+
+			::CreateDirectoryW(fixture.themes.c_str(), nullptr);
+			writeTextFile(fixture.mine,
+				"background = #101014\nforeground = #C8D0E0\nansi2 = #7FD88F\n");
+			writeTextFile(fixture.shadow, "[theme]\nbackground = #123456\n");
+			return fixture;
+		}
+
+		static void removeThemeFolder(const ThemeFolderFixture& fixture) {
+			_wremove((fixture.themes + L"\\example.conf.txt").c_str());
+			_wremove(fixture.mine.c_str());
+			_wremove(fixture.shadow.c_str());
+			_wremove(fixture.config_path.c_str());
+			::RemoveDirectoryW(fixture.themes.c_str());
+		}
+
+		// A palette dropped in the themes folder is a theme: it gets a name from
+		// its file, and can replace a built-in of the same name.
+		static void checkThemesFolder(Report& report, const ThemeFolderFixture& fixture) {
+			const std::vector<std::string> names = availableThemeNames(fixture.themes);
+			const bool listed =
+				std::find(names.begin(), names.end(), "midnight") != names.end();
+			const bool built_ins_kept =
+				std::find(names.begin(), names.end(), "dracula") != names.end();
+			const bool no_duplicate_nord =
+				std::count(names.begin(), names.end(), "nord") == 1;
+
+			Palette palette;
+			const bool loaded = findTheme(fixture.themes, "midnight", palette)
+				&& palette.background == 0x101014 && palette.ansi[2] == 0x7FD88F;
+
+			Palette shadowed;
+			const bool replaces = findTheme(fixture.themes, "nord", shadowed)
+				&& shadowed.background == 0x123456;
+
+			Palette untouched;
+			const bool still_built_in = findTheme(fixture.themes, "dracula", untouched)
+				&& untouched.background == 0x282A36;
+
+			report.check("a file in the themes folder becomes a theme", listed && loaded, "");
+			report.check("the built-in themes are still listed", built_ins_kept, "");
+			report.check("a file named after a built-in replaces it, once",
+				replaces && no_duplicate_nord, "");
+			report.check("other built-ins are unaffected", still_built_in, "");
+		}
+
+		static void checkFolderThemeReachesConfigAndMenu(Report& report,
+				const ThemeFolderFixture& fixture) {
+			writeTextFile(fixture.config_path, "[theme]\nname = midnight\nansi1 = #FF0000\n");
+
+			Config config;
+			std::string error;
+			loadConfig(fixture.config_path, config, error);
+
+			report.check("the config can name a theme from the folder",
+				config.palette.background == 0x101014 && config.palette.ansi[2] == 0x7FD88F,
+				config.theme_name);
+			report.check("colours in the config still override a folder theme",
+				config.palette.ansi[1] == 0xFF0000, "");
+
+			const std::vector<std::string> names = availableThemeNames(fixture.themes);
+			HMENU menu = buildTerminalMenu(config, names, false);
+			const MenuChoice chosen = choiceFromMenu(menu, L"midnight", names);
+			::DestroyMenu(menu);
+
+			report.check("the menu offers themes from the folder",
+				chosen.action == MenuAction::SetTheme && chosen.text == "midnight", chosen.text);
+		}
+
+		// What is written out has to be readable back as the same theme, or
+		// editing a shipped palette would quietly change it.
+		static void checkShippedThemesAreWrittenOut(Report& report, const std::wstring& themes) {
+			ensureThemesDirectory(themes);
+
+			const std::wstring path = themes + L"\\dracula.conf";
+			const bool written =
+				::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+
+			Palette built_in;
+			findBuiltInTheme("dracula", built_in);
+
+			Palette from_file;
+			const bool loaded = findTheme(themes, "dracula", from_file);
+			bool same = loaded && from_file.background == built_in.background
+				&& from_file.foreground == built_in.foreground
+				&& from_file.cursor == built_in.cursor
+				&& from_file.selection == built_in.selection;
+			for (int i = 0; i < 16 && same; ++i) same = from_file.ansi[i] == built_in.ansi[i];
+
+			report.check("every built-in theme is written to the folder", written, "");
+			report.check("a written theme reads back as the same colours", same, "");
+
+			writeTextFile(path, "background = #010203\n");
+			Palette edited;
+			const bool honoured = findTheme(themes, "dracula", edited)
+				&& edited.background == 0x010203;
+			report.check("editing a shipped theme file changes that theme", honoured, "");
+
+			_wremove(path.c_str());
+			Palette restored;
+			report.check("deleting the file brings the built-in back",
+				findTheme(themes, "dracula", restored)
+				&& restored.background == built_in.background, "");
+		}
+
+		// Editing a theme file must be noticed, not just the config's own.
+		static void checkThemeEditsAreNoticed(Report& report, const std::wstring& config_path) {
+			const std::wstring themes = themesDirectory(config_path);
+			ensureThemesDirectory(themes);
+			writeTextFile(config_path, "[theme]\nname = nord\n");
+
+			const unsigned long long before = settingsStamp(config_path, "nord");
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(40));
+			writeTextFile(themes + L"\\nord.conf", "background = #020304\n");
+
+			const unsigned long long after = settingsStamp(config_path, "nord");
+			const unsigned long long other = settingsStamp(config_path, "dracula");
+
+			report.check("editing the active theme file is noticed", before != after, "");
+			report.check("an untouched theme does not look edited",
+				other == settingsStamp(config_path, "dracula"), "");
+		}
+
+		// The folder button has to create what it opens.
+		static void checkThemesFolderIsCreated(Report& report, const std::wstring& themes) {
+			_wremove((themes + L"\\example.conf.txt").c_str());
+			::RemoveDirectoryW(themes.c_str());
+
+			const bool created = ensureThemesDirectory(themes)
+				&& ::GetFileAttributesW(themes.c_str()) != INVALID_FILE_ATTRIBUTES
+				&& ::GetFileAttributesW((themes + L"\\example.conf.txt").c_str())
+					!= INVALID_FILE_ATTRIBUTES;
+
+			report.check("opening the themes folder creates it, with an example", created, "");
+		}
+
+		static void checkMenuOffersCustomisation(Report& report) {
+			Config config;
+			findBuiltInTheme(config.theme_name, config.palette);
+
+			const std::vector<std::string> themes = builtInThemeNames();
+			HMENU menu = buildTerminalMenu(config, themes, true);
+
+			const MenuChoice theme = choiceFromMenu(menu, L"dracula", themes);
+			const MenuChoice cursor = choiceFromMenu(menu, L"Underline", themes);
+			const MenuChoice font = choiceFromMenu(menu, L"14 pt", themes);
+			const MenuChoice opacity = choiceFromMenu(menu, L"90%", themes);
+			const MenuChoice padding = choiceFromMenu(menu, L"24 px", themes);
+
+			report.check("the menu offers every built-in theme",
+				theme.action == MenuAction::SetTheme && theme.text == "dracula", theme.text);
+			report.check("the menu offers cursor styles",
+				cursor.action == MenuAction::SetCursorStyle
+				&& cursor.style == CursorStyle::Underline, "");
+			report.check("the menu offers font sizes",
+				font.action == MenuAction::SetFontSize && font.number == 14, "");
+			report.check("the menu offers opacity levels",
+				opacity.action == MenuAction::SetOpacity && opacity.number == 90, "");
+			// Source is UTF-8; without /utf-8 the compiler reads it as the
+			// system code page and these labels arrive as mojibake. The text is
+			// built from code points here so the check cannot be mangled too.
+			const std::wstring ellipsis(1, static_cast<wchar_t>(0x2026));
+			bool saw_config_label = false;
+			bool saw_themes_label = false;
+
+			for (int i = 0; i < ::GetMenuItemCount(menu); ++i) {
+				wchar_t label[128] = {};
+				::GetMenuStringW(menu, static_cast<UINT>(i), label, 128, MF_BYPOSITION);
+				if (std::wstring(label) == L"Edit configuration file" + ellipsis) {
+					saw_config_label = true;
+				}
+
+				if (std::wstring(label) == L"Open themes folder" + ellipsis) {
+					saw_themes_label = true;
+				}
+			}
+
+			report.check("menu labels keep their non-ASCII characters",
+				saw_config_label && saw_themes_label, "");
+			report.check("the menu can open the themes folder", saw_themes_label, "");
+
+			report.check("the menu offers padding levels",
+				padding.action == MenuAction::SetPadding && padding.number == 24, "");
+
+			::DestroyMenu(menu);
+		}
+
+		static void checkMenuChoicesApply(Report& report) {
+			Config config;
+			findBuiltInTheme(config.theme_name, config.palette);
+
+			MenuChoice theme;
+			theme.action = MenuAction::SetTheme;
+			theme.text   = "nord";
+			const bool changed = applyMenuChoice(theme, std::wstring(), config);
+
+			MenuChoice blink;
+			blink.action = MenuAction::ToggleBlink;
+			const bool was_blinking = config.cursor.blink;
+			applyMenuChoice(blink, std::wstring(), config);
+
+			report.check("choosing a theme repaints in its colours",
+				changed && config.palette.background == 0x2E3440, "");
+			report.check("choosing the same theme again changes nothing",
+				!applyMenuChoice(theme, std::wstring(), config), "");
+			report.check("blinking toggles", config.cursor.blink != was_blinking, "");
+		}
+
+		static void checkMenuChoicesPersist(Report& report, const std::wstring& directory) {
+			const std::wstring path = directory + L"wbshterm-menu.conf";
+			writeDefaultConfig(path);
+
+			Config config;
+			std::string error;
+			loadConfig(path, config, error);
+
+			MenuChoice theme;
+			theme.action = MenuAction::SetTheme;
+			theme.text   = "gruvbox-dark";
+			applyMenuChoice(theme, std::wstring(), config);
+
+			std::string section;
+			std::string key;
+			std::string value;
+			settingForChoice(theme, config, section, key, value);
+			updateConfigValue(path, section, key, value);
+
+			MenuChoice padding;
+			padding.action = MenuAction::SetPadding;
+			padding.number = 24;
+			applyMenuChoice(padding, std::wstring(), config);
+			settingForChoice(padding, config, section, key, value);
+			updateConfigValue(path, section, key, value);
+
+			Config reloaded;
+			loadConfig(path, reloaded, error);
+
+			std::string text;
+			FILE* file = nullptr;
+			if (_wfopen_s(&file, path.c_str(), L"rb") == 0 && file != nullptr) {
+				char buffer[4096];
+				const std::size_t got = std::fread(buffer, 1, sizeof(buffer), file);
+				text.assign(buffer, got);
+				std::fclose(file);
+			}
+
+			report.check("a menu choice survives a reload",
+				reloaded.theme_name == "gruvbox-dark" && reloaded.window.padding == 24,
+				reloaded.theme_name);
+			report.check("writing a setting keeps the rest of the file",
+				text.find("# wbshterm configuration.") != std::string::npos
+				&& text.find("fallback = ") != std::string::npos, "");
+			report.check("a setting is written once, not appended twice",
+				countOccurrences(text, "padding = ") == 1,
+				std::to_string(countOccurrences(text, "padding = ")));
+
+			_wremove(path.c_str());
+		}
+
+		static std::size_t countLines(const std::string& text) {
+			return countOccurrences(text, "\n");
+		}
+
+		// The panel is laid out from a fixed set of rows here, so the shape is
+		// checked rather than this machine's own numbers.
+		static void checkFetchPanelLayout(Report& report) {
+			FetchInfo info;
+			info.user = "ada";
+			info.host = "analytical";
+			info.rows.push_back({ "OS", "Windows" });
+			info.rows.push_back({ "Shell", "wbsh 1.0.10" });
+			info.rows.push_back({ "Nothing", "" });
+
+			const std::string panel = renderFetchPanel(info);
+
+			report.check("the panel names the user and host",
+				panel.find("ada") != std::string::npos
+				&& panel.find("analytical") != std::string::npos, "");
+			report.check("the panel lists the rows it was given",
+				panel.find("OS") != std::string::npos
+				&& panel.find("wbsh 1.0.10") != std::string::npos, "");
+			report.check("a row with nothing to say is left out",
+				panel.find("Nothing") == std::string::npos, "");
+			report.check("the logo is drawn beside the rows",
+				panel.find("\\u2588") != std::string::npos
+				|| panel.find("\x1b[36;1m") != std::string::npos, "");
+			report.check("the palette strip shows both halves",
+				panel.find("\x1b[40m") != std::string::npos
+				&& panel.find("\x1b[107m") != std::string::npos, "");
+		}
+
+		// However many rows there are, the panel keeps its shape: never fewer
+		// lines than the logo, one line per row when there are more.
+		static void checkFetchPanelGrowsWithRows(Report& report) {
+			FetchInfo small;
+			small.user = "a";
+			small.host = "b";
+			small.rows.push_back({ "One", "1" });
+
+			FetchInfo large = small;
+			for (int i = 0; i < 12; ++i) {
+				large.rows.push_back({ "Row" + std::to_string(i), std::to_string(i) });
+			}
+
+			const std::size_t small_lines = countLines(renderFetchPanel(small));
+			const std::size_t large_lines = countLines(renderFetchPanel(large));
+
+			report.check("a short panel is still as tall as the logo", small_lines >= 8,
+				std::to_string(small_lines));
+			report.check("more rows make a taller panel", large_lines > small_lines,
+				std::to_string(large_lines));
+		}
+
+		static void checkStartupFetchSetting(Report& report, const std::wstring& directory) {
+			const std::wstring path = directory + L"wbshterm-startup.conf";
+			writeTextFile(path, "[startup]\nfetch = false\n");
+
+			Config off;
+			std::string error;
+			loadConfig(path, off, error);
+
+			writeTextFile(path, "[startup]\nfetch = true\n");
+			Config on;
+			loadConfig(path, on, error);
+
+			report.check("the startup panel can be switched off",
+				!off.startup_fetch && on.startup_fetch, "");
+			_wremove(path.c_str());
+		}
+
 		static KeyPress pressOf(unsigned int virtual_key, bool control, bool alt, bool shift) {
 			KeyPress press;
 			press.virtual_key = virtual_key;
@@ -367,17 +892,6 @@ namespace wbshterm {
 			const std::string bracketed = encodePaste("hi", modes);
 			report.check("bracketed paste wraps the text",
 				bracketed == "\x1b[200~hi\x1b[201~", bracketed);
-		}
-
-		static std::size_t countOccurrences(const std::string& haystack,
-				const std::string& needle) {
-			std::size_t count = 0;
-			for (std::size_t at = haystack.find(needle); at != std::string::npos;
-					at = haystack.find(needle, at + needle.size())) {
-				++count;
-			}
-
-			return count;
 		}
 
 		static bool waitForText(Session& session, const std::string& needle, int timeout_ms) {
@@ -533,6 +1047,33 @@ namespace wbshterm {
 			report.check("a pager does not discard scrollback", history_kept, "");
 		}
 
+		// The banner promises Ctrl-D quits, so the window has to see the shell
+		// go away when it is pressed on an empty line.
+		static void checkCtrlDEndsTheSession(Report& report, const std::wstring& command_line) {
+			Session session;
+			std::string error;
+			if (!session.start(command_line, 90, 12, error)) {
+				report.check("Ctrl-D on an empty line ends the session", false, error);
+				return;
+			}
+
+			waitForText(session, "$", 8000);
+
+			const std::string eot(1, '\004');
+			session.writeInput(eot.data(), eot.size());
+
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+			while (session.childRunning() && std::chrono::steady_clock::now() < deadline) {
+				session.drainOutput();
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			}
+
+			const bool ended = !session.childRunning();
+			report.check("Ctrl-D on an empty line ends the session", ended,
+				session.screen().toText());
+			session.stop();
+		}
+
 		// The encoder is only right if the shell's line editor agrees: Up
 		// must recall the previous command through ConPTY's key translation.
 		static void checkHistoryRecall(Report& report, Session& session) {
@@ -596,6 +1137,11 @@ namespace wbshterm {
 
 	} /* namespace test */
 
+	static std::wstring reportDirectory(const std::wstring& report_path) {
+		const std::size_t cut = report_path.find_last_of(L"/\\");
+		return cut == std::wstring::npos ? std::wstring() : report_path.substr(0, cut + 1);
+	}
+
 	bool runSelfTest(const std::wstring& report_path, const std::wstring& shell_command_line) {
 		test::Report report;
 
@@ -615,6 +1161,26 @@ namespace wbshterm {
 		test::checkScrolledViewHoldsStill(report);
 		test::checkSelectionText(report);
 		test::checkSelectionShape(report);
+		test::checkCharacterWidths(report);
+		test::checkWideCharactersTakeTwoCells(report);
+		test::checkResizeKeepsContent(report);
+		test::checkThemesAreAvailable(report);
+		test::checkConfigRoundTrip(report, reportDirectory(report_path));
+		test::checkThemeOverridesIgnoreOrder(report, reportDirectory(report_path));
+		test::checkMenuOffersCustomisation(report);
+		const test::ThemeFolderFixture themes =
+			test::makeThemeFolder(reportDirectory(report_path));
+		test::checkThemesFolder(report, themes);
+		test::checkFolderThemeReachesConfigAndMenu(report, themes);
+		test::checkThemesFolderIsCreated(report, themes.themes);
+		test::checkFetchPanelLayout(report);
+		test::checkFetchPanelGrowsWithRows(report);
+		test::checkStartupFetchSetting(report, reportDirectory(report_path));
+		test::checkShippedThemesAreWrittenOut(report, themes.themes);
+		test::checkThemeEditsAreNoticed(report, themes.config_path);
+		test::removeThemeFolder(themes);
+		test::checkMenuChoicesApply(report);
+		test::checkMenuChoicesPersist(report, reportDirectory(report_path));
 		test::checkCursorKeyEncoding(report);
 		test::checkModifierParameters(report);
 		test::checkFunctionAndEditingKeys(report);
@@ -622,6 +1188,7 @@ namespace wbshterm {
 		test::checkTextKeysFallThrough(report);
 		test::checkPasteEncoding(report);
 		test::checkLiveSession(report, shell_command_line);
+		test::checkCtrlDEndsTheSession(report, shell_command_line);
 
 		test::writeReport(report_path, report.text());
 		return report.passed();

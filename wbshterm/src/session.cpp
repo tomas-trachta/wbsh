@@ -28,7 +28,9 @@ namespace wbshterm {
 		size.rows    = static_cast<SHORT>(rows);
 		if (!pty_.open(command_line, size, out_error)) return false;
 
+		stop_signal_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
 		reader_ = std::thread(&Session::readLoop, this);
+		child_watch_ = std::thread(&Session::watchChildLoop, this);
 		return true;
 	}
 
@@ -47,6 +49,16 @@ namespace wbshterm {
 			appendBytes(buffer.data(), got);
 			notifyWindow();
 		}
+
+		notifyWindow();
+	}
+
+	void Session::watchChildLoop() {
+		const HANDLE child = pty_.childHandle();
+		if (child == INVALID_HANDLE_VALUE || stop_signal_ == nullptr) return;
+
+		const HANDLE waited[2] = { child, stop_signal_ };
+		::WaitForMultipleObjects(2, waited, FALSE, INFINITE);
 
 		notifyWindow();
 	}
@@ -118,9 +130,17 @@ namespace wbshterm {
 	void Session::stop() {
 		if (stopping_.exchange(true)) return;
 
+		if (stop_signal_ != nullptr) ::SetEvent(stop_signal_);
+		if (child_watch_.joinable()) child_watch_.join();
+
 		pty_.endSession();
 		if (reader_.joinable()) reader_.join();
 		pty_.close();
+
+		if (stop_signal_ != nullptr) {
+			::CloseHandle(stop_signal_);
+			stop_signal_ = nullptr;
+		}
 	}
 
 } /* namespace wbshterm */
