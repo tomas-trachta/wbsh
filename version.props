@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <!-- Single source of truth for the version of everything in this repo.
      wbsh.vcxproj and wbshterm\wbshterm.vcxproj both import this, the two
      installers read it, and the release workflow bumps it here. Editing
@@ -7,7 +7,7 @@
   <PropertyGroup Label="Version">
     <WbshVersionMajor>1</WbshVersionMajor>
     <WbshVersionMinor>0</WbshVersionMinor>
-    <WbshVersionPatch>11</WbshVersionPatch>
+    <WbshVersionPatch>12</WbshVersionPatch>
     <WbshVersion>$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)</WbshVersion>
   </PropertyGroup>
 </Project>
