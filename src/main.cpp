@@ -51,13 +51,61 @@ static void printHelp() {
 		"  wbsh [opts] -c <command>      run / dump the given string\n"
 		"  wbsh [opts] <file>            run / dump the file (- for stdin)\n"
 		"\n"
-		"modes (default for files = dump AST):\n"
+		"modes (default for files = dump AST, NOT execute -- see -r):\n"
 		"  -i, --interactive             force interactive REPL\n"
 		"  -r, --run                     actually execute the script\n"
 		"  -e, --expand                  walk the AST and dump expanded words\n"
 		"  -t, --tokens                  dump the token stream\n"
 		"  --no-ast                      suppress the AST dump\n"
-		"  -h, --help                    show this help\n";
+		"  -h, --help                    show this help\n"
+		"  -v, --version                 print version and exit\n"
+		"  --agent-info                  print a longer brief for scripts/tools/AI agents\n";
+}
+
+static void printAgentInfo() {
+	std::cout <<
+		"wbsh " WBSH_VERSION_STR " -- agent brief\n"
+		"\n"
+		"WHAT THIS IS\n"
+		"  wbsh is a Bash-compatible shell for Windows: a real POSIX shell\n"
+		"  grammar (lexer/parser/AST), not a wrapper around cmd.exe. It ships\n"
+		"  as a single exe with bundled coreutils (ls, grep, sed, awk, find,\n"
+		"  xargs, tar, gzip, curl, hashing tools, etc.), so scripts using those\n"
+		"  work without anything else on PATH. System tools (git, vim, less, ...)\n"
+		"  are auto-discovered on PATH and invoked as native Windows processes.\n"
+		"\n"
+		"HOW TO RUN A COMMAND (READ THIS FIRST)\n"
+		"  By default, giving wbsh a command or script does NOT execute it --\n"
+		"  it parses and dumps the AST instead. You must pass -r/--run to\n"
+		"  actually execute:\n"
+		"    wbsh -r -c \"echo hello && ls -la\"     run one command line\n"
+		"    wbsh -r ./script.sh                   run a script file\n"
+		"    wbsh -r -                             run a script from stdin\n"
+		"  Without -r, wbsh -c \"...\" only prints a parse tree and exits 0 --\n"
+		"  it will NOT run the command and will NOT produce the command's\n"
+		"  output. This is the opposite of bash's -c default; do not omit -r.\n"
+		"\n"
+		"PATH TRANSLATION\n"
+		"  POSIX-style paths are converted for native Windows executables:\n"
+		"  /c/Users/name <-> C:\\Users\\name. Built-in commands and coreutils\n"
+		"  accept either form directly.\n"
+		"\n"
+		"EXIT STATUS AND OUTPUT\n"
+		"  Standard POSIX exit-status conventions apply ($?, &&, ||, pipefail\n"
+		"  when set). Output is written LF-only (no CRLF translation), so\n"
+		"  `$(...)` command substitution and `read` behave like on Linux.\n"
+		"\n"
+		"COMPATIBILITY NOTES\n"
+		"  Core POSIX shell syntax, pipelines, redirection, functions, [[ ]],\n"
+		"  arrays, and common bash builtins are supported. This is an early\n"
+		"  but released project (see README) -- some bash edge cases may not\n"
+		"  yet match exactly. When in doubt, test the exact command with\n"
+		"  `wbsh -r -c \"...\"` first rather than assuming bash parity.\n"
+		"\n"
+		"MORE\n"
+		"  wbsh --help          short flag reference\n"
+		"  wbsh --version       version string\n"
+		"  README.md            full docs, install, feature list\n";
 }
 
 static std::string readAll(std::istream& in) {
@@ -118,6 +166,16 @@ static ParseResult parseArgs(int argc, char** argv, CliOptions& opts) {
 		std::string a = argv[i];
 		if (a == "-h" || a == "--help") {
 			printHelp();
+			return { true, 0 };
+		}
+
+		if (a == "--agent-info") {
+			printAgentInfo();
+			return { true, 0 };
+		}
+
+		if (a == "-v" || a == "--version") {
+			std::cout << "wbsh " WBSH_VERSION_STR "\n";
 			return { true, 0 };
 		}
 
