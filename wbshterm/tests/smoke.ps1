@@ -1,39 +1,20 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Smoke tests for the wbshterm M0 ConPTY spike.
+    Smoke tests for wbshterm.
 .DESCRIPTION
-    Each check drives a real wbsh session over a pseudoconsole and asserts
-    on what came back through the pty, so a regression in handle setup or
-    teardown fails here rather than in interactive use.
+    Drives the real binary: the built-in self-test covers the parser, the
+    grid and one live pseudoconsole session; the checks here add the
+    modes that only make sense from outside the process (snapshot,
+    replay, and replay determinism).
 #>
 [CmdletBinding()]
 param(
-    [string]$Spike
+    [string]$Terminal
 )
 
 $ErrorActionPreference = 'Stop'
 $script:Failures = 0
-
-function Invoke-Spike {
-    param([string[]]$SpikeArgs)
-
-    $stdout = [System.IO.Path]::GetTempFileName()
-    $stderr = [System.IO.Path]::GetTempFileName()
-    $quoted = $SpikeArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
-    try {
-        $process = Start-Process -FilePath $Spike -ArgumentList $quoted -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-        return [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            Stdout   = [string](Get-Content $stdout -Raw)
-            Stderr   = [string](Get-Content $stderr -Raw)
-        }
-    }
-    finally {
-        Remove-Item $stdout, $stderr -ErrorAction SilentlyContinue
-    }
-}
 
 function Assert-That {
     param([string]$Name, [bool]$Condition, [string]$Detail = '')
@@ -48,37 +29,85 @@ function Assert-That {
     $script:Failures++
 }
 
-function Test-CommandRoundTrip {
-    $run = Invoke-Spike @('--feed', 'echo smoke-marker\rexit\r', '--delay', '400', '--timeout', '15000')
-    Assert-That 'a fed command runs and its output comes back' ([bool]($run.Stdout -match 'smoke-marker'))
-    Assert-That 'the shell exits cleanly' ($run.ExitCode -eq 0) "exit code $($run.ExitCode)"
+function Invoke-Terminal {
+    param([string[]]$TerminalArgs)
+
+    $quoted = $TerminalArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
+    $process = Start-Process -FilePath $Terminal -ArgumentList $quoted -NoNewWindow -Wait -PassThru
+    return $process.ExitCode
 }
 
-function Test-NoOutputLeak {
-    $run = Invoke-Spike @('--shell', "$env:SystemRoot\System32\cmd.exe", '--args', '/c echo leaked',
-        '--feed', ' ', '--delay', '200', '--timeout', '10000', '--quiet')
-    Assert-That 'child stdout goes to the pty, not to this process' (-not [bool]($run.Stdout -match 'leaked')) `
-        "stdout was: $($run.Stdout)"
-    Assert-That 'the pty carried the bytes' ([bool]($run.Stderr -match 'bytes in')) $run.Stderr
+function Test-SelfTest {
+    param([string]$WorkDir)
+
+    $report = Join-Path $WorkDir 'selftest.txt'
+    $code = Invoke-Terminal @('--selftest', $report)
+
+    $text = if (Test-Path $report) { Get-Content $report -Raw } else { '' }
+    Assert-That 'the built-in self-test passes' ($code -eq 0) $text
+    Assert-That 'the self-test report lists checks' ([bool]($text -match 'ok   ')) $text
 }
 
-function Test-ExitStatusPropagates {
-    $run = Invoke-Spike @('--feed', 'exit 7\r', '--delay', '400', '--timeout', '15000', '--quiet')
-    Assert-That 'the shell exit code is reported' ([bool]($run.Stderr -match 'shell exit code 7')) $run.Stderr
+function Test-Snapshot {
+    param([string]$WorkDir)
+
+    $image = Join-Path $WorkDir 'snapshot.png'
+    $code = Invoke-Terminal @('--snapshot', $image, '--feed', 'echo snapshot-marker\r',
+        '--size', '80x12', '--delay', '500', '--settle', '700')
+
+    $bytes = if (Test-Path $image) { (Get-Item $image).Length } else { 0 }
+    Assert-That 'a snapshot renders to a PNG' (($code -eq 0) -and ($bytes -gt 2000)) "$bytes bytes"
 }
 
-if (-not $Spike) {
+function Test-ReplayIsDeterministic {
+    param([string]$WorkDir)
+
+    $recording = Join-Path $WorkDir 'session.raw'
+    $image = Join-Path $WorkDir 'recorded.png'
+    Invoke-Terminal @('--snapshot', $image, '--record', $recording,
+        '--feed', 'echo replay-marker\r', '--size', '80x12',
+        '--delay', '500', '--settle', '700') | Out-Null
+
+    if (-not (Test-Path $recording)) {
+        Assert-That 'the session was recorded' $false 'no recording written'
+        return
+    }
+
+    Assert-That 'the session was recorded' $true ''
+
+    $first = Join-Path $WorkDir 'grid1.txt'
+    $second = Join-Path $WorkDir 'grid2.txt'
+    Invoke-Terminal @('--replay', $recording, '--dump', $first, '--size', '80x12') | Out-Null
+    Invoke-Terminal @('--replay', $recording, '--dump', $second, '--size', '80x12') | Out-Null
+
+    $gridOne = if (Test-Path $first) { Get-Content $first -Raw } else { 'one' }
+    $gridTwo = if (Test-Path $second) { Get-Content $second -Raw } else { 'two' }
+
+    Assert-That 'replaying a recording reproduces the grid' ($gridOne -eq $gridTwo) ''
+    Assert-That 'the replayed grid holds the command output' `
+        ([bool]($gridOne -match 'replay-marker')) $gridOne
+}
+
+if (-not $Terminal) {
     $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-    $Spike = Join-Path $root 'build\wbshterm-spike.exe'
+    $Terminal = Join-Path $root 'build\wbshterm.exe'
 }
 
-if (-not (Test-Path $Spike)) {
-    throw "spike not built: $Spike (run build.ps1 first)"
+if (-not (Test-Path $Terminal)) {
+    throw "wbshterm not built: $Terminal (run build.ps1 first)"
 }
 
-Test-CommandRoundTrip
-Test-NoOutputLeak
-Test-ExitStatusPropagates
+$workDir = Join-Path ([System.IO.Path]::GetTempPath()) ('wbshterm-smoke-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+
+try {
+    Test-SelfTest -WorkDir $workDir
+    Test-Snapshot -WorkDir $workDir
+    Test-ReplayIsDeterministic -WorkDir $workDir
+}
+finally {
+    Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 if ($script:Failures -gt 0) {
     Write-Host "$script:Failures check(s) failed"

@@ -165,6 +165,11 @@ namespace wbshterm {
 		return ::GetExitCodeProcess(child_, &out_exit_code) != 0;
 	}
 
+	bool PtySession::childAlive() const {
+		if (child_ == INVALID_HANDLE_VALUE) return false;
+		return ::WaitForSingleObject(child_, 0) == WAIT_TIMEOUT;
+	}
+
 	void PtySession::endSession() {
 		closeIfOpen(input_write_);
 

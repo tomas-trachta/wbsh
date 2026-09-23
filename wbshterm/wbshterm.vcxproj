@@ -74,12 +74,11 @@
   <PropertyGroup Label="UserMacros" />
 
   <!-- Built alongside wbsh.exe so the spike's default shell lookup (see
-       locateShell in src\spike_main.cpp) finds it next to itself. The
-       binary keeps the -spike suffix until M1 replaces the passthrough
-       with a real window; wbshterm\build.ps1 builds the same sources
-       without Visual Studio and must stay flag-compatible with this. -->
+       locateShell in src\main.cpp) finds it next to itself.
+       wbshterm\build.ps1 builds the same sources without Visual Studio
+       and must stay flag-compatible with this. -->
   <PropertyGroup>
-    <TargetName>wbshterm-spike</TargetName>
+    <TargetName>wbshterm</TargetName>
     <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)build\msbuild\$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
@@ -89,17 +88,18 @@
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PreBuildEvent>
-      <Command>python "$(ProjectDir)..\tools\check_style.py" "$(ProjectDir)src\pty.h" "$(ProjectDir)src\pty.cpp" "$(ProjectDir)src\spike_main.cpp"</Command>
+      <Command>powershell -NoProfile -Command "python '$(ProjectDir)..\tools\check_style.py' (Get-ChildItem '$(ProjectDir)src\*.h','$(ProjectDir)src\*.cpp' | ForEach-Object FullName); exit $LASTEXITCODE"</Command>
       <Message>Running style checker (tools\check_style.py)...</Message>
     </PreBuildEvent>
   </ItemDefinitionGroup>
@@ -110,17 +110,18 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PreBuildEvent>
-      <Command>python "$(ProjectDir)..\tools\check_style.py" "$(ProjectDir)src\pty.h" "$(ProjectDir)src\pty.cpp" "$(ProjectDir)src\spike_main.cpp"</Command>
+      <Command>powershell -NoProfile -Command "python '$(ProjectDir)..\tools\check_style.py' (Get-ChildItem '$(ProjectDir)src\*.h','$(ProjectDir)src\*.cpp' | ForEach-Object FullName); exit $LASTEXITCODE"</Command>
       <Message>Running style checker (tools\check_style.py)...</Message>
     </PreBuildEvent>
   </ItemDefinitionGroup>
@@ -129,17 +130,18 @@
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PreBuildEvent>
-      <Command>python "$(ProjectDir)..\tools\check_style.py" "$(ProjectDir)src\pty.h" "$(ProjectDir)src\pty.cpp" "$(ProjectDir)src\spike_main.cpp"</Command>
+      <Command>powershell -NoProfile -Command "python '$(ProjectDir)..\tools\check_style.py' (Get-ChildItem '$(ProjectDir)src\*.h','$(ProjectDir)src\*.cpp' | ForEach-Object FullName); exit $LASTEXITCODE"</Command>
       <Message>Running style checker (tools\check_style.py)...</Message>
     </PreBuildEvent>
   </ItemDefinitionGroup>
@@ -150,27 +152,46 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PreBuildEvent>
-      <Command>python "$(ProjectDir)..\tools\check_style.py" "$(ProjectDir)src\pty.h" "$(ProjectDir)src\pty.cpp" "$(ProjectDir)src\spike_main.cpp"</Command>
+      <Command>powershell -NoProfile -Command "python '$(ProjectDir)..\tools\check_style.py' (Get-ChildItem '$(ProjectDir)src\*.h','$(ProjectDir)src\*.cpp' | ForEach-Object FullName); exit $LASTEXITCODE"</Command>
       <Message>Running style checker (tools\check_style.py)...</Message>
     </PreBuildEvent>
   </ItemDefinitionGroup>
 
   <ItemGroup>
+    <ClInclude Include="src\font.h" />
     <ClInclude Include="src\pty.h" />
+    <ClInclude Include="src\render.h" />
+    <ClInclude Include="src\replay.h" />
+    <ClInclude Include="src\screen.h" />
+    <ClInclude Include="src\selftest.h" />
+    <ClInclude Include="src\session.h" />
+    <ClInclude Include="src\snapshot.h" />
+    <ClInclude Include="src\vtparse.h" />
+    <ClInclude Include="src\window.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\font.cpp" />
+    <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\pty.cpp" />
-    <ClCompile Include="src\spike_main.cpp" />
+    <ClCompile Include="src\render.cpp" />
+    <ClCompile Include="src\replay.cpp" />
+    <ClCompile Include="src\screen.cpp" />
+    <ClCompile Include="src\selftest.cpp" />
+    <ClCompile Include="src\session.cpp" />
+    <ClCompile Include="src\snapshot.cpp" />
+    <ClCompile Include="src\vtparse.cpp" />
+    <ClCompile Include="src\window.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />

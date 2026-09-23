@@ -46,6 +46,8 @@ namespace wbshterm {
 
 		bool waitForExit(DWORD timeout_ms, DWORD& out_exit_code);
 
+		bool childAlive() const;
+
 		/**
 		 * @brief Close the pseudoconsole so pending read() calls return 0.
 		 *

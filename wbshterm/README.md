@@ -1,19 +1,19 @@
 # wbshterm
 
-A terminal for wbsh. This directory currently holds **M0**, the ConPTY
-spike: enough plumbing to prove that wbsh can be hosted on a pseudoconsole
-without changing a line of the shell.
+A terminal for wbsh: a Win32 window that hosts an unmodified `wbsh.exe` on a
+pseudoconsole, parses its VT output into a cell grid, and paints that grid
+with Direct2D and DirectWrite.
 
-There is no window yet. `spike_main.cpp` passes this process's own console
-straight through, so what M0 demonstrates is the pipe layer that M1's
-renderer will sit on top of.
+**M1 is done** — the window renders. Input is a deliberate stub (typing,
+Enter, backspace, arrows, Home/End, Delete, PageUp/Down); the full encoder,
+scrollback and selection are M2 and M3.
 
 ## Build and run
 
-`wbshterm.vcxproj` is part of `wbsh.sln`, so Visual Studio and msbuild
-build it like any other project. It depends on `wbsh`, which puts
-`wbsh.exe` next to `wbshterm-spike.exe` in `x64\$(Configuration)\` — where
-the spike looks for it first.
+`wbshterm.vcxproj` is part of `wbsh.sln`, so Visual Studio and msbuild build
+it like any other project. It depends on `wbsh`, which puts `wbsh.exe` next
+to `wbshterm.exe` in `x64\$(Configuration)\` — where the terminal looks for
+it first.
 
 ```powershell
 msbuild ..\wbsh.sln /t:wbshterm /p:Configuration=Release /p:Platform=x64
@@ -24,71 +24,83 @@ msbuild ..\wbsh.sln /t:wbshterm /p:Configuration=Release /p:Platform=x64
 checker; keep them flag-compatible.
 
 ```powershell
-.\build.ps1                 # Release; -Configuration Debug for /Od /Zi
-.\tests\smoke.ps1           # three scripted checks against a real session
-.\tests\smoke.ps1 -Spike ..\x64\Release\wbshterm-spike.exe
+.\build.ps1
+.\build\wbshterm.exe                 # the terminal
+.\tests\smoke.ps1                    # self-test, snapshot, replay determinism
 ```
 
-Interactive passthrough, from a real console (Windows Terminal or conhost):
+## Modes
 
-```powershell
-.\build\wbshterm-spike.exe
-```
+The window is the point, but the headless modes are how this thing is
+tested — a terminal that can only be checked by looking at it cannot be
+checked in CI.
 
-Scripted, for tests and measurements — `\r` is Enter, and the feed should
-end with `exit` so the session closes on its own:
-
-```powershell
-.\build\wbshterm-spike.exe --feed "ls -la\rexit\r"
-.\build\wbshterm-spike.exe --feed "cat big.txt\rexit\r" --quiet   # throughput only
-```
-
-## What M0 established
-
-**wbsh needs no changes.** Hosted on a pseudoconsole it boots, prints its
-prompt, runs commands, and exits with the right status. Its line editor
-(`ReadConsoleInputW`), its width queries (`GetConsoleScreenBufferInfo`) and
-its raw-mode switching all work, because ConPTY gives the child a real
-console rather than a bare pipe. `vim` from Git Bash renders and takes
-input through the same session.
-
-**ConPTY throughput is ~1.5 MB/s.** Measured by `cat`-ing ~970 KB of source
-through a session (989 KB in 634 ms, including wbsh's own read). That is
-the number to design the renderer against: a large dump is I/O-bound in the
-pty, not in our painting, so M1 should coalesce reads and paint at most
-once per frame rather than per read.
-
-**One Win32 quirk decides whether any of this works.** The child must be
-spawned with `STARTF_USESTDHANDLES` and all three std handles set to
-`nullptr`:
-
-```cpp
-startup.StartupInfo.dwFlags    = STARTF_USESTDHANDLES;
-startup.StartupInfo.hStdInput  = nullptr;
-startup.StartupInfo.hStdOutput = nullptr;
-startup.StartupInfo.hStdError  = nullptr;
-```
-
-Without it — and the SDK's own EchoCon sample omits it — the child inherits
-*this* process's standard handles on Windows 10 22H2. The failure is
-peculiar enough to be worth recognising: the child is genuinely attached to
-the pseudoconsole, so `mode con` reports the pty's size, while everything
-written to stdout bypasses the pty and lands in the parent's own output.
-Only explicit `> CON` writes come back through the pipe.
-
-## Files
-
-| File | Contents |
+| Mode | What it does |
 | --- | --- |
-| `src/pty.h` / `src/pty.cpp` | `PtySession`: pseudoconsole, pipes, child lifetime. Seeds M1's `pty.cpp`. |
-| `src/spike_main.cpp` | Console passthrough, `--feed` mode, throughput reporting. Thrown away at M1. |
-| `build.ps1` | vswhere + `cl /W4 /WX`; no project file yet. |
-| `tests/smoke.ps1` | Round trip, exit status, and a regression check for the std-handle quirk. |
+| *(no arguments)* | Opens the window on a wbsh session. |
+| `--selftest <report.txt>` | Parser and grid checks plus one live pty session; exit code is the verdict. |
+| `--snapshot <out.png>` | Runs a session headlessly and paints the finished grid to a PNG. |
+| `--record <out.raw>` | With `--snapshot`, also writes every byte the pty produced. |
+| `--replay <in.raw>` | Parses a recording with no shell; `--dump <txt>` writes the grid as text, `--snapshot` paints it. |
+
+`--feed "ls --color\r"` types into any session (`\r` is Enter), `--size
+100x30` sets the grid, and `--shell` / `--args` pick a different program to
+host.
+
+Record-then-replay is the test strategy: a recording is deterministic, so a
+grid dump taken from one is a golden file, and a rendering bug can be told
+apart from a parsing bug by replaying the same bytes.
+
+```powershell
+.\build\wbshterm.exe --snapshot out.png --feed "ls --color -la\r" --size 100x24
+.\build\wbshterm.exe --replay session.raw --dump grid.txt --size 100x24
+```
+
+## Modules
+
+| File | Responsibility |
+| --- | --- |
+| `pty.h/.cpp` | `PtySession`: pseudoconsole, pipes, child lifetime. |
+| `vtparse.h/.cpp` | Bytes to VT actions (DEC state machine) and UTF-8 decoding. |
+| `screen.h/.cpp` | The cell grid: printing, cursor motion, erase, scroll, SGR, query replies. |
+| `session.h/.cpp` | Pty + parser + grid + reader thread; the grid is touched by one thread only. |
+| `font.h/.cpp` | DirectWrite faces and the measured cell box. |
+| `render.h/.cpp` | Direct2D painting of a grid onto any render target. |
+| `window.h/.cpp` | The Win32 window, message handlers, and key encoding. |
+| `snapshot.h/.cpp` | Off-screen WIC target and PNG encode. |
+| `replay.h/.cpp` | Recording in, grid out, no shell involved. |
+| `selftest.h/.cpp` | The headless checks. |
+| `main.cpp` | Argument parsing and mode dispatch. |
+
+## Things learned the hard way
+
+**The child needs `STARTF_USESTDHANDLES` with all three std handles null**
+(M0). Without it — and the SDK's own EchoCon sample omits it — the child
+inherits *this* process's standard handles on Windows 10 22H2. The failure
+is peculiar: the child is genuinely attached to the pseudoconsole, so `mode
+con` reports the pty's size, while everything it writes to stdout bypasses
+the pty and lands in the host's output. Only explicit `> CON` writes come
+back. `--selftest` guards it.
+
+**Queries must be answered.** Full-screen applications send DA1 (`ESC[c`),
+DA2 (`ESC[>c`) and DSR/CPR (`ESC[6n`) and change behaviour based on the
+reply — or on its absence. `Screen` answers them through a `VtResponder`,
+which `Session` implements by writing back into the pty.
+
+**ConPTY output is conhost's rendering, not the application's.** What
+arrives on the pipe is regenerated from conhost's own buffer, so an oddity
+in the stream is not necessarily a bug in this terminal: vim under ConPTY
+emits `ESC[67C` followed by a literal `m`, and every conformant terminal
+(this one, Windows Terminal) paints that `m`.
+
+**ConPTY throughput is ~1.5 MB/s** (M0: 989 KB in 634 ms). The pty, not the
+renderer, is the ceiling on a large dump. The reader thread only buffers
+bytes and posts one wake-up at a time; parsing and painting happen once per
+drain on the UI thread.
 
 ## Teardown order
 
 `read()` returns 0 only once the pseudoconsole is closed, and `close()`
 releases the handle readers are blocked on. So the sequence is
-`endSession()`, then join every reader, then `close()`. Interactive mode
-also cancels the pending console read, since that thread is parked in
-`ReadFile` on this process's input handle.
+`endSession()`, then join every reader, then `close()` — which is what
+`Session::stop()` does.

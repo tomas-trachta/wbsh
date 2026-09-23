@@ -46,11 +46,12 @@ function Invoke-ClBuild {
 
     $arguments = @(
         '/nologo', '/std:c++17', '/W4', '/WX', '/EHsc', '/permissive-',
-        '/D_CRT_SECURE_NO_WARNINGS', '/DWIN32_LEAN_AND_MEAN'
+        '/D_CRT_SECURE_NO_WARNINGS', '/DWIN32_LEAN_AND_MEAN', '/DUNICODE', '/D_UNICODE'
     ) + $optimization + $sources + @(
-        "/Fe:$(Join-Path $OutputDir 'wbshterm-spike.exe')",
+        "/Fe:$(Join-Path $OutputDir 'wbshterm.exe')",
         "/Fo:$OutputDir\",
-        '/link', 'kernel32.lib', 'user32.lib'
+        '/link', '/SUBSYSTEM:WINDOWS', '/ENTRY:wWinMainCRTStartup',
+        'kernel32.lib', 'user32.lib'
     )
 
     & cl @arguments
@@ -64,4 +65,4 @@ New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 Import-VcEnvironment (Find-VcVarsScript)
 Invoke-ClBuild -SourceDir (Join-Path $root 'src') -OutputDir $outputDir -Configuration $Configuration
 
-Write-Host "built $(Join-Path $outputDir 'wbshterm-spike.exe')"
+Write-Host "built $(Join-Path $outputDir 'wbshterm.exe')"
