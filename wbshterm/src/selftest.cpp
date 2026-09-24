@@ -12,6 +12,7 @@
 #include "menu.h"
 #include "pane_tree.h"
 #include "picker.h"
+#include "titlebar.h"
 #include "view.h"
 #include "session.h"
 
@@ -1903,6 +1904,85 @@ namespace wbshterm {
 				!parseKeyBinding("ctrl+wibble", ignored), "");
 		}
 
+		static TitleBar barOfWidth(float width, bool on_right) {
+			TitleBarMetrics metrics;
+			metrics.height   = 38.0f;
+			metrics.diameter = 12.0f;
+			metrics.gap      = 8.0f;
+			metrics.margin   = 14.0f;
+			metrics.on_right = on_right;
+
+			TitleBar bar;
+			bar.applyMetrics(metrics);
+			bar.setBounds(D2D1::RectF(0.0f, 0.0f, width, metrics.height));
+			return bar;
+		}
+
+		static void checkTitleBarGeometry(Report& report) {
+			const TitleBar bar = barOfWidth(600.0f, true);
+
+			const D2D1_ELLIPSE close = bar.circleOf(TitleButton::Close);
+			const D2D1_ELLIPSE minimize = bar.circleOf(TitleButton::Minimize);
+			const D2D1_ELLIPSE zoom = bar.circleOf(TitleButton::Zoom);
+
+			report.check("close sits a margin in from the right",
+				close.point.x == 580.0f, std::to_string(close.point.x));
+			report.check("the lights run inwards, evenly spaced",
+				close.point.x - minimize.point.x == 20.0f
+					&& minimize.point.x - zoom.point.x == 20.0f, "");
+			report.check("the lights sit on the bar's centre line",
+				close.point.y == 19.0f && zoom.point.y == 19.0f,
+				std::to_string(close.point.y));
+			report.check("a light is as wide as it is tall",
+				close.radiusX == 6.0f && close.radiusY == 6.0f, "");
+
+			const TitleBar left = barOfWidth(600.0f, false);
+			report.check("on the left, close leads from the other end",
+				left.circleOf(TitleButton::Close).point.x == 20.0f
+					&& left.circleOf(TitleButton::Zoom).point.x == 60.0f, "");
+			report.check("either side reserves the same width",
+				bar.clusterWidth() == left.clusterWidth(), "");
+		}
+
+		static void checkTitleBarHitTesting(Report& report) {
+			TitleBar bar = barOfWidth(600.0f, true);
+
+			report.check("the middle of a light hits it",
+				bar.buttonAt(580.0f, 19.0f) == TitleButton::Close, "");
+			report.check("each light answers for itself",
+				bar.buttonAt(560.0f, 19.0f) == TitleButton::Minimize
+					&& bar.buttonAt(540.0f, 19.0f) == TitleButton::Zoom, "");
+			report.check("a light is reachable a little outside its circle",
+				bar.buttonAt(571.0f, 19.0f) == TitleButton::Close, "");
+			report.check("the empty caption is not a light",
+				bar.buttonAt(300.0f, 19.0f) == TitleButton::None, "");
+			report.check("below the bar is not the bar",
+				!bar.holdsPoint(300.0f, 60.0f)
+					&& bar.buttonAt(580.0f, 60.0f) == TitleButton::None, "");
+			report.check("the caption still counts as the bar",
+				bar.holdsPoint(300.0f, 19.0f), "");
+
+			report.check("a new hover is a change worth repainting",
+				bar.setHovered(TitleButton::Zoom), "");
+			report.check("the same hover twice is not",
+				!bar.setHovered(TitleButton::Zoom), "");
+		}
+
+		// Height zero is how the ordinary Windows frame is asked for: every
+		// point then falls through to the grid underneath.
+		static void checkTitleBarCanBeTurnedOff(Report& report) {
+			TitleBar bar = barOfWidth(600.0f, true);
+			TitleBarMetrics none;
+			none.height = 0.0f;
+			bar.applyMetrics(none);
+			bar.setBounds(D2D1::RectF(0.0f, 0.0f, 600.0f, 0.0f));
+
+			report.check("a bar of no height holds nothing",
+				!bar.holdsPoint(580.0f, 0.0f) && !bar.holdsPoint(300.0f, 19.0f), "");
+			report.check("a bar of no height has no lights",
+				bar.buttonAt(580.0f, 0.0f) == TitleButton::None, "");
+		}
+
 		static bool writeReport(const std::wstring& path, const std::string& text) {
 			FILE* file = nullptr;
 			if (_wfopen_s(&file, path.c_str(), L"wb") != 0 || file == nullptr) return false;
@@ -1972,6 +2052,12 @@ namespace wbshterm {
 		test::checkDraggingMovesTheDivider(report);
 	}
 
+	static void runTitleBarChecks(test::Report& report) {
+		test::checkTitleBarGeometry(report);
+		test::checkTitleBarHitTesting(report);
+		test::checkTitleBarCanBeTurnedOff(report);
+	}
+
 	static void runSettingsChecks(test::Report& report, const std::wstring& directory) {
 		test::checkThemesAreAvailable(report);
 		test::checkConfigRoundTrip(report, directory);
@@ -2020,6 +2106,7 @@ namespace wbshterm {
 		runPickerChecks(report, directory);
 		runViewChecks(report);
 		runLayoutChecks(report);
+		runTitleBarChecks(report);
 		runSettingsChecks(report, directory);
 		runKeyChecks(report);
 		runLiveChecks(report, shell_command_line, directory);

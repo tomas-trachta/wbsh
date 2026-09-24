@@ -41,6 +41,12 @@ namespace wbshterm {
 		bool        blink = true;
 	};
 
+	struct TitleBarSettings {
+		bool custom   = true;
+		int  height   = 38;
+		bool on_right = true;
+	};
+
 	struct PaneSettings {
 		std::string prefix       = "ctrl+b";
 		int         divider      = 6;
@@ -53,6 +59,7 @@ namespace wbshterm {
 		WindowSettings window;
 		CursorSettings cursor;
 		PaneSettings   panes;
+		TitleBarSettings titlebar;
 		Palette        palette;
 		std::string    theme_name      = "catppuccin-mocha";
 		int            scrollback_lines = 10000;

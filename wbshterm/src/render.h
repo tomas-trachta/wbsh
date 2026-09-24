@@ -9,6 +9,7 @@
 #include "font.h"
 #include "picker.h"
 #include "screen.h"
+#include "titlebar.h"
 #include "view.h"
 
 #include <d2d1_1.h>
@@ -25,6 +26,14 @@ namespace wbshterm {
 		const Screen*       screen  = nullptr;
 		const TerminalView* view    = nullptr;
 		bool                focused = true;
+	};
+
+	/** The window's own caption: what it says, and how it is feeling. */
+	struct TitleBarCanvas {
+		ID2D1RenderTarget* target = nullptr;
+		const TitleBar*    bar    = nullptr;
+		std::wstring       title;
+		bool               zoomed = false;
 	};
 
 	/**
@@ -54,6 +63,7 @@ namespace wbshterm {
 		void drawDivider(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 		void drawStatusBar(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
 			const std::string& left, const std::string& right);
+		void drawTitleBar(const TitleBarCanvas& canvas);
 		void drawFocusBorder(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 
 	private:
@@ -72,6 +82,11 @@ namespace wbshterm {
 			float width, bool highlighted);
 		void drawStatusText(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
 			const std::string& text, bool to_the_right);
+		void drawTitleLights(const TitleBarCanvas& canvas);
+		void drawTitleText(const TitleBarCanvas& canvas);
+		void drawTitleGlyph(const TitleBarCanvas& canvas, TitleButton which);
+		void drawZoomArrows(const TitleBarCanvas& canvas, const D2D1_ELLIPSE& circle,
+			float reach);
 		void drawPickerMatches(const PaneCanvas& canvas, const Picker& picker, float top,
 			float width, int visible_rows);
 

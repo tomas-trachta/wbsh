@@ -32,10 +32,35 @@ namespace wbshterm {
 		if (!createFormats(settings.family, size_dip, out_error)) return false;
 
 		applyFallback(settings.fallback);
+		createCaptionFormat();
 		if (!measureCell(out_error)) return false;
 
 		metrics_.height *= (settings.line_height > 0.1f ? settings.line_height : 1.0f);
 		return true;
+	}
+
+	// The caption is chrome, not terminal text: a proportional UI face at a
+	// fixed size reads as part of the window rather than part of the grid.
+	// Failing to load one is not fatal -- the caption simply goes untitled.
+	void FontSet::createCaptionFormat() {
+		static const wchar_t* const kFamilies[] = {
+			L"Segoe UI Variable Text", L"Segoe UI", L"Tahoma",
+		};
+
+		for (const wchar_t* family : kFamilies) {
+			const HRESULT hr = factory_->CreateTextFormat(family, nullptr,
+				DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+				DWRITE_FONT_STRETCH_NORMAL, 12.5f, L"", caption_.ReleaseAndGetAddressOf());
+			if (FAILED(hr)) continue;
+
+			caption_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+			caption_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+			caption_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+			caption_->SetTrimming(nullptr, nullptr);
+			return;
+		}
+
+		caption_.Reset();
 	}
 
 	// A monospace face has no emoji or CJK, and DirectWrite's own fallback

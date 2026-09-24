@@ -32,16 +32,21 @@ namespace wbshterm {
 		bool create(const FontSettings& settings, std::string& out_error);
 
 		IDWriteTextFormat* format(bool bold, bool italic) const;
+
+		/** A proportional face for chrome, centred; null if none loaded. */
+		IDWriteTextFormat* captionFormat() const { return caption_.Get(); }
 		IDWriteFactory* factory() const { return factory_.Get(); }
 		const CellMetrics& metrics() const { return metrics_; }
 
 	private:
 		bool createFormats(const std::wstring& family, float size_dip, std::string& out_error);
+		void createCaptionFormat();
 		void applyFallback(const std::vector<std::wstring>& families);
 		bool measureCell(std::string& out_error);
 
 		Microsoft::WRL::ComPtr<IDWriteFactory>    factory_;
 		Microsoft::WRL::ComPtr<IDWriteTextFormat> formats_[4];
+		Microsoft::WRL::ComPtr<IDWriteTextFormat> caption_;
 		CellMetrics                               metrics_;
 	};
 

@@ -89,6 +89,7 @@ apart from a parsing bug by replaying the same bytes.
 | `view.h/.cpp` | What the window looks at: scroll position and selection, in absolute rows. |
 | `config.h/.cpp` | The settings file: parsing, defaults, and the file written on first run. |
 | `theme.h/.cpp` | The built-in colour schemes. |
+| `titlebar.h/.cpp` | Where the caption's lights sit, and what the pointer is over. |
 | `menu.h/.cpp` | The right-click menu: what it offers, and what a click meant. |
 | `picker.h/.cpp` | The overlay list: fuzzy matching, filtering and selection. |
 | `charwidth.h/.cpp` | How many cells a character takes: zero, one or two. |
@@ -97,7 +98,7 @@ apart from a parsing bug by replaying the same bytes.
 | `pane_tree.h/.cpp` | The split layout: splitting, closing, and slicing the client area. |
 | `font.h/.cpp` | DirectWrite faces and the measured cell box. |
 | `render.h/.cpp` | Direct2D painting of a grid onto any render target. |
-| `window.h/.cpp` | The Win32 window, message handlers, key encoding, pane commands, and the status bar. |
+| `window.h/.cpp` | The Win32 window and its frame, message handlers, key encoding, pane commands, and the status bar. |
 | `snapshot.h/.cpp` | Off-screen WIC target and PNG encode. |
 | `replay.h/.cpp` | Recording in, grid out, no shell involved. |
 | `selftest.h/.cpp` | The headless checks. |
@@ -312,6 +313,47 @@ never see it; the answer is read back from `CONIN$` for the same reason.
 And conhost passes such a sequence on only once something else moves the
 screen along, so the request ends with a save and restore of the cursor —
 a nudge that leaves nothing on screen.
+
+## The window's own frame
+
+wbshterm draws its caption rather than letting Windows draw one: a slim bar
+in the theme's own colours, the title centred in a proportional face, and
+three round lights on the right — zoom, minimise, close, with close
+outermost where Windows users reach for it. Hovering the cluster brings up
+the marks inside them; pressing one darkens it, and sliding off before
+letting go takes the press back.
+
+```ini
+[titlebar]
+custom = true       # false for the ordinary Windows frame
+buttons = right     # or left, the way macOS has them
+height = 38
+```
+
+The caption is a real one: dragging it moves the window, double-clicking
+zooms it, Aero Snap works, and right-clicking opens the system menu that a
+custom frame would otherwise take away. `Alt+Space` is deliberately *not*
+claimed for that menu — readline binds it, and a terminal has no business
+taking a key its own shell is already using.
+
+Underneath, `WM_NCCALCSIZE` keeps the whole window as client area, and
+`WM_NCHITTEST` hands the edges back so the window still resizes. Maximised,
+the frame Windows adds is subtracted again, so the grid lands exactly on
+the work area instead of spilling past the screen and over the taskbar.
+
+**Rounded corners depend on the Windows version.** Windows 11 rounds them
+itself through `DWMWA_WINDOW_CORNER_PREFERENCE` — antialiased, with the
+shadow following the shape. Windows 10 rejects that attribute, so the
+corners are cut out of the window instead with a region: the same shape,
+but a hard edge rather than a smooth one, and no shadow. The code asks DWM
+first and only falls back when it refuses, so a Windows 11 machine gets the
+good version without a switch to set.
+
+The same split decides one more thing. `DWMWA_BORDER_COLOR` is Windows 11
+only, so on Windows 10 the sliver of frame that would buy a drop shadow is
+drawn by DWM in its own accent colour — a bright hairline across the top of
+a window with no caption to justify it. There the frame is left alone and
+the cut-out corners stand on their own.
 
 ## Panes
 

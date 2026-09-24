@@ -274,17 +274,214 @@ namespace wbshterm {
 		return true;
 	}
 
+
+	// DWMWA_WINDOW_CORNER_PREFERENCE and DWMWCP_ROUNDSMALL. Windows 11
+	// rounds the corners from this; Windows 10 rejects it and stays square,
+	// which is why nothing here depends on the call having worked.
+	static const DWORD kCornerPreference = 33;
+	static const DWORD kRoundSmall = 3;
+	static const int   kCornerRadius = 9;
+
+	// Windows 11 rounds the corners itself: antialiased, shadowed, and
+	// nothing to maintain. Windows 10 refuses the attribute, and the
+	// only rounded silhouette to be had there is one cut out of the
+	// window. That edge is hard, but at this radius it reads as a
+	// rounded corner rather than as a staircase.
+	//
+	// A maximised window is square on both, the way every other one is.
+	void TerminalWindow::applyCornerRegion() {
+		if (dwm_rounds_corners_ || !customFrame()) return;
+		if (::IsIconic(window_) != 0) return;
+
+		if (::IsZoomed(window_) != 0) {
+			::SetWindowRgn(window_, nullptr, TRUE);
+			return;
+		}
+
+		RECT window{};
+		::GetWindowRect(window_, &window);
+
+		const int width = window.right - window.left;
+		const int height = window.bottom - window.top;
+		if (width <= 0 || height <= 0) return;
+
+		const HRGN region = ::CreateRoundRectRgn(0, 0, width + 1, height + 1,
+			kCornerRadius * 2, kCornerRadius * 2);
+		::SetWindowRgn(window_, region, TRUE);
+	}
+
+	bool TerminalWindow::customFrame() const {
+		return config_.titlebar.custom;
+	}
+
+	float TerminalWindow::titleHeight() const {
+		return customFrame() ? static_cast<float>(config_.titlebar.height) : 0.0f;
+	}
+
+	int TerminalWindow::resizeBorder() const {
+		return ::GetSystemMetrics(SM_CXSIZEFRAME) + ::GetSystemMetrics(SM_CXPADDEDBORDER);
+	}
+
+	// Keeping the proposed rectangle whole is what takes the caption and the
+	// border away. Maximised, Windows deliberately oversizes the window by
+	// the frame, so that much has to be given back or the grid spills off
+	// every edge of the screen.
+	LRESULT TerminalWindow::onCalcSize(WPARAM wparam, LPARAM lparam) {
+		if (wparam == FALSE) return ::DefWindowProcW(window_, WM_NCCALCSIZE, wparam, lparam);
+		if (::IsZoomed(window_) == 0) return 0;
+
+		auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+		const int grip = resizeBorder();
+		params->rgrc[0].left   += grip;
+		params->rgrc[0].top    += grip;
+		params->rgrc[0].right  -= grip;
+		params->rgrc[0].bottom -= grip;
+		return 0;
+	}
+
+	// Nothing is left to grab once the frame is gone, so the edges are
+	// handed back by hand. Maximised there is nothing to resize.
+	LRESULT TerminalWindow::frameEdgeAt(int x, int y, const RECT& client) const {
+		if (::IsZoomed(window_) != 0) return HTNOWHERE;
+
+		const int grip = resizeBorder();
+		const bool left = x < grip;
+		const bool right = x >= client.right - grip;
+		const bool top = y < grip;
+		const bool bottom = y >= client.bottom - grip;
+
+		if (top && left) return HTTOPLEFT;
+		if (top && right) return HTTOPRIGHT;
+		if (bottom && left) return HTBOTTOMLEFT;
+		if (bottom && right) return HTBOTTOMRIGHT;
+		if (top) return HTTOP;
+		if (bottom) return HTBOTTOM;
+		if (left) return HTLEFT;
+		if (right) return HTRIGHT;
+
+		return HTNOWHERE;
+	}
+
+	// A light answers HTCLIENT so the ordinary mouse messages reach it; the
+	// rest of the bar answers HTCAPTION, which is what hands dragging,
+	// double-click-to-zoom and Aero Snap back to Windows for free.
+	LRESULT TerminalWindow::onHitTest(LPARAM lparam) {
+		POINT where = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+		::ScreenToClient(window_, &where);
+
+		RECT client{};
+		::GetClientRect(window_, &client);
+
+		const LRESULT edge = frameEdgeAt(where.x, where.y, client);
+		if (edge != HTNOWHERE) return edge;
+
+		const float x = static_cast<float>(where.x);
+		const float y = static_cast<float>(where.y);
+		if (title_bar_.buttonAt(x, y) != TitleButton::None) return HTCLIENT;
+		if (title_bar_.holdsPoint(x, y)) return HTCAPTION;
+
+		return HTCLIENT;
+	}
+
+	void TerminalWindow::runTitleButton(TitleButton which) {
+		switch (which) {
+		case TitleButton::Close:
+			::PostMessageW(window_, WM_CLOSE, 0, 0);
+			return;
+		case TitleButton::Minimize:
+			::ShowWindow(window_, SW_MINIMIZE);
+			return;
+		case TitleButton::Zoom:
+			::ShowWindow(window_, ::IsZoomed(window_) != 0 ? SW_RESTORE : SW_MAXIMIZE);
+			return;
+		default:
+			return;
+		}
+	}
+
+	bool TerminalWindow::titleBarTakesPress(LPARAM lparam) {
+		const TitleButton which = title_bar_.buttonAt(
+			static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
+		if (which == TitleButton::None) return false;
+
+		title_bar_.setPressed(which);
+		::SetCapture(window_);
+		::InvalidateRect(window_, nullptr, FALSE);
+		return true;
+	}
+
+	// Acting on release, and only when the pointer is still on the light it
+	// went down on, is what lets a press be taken back by sliding off it.
+	bool TerminalWindow::titleBarTakesRelease(LPARAM lparam) {
+		const TitleButton pressed = title_bar_.pressed();
+		if (pressed == TitleButton::None) return false;
+
+		title_bar_.setPressed(TitleButton::None);
+		if (::GetCapture() == window_) ::ReleaseCapture();
+		::InvalidateRect(window_, nullptr, FALSE);
+
+		const TitleButton under = title_bar_.buttonAt(
+			static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
+		if (under == pressed) runTitleButton(pressed);
+
+		return true;
+	}
+
+	void TerminalWindow::armMouseLeave() {
+		TRACKMOUSEEVENT track{};
+		track.cbSize = sizeof(track);
+		track.dwFlags = TME_LEAVE;
+		track.hwndTrack = window_;
+		::TrackMouseEvent(&track);
+	}
+
+	void TerminalWindow::trackTitleHover(LPARAM lparam) {
+		const TitleButton which = title_bar_.buttonAt(
+			static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
+		if (!title_bar_.setHovered(which)) return;
+
+		if (which != TitleButton::None) armMouseLeave();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::clearTitleHover() {
+		if (!title_bar_.setHovered(TitleButton::None)) return;
+
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::setWindowActive(bool active) {
+		title_bar_.setActive(active);
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	// The taskbar keeps the whole path; the caption shows the leaf, the way
+	// a Mac window is named for the folder rather than the route to it.
+	std::wstring TerminalWindow::captionText() const {
+		const std::size_t cut = shown_title_.find_last_of(L"/\\");
+		if (cut == std::wstring::npos || cut + 1 >= shown_title_.size()) return shown_title_;
+
+		return shown_title_.substr(cut + 1);
+	}
+
 	void TerminalWindow::layoutPanes() {
 		if (!target_) return;
 
 		const D2D1_SIZE_F size = target_->GetSize();
 		const CellMetrics& cell = renderer_.metrics();
 
+		TitleBarMetrics caption;
+		caption.height   = titleHeight();
+		caption.on_right = config_.titlebar.on_right;
+		title_bar_.applyMetrics(caption);
+		title_bar_.setBounds(D2D1::RectF(0.0f, 0.0f, size.width, titleHeight()));
+
 		status_bounds_ = D2D1::RectF(0.0f, size.height - statusHeight(),
 			size.width, size.height);
 
 		PaneMetrics metrics;
-		metrics.client      = D2D1::RectF(0.0f, 0.0f, size.width, status_bounds_.top);
+		metrics.client      = D2D1::RectF(0.0f, titleHeight(), size.width,
+			status_bounds_.top);
 		metrics.cell_width  = cell.width;
 		metrics.cell_height = cell.height;
 		metrics.padding     = renderer_.padding();
@@ -300,6 +497,8 @@ namespace wbshterm {
 
 	void TerminalWindow::commitGridSizes() {
 		::KillTimer(window_, kTimerResize);
+		if (::IsIconic(window_) != 0) return;
+
 		for (PaneNode* leaf : panes_.leaves()) leaf->pane()->commitGridSize();
 	}
 
@@ -472,6 +671,15 @@ namespace wbshterm {
 			renderer_.drawStatusBar(target_.Get(), status_bounds_, statusLeft(),
 				statusRight());
 		}
+
+		if (!customFrame()) return;
+
+		TitleBarCanvas caption;
+		caption.target = target_.Get();
+		caption.bar    = &title_bar_;
+		caption.title  = captionText();
+		caption.zoomed = ::IsZoomed(window_) != 0;
+		renderer_.drawTitleBar(caption);
 	}
 
 	PaneNode* TerminalWindow::leafFromMouse(LPARAM lparam) const {
@@ -520,6 +728,12 @@ namespace wbshterm {
 	bool TerminalWindow::onSetCursor() {
 		POINT where{};
 		if (::GetCursorPos(&where) == 0 || ::ScreenToClient(window_, &where) == 0) return false;
+
+		if (title_bar_.holdsPoint(static_cast<float>(where.x), static_cast<float>(where.y))
+			|| where.y >= static_cast<int>(status_bounds_.top)) {
+			::SetCursor(::LoadCursorW(nullptr, IDC_ARROW));
+			return true;
+		}
 
 		const PaneNode* branch = dragging_ != nullptr
 			? dragging_
@@ -602,6 +816,7 @@ namespace wbshterm {
 		if (font_changed && !renderer_.create(config_, error)) return;
 
 		renderer_.applyConfig(config_);
+		applyFrameAppearance();
 		parseKeyBinding(config_.panes.prefix, prefix_);
 		applyScrollbackLimit();
 		applyWindowSettings();
@@ -657,7 +872,11 @@ namespace wbshterm {
 		RECT wanted = { 0, 0,
 			static_cast<LONG>(cell.width * static_cast<float>(config_.window.columns) + pad),
 			static_cast<LONG>(cell.height * static_cast<float>(config_.window.rows) + pad) };
-		::AdjustWindowRect(&wanted, WS_OVERLAPPEDWINDOW, FALSE);
+
+		// A custom frame puts the caption inside the client area, so the
+		// window has to be that much taller to leave the grid its rows.
+		if (customFrame()) wanted.bottom += static_cast<LONG>(titleHeight());
+		else ::AdjustWindowRect(&wanted, WS_OVERLAPPEDWINDOW, FALSE);
 
 		window_ = ::CreateWindowExW(0, kClassName, L"wbsh", WS_OVERLAPPEDWINDOW,
 			CW_USEDEFAULT, CW_USEDEFAULT, wanted.right - wanted.left, wanted.bottom - wanted.top,
@@ -667,17 +886,38 @@ namespace wbshterm {
 			return false;
 		}
 
-		applyDarkTitleBar();
+		applyFrameAppearance();
 		return true;
 	}
 
-	void TerminalWindow::applyDarkTitleBar() {
+	// The border DWM still draws around a custom frame is the one seam
+	// left, so it takes the theme's own background and disappears into
+	// it. The shadow needs a sliver of frame extended back under the
+	// client area, or a window with no caption casts none.
+	void TerminalWindow::applyFrameAppearance() {
 		const BOOL dark = TRUE;
 		::DwmSetWindowAttribute(window_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 
-		const COLORREF frame = RGB(0x1E, 0x1E, 0x1E);
+		const std::uint32_t chrome = config_.palette.background;
+		const COLORREF frame = RGB((chrome >> 16) & 0xFF, (chrome >> 8) & 0xFF, chrome & 0xFF);
 		::DwmSetWindowAttribute(window_, DWMWA_CAPTION_COLOR, &frame, sizeof(frame));
 		::DwmSetWindowAttribute(window_, DWMWA_BORDER_COLOR, &frame, sizeof(frame));
+
+		const DWORD corners = kRoundSmall;
+		dwm_rounds_corners_ = SUCCEEDED(::DwmSetWindowAttribute(window_, kCornerPreference,
+			&corners, sizeof(corners)));
+
+		if (!customFrame()) return;
+
+		// The sliver of frame that buys a shadow is drawn by DWM in its own
+		// colour, and the attribute that would recolour it is Windows 11's
+		// too. On Windows 10 that leaves an accent-coloured hairline across
+		// the top of a window that has no caption to justify it, so there
+		// the frame stays where it is and the cut-out corners stand alone.
+		const MARGINS shadow = { 0, 0, dwm_rounds_corners_ ? 1 : 0, 0 };
+		::DwmExtendFrameIntoClientArea(window_, &shadow);
+		::SetWindowPos(window_, nullptr, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 	}
 
 	bool TerminalWindow::createTarget(std::string& out_error) {
@@ -719,7 +959,9 @@ namespace wbshterm {
 	LRESULT TerminalWindow::handleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
 		switch (message) {
 		case WM_PAINT:       onPaint(); return 0;
-		case WM_SIZE:        onResize(); return 0;
+		case WM_SIZE:
+			if (wparam != SIZE_MINIMIZED) onResize();
+			return 0;
 		case WM_CHAR:
 		case WM_SYSCHAR:     onText(static_cast<wchar_t>(wparam)); return 0;
 		case WM_KEYDOWN:
@@ -735,7 +977,18 @@ namespace wbshterm {
 		case WM_LBUTTONDOWN:
 		case WM_LBUTTONDBLCLK: onMouseDown(lparam); return 0;
 		case WM_MOUSEMOVE:   onMouseMove(wparam, lparam); return 0;
-		case WM_LBUTTONUP:   onMouseUp(); return 0;
+		case WM_LBUTTONUP:   onMouseUp(lparam); return 0;
+		case WM_NCCALCSIZE:
+			if (customFrame()) return onCalcSize(wparam, lparam);
+			break;
+		case WM_NCHITTEST:
+			if (customFrame()) return onHitTest(lparam);
+			break;
+		case WM_NCMOUSEMOVE:
+		case WM_MOUSELEAVE: clearTitleHover(); break;
+		case WM_ACTIVATE:
+			setWindowActive(LOWORD(wparam) != WA_INACTIVE);
+			break;
 		case WM_CAPTURECHANGED: onCaptureLost(); return 0;
 		case WM_CONTEXTMENU: onContextMenu(lparam); return 0;
 		case WM_ERASEBKGND:  return 1;
@@ -767,6 +1020,7 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::onMouseDown(LPARAM lparam) {
+		if (titleBarTakesPress(lparam)) return;
 		if (beginDividerDrag(lparam)) return;
 
 		PaneNode* leaf = leafFromMouse(lparam);
@@ -788,7 +1042,10 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::onMouseMove(WPARAM wparam, LPARAM lparam) {
+		trackTitleHover(lparam);
+
 		if ((wparam & MK_LBUTTON) == 0) return;
+		if (title_bar_.pressed() != TitleButton::None) return;
 
 		if (dragging_ != nullptr) {
 			continueDividerDrag(lparam);
@@ -801,7 +1058,9 @@ namespace wbshterm {
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
-	void TerminalWindow::onMouseUp() {
+	void TerminalWindow::onMouseUp(LPARAM lparam) {
+		if (titleBarTakesRelease(lparam)) return;
+
 		const bool was_dragging = dragging_ != nullptr;
 		if (::GetCapture() == window_) ::ReleaseCapture();
 
@@ -923,8 +1182,49 @@ namespace wbshterm {
 	// The menu is where customising lives for anyone who does not want to
 	// open a config file; every choice is written back to that file so it
 	// still applies tomorrow.
+	// A caption of our own drops the system menu that comes with a real
+	// one, and Move, Size and the keyboard ways to close go with it. Alt+Space
+	// is deliberately left alone: readline binds it, and a terminal that
+	// swallowed it would be taking a key its shell was already using.
+	void TerminalWindow::showSystemMenu(int screen_x, int screen_y) {
+		HMENU menu = ::GetSystemMenu(window_, FALSE);
+		if (menu == nullptr) return;
+
+		const bool zoomed = ::IsZoomed(window_) != 0;
+		const UINT when_zoomed = zoomed ? MF_ENABLED : (MF_DISABLED | MF_GRAYED);
+		const UINT when_normal = zoomed ? (MF_DISABLED | MF_GRAYED) : MF_ENABLED;
+
+		::EnableMenuItem(menu, SC_RESTORE, MF_BYCOMMAND | when_zoomed);
+		::EnableMenuItem(menu, SC_MOVE, MF_BYCOMMAND | when_normal);
+		::EnableMenuItem(menu, SC_SIZE, MF_BYCOMMAND | when_normal);
+		::EnableMenuItem(menu, SC_MAXIMIZE, MF_BYCOMMAND | when_normal);
+		::EnableMenuItem(menu, SC_MINIMIZE, MF_BYCOMMAND | MF_ENABLED);
+		::EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+
+		const int command = ::TrackPopupMenu(menu,
+			TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, screen_x, screen_y, 0,
+			window_, nullptr);
+		if (command == 0) return;
+
+		::PostMessageW(window_, WM_SYSCOMMAND, static_cast<WPARAM>(command), 0);
+	}
+
+	bool TerminalWindow::pointIsOnCaption(int screen_x, int screen_y) const {
+		if (!customFrame()) return false;
+
+		POINT where = { screen_x, screen_y };
+		if (::ScreenToClient(window_, &where) == 0) return false;
+
+		return title_bar_.holdsPoint(static_cast<float>(where.x), static_cast<float>(where.y));
+	}
+
 	void TerminalWindow::onContextMenu(LPARAM lparam) {
 		POINT where = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+		if (pointIsOnCaption(where.x, where.y)) {
+			showSystemMenu(where.x, where.y);
+			return;
+		}
+
 		if (where.x == -1 && where.y == -1) {
 			RECT client{};
 			::GetClientRect(window_, &client);
@@ -1048,15 +1348,22 @@ namespace wbshterm {
 		::EndPaint(window_, &paint);
 	}
 
+	// A minimised window reports a client area of nothing, and laying
+	// panes out into nothing collapses every grid to a single cell --
+	// which the commit would then hand to the shells, reflowing them to
+	// one column behind a window nobody can see.
 	void TerminalWindow::onResize() {
 		if (!target_) return;
 
 		RECT client{};
 		::GetClientRect(window_, &client);
+		if (client.right <= client.left || client.bottom <= client.top) return;
+
 		target_->Resize(D2D1::SizeU(
 			static_cast<UINT32>(client.right - client.left),
 			static_cast<UINT32>(client.bottom - client.top)));
 
+		applyCornerRegion();
 		layoutPanes();
 		scheduleGridCommit();
 		::InvalidateRect(window_, nullptr, FALSE);
@@ -1133,6 +1440,7 @@ namespace wbshterm {
 
 		shown_title_ = wide;
 		::SetWindowTextW(window_, wide.c_str());
+		if (customFrame()) ::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	KeyModes TerminalWindow::currentModes() const {

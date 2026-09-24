@@ -49,6 +49,13 @@ namespace wbshterm {
 		"# The panel of system information shown when a session opens.\n"
 		"fetch = true\n"
 		"\n"
+		"[titlebar]\n"
+		"# The window draws its own caption: round lights, title centred.\n"
+		"# Turn it off for the ordinary Windows frame.\n"
+		"custom = true\n"
+		"buttons = right   # or left, the way macOS has them\n"
+		"height = 38\n"
+		"\n"
 		"[panes]\n"
 		"# Panes start when you type `tmux`, and are driven from a prefix\n"
 		"# key: prefix then % or | to split into columns, \" or - into\n"
@@ -231,6 +238,16 @@ namespace wbshterm {
 		}
 	}
 
+	static void applyTitleBarSetting(const Setting& setting, Config& config) {
+		if (setting.key == "custom") config.titlebar.custom = parseBool(setting.value);
+
+		if (setting.key == "buttons") config.titlebar.on_right = setting.value != "left";
+
+		if (setting.key == "height") {
+			config.titlebar.height = parseInt(setting.value, config.titlebar.height);
+		}
+	}
+
 	static void applyPaneSetting(const Setting& setting, Config& config) {
 		if (setting.key == "prefix") config.panes.prefix = setting.value;
 
@@ -372,6 +389,7 @@ namespace wbshterm {
 		if (setting.section == "window") applyWindowSetting(setting, config);
 		if (setting.section == "cursor") applyCursorSetting(setting, config);
 		if (setting.section == "panes")  applyPaneSetting(setting, config);
+		if (setting.section == "titlebar") applyTitleBarSetting(setting, config);
 		if (setting.section == "theme")  applyThemeSetting(setting, config);
 		if (setting.section == "startup" && setting.key == "fetch") {
 			config.startup_fetch = parseBool(setting.value);

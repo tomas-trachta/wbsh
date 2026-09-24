@@ -279,6 +279,140 @@ namespace wbshterm {
 		target->PopAxisAlignedClip();
 	}
 
+	// macOS's own three, and the grey they all go when the window is not
+	// the one being used.
+	static const std::uint32_t kCloseRed    = 0xFF5F57;
+	static const std::uint32_t kMinimizeAmber = 0xFEBC2E;
+	static const std::uint32_t kZoomGreen   = 0x28C840;
+
+	static std::uint32_t lightColor(TitleButton which) {
+		switch (which) {
+		case TitleButton::Close:    return kCloseRed;
+		case TitleButton::Minimize: return kMinimizeAmber;
+		case TitleButton::Zoom:     return kZoomGreen;
+		default:                    return kCloseRed;
+		}
+	}
+
+	// A pressed light darkens, the way a pressed one does on a Mac.
+	static std::uint32_t pressedShade(std::uint32_t color) {
+		return blend(color, 0x000000, 0.25f);
+	}
+
+	void Renderer::drawTitleGlyph(const TitleBarCanvas& canvas, TitleButton which) {
+		const D2D1_ELLIPSE circle = canvas.bar->circleOf(which);
+		const float reach = circle.radiusX * 0.5f;
+		const float x = circle.point.x;
+		const float y = circle.point.y;
+
+		setBrushColor(blend(lightColor(which), 0x000000, 0.62f), 1.0f);
+
+		if (which == TitleButton::Minimize) {
+			canvas.target->DrawLine(D2D1::Point2F(x - reach, y), D2D1::Point2F(x + reach, y),
+				brush_.Get(), 1.3f);
+			return;
+		}
+
+		if (which == TitleButton::Close) {
+			canvas.target->DrawLine(D2D1::Point2F(x - reach, y - reach),
+				D2D1::Point2F(x + reach, y + reach), brush_.Get(), 1.3f);
+			canvas.target->DrawLine(D2D1::Point2F(x - reach, y + reach),
+				D2D1::Point2F(x + reach, y - reach), brush_.Get(), 1.3f);
+			return;
+		}
+
+		drawZoomArrows(canvas, circle, reach);
+	}
+
+	// Two right triangles at opposite corners with a clear diagonal band
+	// between them: the Mac's zoom mark. They sit on the main diagonal
+	// to grow the window and on the other one to put it back, which is
+	// the whole of the difference between the two states.
+	void Renderer::drawZoomArrows(const TitleBarCanvas& canvas, const D2D1_ELLIPSE& circle,
+			float reach) {
+		const float x = circle.point.x;
+		const float y = circle.point.y;
+		const float leg = reach * 1.3f;
+		const float side = canvas.zoomed ? -1.0f : 1.0f;
+
+		Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
+		if (FAILED(factory_->CreatePathGeometry(path.GetAddressOf()))) return;
+
+		Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+		if (FAILED(path->Open(sink.GetAddressOf()))) return;
+
+		const float far_x = x - reach * side;
+		sink->BeginFigure(D2D1::Point2F(far_x, y - reach), D2D1_FIGURE_BEGIN_FILLED);
+		sink->AddLine(D2D1::Point2F(far_x + leg * side, y - reach));
+		sink->AddLine(D2D1::Point2F(far_x, y - reach + leg));
+		sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+
+		const float near_x = x + reach * side;
+		sink->BeginFigure(D2D1::Point2F(near_x, y + reach), D2D1_FIGURE_BEGIN_FILLED);
+		sink->AddLine(D2D1::Point2F(near_x - leg * side, y + reach));
+		sink->AddLine(D2D1::Point2F(near_x, y + reach - leg));
+		sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+
+		if (FAILED(sink->Close())) return;
+
+		canvas.target->FillGeometry(path.Get(), brush_.Get());
+	}
+
+	void Renderer::drawTitleLights(const TitleBarCanvas& canvas) {
+		const TitleBar& bar = *canvas.bar;
+		const std::uint32_t asleep = blend(config_.palette.background,
+			config_.palette.foreground, 0.22f);
+
+		for (int index = 0; index < titleButtonCount(); ++index) {
+			const TitleButton which = titleButtonByIndex(index);
+			const bool lit = bar.active() || bar.hovered() != TitleButton::None;
+			const std::uint32_t color = lit ? lightColor(which) : asleep;
+
+			setBrushColor(bar.pressed() == which ? pressedShade(color) : color, 1.0f);
+			canvas.target->FillEllipse(bar.circleOf(which), brush_.Get());
+
+			if (bar.hovered() != TitleButton::None) drawTitleGlyph(canvas, which);
+		}
+	}
+
+	// The caption sits a shade above the grid rather than beside it: one
+	// surface, the way a Mac window reads, with a hairline to part them.
+	void Renderer::drawTitleBar(const TitleBarCanvas& canvas) {
+		if (canvas.bar == nullptr || !prepareBrush(canvas.target)) return;
+
+		const D2D1_RECT_F& bounds = canvas.bar->bounds();
+		if (bounds.bottom <= bounds.top) return;
+
+		setBrushColor(blend(config_.palette.background, config_.palette.foreground, 0.05f),
+			1.0f);
+		canvas.target->FillRectangle(bounds, brush_.Get());
+
+		setBrushColor(blend(config_.palette.background, config_.palette.foreground, 0.16f),
+			1.0f);
+		canvas.target->FillRectangle(
+			D2D1::RectF(bounds.left, bounds.bottom - 1.0f, bounds.right, bounds.bottom),
+			brush_.Get());
+
+		drawTitleLights(canvas);
+		drawTitleText(canvas);
+	}
+
+	void Renderer::drawTitleText(const TitleBarCanvas& canvas) {
+		IDWriteTextFormat* format = font_.captionFormat();
+		if (format == nullptr || canvas.title.empty()) return;
+
+		const D2D1_RECT_F& bounds = canvas.bar->bounds();
+		const float inset = canvas.bar->clusterWidth();
+
+		setBrushColor(blend(config_.palette.background, config_.palette.foreground,
+			canvas.bar->active() ? 0.72f : 0.40f), 1.0f);
+
+		canvas.target->DrawText(canvas.title.c_str(),
+			static_cast<UINT32>(canvas.title.size()), format,
+			D2D1::RectF(bounds.left + inset, bounds.top, bounds.right - inset, bounds.bottom),
+			brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+
 	void Renderer::drawRowBackgrounds(const PaneCanvas& canvas, int absolute_row,
 			int viewport_row) {
 		const CellMetrics& cell_box = font_.metrics();
