@@ -46,9 +46,15 @@ Source: "stage\wbsh-here.cmd";      DestDir: "{app}"; Flags: ignoreversion
 ; Visual C++ runtime DLLs -- staged app-local by build.ps1. skipifsourcedoesntexist
 ; lets the .iss compile cleanly when developers run ISCC standalone without
 ; pre-staging the redistributable.
+Source: "stage\wbshsdk.dll";        DestDir: "{app}"; Flags: ignoreversion
 Source: "stage\msvcp140.dll";       DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage\vcruntime140.dll";   DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+[Dirs]
+; Where a third-party util goes. Created empty so there is somewhere
+; obvious to drop one; see sdk/README.md.
+Name: "{app}\plugins"
 
 [Icons]
 Name: "{userprograms}\wbsh"; Filename: "{app}\wbsh.exe"; WorkingDir: "%USERPROFILE%"

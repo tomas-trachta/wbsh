@@ -86,6 +86,20 @@ $parts = $Version.Split('.')
 if ($parts.Count -lt 3) { throw "Version must be major.minor.patch, got: $Version" }
 $VerMajor = $parts[0]; $VerMinor = $parts[1]; $VerPatch = $parts[2]
 
+# The SDK ships with both products: without it beside the exe, a util
+# dropped in plugins has nothing to load against.
+& $msbuild (Join-Path $RepoRoot 'sdk\wbshsdk.vcxproj') `
+    -nologo "-p:Configuration=$Configuration" "-p:Platform=$Platform" `
+    "-p:WbshVersion=$Version" `
+    "-p:WbshVersionMajor=$VerMajor" `
+    "-p:WbshVersionMinor=$VerMinor" `
+    "-p:WbshVersionPatch=$VerPatch" `
+    -v:minimal
+if ($LASTEXITCODE -ne 0) { throw "MSBuild failed for wbshsdk (exit $LASTEXITCODE)." }
+
+$sdkPath = Join-Path $RepoRoot "$Platform\$Configuration\wbshsdk.dll"
+if (-not (Test-Path $sdkPath)) { throw "Build did not produce $sdkPath." }
+
 & $msbuild (Join-Path $RepoRoot 'wbsh.vcxproj') `
     -nologo "-p:Configuration=$Configuration" "-p:Platform=$Platform" `
     "-p:WbshVersion=$Version" `
@@ -119,6 +133,7 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 
 Copy-Item $exePath                                     $stage
 Copy-Item (Join-Path $ScriptDir 'wbsh-here.cmd')       $stage
+Copy-Item $sdkPath                                     $stage
 
 # Copy VC++ runtime DLLs app-local. Required because the projects link the
 # dynamic CRT (/MD); without these the binaries fail to start on machines
@@ -172,6 +187,7 @@ New-Item -ItemType Directory -Path $termStage | Out-Null
 Copy-Item $termPath                                        $termStage
 Copy-Item $exePath                                         $termStage
 Copy-Item (Join-Path $ScriptDir 'wbshterm-here.cmd')       $termStage
+Copy-Item $sdkPath                                         $termStage
 Copy-CrtDlls -Destination $termStage
 
 $termZipPath = Join-Path $outDir "wbshterm-$Version-portable-$Platform.zip"

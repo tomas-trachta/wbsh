@@ -80,6 +80,18 @@ namespace wbsh {
 	typedef int (*BuiltinFn)(Executor&, const std::vector<std::string>&);
 
 	/**
+	 * @brief A command a third-party util registered through the SDK.
+	 *
+	 * Kept apart from the builtins so the bundled commands keep their
+	 * plain function pointers, and so every one of these can be dropped
+	 * again before the DLLs behind them are let go.
+	 */
+	struct PluginCommand {
+		int (*fn)(void* user, int argc, const char* const* argv) = nullptr;
+		void* user = nullptr;
+	};
+
+	/**
 	 * @brief Split a PATH string into directory entries.
 	 *
 	 * Accepts both `:` (POSIX, wbsh-internal) and `;` separators. A `:`
@@ -235,12 +247,15 @@ namespace wbsh {
 		}
 
 		void registerBuiltin(std::string name, BuiltinFn fn);
+		bool registerPluginCommand(std::string name, PluginCommand command);
+		void clearPluginCommands() { plugin_commands_.clear(); }
 		bool isBuiltin(const std::string& name) const;
 		bool isFunction(const std::string& name) const;
 		std::vector<std::string> builtinNames() const {
 			std::vector<std::string> v;
-			v.reserve(builtins_.size());
+			v.reserve(builtins_.size() + plugin_commands_.size());
 			for (const auto& kv : builtins_) v.push_back(kv.first);
+			for (const auto& kv : plugin_commands_) v.push_back(kv.first);
 			return v;
 		}
 		std::vector<std::string> functionNames() const {
@@ -601,6 +616,7 @@ namespace wbsh {
 		PathConv path_conv_;
 		std::string source_text_;
 		std::unordered_map<std::string, BuiltinFn> builtins_;
+		std::unordered_map<std::string, PluginCommand> plugin_commands_;
 		std::unordered_map<std::string, const FunctionDef*> functions_;
 		std::unordered_map<std::string, std::string> aliases_;
 		std::vector<std::string> history_;

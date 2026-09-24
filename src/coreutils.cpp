@@ -2517,6 +2517,7 @@ namespace wbsh {
 		registerCurlBuiltin(exec);
 		registerFzfBuiltin(exec);
 		registerTmuxBuiltin(exec);
+		registerUtilsBuiltin(exec);
 	}
 
 }  // namespace wbsh

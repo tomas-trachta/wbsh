@@ -83,6 +83,7 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -102,6 +103,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -119,6 +121,7 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -138,6 +141,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -172,6 +176,7 @@
     <ClInclude Include="src\executor.h" />
     <ClInclude Include="src\fnmatch.h" />
     <ClInclude Include="src\termreq.h" />
+    <ClInclude Include="src\utils.h" />
     <ClInclude Include="src\pathconv.h" />
     <ClInclude Include="src\lineedit.h" />
     <ClInclude Include="src\awk.h" />
@@ -203,6 +208,7 @@
     <ClCompile Include="src\fzf.cpp" />
     <ClCompile Include="src\termreq.cpp" />
     <ClCompile Include="src\tmux.cpp" />
+    <ClCompile Include="src\utils.cpp" />
     <ClCompile Include="src\pathconv.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\awk.cpp" />

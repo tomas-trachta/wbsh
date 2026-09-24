@@ -52,5 +52,6 @@ namespace wbsh {
 
 	void registerFzfBuiltin(Executor& exec);
 	void registerTmuxBuiltin(Executor& exec);
+	void registerUtilsBuiltin(Executor& exec);
 
 }  // namespace wbsh

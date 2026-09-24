@@ -1,5 +1,7 @@
 #include "executor.h"
 
+#include "utils.h"
+
 #ifdef _WIN32
 // winsock2.h must precede windows.h or the legacy winsock symbols leak in.
 #  define WIN32_LEAN_AND_MEAN
@@ -316,6 +318,7 @@ namespace wbsh {
 		: env_(env), expander_(env, this) {
 		registerCoreBuiltins(*this);
 		registerCoreutils(*this);
+		loadUtils(*this);
 	}
 
 	int Executor::execute(const Node& root) {
@@ -2319,18 +2322,48 @@ namespace wbsh {
 		builtins_[std::move(name)] = fn;
 	}
 
+	// A util's command refuses to take a bundled name: shadowing `ls`
+	// from a DLL someone dropped in a folder is not a thing a shell
+	// should let happen quietly.
+	bool Executor::registerPluginCommand(std::string name, PluginCommand command) {
+		if (command.fn == nullptr || name.empty()) return false;
+		if (builtins_.count(name) != 0) return false;
+		if (plugin_commands_.count(name) != 0) return false;
+
+		plugin_commands_[std::move(name)] = command;
+		return true;
+	}
+
 	bool Executor::isBuiltin(const std::string& name) const {
-		return builtins_.count(name) != 0;
+		return builtins_.count(name) != 0 || plugin_commands_.count(name) != 0;
 	}
 
 	bool Executor::isFunction(const std::string& name) const {
 		return functions_.count(name) != 0;
 	}
 
+	// argv is rebuilt the way a program expects it -- the command's own
+	// name first -- because a util is written against argc/argv and not
+	// against this shell's idea of an argument list.
+	static int callPluginCommand(const PluginCommand& command, const std::string& name,
+			const std::vector<std::string>& args) {
+		std::vector<const char*> argv;
+		argv.reserve(args.size() + 2);
+		argv.push_back(name.c_str());
+		for (const std::string& arg : args) argv.push_back(arg.c_str());
+		argv.push_back(nullptr);
+
+		return command.fn(command.user, static_cast<int>(argv.size()) - 1, argv.data());
+	}
+
 	int Executor::callBuiltin(const std::string& name, const std::vector<std::string>& args) {
 		auto it = builtins_.find(name);
-		if (it == builtins_.end()) return 127;
-		return it->second(*this, args);
+		if (it != builtins_.end()) return it->second(*this, args);
+
+		auto plugin = plugin_commands_.find(name);
+		if (plugin == plugin_commands_.end()) return 127;
+
+		return callPluginCommand(plugin->second, name, args);
 	}
 
 	int Executor::callFunction(const std::string& name, const std::vector<std::string>& args) {

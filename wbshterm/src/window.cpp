@@ -5,6 +5,8 @@
 
 #include "window.h"
 
+#include "utils.h"
+
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <windowsx.h>
@@ -244,8 +246,13 @@ namespace wbshterm {
 		return narrow;
 	}
 
+	// A util's segments sit to the left of the host and clock, which is
+	// where tmux's own status-right additions go.
 	std::string TerminalWindow::statusRight() const {
-		return "\"" + computerName() + "\" " + shown_clock_;
+		const std::string segments = utilSegmentText();
+		const std::string fixed = "\"" + computerName() + "\" " + shown_clock_;
+
+		return segments.empty() ? fixed : segments + "  " + fixed;
 	}
 
 	static std::string clockText() {
@@ -765,6 +772,7 @@ namespace wbshterm {
 		if (!createTarget(out_error)) return false;
 
 		parseKeyBinding(config_.panes.prefix, prefix_);
+		loadUtils();
 
 		auto first = std::make_unique<Pane>();
 		Pane* only = first.get();

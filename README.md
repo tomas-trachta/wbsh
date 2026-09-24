@@ -233,7 +233,7 @@ Default `PS1` (with color):
 `unexpand`, `comm`, `yes`, `nproc`, `tput`, `mktemp`, `kill`, `sed`, `awk` /
 `gawk`, `bc`, `gzip`, `gunzip`, `zcat`, `zip`, `unzip`, `stat`, `chmod`, `ln`,
 `cmp`, `diff`, `du`, `df`, `md5sum`, `sha1sum`, `sha256sum`, `sha512sum`,
-`base64`, `curl`, `tar`, `fzf`, `tmux`.
+`base64`, `curl`, `tar`, `fzf`, `tmux`, `utils`.
 
 `tmux` is not the real tmux: it asks a terminal that hosts panes itself
 to start doing so. Under wbshterm it opens pane mode — splits, a status
@@ -299,6 +299,49 @@ installed) `installer\output\wbsh-setup-x64.exe`.
 
 ---
 
+## Third-party utils
+
+A util is a DLL someone else wrote. Drop it in `plugins` and its commands
+join the shell and its segments join the terminal's status bar — no
+rebuild, no patch, nothing to register.
+
+```
+$ utils
+hello            1.0.0      A worked example: one command and one status segment.
+$ hello Tomas
+Hello, Tomas!
+$ hello Tomas | tr a-z A-Z
+HELLO, TOMAS!
+```
+
+A util's command is a command like any other: it redirects, it pipes, it
+sets `$?`. It is refused the name of a bundled one, so nothing dropped in
+a folder quietly becomes `ls`.
+
+| Folder | For |
+| --- | --- |
+| `<install>\plugins\` | Utils that ship with an install |
+| `%APPDATA%\wbsh\plugins\` | A user's own, no administrator needed |
+
+Both hosts load the same DLL. wbsh.exe offers it commands, stdout and
+shell variables; wbshterm.exe offers it status-bar segments. They are
+separate processes, so a util that does both is loaded twice and each
+half keeps its own state.
+
+The contract is C — `sdk/include/wbshsdk.h` — so a util built with another
+compiler, or another language, loads fine. It is versioned: a util built
+against a different `WBSH_SDK_ABI` is named and skipped rather than
+crashing something later. A DLL that is not a util at all is skipped the
+same way, and never costs the ones beside it.
+
+**wbsh.exe stays a single self-contained binary.** It reaches the SDK
+through `LoadLibrary`, never a link, so a bare wbsh.exe with no
+`wbshsdk.dll` beside it runs exactly as before — no SDK simply means no
+utils.
+
+See [sdk/README.md](sdk/README.md) to write one; `sdk/samples/hello` is a
+working project to copy.
+
 ## Project layout
 
 ```
@@ -332,6 +375,16 @@ src/
   numparse.h             Error-as-value numeric parsing
   regexutil.h            Error-as-value std::regex adapters
   source.h               Source locations shared by lexer / parser
+  termreq.h/.cpp         OSC requests to a terminal that hosts panes
+  tmux.cpp               `tmux`: asks the terminal to start pane mode
+  utils.cpp/h            Loading third-party utils through the SDK
+
+sdk/
+  include/wbshsdk.h      The C contract a third-party util is written against
+  src/wbshsdk.cpp        wbshsdk.dll: host binding, util loading, ABI checks
+  samples/hello/         A working util: one command, one status segment
+  tests/sdk.ps1          Integration checks with the sample installed
+  README.md              How to write and install a util
 
 tests/                   Shell-script suite + golden files (run-all.sh)
 tools/check_style.py     Mechanical style checker (runs before every build)
@@ -358,6 +411,17 @@ individual builtins). Golden mode additionally diffs combined
 stdout+stderr against `tests/expected/<name>.out`. The scripts run
 *inside wbsh itself*, so the suite is an end-to-end check of the whole
 lexer → parser → expander → executor pipeline.
+
+The SDK has its own end-to-end checks, which need the sample util built
+into `x64/Release/plugins`:
+
+```powershell
+powershell -File sdk	ests\sdk.ps1
+```
+
+They drive the real wbsh.exe with the sample installed: that it is
+listed, that its command pipes and sets `$?` like any other, and that a
+DLL which is not a util is skipped without taking the good one with it.
 
 There is currently **no CI**; contributions to add one are welcome. See
 [CONTRIBUTING.md](./CONTRIBUTING.md) for the golden / record workflow.

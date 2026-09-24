@@ -47,9 +47,15 @@ Source: "stage-wbshterm\wbshterm.exe";      DestDir: "{app}"; Flags: ignoreversi
 Source: "stage-wbshterm\wbsh.exe";          DestDir: "{app}"; Flags: ignoreversion
 Source: "stage-wbshterm\wbshterm-here.cmd"; DestDir: "{app}"; Flags: ignoreversion
 ; Visual C++ runtime DLLs, staged app-local by build.ps1.
+Source: "stage-wbshterm\wbshsdk.dll";        DestDir: "{app}"; Flags: ignoreversion
 Source: "stage-wbshterm\msvcp140.dll";      DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage-wbshterm\vcruntime140.dll";  DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage-wbshterm\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+[Dirs]
+; Where a third-party util goes. Created empty so there is somewhere
+; obvious to drop one; see sdk/README.md.
+Name: "{app}\plugins"
 
 [Icons]
 Name: "{userprograms}\wbshterm"; Filename: "{app}\wbshterm.exe"; WorkingDir: "%USERPROFILE%"
