@@ -67,6 +67,14 @@ namespace wbshterm {
 	 * change are marked dirty for the renderer and cleared by
 	 * clearDirty(); a resize marks everything dirty.
 	 */
+	/** Where a request to start pane mode goes: the window that hosts them. */
+	class TmuxHandler {
+	public:
+		virtual ~TmuxHandler() = default;
+
+		virtual void tmuxAttach() = 0;
+	};
+
 	/** Where a pick request from the shell goes: the window's overlay. */
 	class PickHandler {
 	public:
@@ -130,6 +138,9 @@ namespace wbshterm {
 		/** Without one, pick requests from the shell are ignored. */
 		void setPickHandler(PickHandler* handler) { pick_handler_ = handler; }
 
+		/** Without one, a request to start pane mode is ignored. */
+		void setTmuxHandler(TmuxHandler* handler) { tmux_handler_ = handler; }
+
 	private:
 		Cell& at(int row, int column);
 		void markDirty(int row);
@@ -146,7 +157,9 @@ namespace wbshterm {
 		void pushToScrollback(int row);
 		void noteShellMark(const std::string& body);
 		void noteWorkingDirectory(const std::string& body);
+		void noteTerminalRequest(const std::string& body);
 		void notePickRequest(const std::string& body);
+		void noteTmuxRequest(const std::string& body);
 		void notePickList(const std::string& path);
 		int  currentAbsoluteRow() const;
 		void shiftBlocksAfterTrim();
@@ -199,6 +212,7 @@ namespace wbshterm {
 		bool          bracketed_paste_    = false;
 		VtResponder*  responder_ = nullptr;
 		PickHandler*  pick_handler_ = nullptr;
+		TmuxHandler*  tmux_handler_ = nullptr;
 	};
 
 } /* namespace wbshterm */

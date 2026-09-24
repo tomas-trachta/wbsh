@@ -171,6 +171,7 @@
     <ClInclude Include="src\expander.h" />
     <ClInclude Include="src\executor.h" />
     <ClInclude Include="src\fnmatch.h" />
+    <ClInclude Include="src\termreq.h" />
     <ClInclude Include="src\pathconv.h" />
     <ClInclude Include="src\lineedit.h" />
     <ClInclude Include="src\awk.h" />
@@ -200,6 +201,8 @@
     <ClCompile Include="src\coreutils_curl.cpp" />
     <ClCompile Include="src\coreutils_hash.cpp" />
     <ClCompile Include="src\fzf.cpp" />
+    <ClCompile Include="src\termreq.cpp" />
+    <ClCompile Include="src\tmux.cpp" />
     <ClCompile Include="src\pathconv.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\awk.cpp" />

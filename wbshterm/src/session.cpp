@@ -19,14 +19,14 @@ namespace wbshterm {
 		stop();
 	}
 
-	bool Session::start(const std::wstring& command_line, int columns, int rows,
+	bool Session::start(const ShellCommand& shell, int columns, int rows,
 			std::string& out_error) {
 		screen_.resize(columns, rows);
 
 		PtySize size;
 		size.columns = static_cast<SHORT>(columns);
 		size.rows    = static_cast<SHORT>(rows);
-		if (!pty_.open(command_line, size, out_error)) return false;
+		if (!pty_.open(shell, size, out_error)) return false;
 
 		stop_signal_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
 		reader_ = std::thread(&Session::readLoop, this);

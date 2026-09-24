@@ -49,6 +49,15 @@ namespace wbshterm {
 		"# The panel of system information shown when a session opens.\n"
 		"fetch = true\n"
 		"\n"
+		"[panes]\n"
+		"# Panes start when you type `tmux`, and are driven from a prefix\n"
+		"# key: prefix then % or | to split into columns, \" or - into\n"
+		"# rows, arrows to move, o to cycle, z to zoom, x to close.\n"
+		"prefix = ctrl+b\n"
+		"divider = 6\n"
+		"focus_border = true\n"
+		"status = true\n"
+		"\n"
 		"[scrollback]\n"
 		"lines = 10000\n"
 		"\n"
@@ -222,6 +231,20 @@ namespace wbshterm {
 		}
 	}
 
+	static void applyPaneSetting(const Setting& setting, Config& config) {
+		if (setting.key == "prefix") config.panes.prefix = setting.value;
+
+		if (setting.key == "divider") {
+			config.panes.divider = parseInt(setting.value, config.panes.divider);
+		}
+
+		if (setting.key == "focus_border") {
+			config.panes.focus_border = parseBool(setting.value);
+		}
+
+		if (setting.key == "status") config.panes.status = parseBool(setting.value);
+	}
+
 	static void applyWindowSetting(const Setting& setting, Config& config) {
 		if (setting.key == "padding") {
 			config.window.padding = parseInt(setting.value, config.window.padding);
@@ -348,6 +371,7 @@ namespace wbshterm {
 		if (setting.section == "font")   applyFontSetting(setting, config);
 		if (setting.section == "window") applyWindowSetting(setting, config);
 		if (setting.section == "cursor") applyCursorSetting(setting, config);
+		if (setting.section == "panes")  applyPaneSetting(setting, config);
 		if (setting.section == "theme")  applyThemeSetting(setting, config);
 		if (setting.section == "startup" && setting.key == "fetch") {
 			config.startup_fetch = parseBool(setting.value);

@@ -40,6 +40,14 @@ namespace wbshterm {
 	 */
 	std::string encodePaste(const std::string& text, const KeyModes& modes);
 
+	/**
+	 * @brief Reads a binding as a config file spells it: "ctrl+a".
+	 *
+	 * Names are case-insensitive and the modifiers may come in any
+	 * order; false means the text named no key this can encode.
+	 */
+	bool parseKeyBinding(const std::string& text, KeyPress& out_key);
+
 	/** The xterm modifier parameter: 1 + shift + 2*alt + 4*ctrl. */
 	int modifierParameter(const KeyPress& key);
 

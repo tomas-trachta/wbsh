@@ -51,5 +51,6 @@ namespace wbsh {
 	void registerHashBuiltins(Executor& exec);
 
 	void registerFzfBuiltin(Executor& exec);
+	void registerTmuxBuiltin(Executor& exec);
 
 }  // namespace wbsh

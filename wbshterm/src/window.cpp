@@ -22,7 +22,10 @@ namespace wbshterm {
 	static const UINT_PTR kTimerConfig = 2;
 	static const UINT     kBlinkMs = 530;
 	static const UINT     kConfigPollMs = 1000;
+	static const UINT_PTR kTimerResize = 3;
+	static const UINT     kResizeSettleMs = 80;
 	static const int     kWheelLines = 3;
+	static const float   kDividerSlop = 3.0f;
 
 	static std::string encodeUtf8(wchar_t character) {
 		char bytes[8] = {};
@@ -90,6 +93,445 @@ namespace wbshterm {
 		return text;
 	}
 
+
+	Pane& TerminalWindow::focused() {
+		return *panes_.focused()->pane();
+	}
+
+	const Pane& TerminalWindow::focused() const {
+		return *panes_.focused()->pane();
+	}
+
+	// OSC 7 reports a Windows path with its slashes the POSIX way round;
+	// CreateProcess wants them back.
+	static std::wstring nativeDirectory(const std::string& reported) {
+		if (reported.empty()) return std::wstring();
+
+		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, reported.c_str(),
+			static_cast<int>(reported.size()), nullptr, 0);
+		if (needed <= 0) return std::wstring();
+
+		std::wstring wide(static_cast<std::size_t>(needed), L'\0');
+		::MultiByteToWideChar(CP_UTF8, 0, reported.c_str(),
+			static_cast<int>(reported.size()), wide.data(), needed);
+
+		for (wchar_t& letter : wide) {
+			if (letter == L'/') letter = L'\\';
+		}
+
+		return wide;
+	}
+
+	// A new pane opens where the focused one is, the way a tmux split
+	// inherits the current path rather than starting back at home.
+	//
+	// It is laid out before it is started so its shell draws its first
+	// prompt at the width it will keep, rather than at one it never had.
+	bool TerminalWindow::startPane(Pane& pane, std::string& out_error) {
+		ShellCommand shell;
+		shell.command_line = command_line_;
+		shell.working_directory = directory_hint_;
+
+		pane.screen().setTmuxHandler(this);
+		pane.session().wakeWith(window_, kMessagePtyData);
+		if (!pane.start(shell, out_error)) return false;
+
+		pane.screen().setScrollbackLimit(config_.scrollback_lines);
+
+		// The startup panel belongs to the session, not to every pane in
+		// it: a split wants a prompt, not the system information again.
+		::SetEnvironmentVariableW(L"WBSH_INIT_COMMAND", nullptr);
+		return true;
+	}
+
+	void TerminalWindow::splitFocused(SplitAxis axis) {
+		directory_hint_ = nativeDirectory(focused().screen().workingDirectory());
+
+		auto added = std::make_unique<Pane>();
+		Pane* fresh = added.get();
+		panes_.splitFocused(axis, std::move(added));
+		layoutPanes();
+
+		std::string error;
+		if (!startPane(*fresh, error)) {
+			panes_.close(panes_.focused());
+			layoutPanes();
+		}
+
+		commitGridSizes();
+		syncTitle();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::closeFocused() {
+		if (!panes_.close(panes_.focused())) {
+			::DestroyWindow(window_);
+			return;
+		}
+
+		layoutPanes();
+		commitGridSizes();
+		syncTitle();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::stopEveryPane() {
+		for (PaneNode* leaf : panes_.leaves()) leaf->pane()->session().stop();
+	}
+
+	void TerminalWindow::applyScrollbackLimit() {
+		for (PaneNode* leaf : panes_.leaves()) {
+			leaf->pane()->screen().setScrollbackLimit(config_.scrollback_lines);
+		}
+	}
+
+
+	// Typing `tmux` is how pane mode starts, so until then the prefix key
+	// belongs to the shell: Ctrl-B is a line-editing key right up to the
+	// moment it is not. The pty hears about the row the status bar takes
+	// on the resize timer, because this runs inside the parse of the very
+	// bytes that asked for it.
+	void TerminalWindow::tmuxAttach() {
+		if (tmux_mode_) return;
+
+		tmux_mode_ = true;
+		layoutPanes();
+		scheduleGridCommit();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	float TerminalWindow::statusHeight() const {
+		if (!tmux_mode_ || !config_.panes.status) return 0.0f;
+
+		return renderer_.metrics().height;
+	}
+
+	static std::string lastPathSegment(const std::string& path) {
+		const std::size_t cut = path.find_last_of("/\\");
+		if (cut == std::string::npos) return path;
+
+		return path.substr(cut + 1);
+	}
+
+	static std::string paneName(const Pane& pane) {
+		const std::string name = lastPathSegment(pane.screen().workingDirectory());
+		return name.empty() ? "wbsh" : name;
+	}
+
+	// tmux's own shape: the session on the left, then every window with the
+	// active one starred. Panes stand in for windows; there is one session.
+	std::string TerminalWindow::statusLeft() const {
+		std::string text = "[wbsh]";
+
+		const std::vector<PaneNode*> leaves = panes_.leaves();
+		for (std::size_t i = 0; i < leaves.size(); ++i) {
+			text += " " + std::to_string(i) + ":" + paneName(*leaves[i]->pane());
+			text += leaves[i] == panes_.focused() ? "*" : " ";
+		}
+
+		if (panes_.zoomed()) text += " Z";
+		return text;
+	}
+
+	static std::string computerName() {
+		wchar_t name[MAX_COMPUTERNAME_LENGTH + 1] = {};
+		DWORD length = MAX_COMPUTERNAME_LENGTH + 1;
+		if (::GetComputerNameW(name, &length) == 0) return std::string();
+
+		std::string narrow(length, '\0');
+		::WideCharToMultiByte(CP_UTF8, 0, name, static_cast<int>(length),
+			narrow.data(), static_cast<int>(length), nullptr, nullptr);
+		return narrow;
+	}
+
+	std::string TerminalWindow::statusRight() const {
+		return "\"" + computerName() + "\" " + shown_clock_;
+	}
+
+	static std::string clockText() {
+		static const char* const kMonths[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+			"Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+		SYSTEMTIME now{};
+		::GetLocalTime(&now);
+
+		char text[32] = {};
+		std::snprintf(text, sizeof(text), "%02u:%02u %02u-%s-%02u",
+			now.wHour, now.wMinute, now.wDay,
+			kMonths[(now.wMonth - 1) % 12], now.wYear % 100);
+		return text;
+	}
+
+	// The clock only moves once a minute, so the window is only repainted
+	// for it once a minute rather than on every blink.
+	bool TerminalWindow::statusClockChanged() {
+		if (statusHeight() == 0.0f) return false;
+
+		const std::string now = clockText();
+		if (now == shown_clock_) return false;
+
+		shown_clock_ = now;
+		return true;
+	}
+
+	void TerminalWindow::layoutPanes() {
+		if (!target_) return;
+
+		const D2D1_SIZE_F size = target_->GetSize();
+		const CellMetrics& cell = renderer_.metrics();
+
+		status_bounds_ = D2D1::RectF(0.0f, size.height - statusHeight(),
+			size.width, size.height);
+
+		PaneMetrics metrics;
+		metrics.client      = D2D1::RectF(0.0f, 0.0f, size.width, status_bounds_.top);
+		metrics.cell_width  = cell.width;
+		metrics.cell_height = cell.height;
+		metrics.padding     = renderer_.padding();
+		metrics.divider     = static_cast<float>(config_.panes.divider);
+		panes_.layout(metrics);
+	}
+
+	// Resizing a pseudoconsole makes its child repaint everything it shows,
+	// so a drag lets the pointer settle before any pty hears a new size.
+	void TerminalWindow::scheduleGridCommit() {
+		::SetTimer(window_, kTimerResize, kResizeSettleMs, nullptr);
+	}
+
+	void TerminalWindow::commitGridSizes() {
+		::KillTimer(window_, kTimerResize);
+		for (PaneNode* leaf : panes_.leaves()) leaf->pane()->commitGridSize();
+	}
+
+
+	static bool isModifierKey(unsigned int key) {
+		switch (key) {
+		case VK_SHIFT:
+		case VK_LSHIFT:
+		case VK_RSHIFT:
+		case VK_CONTROL:
+		case VK_LCONTROL:
+		case VK_RCONTROL:
+		case VK_MENU:
+		case VK_LMENU:
+		case VK_RMENU:
+		case VK_LWIN:
+		case VK_RWIN:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	// Which key carries a pane command is decided by the character it
+	// produces, not its virtual key, so | and - stay where the keycaps say
+	// they are on a layout that is not American.
+	static bool mayCarryCharacter(unsigned int key) {
+		if (key >= '0' && key <= 'Z') return true;
+
+		return key >= VK_OEM_1 && key <= VK_OEM_102;
+	}
+
+	static bool arrowDirection(unsigned int key, PaneDirection& out_direction) {
+		switch (key) {
+		case VK_LEFT:  out_direction = PaneDirection::Left;  return true;
+		case VK_RIGHT: out_direction = PaneDirection::Right; return true;
+		case VK_UP:    out_direction = PaneDirection::Up;    return true;
+		case VK_DOWN:  out_direction = PaneDirection::Down;  return true;
+		default:       return false;
+		}
+	}
+
+	static bool sameKey(const KeyPress& press, const KeyPress& binding) {
+		return press.virtual_key == binding.virtual_key
+			&& press.control == binding.control
+			&& press.alt == binding.alt
+			&& press.shift == binding.shift;
+	}
+
+	void TerminalWindow::focusNeighbour(PaneDirection direction) {
+		PaneNode* leaf = panes_.neighbour(direction);
+		if (leaf == nullptr) return;
+
+		panes_.focusOn(leaf);
+		syncTitle();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::focusNextPane() {
+		const std::vector<PaneNode*> leaves = panes_.leaves();
+		if (leaves.size() < 2) return;
+
+		auto at = std::find(leaves.begin(), leaves.end(), panes_.focused());
+		if (at == leaves.end()) return;
+
+		++at;
+		panes_.focusOn(at == leaves.end() ? leaves.front() : *at);
+		syncTitle();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::toggleZoom() {
+		panes_.toggleZoom();
+		layoutPanes();
+		commitGridSizes();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::runPaneCommand(wchar_t character) {
+		switch (character) {
+		case L'|':
+		case L'%':
+			splitFocused(SplitAxis::Columns);
+			return;
+		case L'"':
+		case L'-':
+			splitFocused(SplitAxis::Rows);
+			return;
+		case L'x': closeFocused(); return;
+		case L'z': toggleZoom(); return;
+		case L'o': focusNextPane(); return;
+		case L'h': focusNeighbour(PaneDirection::Left); return;
+		case L'j': focusNeighbour(PaneDirection::Down); return;
+		case L'k': focusNeighbour(PaneDirection::Up); return;
+		case L'l': focusNeighbour(PaneDirection::Right); return;
+		default:   return;
+		}
+	}
+
+	// tmux's shape: a prefix key, then one key that means a pane command.
+	// The prefix twice over sends it on, so the shell can still see it.
+	bool TerminalWindow::paneKeyTaken(const KeyPress& press) {
+		if (!tmux_mode_) return false;
+
+		if (!prefix_pending_) {
+			if (!sameKey(press, prefix_)) return false;
+
+			prefix_pending_ = true;
+			swallow_next_char_ = true;
+			return true;
+		}
+
+		if (isModifierKey(press.virtual_key)) return true;
+
+		if (sameKey(press, prefix_)) {
+			prefix_pending_ = false;
+			return false;
+		}
+
+		PaneDirection direction = PaneDirection::Left;
+		if (arrowDirection(press.virtual_key, direction)) {
+			prefix_pending_ = false;
+			focusNeighbour(direction);
+			return true;
+		}
+
+		prefix_pending_ = mayCarryCharacter(press.virtual_key);
+		return true;
+	}
+
+	bool TerminalWindow::paneCharacterTaken(wchar_t character) {
+		if (!tmux_mode_ || !prefix_pending_) return false;
+
+		prefix_pending_ = false;
+		runPaneCommand(character);
+		return true;
+	}
+
+	PaneCanvas TerminalWindow::canvasFor(const PaneNode& leaf) const {
+		PaneCanvas canvas;
+		canvas.target  = target_.Get();
+		canvas.bounds  = leaf.bounds();
+		canvas.screen  = &leaf.pane()->screen();
+		canvas.view    = &leaf.pane()->view();
+		canvas.focused = &leaf == panes_.focused();
+		return canvas;
+	}
+
+	void TerminalWindow::paintPanes() {
+		const std::vector<PaneNode*> leaves = panes_.leaves();
+
+		for (PaneNode* leaf : leaves) {
+			if (leaf->bounds().right <= leaf->bounds().left) continue;
+
+			const PaneCanvas canvas = canvasFor(*leaf);
+			renderer_.draw(canvas);
+			renderer_.drawPicker(canvas, leaf->pane()->picker());
+			leaf->pane()->screen().clearDirty();
+		}
+
+		for (const PaneDivider& divider : panes_.dividers()) {
+			renderer_.drawDivider(target_.Get(), divider.bounds);
+		}
+
+		if (config_.panes.focus_border && leaves.size() > 1) {
+			renderer_.drawFocusBorder(target_.Get(), panes_.focused()->bounds());
+		}
+
+		if (statusHeight() > 0.0f) {
+			renderer_.drawStatusBar(target_.Get(), status_bounds_, statusLeft(),
+				statusRight());
+		}
+	}
+
+	PaneNode* TerminalWindow::leafFromMouse(LPARAM lparam) const {
+		return panes_.leafAt(static_cast<float>(GET_X_LPARAM(lparam)),
+			static_cast<float>(GET_Y_LPARAM(lparam)));
+	}
+
+	GridPoint TerminalWindow::pointInLeaf(const PaneNode& leaf, LPARAM lparam) const {
+		const CellMetrics& cell = renderer_.metrics();
+		const Screen& screen = leaf.pane()->screen();
+		const float x = static_cast<float>(GET_X_LPARAM(lparam)) - leaf.bounds().left
+			- renderer_.padding();
+		const float y = static_cast<float>(GET_Y_LPARAM(lparam)) - leaf.bounds().top
+			- renderer_.padding();
+
+		const int column = std::min(std::max(static_cast<int>(x / cell.width), 0),
+			screen.columns() - 1);
+		const int viewport_row = std::min(std::max(static_cast<int>(y / cell.height), 0),
+			screen.rows() - 1);
+
+		GridPoint point;
+		point.row    = leaf.pane()->view().topRow(screen) + viewport_row;
+		point.column = column;
+		return point;
+	}
+
+	bool TerminalWindow::beginDividerDrag(LPARAM lparam) {
+		PaneNode* branch = panes_.dividerAt(static_cast<float>(GET_X_LPARAM(lparam)),
+			static_cast<float>(GET_Y_LPARAM(lparam)), kDividerSlop);
+		if (branch == nullptr) return false;
+
+		dragging_ = branch;
+		::SetCapture(window_);
+		return true;
+	}
+
+	void TerminalWindow::continueDividerDrag(LPARAM lparam) {
+		panes_.dragDivider(dragging_, static_cast<float>(GET_X_LPARAM(lparam)),
+			static_cast<float>(GET_Y_LPARAM(lparam)));
+		layoutPanes();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	// The window class asks for an I-beam; over a divider it has to become
+	// a sizing cursor or there is nothing telling the hands it can move.
+	bool TerminalWindow::onSetCursor() {
+		POINT where{};
+		if (::GetCursorPos(&where) == 0 || ::ScreenToClient(window_, &where) == 0) return false;
+
+		const PaneNode* branch = dragging_ != nullptr
+			? dragging_
+			: panes_.dividerAt(static_cast<float>(where.x), static_cast<float>(where.y),
+				kDividerSlop);
+		if (branch == nullptr) return false;
+
+		::SetCursor(::LoadCursorW(nullptr,
+			branch->axis() == SplitAxis::Columns ? IDC_SIZEWE : IDC_SIZENS));
+		return true;
+	}
+
 	bool TerminalWindow::create(const std::wstring& command_line, const Config& config,
 			const std::wstring& config_path, std::string& out_error) {
 		command_line_ = command_line;
@@ -108,15 +550,15 @@ namespace wbshterm {
 		if (!createWindow(out_error)) return false;
 		if (!createTarget(out_error)) return false;
 
-		int columns = config_.window.columns;
-		int rows    = config_.window.rows;
-		gridSizeFromClient(columns, rows);
+		parseKeyBinding(config_.panes.prefix, prefix_);
 
-		session_.screen().setPickHandler(this);
-		session_.wakeWith(window_, kMessagePtyData);
-		if (!session_.start(command_line_, columns, rows, out_error)) return false;
+		auto first = std::make_unique<Pane>();
+		Pane* only = first.get();
+		panes_.adopt(std::move(first));
+		layoutPanes();
 
-		session_.screen().setScrollbackLimit(config_.scrollback_lines);
+		if (!startPane(*only, out_error)) return false;
+
 		applyWindowSettings();
 
 		::SetTimer(window_, kTimerBlink, kBlinkMs, nullptr);
@@ -160,7 +602,8 @@ namespace wbshterm {
 		if (font_changed && !renderer_.create(config_, error)) return;
 
 		renderer_.applyConfig(config_);
-		session_.screen().setScrollbackLimit(config_.scrollback_lines);
+		parseKeyBinding(config_.panes.prefix, prefix_);
+		applyScrollbackLimit();
 		applyWindowSettings();
 		onResize();
 		::InvalidateRect(window_, nullptr, FALSE);
@@ -171,6 +614,14 @@ namespace wbshterm {
 			reloadConfigIfChanged();
 			return;
 		}
+
+		if (timer == kTimerResize) {
+			commitGridSizes();
+			::InvalidateRect(window_, nullptr, FALSE);
+			return;
+		}
+
+		if (statusClockChanged()) ::InvalidateRect(window_, nullptr, FALSE);
 
 		if (!config_.cursor.blink) {
 			cursor_phase_ = true;
@@ -249,19 +700,6 @@ namespace wbshterm {
 		return true;
 	}
 
-	void TerminalWindow::gridSizeFromClient(int& out_columns, int& out_rows) const {
-		if (!target_) return;
-
-		const D2D1_SIZE_F size = target_->GetSize();
-		const CellMetrics& cell = renderer_.metrics();
-		const float pad = 2.0f * renderer_.padding();
-
-		out_columns = static_cast<int>((size.width - pad) / cell.width);
-		out_rows    = static_cast<int>((size.height - pad) / cell.height);
-		if (out_columns < 1) out_columns = 1;
-		if (out_rows < 1) out_rows = 1;
-	}
-
 	LRESULT CALLBACK TerminalWindow::windowProc(HWND window, UINT message, WPARAM wparam,
 			LPARAM lparam) {
 		if (message == WM_NCCREATE) {
@@ -289,18 +727,23 @@ namespace wbshterm {
 			if (onKeyDown(wparam)) return 0;
 			break;
 		case WM_DPICHANGED:  onDpiChanged(wparam, lparam); return 0;
-		case WM_MOUSEWHEEL:  onMouseWheel(wparam); return 0;
+		case WM_MOUSEWHEEL:  onMouseWheel(wparam, lparam); return 0;
+		case WM_EXITSIZEMOVE: commitGridSizes(); return 0;
+		case WM_SETCURSOR:
+			if (LOWORD(lparam) == HTCLIENT && onSetCursor()) return TRUE;
+			break;
 		case WM_LBUTTONDOWN:
 		case WM_LBUTTONDBLCLK: onMouseDown(lparam); return 0;
 		case WM_MOUSEMOVE:   onMouseMove(wparam, lparam); return 0;
 		case WM_LBUTTONUP:   onMouseUp(); return 0;
+		case WM_CAPTURECHANGED: onCaptureLost(); return 0;
 		case WM_CONTEXTMENU: onContextMenu(lparam); return 0;
 		case WM_ERASEBKGND:  return 1;
 		case WM_TIMER:       onTimer(wparam); return 0;
 		case kMessagePtyData: onPtyData(); return 0;
 		case WM_CLOSE:       ::DestroyWindow(window_); return 0;
 		case WM_DESTROY:
-			session_.stop();
+			stopEveryPane();
 			::PostQuitMessage(0);
 			return 0;
 		default:
@@ -308,23 +751,6 @@ namespace wbshterm {
 		}
 
 		return ::DefWindowProcW(window_, message, wparam, lparam);
-	}
-
-	GridPoint TerminalWindow::pointFromMouse(LPARAM lparam) const {
-		const CellMetrics& cell = renderer_.metrics();
-		const float pad = renderer_.padding();
-		const float x = static_cast<float>(GET_X_LPARAM(lparam)) - pad;
-		const float y = static_cast<float>(GET_Y_LPARAM(lparam)) - pad;
-
-		const int column = std::min(std::max(static_cast<int>(x / cell.width), 0),
-			session_.screen().columns() - 1);
-		const int viewport_row = std::min(std::max(static_cast<int>(y / cell.height), 0),
-			session_.screen().rows() - 1);
-
-		GridPoint point;
-		point.row    = view_.topRow(session_.screen()) + viewport_row;
-		point.column = column;
-		return point;
 	}
 
 	// Two clicks in the same cell inside the double-click time select a
@@ -341,53 +767,93 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::onMouseDown(LPARAM lparam) {
-		const GridPoint point = pointFromMouse(lparam);
-		const int clicks = clickCountAt(point);
+		if (beginDividerDrag(lparam)) return;
 
-		if (clicks >= 3) view_.selectLine(point, session_.screen());
-		else if (clicks == 2) view_.selectWord(point, session_.screen());
-		else view_.beginSelection(point);
+		PaneNode* leaf = leafFromMouse(lparam);
+		if (leaf == nullptr) return;
+
+		panes_.focusOn(leaf);
+
+		const GridPoint point = pointInLeaf(*leaf, lparam);
+		const int clicks = clickCountAt(point);
+		TerminalView& view = leaf->pane()->view();
+		const Screen& screen = leaf->pane()->screen();
+
+		if (clicks >= 3) view.selectLine(point, screen);
+		else if (clicks == 2) view.selectWord(point, screen);
+		else view.beginSelection(point);
 
 		::SetCapture(window_);
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	void TerminalWindow::onMouseMove(WPARAM wparam, LPARAM lparam) {
-		if (!view_.selecting() || (wparam & MK_LBUTTON) == 0) return;
+		if ((wparam & MK_LBUTTON) == 0) return;
 
-		view_.extendSelection(pointFromMouse(lparam));
+		if (dragging_ != nullptr) {
+			continueDividerDrag(lparam);
+			return;
+		}
+
+		if (!focused().view().selecting()) return;
+
+		focused().view().extendSelection(pointInLeaf(*panes_.focused(), lparam));
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	void TerminalWindow::onMouseUp() {
+		const bool was_dragging = dragging_ != nullptr;
 		if (::GetCapture() == window_) ::ReleaseCapture();
-		view_.endSelection();
+
+		if (was_dragging) return;
+
+		focused().view().endSelection();
 	}
 
-	void TerminalWindow::onMouseWheel(WPARAM wparam) {
+	// Releasing the capture raises this, and so does losing it to
+	// something else mid-drag; either way the drag has to end here or
+	// the divider keeps following the pointer and no pty is resized.
+	void TerminalWindow::onCaptureLost() {
+		if (dragging_ == nullptr) return;
+
+		dragging_ = nullptr;
+		commitGridSizes();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	// The wheel turns the pane under the pointer, not the focused one:
+	// reading a pane while another works is the reason for splitting.
+	void TerminalWindow::onMouseWheel(WPARAM wparam, LPARAM lparam) {
 		const int notches = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
 		if (notches == 0) return;
 
-		view_.scrollBy(notches * kWheelLines, session_.screen());
+		POINT where = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+		::ScreenToClient(window_, &where);
+
+		PaneNode* leaf = panes_.leafAt(static_cast<float>(where.x),
+			static_cast<float>(where.y));
+		Pane& pane = leaf != nullptr ? *leaf->pane() : focused();
+
+		pane.view().scrollBy(notches * kWheelLines, pane.screen());
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	// Ctrl+PageUp / Ctrl+PageDown walk the prompts the shell marked, which
 	// is how a long scrollback becomes navigable rather than a wall.
 	bool TerminalWindow::jumpToCommand(bool backwards) {
-		const int row = view_.neighbouringCommandRow(session_.screen(), backwards);
+		const int row = focused().view().neighbouringCommandRow(focused().screen(), backwards);
 		if (row < 0) return false;
 
-		view_.scrollToRow(row, session_.screen());
+		focused().view().scrollToRow(row, focused().screen());
 		return true;
 	}
 
 	void TerminalWindow::copyLastCommandOutput() {
-		const std::vector<CommandBlock>& blocks = session_.screen().commandBlocks();
+		const std::vector<CommandBlock>& blocks = focused().screen().commandBlocks();
 		for (auto block = blocks.rbegin(); block != blocks.rend(); ++block) {
 			if (!block->finished || block->output_row < 0) continue;
 
-			view_.selectBlockOutput(*block, session_.screen());
+			focused().view().selectBlockOutput(*block, focused().screen());
 			copySelection();
 			::InvalidateRect(window_, nullptr, FALSE);
 			return;
@@ -395,7 +861,7 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::copySelection() {
-		const std::string text = view_.selectedText(session_.screen());
+		const std::string text = focused().view().selectedText(focused().screen());
 		if (text.empty()) return;
 
 		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(),
@@ -420,20 +886,20 @@ namespace wbshterm {
 	// Scrolling and copying belong to the window, not the shell, so these
 	// are taken before the key encoder ever sees them.
 	bool TerminalWindow::handleViewShortcut(const KeyPress& press) {
-		const int page = std::max(1, session_.screen().rows() - 1);
+		const int page = std::max(1, focused().screen().rows() - 1);
 
 		if (press.control && !press.shift && press.virtual_key == VK_PRIOR) {
 			if (!jumpToCommand(true)) return true;
 		} else if (press.control && !press.shift && press.virtual_key == VK_NEXT) {
 			if (!jumpToCommand(false)) return true;
 		} else if (press.shift && !press.control && press.virtual_key == VK_PRIOR) {
-			view_.scrollBy(page, session_.screen());
+			focused().view().scrollBy(page, focused().screen());
 		} else if (press.shift && !press.control && press.virtual_key == VK_NEXT) {
-			view_.scrollBy(-page, session_.screen());
+			focused().view().scrollBy(-page, focused().screen());
 		} else if (press.shift && press.control && press.virtual_key == VK_UP) {
-			view_.scrollBy(1, session_.screen());
+			focused().view().scrollBy(1, focused().screen());
 		} else if (press.shift && press.control && press.virtual_key == VK_DOWN) {
-			view_.scrollBy(-1, session_.screen());
+			focused().view().scrollBy(-1, focused().screen());
 		} else if (press.control && !press.alt
 				&& (press.virtual_key == VK_OEM_PLUS || press.virtual_key == VK_ADD
 					|| press.virtual_key == VK_OEM_MINUS || press.virtual_key == VK_SUBTRACT
@@ -470,8 +936,8 @@ namespace wbshterm {
 		const std::vector<std::string> themes =
 			availableThemeNames(themesDirectory(config_path_));
 
-		HMENU menu = buildTerminalMenu(config_, themes, view_.hasSelection(),
-			!session_.screen().commandBlocks().empty());
+		HMENU menu = buildTerminalMenu(config_, themes, focused().view().hasSelection(),
+			!focused().screen().commandBlocks().empty());
 		const int command = ::TrackPopupMenu(menu,
 			TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, where.x, where.y, 0, window_, nullptr);
 		::DestroyMenu(menu);
@@ -572,14 +1038,11 @@ namespace wbshterm {
 
 		if (target_) {
 			target_->BeginDraw();
-			renderer_.draw(target_.Get(), session_.screen(), view_);
-			renderer_.drawPicker(target_.Get(), session_.screen(), picker_);
+			paintPanes();
 			if (target_->EndDraw() == D2DERR_RECREATE_TARGET) {
 				std::string ignored;
 				createTarget(ignored);
 			}
-
-			session_.screen().clearDirty();
 		}
 
 		::EndPaint(window_, &paint);
@@ -594,14 +1057,8 @@ namespace wbshterm {
 			static_cast<UINT32>(client.right - client.left),
 			static_cast<UINT32>(client.bottom - client.top)));
 
-		int columns = config_.window.columns;
-		int rows    = config_.window.rows;
-		gridSizeFromClient(columns, rows);
-
-		if (columns != session_.screen().columns() || rows != session_.screen().rows()) {
-			session_.resize(columns, rows);
-		}
-
+		layoutPanes();
+		scheduleGridCommit();
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
@@ -616,28 +1073,50 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::onPtyData() {
-		closeIfChildExited();
+		bool changed = false;
+		for (PaneNode* leaf : panes_.leaves()) {
+			if (!leaf->pane()->session().drainOutput()) continue;
 
-		if (session_.drainOutput()) {
-			view_.followOutput(session_.screen());
+			leaf->pane()->view().followOutput(leaf->pane()->screen());
+			changed = true;
+		}
+
+		if (changed) {
 			syncTitle();
 			::InvalidateRect(window_, nullptr, FALSE);
 		}
 
-		closeIfChildExited();
+		closeExitedPanes();
 	}
 
-	void TerminalWindow::closeIfChildExited() {
-		if (session_.childRunning()) return;
+	// Collected first and closed after, because closing a pane destroys
+	// the node the loop would otherwise still be standing on.
+	void TerminalWindow::closeExitedPanes() {
+		std::vector<PaneNode*> finished;
+		for (PaneNode* leaf : panes_.leaves()) {
+			if (!leaf->pane()->session().childRunning()) finished.push_back(leaf);
+		}
 
-		session_.drainOutput();
-		::DestroyWindow(window_);
+		if (finished.empty()) return;
+
+		for (PaneNode* leaf : finished) {
+			leaf->pane()->session().drainOutput();
+			if (panes_.close(leaf)) continue;
+
+			::DestroyWindow(window_);
+			return;
+		}
+
+		layoutPanes();
+		commitGridSizes();
+		syncTitle();
+		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	void TerminalWindow::syncTitle() {
-		const std::string& directory = session_.screen().workingDirectory();
+		const std::string& directory = focused().screen().workingDirectory();
 		const std::string& title = directory.empty()
-			? session_.screen().title()
+			? focused().screen().title()
 			: directory;
 		if (title.empty()) return;
 
@@ -648,6 +1127,8 @@ namespace wbshterm {
 		std::wstring wide(static_cast<std::size_t>(needed), L'\0');
 		::MultiByteToWideChar(CP_UTF8, 0, title.c_str(), static_cast<int>(title.size()),
 			wide.data(), needed);
+		const std::size_t count = panes_.leaves().size();
+		if (count > 1) wide += L"  [" + std::to_wstring(count) + L" panes]";
 		if (wide == shown_title_) return;
 
 		shown_title_ = wide;
@@ -656,8 +1137,8 @@ namespace wbshterm {
 
 	KeyModes TerminalWindow::currentModes() const {
 		KeyModes modes;
-		modes.application_cursor = session_.screen().applicationCursorKeys();
-		modes.bracketed_paste    = session_.screen().bracketedPaste();
+		modes.application_cursor = focused().screen().applicationCursorKeys();
+		modes.bracketed_paste    = focused().screen().bracketedPaste();
 		return modes;
 	}
 
@@ -669,8 +1150,10 @@ namespace wbshterm {
 			return;
 		}
 
-		if (picker_.active()) {
-			picker_.typeCharacter(character);
+		if (paneCharacterTaken(character)) return;
+
+		if (focused().picker().active()) {
+			focused().picker().typeCharacter(character);
 			::InvalidateRect(window_, nullptr, FALSE);
 			return;
 		}
@@ -682,45 +1165,27 @@ namespace wbshterm {
 		sendBytes(bytes.data(), bytes.size());
 	}
 
-	void TerminalWindow::pickBegin(const std::string& prompt) {
-		picker_.begin(prompt);
-	}
-
-	void TerminalWindow::pickItem(const std::string& text) {
-		picker_.addItem(text);
-	}
-
-	void TerminalWindow::pickEnd() {
-		picker_.finish();
-		::InvalidateRect(window_, nullptr, FALSE);
-	}
-
-	void TerminalWindow::pickCancel() {
-		picker_.cancel();
-		::InvalidateRect(window_, nullptr, FALSE);
-	}
-
 	// The shell is blocked waiting for a line, so every answer ends with a
 	// carriage return; an empty one means the user backed out.
 	void TerminalWindow::answerPick(const std::string& choice) {
-		picker_.cancel();
+		focused().picker().cancel();
 
 		const std::string reply = choice + "\r";
-		session_.writeInput(reply.data(), reply.size());
+		focused().session().writeInput(reply.data(), reply.size());
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	bool TerminalWindow::pickerTakesKey(WPARAM key) {
-		if (!picker_.active()) return false;
+		if (!focused().picker().active()) return false;
 
 		switch (key) {
-		case VK_RETURN: answerPick(picker_.chosen()); return true;
+		case VK_RETURN: answerPick(focused().picker().chosen()); return true;
 		case VK_ESCAPE: answerPick(std::string()); return true;
-		case VK_UP:     picker_.moveSelection(-1); break;
-		case VK_DOWN:   picker_.moveSelection(1); break;
-		case VK_PRIOR:  picker_.moveSelection(-10); break;
-		case VK_NEXT:   picker_.moveSelection(10); break;
-		case VK_BACK:   picker_.backspace(); break;
+		case VK_UP:     focused().picker().moveSelection(-1); break;
+		case VK_DOWN:   focused().picker().moveSelection(1); break;
+		case VK_PRIOR:  focused().picker().moveSelection(-10); break;
+		case VK_NEXT:   focused().picker().moveSelection(10); break;
+		case VK_BACK:   focused().picker().backspace(); break;
 		default:        return false;
 		}
 
@@ -736,6 +1201,8 @@ namespace wbshterm {
 
 		const KeyPress press = currentKeyPress(key);
 		swallow_next_char_ = false;
+
+		if (paneKeyTaken(press)) return true;
 
 		if (handleViewShortcut(press)) {
 			swallow_next_char_ = alsoProducesCharacter(press);
@@ -767,12 +1234,12 @@ namespace wbshterm {
 	void TerminalWindow::sendBytes(const char* data, std::size_t length) {
 		if (length == 0) return;
 
-		view_.scrollToBottom();
-		view_.clearSelection();
+		focused().view().scrollToBottom();
+		focused().view().clearSelection();
 		cursor_phase_ = true;
 		renderer_.setCursorVisible(true);
 		::InvalidateRect(window_, nullptr, FALSE);
-		session_.writeInput(data, length);
+		focused().session().writeInput(data, length);
 	}
 
 	int TerminalWindow::runMessageLoop() {

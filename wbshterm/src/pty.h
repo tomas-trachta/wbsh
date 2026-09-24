@@ -19,6 +19,12 @@ namespace wbshterm {
 		SHORT rows    = 30;
 	};
 
+	/** What to launch and where; an empty directory means "inherit ours". */
+	struct ShellCommand {
+		std::wstring command_line;
+		std::wstring working_directory;
+	};
+
 	/**
 	 * @brief Owns a pseudoconsole, its pipes, and the child process on it.
 	 *
@@ -35,7 +41,7 @@ namespace wbshterm {
 		PtySession(const PtySession&)            = delete;
 		PtySession& operator=(const PtySession&) = delete;
 
-		bool open(const std::wstring& command_line, PtySize size, std::string& out_error);
+		bool open(const ShellCommand& shell, PtySize size, std::string& out_error);
 
 		bool resize(PtySize size);
 
@@ -64,7 +70,7 @@ namespace wbshterm {
 
 	private:
 		bool createPipesAndConsole(PtySize size, std::string& out_error);
-		bool spawnChild(const std::wstring& command_line, std::string& out_error);
+		bool spawnChild(const ShellCommand& shell, std::string& out_error);
 
 		HPCON  console_     = nullptr;
 		HANDLE input_write_ = INVALID_HANDLE_VALUE;

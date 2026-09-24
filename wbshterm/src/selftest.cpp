@@ -10,6 +10,7 @@
 #include "fetch.h"
 #include "keymap.h"
 #include "menu.h"
+#include "pane_tree.h"
 #include "picker.h"
 #include "view.h"
 #include "session.h"
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <thread>
 
 namespace wbshterm {
@@ -769,22 +771,22 @@ namespace wbshterm {
 		// However many rows there are, the panel keeps its shape: never fewer
 		// lines than the logo, one line per row when there are more.
 		static void checkFetchPanelGrowsWithRows(Report& report) {
-			FetchInfo small;
-			small.user = "a";
-			small.host = "b";
-			small.rows.push_back({ "One", "1" });
+			FetchInfo compact;
+			compact.user = "a";
+			compact.host = "b";
+			compact.rows.push_back({ "One", "1" });
 
-			FetchInfo large = small;
+			FetchInfo large = compact;
 			for (int i = 0; i < 12; ++i) {
 				large.rows.push_back({ "Row" + std::to_string(i), std::to_string(i) });
 			}
 
-			const std::size_t small_lines = countLines(renderFetchPanel(small));
+			const std::size_t compact_lines = countLines(renderFetchPanel(compact));
 			const std::size_t large_lines = countLines(renderFetchPanel(large));
 
-			report.check("a short panel is still as tall as the logo", small_lines >= 8,
-				std::to_string(small_lines));
-			report.check("more rows make a taller panel", large_lines > small_lines,
+			report.check("a short panel is still as tall as the logo", compact_lines >= 8,
+				std::to_string(compact_lines));
+			report.check("more rows make a taller panel", large_lines > compact_lines,
 				std::to_string(large_lines));
 		}
 
@@ -1004,6 +1006,42 @@ namespace wbshterm {
 			bool ended = false;
 			bool cancelled = false;
 		};
+
+		class TmuxRecorder : public TmuxHandler {
+		public:
+			void tmuxAttach() override { ++attached; }
+
+			int attached = 0;
+		};
+
+		// Pane mode starts only when the shell asks for it, over the same
+		// OSC 1337 the picker uses; the two must not answer each other.
+		static void checkTmuxRequestParsing(Report& report) {
+			Screen screen(40, 6);
+			TmuxRecorder tmux;
+			PickRecorder picker;
+			screen.setTmuxHandler(&tmux);
+			screen.setPickHandler(&picker);
+
+			feedToScreen(screen, "\x1b]1337;tmux;attach\a");
+			report.check("a tmux request starts pane mode", tmux.attached == 1,
+				std::to_string(tmux.attached));
+			report.check("a tmux request is not a pick request",
+				picker.began.empty() && !picker.ended, "");
+
+			feedToScreen(screen, "\x1b]1337;pick;begin;fzf\a\x1b]1337;pick;end\a");
+			report.check("a pick request does not start pane mode", tmux.attached == 1,
+				std::to_string(tmux.attached));
+
+			feedToScreen(screen, "\x1b]1337;tmux;detach\a\x1b]1337;tmux\a");
+			report.check("an unknown tmux verb is ignored", tmux.attached == 1,
+				std::to_string(tmux.attached));
+
+			Screen deaf(40, 6);
+			feedToScreen(deaf, "\x1b]1337;tmux;attach\a");
+			report.check("a tmux request without a handler is dropped",
+				deaf.toText().find("tmux") == std::string::npos, deaf.toText());
+		}
 
 		// The request travels as OSC 1337, so the parts have to survive the
 		// encoding: spaces, semicolons and anything else in a file name.
@@ -1349,7 +1387,7 @@ namespace wbshterm {
 
 			Session session;
 			std::string error;
-			if (!session.start(command_line, 100, 16, error)) {
+			if (!session.start({ command_line }, 100, 16, error)) {
 				report.check("the shell hands its picker to the terminal", false, error);
 				return;
 			}
@@ -1415,7 +1453,7 @@ namespace wbshterm {
 
 			Session session;
 			std::string error;
-			if (!session.start(command_line, 100, 16, error)) {
+			if (!session.start({ command_line }, 100, 16, error)) {
 				report.check("a long list survives the trip to the terminal", false, error);
 				return;
 			}
@@ -1468,7 +1506,7 @@ namespace wbshterm {
 
 			Session session;
 			std::string error;
-			if (!session.start(command_line, 100, 16, error)) {
+			if (!session.start({ command_line }, 100, 16, error)) {
 				report.check("a picker behind a pipe still reaches the terminal", false, error);
 				return;
 			}
@@ -1505,7 +1543,7 @@ namespace wbshterm {
 		static void checkCtrlDEndsTheSession(Report& report, const std::wstring& command_line) {
 			Session session;
 			std::string error;
-			if (!session.start(command_line, 90, 12, error)) {
+			if (!session.start({ command_line }, 90, 12, error)) {
 				report.check("Ctrl-D on an empty line ends the session", false, error);
 				return;
 			}
@@ -1572,7 +1610,7 @@ namespace wbshterm {
 		static void checkLiveSession(Report& report, const std::wstring& command_line) {
 			Session session;
 			std::string error;
-			if (!session.start(command_line, 200, 12, error)) {
+			if (!session.start({ command_line }, 200, 12, error)) {
 				report.check("the shell starts on a pseudoconsole", false, error);
 				return;
 			}
@@ -1597,6 +1635,272 @@ namespace wbshterm {
 			checkInterrupt(report, session);
 			checkResizeReachesTheShell(report, session);
 			session.stop();
+		}
+
+
+		static PaneMetrics layoutMetrics(float width, float height) {
+			PaneMetrics metrics;
+			metrics.client      = D2D1::RectF(0.0f, 0.0f, width, height);
+			metrics.cell_width  = 10.0f;
+			metrics.cell_height = 20.0f;
+			metrics.padding     = 5.0f;
+			metrics.divider     = 6.0f;
+			return metrics;
+		}
+
+		static std::unique_ptr<Pane> freshPane() {
+			return std::make_unique<Pane>();
+		}
+
+		// Committing is what the window does once a drag settles, and it is
+		// the only way the grid sizes the layout asked for reach a Screen.
+		static void layoutAndCommit(PaneTree& tree, const PaneMetrics& metrics) {
+			tree.layout(metrics);
+			for (PaneNode* leaf : tree.leaves()) leaf->pane()->commitGridSize();
+		}
+
+		static float widthOf(const PaneNode& node) {
+			return node.bounds().right - node.bounds().left;
+		}
+
+		static float heightOf(const PaneNode& node) {
+			return node.bounds().bottom - node.bounds().top;
+		}
+
+		static void checkLonePaneTakesTheClient(Report& report) {
+			PaneTree tree;
+			tree.adopt(freshPane());
+			layoutAndCommit(tree, layoutMetrics(405.0f, 250.0f));
+
+			const PaneNode* only = tree.focused();
+			const bool filled = only != nullptr
+				&& widthOf(*only) == 405.0f && heightOf(*only) == 250.0f;
+
+			report.check("a lone pane takes the whole client area", filled, "");
+			report.check("a lone pane has no divider", tree.dividers().empty(), "");
+			report.check("a lone pane sizes its grid to its rectangle",
+				only != nullptr && only->pane()->screen().columns() == 39
+					&& only->pane()->screen().rows() == 12, "");
+		}
+
+		static void checkColumnSplitSharesTheWidth(Report& report) {
+			PaneTree tree;
+			tree.adopt(freshPane());
+			tree.splitFocused(SplitAxis::Columns, freshPane());
+
+			const PaneMetrics metrics = layoutMetrics(406.0f, 250.0f);
+			layoutAndCommit(tree, metrics);
+
+			const std::vector<PaneNode*> leaves = tree.leaves();
+			const bool two = leaves.size() == 2;
+			const float spent = two
+				? widthOf(*leaves[0]) + widthOf(*leaves[1]) + metrics.divider
+				: 0.0f;
+
+			report.check("a split makes a second pane", two, "");
+			report.check("both panes and the divider fill the width", spent == 406.0f,
+				std::to_string(spent));
+			report.check("a split leaves one divider behind", tree.dividers().size() == 1, "");
+			report.check("the focus follows the new pane",
+				two && tree.focused() == leaves[1], "");
+		}
+
+		static void checkSplitSnapsToWholeCells(Report& report) {
+			PaneTree tree;
+			tree.adopt(freshPane());
+			tree.splitFocused(SplitAxis::Columns, freshPane());
+			layoutAndCommit(tree, layoutMetrics(405.0f, 250.0f));
+
+			const std::vector<PaneNode*> leaves = tree.leaves();
+			const bool two = leaves.size() == 2;
+
+			report.check("the first pane snaps down to whole cells",
+				two && widthOf(*leaves[0]) == 190.0f,
+				two ? std::to_string(widthOf(*leaves[0])) : "");
+			report.check("the second pane absorbs the odd pixels",
+				two && widthOf(*leaves[1]) == 209.0f,
+				two ? std::to_string(widthOf(*leaves[1])) : "");
+			report.check("neither pane is left holding a sliver of a cell",
+				two && leaves[0]->pane()->screen().columns() == 18
+					&& leaves[1]->pane()->screen().columns() == 19, "");
+		}
+
+		static void checkRowSplitSharesTheHeight(Report& report) {
+			PaneTree tree;
+			tree.adopt(freshPane());
+			tree.splitFocused(SplitAxis::Rows, freshPane());
+			layoutAndCommit(tree, layoutMetrics(400.0f, 246.0f));
+
+			const std::vector<PaneNode*> leaves = tree.leaves();
+			const bool two = leaves.size() == 2;
+			const float spent = two
+				? heightOf(*leaves[0]) + heightOf(*leaves[1]) + 6.0f
+				: 0.0f;
+
+			report.check("a row split shares the height", spent == 246.0f,
+				std::to_string(spent));
+			report.check("a row split keeps the full width",
+				two && widthOf(*leaves[0]) == 400.0f && widthOf(*leaves[1]) == 400.0f, "");
+		}
+
+		static void checkClosingGivesTheSpaceToTheSibling(Report& report) {
+			PaneTree tree;
+			tree.adopt(freshPane());
+			tree.splitFocused(SplitAxis::Columns, freshPane());
+			layoutAndCommit(tree, layoutMetrics(406.0f, 250.0f));
+
+			const std::vector<PaneNode*> before = tree.leaves();
+			const bool two = before.size() == 2;
+			PaneNode* survivor = two ? before[0] : nullptr;
+
+			const bool closed = two && tree.close(before[1]);
+			layoutAndCommit(tree, layoutMetrics(406.0f, 250.0f));
+
+			report.check("closing a pane leaves the tree standing", closed, "");
+			report.check("the survivor takes the whole client area",
+				survivor != nullptr && widthOf(*survivor) == 406.0f, "");
+			report.check("the divider goes with the pane", tree.dividers().empty(), "");
+			report.check("the focus lands on the survivor", tree.focused() == survivor, "");
+		}
+
+		static void checkTheLastPaneCannotClose(Report& report) {
+			PaneTree tree;
+			tree.adopt(freshPane());
+			layoutAndCommit(tree, layoutMetrics(400.0f, 240.0f));
+
+			report.check("the last pane refuses to close", !tree.close(tree.focused()), "");
+			report.check("refusing to close leaves the pane in place",
+				tree.leaves().size() == 1, "");
+		}
+
+		// left | right, with the right column split into a top and a bottom.
+		static void buildCorner(PaneTree& tree) {
+			tree.adopt(freshPane());
+			tree.splitFocused(SplitAxis::Columns, freshPane());
+			tree.splitFocused(SplitAxis::Rows, freshPane());
+			layoutAndCommit(tree, layoutMetrics(400.0f, 246.0f));
+		}
+
+		static void checkNavigationFollowsGeometry(Report& report) {
+			PaneTree tree;
+			buildCorner(tree);
+
+			const std::vector<PaneNode*> leaves = tree.leaves();
+			if (leaves.size() != 3) {
+				report.check("three panes make a corner", false, std::to_string(leaves.size()));
+				return;
+			}
+
+			PaneNode* left   = leaves[0];
+			PaneNode* top    = leaves[1];
+			PaneNode* bottom = leaves[2];
+
+			tree.focusOn(top);
+			report.check("left of the top-right pane is the left column",
+				tree.neighbour(PaneDirection::Left) == left, "");
+			report.check("below the top-right pane is the bottom-right one",
+				tree.neighbour(PaneDirection::Down) == bottom, "");
+
+			tree.focusOn(bottom);
+			report.check("above the bottom-right pane is the top-right one",
+				tree.neighbour(PaneDirection::Up) == top, "");
+
+			tree.focusOn(left);
+			report.check("the neighbour to the right is the pane sharing the most edge",
+				tree.neighbour(PaneDirection::Right) == bottom, "");
+			report.check("nothing lies left of the leftmost pane",
+				tree.neighbour(PaneDirection::Left) == nullptr, "");
+		}
+
+		static void checkHitTestingFindsThePane(Report& report) {
+			PaneTree tree;
+			buildCorner(tree);
+
+			const std::vector<PaneNode*> leaves = tree.leaves();
+			const bool three = leaves.size() == 3;
+
+			report.check("a point in the left column hits the left pane",
+				three && tree.leafAt(10.0f, 10.0f) == leaves[0], "");
+			report.check("a point below the horizontal divider hits the bottom pane",
+				three && tree.leafAt(300.0f, 240.0f) == leaves[2], "");
+			report.check("a point on a divider belongs to no pane",
+				tree.leafAt(192.0f, 100.0f) == nullptr, "");
+			report.check("a divider is found where it was drawn",
+				tree.dividerAt(192.0f, 100.0f, 2.0f) != nullptr, "");
+		}
+
+		static void checkZoomGivesOnePaneEverything(Report& report) {
+			PaneTree tree;
+			buildCorner(tree);
+			PaneNode* zoomed = tree.focused();
+
+			tree.toggleZoom();
+			layoutAndCommit(tree, layoutMetrics(400.0f, 246.0f));
+
+			const bool filled = zoomed != nullptr && widthOf(*zoomed) == 400.0f
+				&& heightOf(*zoomed) == 246.0f;
+			const std::vector<PaneNode*> leaves = tree.leaves();
+
+			report.check("zooming hands the client area to one pane", filled, "");
+			report.check("zooming empties every other pane",
+				leaves.size() == 3 && widthOf(*leaves[0]) == 0.0f, "");
+			report.check("a zoomed layout draws no dividers", tree.dividers().empty(), "");
+
+			tree.toggleZoom();
+			layoutAndCommit(tree, layoutMetrics(400.0f, 246.0f));
+			report.check("unzooming puts the other panes back",
+				tree.leaves().size() == 3 && widthOf(*tree.leaves()[0]) > 0.0f, "");
+		}
+
+		static void checkDraggingMovesTheDivider(Report& report) {
+			PaneTree tree;
+			tree.adopt(freshPane());
+			tree.splitFocused(SplitAxis::Columns, freshPane());
+			layoutAndCommit(tree, layoutMetrics(406.0f, 250.0f));
+
+			PaneNode* branch = tree.dividerAt(202.0f, 100.0f, 3.0f);
+			report.check("a divider can be picked up", branch != nullptr, "");
+			if (branch == nullptr) return;
+
+			tree.dragDivider(branch, 100.0f, 100.0f);
+			layoutAndCommit(tree, layoutMetrics(406.0f, 250.0f));
+
+			const std::vector<PaneNode*> leaves = tree.leaves();
+			const bool two = leaves.size() == 2;
+
+			report.check("dragging a divider narrows the pane before it",
+				two && widthOf(*leaves[0]) == 100.0f,
+				two ? std::to_string(widthOf(*leaves[0])) : "");
+			report.check("a dragged pane keeps a whole-cell grid",
+				two && leaves[0]->pane()->screen().columns() == 9, "");
+		}
+
+
+		static void checkKeyBindingParsing(Report& report) {
+			KeyPress simple;
+			const bool read_simple = parseKeyBinding("ctrl+a", simple);
+
+			report.check("a binding reads its modifier and its key",
+				read_simple && simple.control && simple.virtual_key == 'A'
+					&& !simple.alt && !simple.shift, "");
+
+			KeyPress loud;
+			report.check("a binding is case-insensitive",
+				parseKeyBinding("CTRL+B", loud) && loud.control && loud.virtual_key == 'B', "");
+
+			KeyPress stacked;
+			const bool read_stacked = parseKeyBinding("alt+shift+space", stacked);
+			report.check("modifiers stack in any order",
+				read_stacked && stacked.alt && stacked.shift && !stacked.control
+					&& stacked.virtual_key == VK_SPACE, "");
+
+			KeyPress ignored;
+			report.check("a binding naming no key is refused",
+				!parseKeyBinding("ctrl+", ignored), "");
+			report.check("a binding naming two keys is refused",
+				!parseKeyBinding("ctrl+a+b", ignored), "");
+			report.check("a binding naming an unknown key is refused",
+				!parseKeyBinding("ctrl+wibble", ignored), "");
 		}
 
 		static bool writeReport(const std::wstring& path, const std::string& text) {
@@ -1639,6 +1943,7 @@ namespace wbshterm {
 		test::checkAnOverlongListSaysSo(report);
 		test::checkPickerSelection(report);
 		test::checkPickRequestParsing(report);
+		test::checkTmuxRequestParsing(report);
 		test::checkPickListArrivesAsFile(report, directory);
 	}
 
@@ -1652,6 +1957,19 @@ namespace wbshterm {
 		test::checkCharacterWidths(report);
 		test::checkWideCharactersTakeTwoCells(report);
 		test::checkResizeKeepsContent(report);
+	}
+
+	static void runLayoutChecks(test::Report& report) {
+		test::checkLonePaneTakesTheClient(report);
+		test::checkColumnSplitSharesTheWidth(report);
+		test::checkSplitSnapsToWholeCells(report);
+		test::checkRowSplitSharesTheHeight(report);
+		test::checkClosingGivesTheSpaceToTheSibling(report);
+		test::checkTheLastPaneCannotClose(report);
+		test::checkNavigationFollowsGeometry(report);
+		test::checkHitTestingFindsThePane(report);
+		test::checkZoomGivesOnePaneEverything(report);
+		test::checkDraggingMovesTheDivider(report);
 	}
 
 	static void runSettingsChecks(test::Report& report, const std::wstring& directory) {
@@ -1682,6 +2000,7 @@ namespace wbshterm {
 		test::checkEraseKeys(report);
 		test::checkTextKeysFallThrough(report);
 		test::checkPasteEncoding(report);
+		test::checkKeyBindingParsing(report);
 	}
 
 	static void runLiveChecks(test::Report& report, const std::wstring& command_line,
@@ -1700,6 +2019,7 @@ namespace wbshterm {
 		runGridChecks(report);
 		runPickerChecks(report, directory);
 		runViewChecks(report);
+		runLayoutChecks(report);
 		runSettingsChecks(report, directory);
 		runKeyChecks(report);
 		runLiveChecks(report, shell_command_line, directory);

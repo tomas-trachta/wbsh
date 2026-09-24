@@ -26,13 +26,13 @@ namespace wbshterm {
 		close();
 	}
 
-	bool PtySession::open(const std::wstring& command_line, PtySize size, std::string& out_error) {
+	bool PtySession::open(const ShellCommand& shell, PtySize size, std::string& out_error) {
 		if (!createPipesAndConsole(size, out_error)) {
 			close();
 			return false;
 		}
 
-		if (!spawnChild(command_line, out_error)) {
+		if (!spawnChild(shell, out_error)) {
 			close();
 			return false;
 		}
@@ -75,7 +75,7 @@ namespace wbshterm {
 		return true;
 	}
 
-	bool PtySession::spawnChild(const std::wstring& command_line, std::string& out_error) {
+	bool PtySession::spawnChild(const ShellCommand& shell, std::string& out_error) {
 		SIZE_T attribute_bytes = 0;
 		::InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_bytes);
 
@@ -107,12 +107,16 @@ namespace wbshterm {
 		startup.StartupInfo.hStdError = nullptr;
 		startup.lpAttributeList = attributes;
 
-		std::wstring mutable_command_line = command_line;
+		std::wstring mutable_command_line = shell.command_line;
+		const wchar_t* directory = shell.working_directory.empty()
+			? nullptr
+			: shell.working_directory.c_str();
+
 		PROCESS_INFORMATION child{};
 		const BOOL spawned = ::CreateProcessW(nullptr, mutable_command_line.data(),
 			nullptr, nullptr, FALSE,
 			EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-			nullptr, nullptr, &startup.StartupInfo, &child);
+			nullptr, directory, &startup.StartupInfo, &child);
 
 		::DeleteProcThreadAttributeList(attributes);
 

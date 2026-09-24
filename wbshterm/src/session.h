@@ -32,7 +32,7 @@ namespace wbshterm {
 		Session(const Session&)            = delete;
 		Session& operator=(const Session&) = delete;
 
-		bool start(const std::wstring& command_line, int columns, int rows,
+		bool start(const ShellCommand& shell, int columns, int rows,
 			std::string& out_error);
 
 		/** Wakes this window with this message when bytes arrive. */

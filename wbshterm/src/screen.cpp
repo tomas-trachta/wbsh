@@ -429,6 +429,17 @@ namespace wbshterm {
 
 	// OSC 1337;pick;... is this terminal's own: the shell hands over a list
 	// and takes back what was chosen, instead of drawing a picker itself.
+	void Screen::noteTerminalRequest(const std::string& body) {
+		if (body.rfind("pick;", 0) == 0) notePickRequest(body);
+		if (body.rfind("tmux;", 0) == 0) noteTmuxRequest(body);
+	}
+
+	void Screen::noteTmuxRequest(const std::string& body) {
+		if (tmux_handler_ == nullptr) return;
+
+		if (body == "tmux;attach") tmux_handler_->tmuxAttach();
+	}
+
 	void Screen::notePickRequest(const std::string& body) {
 		if (pick_handler_ == nullptr) return;
 		if (body.rfind("pick;", 0) != 0) return;
@@ -472,7 +483,7 @@ namespace wbshterm {
 		if (code == "0" || code == "2") title_ = body;
 		if (code == "7")   noteWorkingDirectory(body);
 		if (code == "633")  noteShellMark(body);
-		if (code == "1337") notePickRequest(body);
+		if (code == "1337") noteTerminalRequest(body);
 	}
 
 	// vim and friends print a probe glyph, ask where the cursor ended up,

@@ -93,9 +93,11 @@ apart from a parsing bug by replaying the same bytes.
 | `picker.h/.cpp` | The overlay list: fuzzy matching, filtering and selection. |
 | `charwidth.h/.cpp` | How many cells a character takes: zero, one or two. |
 | `session.h/.cpp` | Pty + parser + grid + reader thread; the grid is touched by one thread only. |
+| `pane.h/.cpp` | One shell in a rectangle: its session, view and overlay. |
+| `pane_tree.h/.cpp` | The split layout: splitting, closing, and slicing the client area. |
 | `font.h/.cpp` | DirectWrite faces and the measured cell box. |
 | `render.h/.cpp` | Direct2D painting of a grid onto any render target. |
-| `window.h/.cpp` | The Win32 window, message handlers, and key encoding. |
+| `window.h/.cpp` | The Win32 window, message handlers, key encoding, pane commands, and the status bar. |
 | `snapshot.h/.cpp` | Off-screen WIC target and PNG encode. |
 | `replay.h/.cpp` | Recording in, grid out, no shell involved. |
 | `selftest.h/.cpp` | The headless checks. |
@@ -255,6 +257,7 @@ them ignore them, so wbsh loses nothing elsewhere.
 | `OSC 633;D;<exit>` | Closes the block and records how it ended |
 | `OSC 7;file://…` | Puts the working directory in the title bar |
 | `OSC 1337;pick;…` | Draws the picker as an overlay and answers with the choice |
+| `OSC 1337;tmux;attach` | Starts pane mode, the way typing `tmux` does |
 
 That turns a wall of scrollback into a list of commands:
 
@@ -309,6 +312,86 @@ never see it; the answer is read back from `CONIN$` for the same reason.
 And conhost passes such a sequence on only once something else moves the
 screen along, so the request ends with a save and restore of the cursor —
 a nudge that leaves nothing on screen.
+
+## Panes
+
+Type `tmux`. A status bar appears, the prefix key comes alive, and the
+window starts holding a tree of panes — each with its own shell, grid,
+scrollback and selection. Until then `Ctrl-B` is the shell's, which is
+the point: it is a line-editing key right up to the moment it is not.
+
+This is the half of tmux a terminal can do better than a multiplexer:
+splits, layout and a status bar, drawn by the thing that owns the pixels.
+It is not the other half. There is no server, no detach, no reattach, and
+nothing that outlives the window. For a session that survives its
+terminal, or one on the far side of an SSH connection, run the real tmux
+there — this does not replace it and does not pretend to.
+
+| After the prefix | Does |
+| --- | --- |
+| `%` or `\|` | Split into columns, side by side |
+| `"` or `-` | Split into rows, one above the other |
+| Arrows, or `h` `j` `k` `l` | Move the focus that way |
+| `o` | Focus the next pane |
+| `z` | Zoom the focused pane to the window, or put it back |
+| `x` | Close the focused pane |
+| `Ctrl-B` | Send the prefix on to the shell |
+
+Press the prefix, let go, then press the command key — the tmux habit.
+A command is read from the *character* a key produces rather than from
+the key itself, so `%` and `"` stay on the keycaps that print them on any
+layout; the arrows are read from the key, since they print nothing.
+
+A split inherits the focused pane's working directory, which the shell
+reports through OSC 7, so a new pane opens where you were rather than at
+home. The startup panel is not repeated in it.
+
+The mouse follows the pane under it: clicking focuses, dragging selects
+within that pane, and the wheel scrolls whatever the pointer is over
+rather than whatever has the focus — reading one pane while another works
+is most of the reason to split at all. Dividers drag, and the pointer
+turns into a sizing cursor over one.
+
+```ini
+[panes]
+prefix = ctrl+b     # ctrl / alt / shift in any order, then one key
+divider = 6         # pixels between panes
+focus_border = true # outline the focused pane when there is more than one
+status = true       # the bar along the bottom
+```
+
+### How `tmux` reaches the terminal
+
+`tmux` is a wbsh builtin, not the real one. wbshterm sets `WBSHTERM_PANES`
+in the environment, and the builtin only speaks up when it finds it —
+anywhere else it says so and exits non-zero rather than silently doing
+nothing. When it does fire it writes `OSC 1337 ; tmux ; attach` to the
+console device, the same channel the picker overlay uses, and wbshterm
+starts pane mode on the way through its parser.
+
+Only a bare `tmux` is accepted. `tmux split-window`, `tmux attach` and the
+rest are refused with a line explaining there is no server, because a
+subcommand that silently did nothing would be worse than one that says
+why it cannot.
+
+Four things are worth knowing about the shape of this:
+
+**One pseudoconsole per pane.** Each pane is a ConPTY, and each ConPTY
+brings its own `OpenConsole.exe` — panes cost more on Windows than they do
+on a system with real ptys. Eight of them is fine; eighty is not.
+
+**Resizes are debounced.** Resizing a pseudoconsole makes its child
+repaint everything it is showing, so dragging a divider or the window edge
+re-lays out and repaints immediately but tells no pty anything until the
+pointer settles. This is why a pane's text lags its rectangle for a moment
+mid-drag.
+
+**Scrollback is per pane.** The configured limit applies to each of them,
+so the memory a window can hold scales with how many panes are in it.
+
+**A split does not rewrap** — see [Remaining](#remaining). A pane that
+changes width carries its text over rather than reflowing it, the same
+thing that happens when the window is resized.
 
 ## Scrollback and selection
 

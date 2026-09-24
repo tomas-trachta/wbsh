@@ -23,13 +23,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <fstream>
 #include <string>
 #include <vector>
 
 #include "coreutils_internal.h"
 #include "executor.h"
 #include "pathconv.h"
+#include "termreq.h"
 
 namespace wbsh {
 
@@ -430,26 +430,6 @@ namespace wbsh {
 		return flag != nullptr && *flag != '0';
 	}
 
-	static std::string percentEncodeItem(const std::string& text) {
-		static const char* kHexDigits = "0123456789ABCDEF";
-
-		std::string encoded;
-		for (unsigned char letter : text) {
-			const bool plain = letter >= 0x20 && letter != 0x7F && letter != '%'
-				&& letter != ';';
-			if (plain) {
-				encoded.push_back(static_cast<char>(letter));
-				continue;
-			}
-
-			encoded.push_back('%');
-			encoded.push_back(kHexDigits[letter >> 4]);
-			encoded.push_back(kHexDigits[letter & 0x0F]);
-		}
-
-		return encoded;
-	}
-
 	// ConPTY forwards only a few kilobytes of OSC output before it starts
 	// dropping the rest, so a long list sent item by item loses its tail --
 	// and the "end" that opens the overlay with it. The list travels as a
@@ -479,41 +459,9 @@ namespace wbsh {
 	static void appendPickLine(std::string& request, const std::string& verb,
 			const std::string& value) {
 		request += "\x1b]1337;pick;" + verb;
-		if (!value.empty()) request += ";" + percentEncodeItem(value);
+		if (!value.empty()) request += ";" + percentEncodeRequest(value);
 
 		request += "\a";
-	}
-
-	// conhost only forwards a sequence it has no meaning for once something
-	// else moves the screen along; without that the request sits in it until
-	// the next write, which is long after the user needed the overlay. A
-	// save and restore of the cursor is the cheapest nudge that leaves
-	// nothing behind on screen.
-	static const char* const kPassThroughNudge = "\x1b[s\x1b[u";
-
-	// The request goes to the console device rather than stdout: in
-	// `ls | fzf` stdout is the pipe, and the terminal would never see it.
-	// This is the same reason the in-console picker draws through CONOUT$.
-	//
-	// Virtual terminal processing is left on afterwards on purpose. conhost
-	// forwards the sequence to the terminal on its own schedule, and putting
-	// the old mode back straight after the write loses it on the way out.
-	// Only a run under wbshterm gets here, where VT output is wanted anyway.
-	static void writePickRequest(const std::string& request) {
-		const HANDLE out = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
-			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-		if (out == INVALID_HANDLE_VALUE) return;
-
-		DWORD mode = 0;
-		GetConsoleMode(out, &mode);
-		SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT);
-
-		const std::string bytes = request + kPassThroughNudge;
-
-		DWORD wrote = 0;
-		WriteFile(out, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr);
-
-		CloseHandle(out);
 	}
 
 	// Writing the list can fail -- a full or read-only temp directory -- and
@@ -533,7 +481,7 @@ namespace wbsh {
 		}
 
 		appendPickLine(request, "end", std::string());
-		writePickRequest(request);
+		writeTerminalRequest(request);
 	}
 
 	// The terminal replies by typing the choice, so this reads a line of key

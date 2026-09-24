@@ -114,9 +114,16 @@ namespace wbshterm {
 			return false;
 		}
 
+		const D2D1_SIZE_F size = target->GetSize();
+		PaneCanvas canvas;
+		canvas.target = target.Get();
+		canvas.bounds = D2D1::RectF(0.0f, 0.0f, size.width, size.height);
+		canvas.screen = &screen;
+		canvas.view   = &view;
+
 		target->BeginDraw();
-		renderer.draw(target.Get(), screen, view);
-		renderer.drawPicker(target.Get(), screen, picker);
+		renderer.draw(canvas);
+		renderer.drawPicker(canvas, picker);
 		if (FAILED(target->EndDraw())) {
 			out_error = "off-screen drawing failed";
 			return false;
@@ -182,7 +189,7 @@ namespace wbshterm {
 		Session session;
 		SnapshotPicker picker;
 		session.screen().setPickHandler(&picker);
-		if (!session.start(request.command_line, request.columns, request.rows, out_error)) {
+		if (!session.start({ request.command_line }, request.columns, request.rows, out_error)) {
 			return false;
 		}
 

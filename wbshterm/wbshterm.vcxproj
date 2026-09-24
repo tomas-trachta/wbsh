@@ -188,6 +188,8 @@
   <ItemGroup>
     <ClInclude Include="src\font.h" />
     <ClInclude Include="src\picker.h" />
+    <ClInclude Include="src\pane.h" />
+    <ClInclude Include="src\pane_tree.h" />
     <ClInclude Include="src\fetch.h" />
     <ClInclude Include="src\menu.h" />
     <ClInclude Include="src\theme.h" />
@@ -208,6 +210,8 @@
   <ItemGroup>
     <ClCompile Include="src\font.cpp" />
     <ClCompile Include="src\picker.cpp" />
+    <ClCompile Include="src\pane.cpp" />
+    <ClCompile Include="src\pane_tree.cpp" />
     <ClCompile Include="src\fetch.cpp" />
     <ClCompile Include="src\menu.cpp" />
     <ClCompile Include="src\theme.cpp" />

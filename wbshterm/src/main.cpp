@@ -291,6 +291,12 @@ namespace wbshterm {
 		::SetEnvironmentVariableW(L"WBSHTERM_PICKER", L"1");
 	}
 
+	// And that it hosts panes, which is what makes `tmux` more than a
+	// missing command: the shell only sends the request where it lands.
+	static void announcePaneSupport() {
+		::SetEnvironmentVariableW(L"WBSHTERM_PANES", L"1");
+	}
+
 	static int runWindow(const Options& options) {
 		const std::wstring config_path = options.config_path.empty()
 			? defaultConfigPath()
@@ -307,6 +313,7 @@ namespace wbshterm {
 
 		ensureThemesDirectory(themesDirectory(config_path));
 		announcePickerSupport();
+		announcePaneSupport();
 		if (config.startup_fetch) announceStartupCommand();
 
 		TerminalWindow window;

@@ -41,10 +41,18 @@ namespace wbshterm {
 		bool        blink = true;
 	};
 
+	struct PaneSettings {
+		std::string prefix       = "ctrl+b";
+		int         divider      = 6;
+		bool        focus_border = true;
+		bool        status       = true;
+	};
+
 	struct Config {
 		FontSettings   font;
 		WindowSettings window;
 		CursorSettings cursor;
+		PaneSettings   panes;
 		Palette        palette;
 		std::string    theme_name      = "catppuccin-mocha";
 		int            scrollback_lines = 10000;

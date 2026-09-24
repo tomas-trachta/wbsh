@@ -169,4 +169,66 @@ namespace wbshterm {
 		return bytes;
 	}
 
+	static bool virtualKeyNamed(const std::string& name, unsigned int& out_key) {
+		if (name.size() == 1) {
+			const char letter = name[0];
+			if (letter >= 'a' && letter <= 'z') {
+				out_key = static_cast<unsigned int>(letter - 'a' + 'A');
+				return true;
+			}
+
+			if ((letter >= 'A' && letter <= 'Z') || (letter >= '0' && letter <= '9')) {
+				out_key = static_cast<unsigned int>(letter);
+				return true;
+			}
+
+			return false;
+		}
+
+		if (name == "space")  { out_key = VK_SPACE;  return true; }
+		if (name == "tab")    { out_key = VK_TAB;    return true; }
+		if (name == "escape") { out_key = VK_ESCAPE; return true; }
+
+		return false;
+	}
+
+	static std::string nextBindingPart(const std::string& text, std::size_t& at) {
+		const std::size_t plus = text.find('+', at);
+		const std::size_t end = plus == std::string::npos ? text.size() : plus;
+
+		std::string part;
+		for (std::size_t i = at; i < end; ++i) {
+			const char letter = text[i];
+			if (letter == ' ' || letter == '\t') continue;
+
+			part.push_back(letter >= 'A' && letter <= 'Z'
+				? static_cast<char>(letter - 'A' + 'a')
+				: letter);
+		}
+
+		at = end == text.size() ? end : end + 1;
+		return part;
+	}
+
+	bool parseKeyBinding(const std::string& text, KeyPress& out_key) {
+		KeyPress parsed;
+		bool named = false;
+
+		std::size_t at = 0;
+		while (at < text.size()) {
+			const std::string part = nextBindingPart(text, at);
+			if (part == "ctrl" || part == "control") { parsed.control = true; continue; }
+			if (part == "alt")   { parsed.alt = true; continue; }
+			if (part == "shift") { parsed.shift = true; continue; }
+
+			if (named || !virtualKeyNamed(part, parsed.virtual_key)) return false;
+			named = true;
+		}
+
+		if (!named) return false;
+
+		out_key = parsed;
+		return true;
+	}
+
 } /* namespace wbshterm */

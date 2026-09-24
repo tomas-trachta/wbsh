@@ -55,9 +55,10 @@ Default install location is `%LOCALAPPDATA%\Programs\wbsh`.
 
 Every release also ships `wbshterm-setup-x64.exe`: a window that hosts wbsh
 on a pseudoconsole, with themes, a config file, scrollback and selection,
-and shell integration wbsh drives itself. **It bundles `wbsh.exe`**, so it
-works on its own — installing both is fine, they live in separate folders
-and uninstall independently. See [wbshterm/README.md](wbshterm/README.md).
+tmux-style split panes (type `tmux`), and shell integration wbsh drives
+itself. **It bundles `wbsh.exe`**, so it works on its own — installing
+both is fine, they live in separate folders and uninstall independently.
+See [wbshterm/README.md](wbshterm/README.md).
 
 Default install location is `%LOCALAPPDATA%\Programs\wbshterm`.
 
@@ -232,7 +233,15 @@ Default `PS1` (with color):
 `unexpand`, `comm`, `yes`, `nproc`, `tput`, `mktemp`, `kill`, `sed`, `awk` /
 `gawk`, `bc`, `gzip`, `gunzip`, `zcat`, `zip`, `unzip`, `stat`, `chmod`, `ln`,
 `cmp`, `diff`, `du`, `df`, `md5sum`, `sha1sum`, `sha256sum`, `sha512sum`,
-`base64`, `curl`, `tar`, `fzf`.
+`base64`, `curl`, `tar`, `fzf`, `tmux`.
+
+`tmux` is not the real tmux: it asks a terminal that hosts panes itself
+to start doing so. Under wbshterm it opens pane mode — splits, a status
+bar, and a `Ctrl-B` prefix; see
+[wbshterm/README.md](wbshterm/README.md#panes). Anywhere else it says so
+and exits non-zero, so it never silently pretends to have worked. There
+is no server: nothing detaches, and nothing outlives the window. Install
+the real tmux on a remote host for that.
 
 `fzf` is an interactive fuzzy picker in the spirit of
 [junegunn/fzf](https://github.com/junegunn/fzf): pipe candidate lines into

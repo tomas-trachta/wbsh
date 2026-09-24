@@ -18,6 +18,15 @@
 
 namespace wbshterm {
 
+	/** One pane's rectangle in a target, and what it shows there. */
+	struct PaneCanvas {
+		ID2D1RenderTarget*  target  = nullptr;
+		D2D1_RECT_F         bounds{};
+		const Screen*       screen  = nullptr;
+		const TerminalView* view    = nullptr;
+		bool                focused = true;
+	};
+
 	/**
 	 * @brief Draws grids. The target is supplied per paint, so the same
 	 *        renderer serves a window and an off-screen snapshot.
@@ -37,26 +46,37 @@ namespace wbshterm {
 		/** Cursor drawing alternates with this; the window drives the phase. */
 		void setCursorVisible(bool visible) { cursor_phase_ = visible; }
 
-		void draw(ID2D1RenderTarget* target, const Screen& screen, const TerminalView& view);
+		void draw(const PaneCanvas& canvas);
 
 		/** Paints the overlay over a drawn grid; does nothing when inactive. */
-		void drawPicker(ID2D1RenderTarget* target, const Screen& screen, const Picker& picker);
+		void drawPicker(const PaneCanvas& canvas, const Picker& picker);
+
+		void drawDivider(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
+		void drawStatusBar(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
+			const std::string& left, const std::string& right);
+		void drawFocusBorder(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 
 	private:
 		bool prepareBrush(ID2D1RenderTarget* target);
 
-		void drawRowBackgrounds(ID2D1RenderTarget* target, const Screen& screen,
-			const TerminalView& view, int absolute_row, int viewport_row);
-		void drawRowText(ID2D1RenderTarget* target, const Screen& screen,
-			const TerminalView& view, int absolute_row, int viewport_row);
-		void drawRun(ID2D1RenderTarget* target, const std::wstring& text, const Cell& style,
-			int row, int column);
-		void drawCursor(ID2D1RenderTarget* target, const Screen& screen, const TerminalView& view);
-		void drawPickerRow(ID2D1RenderTarget* target, const std::wstring& text, float top,
-			float width, bool highlighted);
+		/** Where the pane's top-left cell sits inside its bounds. */
+		D2D1_POINT_2F originOf(const PaneCanvas& canvas) const;
 
-		std::uint32_t backgroundFor(const Screen& screen, const TerminalView& view,
-			int absolute_row, int column) const;
+		void drawRowBackgrounds(const PaneCanvas& canvas, int absolute_row, int viewport_row);
+		void drawRowText(const PaneCanvas& canvas, int absolute_row, int viewport_row);
+		void drawRun(const PaneCanvas& canvas, const std::wstring& text, const Cell& style,
+			int row, int column);
+		void drawCursor(const PaneCanvas& canvas);
+		void drawBlockCursor(const PaneCanvas& canvas, float left, float top);
+		void drawPickerRow(const PaneCanvas& canvas, const std::wstring& text, float top,
+			float width, bool highlighted);
+		void drawStatusText(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
+			const std::string& text, bool to_the_right);
+		void drawPickerMatches(const PaneCanvas& canvas, const Picker& picker, float top,
+			float width, int visible_rows);
+
+		std::uint32_t backgroundFor(const PaneCanvas& canvas, int absolute_row,
+			int column) const;
 		std::uint32_t resolveColor(std::uint32_t color, std::uint32_t fallback) const;
 		std::uint32_t resolveForeground(const Cell& cell) const;
 		std::uint32_t resolveBackground(const Cell& cell) const;
