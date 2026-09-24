@@ -37,19 +37,31 @@ namespace wbshterm {
 		const std::vector<int>& matches() const { return matches_; }
 		int selected() const { return selected_; }
 		std::size_t itemCount() const { return items_.size(); }
+
+		/** True when the shell offered more than the list holds. */
+		bool truncated() const { return truncated_; }
 		const std::string& item(int index) const;
 
 		/** The highlighted item, or "" when nothing matches. */
 		std::string chosen() const;
 
 	private:
-		void refilter();
+		struct Scored {
+			int index;
+			int score;
+		};
+
+		void refilter(bool narrowing);
+		void scoreInto(const std::vector<int>& candidates,
+			std::vector<Scored>& out) const;
+		std::vector<int> everyItem() const;
 
 		std::vector<std::string> items_;
 		std::vector<int>         matches_;
 		std::string              prompt_;
 		std::string              query_;
 		int                      selected_   = 0;
+		bool                     truncated_  = false;
 		bool                     collecting_ = false;
 		bool                     active_     = false;
 	};

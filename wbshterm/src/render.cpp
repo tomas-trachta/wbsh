@@ -167,9 +167,12 @@ namespace wbshterm {
 		target->DrawLine(D2D1::Point2F(padding(), top), D2D1::Point2F(padding() + width, top),
 			brush_.Get(), 1.0f);
 
+		// A plus on the total says the shell offered more than the list took,
+		// so an absent entry reads as cut off rather than missing.
+		const std::string total = std::to_string(picker.itemCount())
+			+ (picker.truncated() ? "+" : "");
 		const std::string header = "  " + picker.prompt() + " > " + picker.query()
-			+ "    [" + std::to_string(picker.matches().size()) + "/"
-			+ std::to_string(picker.itemCount()) + "]";
+			+ "    [" + std::to_string(picker.matches().size()) + "/" + total + "]";
 		drawPickerRow(target, widenForPicker(header), top, width, false);
 
 		const int first = std::max(0, picker.selected() - visible_rows + 1);

@@ -4,6 +4,8 @@ A terminal for wbsh: a Win32 window that hosts an unmodified `wbsh.exe` on a
 pseudoconsole, parses its VT output into a cell grid, and paints that grid
 with Direct2D and DirectWrite.
 
+![wbshterm at startup: the screenfetch panel, Catppuccin Mocha theme](../preview_terminal.png)
+
 **M5 is done** — the shell and the terminal talk to each other. wbsh marks
 its prompts and commands, so scrollback is navigable by command and a
 command's output can be copied on its own; the title bar follows the
@@ -277,6 +279,36 @@ directory, open a file, print anything else.
 wbshterm advertises this by setting `WBSHTERM_PICKER=1` for the shell. Run
 wbsh anywhere else and the variable is absent, so its own in-console picker
 runs exactly as before.
+
+Matching prices every character by what it takes to reach: a run of
+adjacent letters earns, a word boundary earns, and a jump over unrelated
+text pays for the distance it skipped. Without that price `wbsh` scores as
+well spelled out across `Josha_paid/website/index.html` as it does against
+`wbsh/src/screen.cpp`, which is how a query ends up looking like it matched
+nothing it meant. Typing only narrows, so each keystroke re-scores what
+already matched rather than the whole tree; the list itself holds up to
+200,000 entries, and the overlay marks the count with a `+` when the shell
+offered more than that.
+
+The handover is four sequences:
+
+| Sequence | What it means |
+| --- | --- |
+| `pick;begin;<prompt>` | A request starts |
+| `pick;list;<path>` | The candidates, as a file with one per line |
+| `pick;item;<text>` | One candidate — used when no file could be written |
+| `pick;end` | The overlay opens |
+
+Each of those shapes works around something ConPTY does. It forwards only a
+few kilobytes of a sequence it has no meaning for before dropping the rest,
+which truncated any list past roughly 300 entries and lost the `end` that
+opens the overlay with it — so a long list travels as a file, and only its
+path goes through the console. The request is written to `CONOUT$` rather
+than stdout, because in `ls | fzf` stdout is the pipe and the terminal would
+never see it; the answer is read back from `CONIN$` for the same reason.
+And conhost passes such a sequence on only once something else moves the
+screen along, so the request ends with a save and restore of the cursor —
+a nudge that leaves nothing on screen.
 
 ## Scrollback and selection
 

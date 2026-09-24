@@ -147,6 +147,7 @@ namespace wbshterm {
 		void noteShellMark(const std::string& body);
 		void noteWorkingDirectory(const std::string& body);
 		void notePickRequest(const std::string& body);
+		void notePickList(const std::string& path);
 		int  currentAbsoluteRow() const;
 		void shiftBlocksAfterTrim();
 		void carryContentForward(const std::vector<Cell>& old_cells, int old_columns,

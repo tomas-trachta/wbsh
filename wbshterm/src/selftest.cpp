@@ -18,6 +18,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <thread>
 
 namespace wbshterm {
@@ -911,6 +913,40 @@ namespace wbshterm {
 			return picker;
 		}
 
+		static void typeQuery(Picker& picker, const std::string& query) {
+			for (char letter : query) picker.typeCharacter(static_cast<char32_t>(letter));
+		}
+
+		// From a real tree: "wbsh" found its letters scattered through
+		// unrelated node_modules paths and ranked those above the project
+		// actually called wbsh, which is what the reader was after.
+		static void checkRankingPrefersTightMatches(Report& report) {
+			Picker picker = pickerWith({
+				"Josha_paid/website/index.html",
+				"LogoFin/frontend/node_modules/caniuse-lite/data/features/web-share.js",
+				"wbsh/src/screen.cpp",
+			});
+
+			typeQuery(picker, "wbsh");
+
+			report.check("a name that really matches ranks above a scattered one",
+				picker.chosen() == "wbsh/src/screen.cpp", picker.chosen());
+		}
+
+		// A list that stops early hides whole projects, because the one the
+		// reader wants may sort after the cut -- so the overlay has to know.
+		static void checkAnOverlongListSaysSo(Report& report) {
+			Picker picker;
+			picker.begin("fzf");
+			for (int i = 0; i < 200003; ++i) picker.addItem("item" + std::to_string(i));
+			picker.finish();
+
+			const bool kept_plenty = picker.itemCount() >= 100000;
+
+			report.check("a list past the limit says it was cut",
+				picker.truncated() && kept_plenty, std::to_string(picker.itemCount()));
+		}
+
 		static void checkPickerFiltering(Report& report) {
 			Picker picker = pickerWith({ "src/screen.cpp", "src/window.cpp", "README.md" });
 
@@ -991,6 +1027,41 @@ namespace wbshterm {
 			report.check("an item survives encoding", decoded,
 				both ? recorder.items[1] : std::string());
 			report.check("the end of the list is announced", recorder.ended, "");
+		}
+
+		// A long list travels as a file, so the terminal has to read one and
+		// take its lines as the items -- including a line that ends CRLF.
+		static void checkPickListArrivesAsFile(Report& report, const std::wstring& directory) {
+			const std::filesystem::path path =
+				std::filesystem::path(directory) / L"pick-list.txt";
+
+			std::ofstream out(path, std::ios::binary | std::ios::trunc);
+			out << "src/screen.cpp\n" << "My Notes;draft.md\n"
+				<< "tail.txt\r\n";
+			out.close();
+
+			Screen screen(40, 6);
+			PickRecorder recorder;
+			screen.setPickHandler(&recorder);
+
+			feedToScreen(screen, "\x1b]1337;pick;begin;fzf\a"
+				"\x1b]1337;pick;list;" + path.u8string() + "\a"
+				"\x1b]1337;pick;end\a");
+
+			const bool all_three = recorder.items.size() == 3;
+			const bool intact    = all_three && recorder.items[1] == "My Notes;draft.md";
+			const bool trimmed   = all_three && recorder.items[2] == "tail.txt";
+
+			report.check("a list file becomes the items", all_three,
+				std::to_string(recorder.items.size()));
+			report.check("a list file keeps an item intact", intact,
+				all_three ? recorder.items[1] : std::string());
+			report.check("a list file tolerates CRLF", trimmed,
+				all_three ? recorder.items[2] : std::string());
+			report.check("a list file still ends the list", recorder.ended, "");
+
+			std::error_code ec;
+			std::filesystem::remove(path, ec);
 		}
 
 		static KeyPress pressOf(unsigned int virtual_key, bool control, bool alt, bool shift) {
@@ -1314,6 +1385,121 @@ namespace wbshterm {
 			session.stop();
 		}
 
+		static std::string forwardSlashes(std::string text) {
+			std::replace(text.begin(), text.end(), '\\', '/');
+			return text;
+		}
+
+		static void makeCandidateFolder(const std::filesystem::path& folder, int count) {
+			std::error_code ec;
+			std::filesystem::remove_all(folder, ec);
+			std::filesystem::create_directories(folder / L"zzz-target", ec);
+
+			for (int i = 0; i < count; ++i) {
+				char name[32] = {};
+				std::snprintf(name, sizeof(name), "cand%04d.txt", i);
+				std::ofstream out(folder / name, std::ios::binary | std::ios::trunc);
+			}
+		}
+
+		// ConPTY forwards only a few kilobytes of OSC output before it drops
+		// the rest, so a directory of hundreds of entries used to arrive
+		// truncated -- taking the "end" that opens the overlay with it.
+		static void checkLongPickList(Report& report, const std::wstring& command_line,
+				const std::wstring& directory) {
+			const std::filesystem::path folder =
+				std::filesystem::path(directory) / L"pick-many";
+			makeCandidateFolder(folder, 600);
+
+			::SetEnvironmentVariableW(L"WBSHTERM_PICKER", L"1");
+
+			Session session;
+			std::string error;
+			if (!session.start(command_line, 100, 16, error)) {
+				report.check("a long list survives the trip to the terminal", false, error);
+				return;
+			}
+
+			AutoPicker picker(session);
+			picker.wanted = "zzztarget";
+			session.screen().setPickHandler(&picker);
+
+			waitForText(session, "$", 8000);
+			runCommand(session, "cd \"" + forwardSlashes(folder.u8string()) + "\"");
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+			session.drainOutput();
+
+			runCommand(session, "fzf");
+
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+			while (std::chrono::steady_clock::now() < deadline) {
+				session.drainOutput();
+				if (session.screen().workingDirectory().find("zzz-target") != std::string::npos) {
+					break;
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			}
+
+			const std::string directory_now = session.screen().workingDirectory();
+
+			report.check("a long list survives the trip to the terminal",
+				picker.item_count == 601, std::to_string(picker.item_count));
+			report.check("a choice from a long list reaches the shell",
+				picker.answered == "zzz-target", picker.answered);
+			report.check("the shell acts on a choice from a long list",
+				directory_now.find("zzz-target") != std::string::npos, directory_now);
+
+			session.stop();
+
+			std::error_code ec;
+			std::filesystem::remove_all(folder, ec);
+		}
+
+		// In a pipeline the stage does not own stdout -- `ls | fzf` hands it a
+		// pipe -- so both halves of the handover have to use the console device
+		// instead: the request out, and the answer back in.
+		static void checkPipedPickRoundTrip(Report& report, const std::wstring& command_line,
+				const std::wstring& directory) {
+			const std::filesystem::path folder =
+				std::filesystem::path(directory) / L"pick-piped";
+			makeCandidateFolder(folder, 5);
+
+			::SetEnvironmentVariableW(L"WBSHTERM_PICKER", L"1");
+
+			Session session;
+			std::string error;
+			if (!session.start(command_line, 100, 16, error)) {
+				report.check("a picker behind a pipe still reaches the terminal", false, error);
+				return;
+			}
+
+			AutoPicker picker(session);
+			picker.wanted = "zzztarget";
+			session.screen().setPickHandler(&picker);
+
+			waitForText(session, "$", 8000);
+			runCommand(session, "cd \"" + forwardSlashes(folder.u8string()) + "\"");
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+			session.drainOutput();
+
+			runCommand(session, "ls | fzf | cat");
+
+			const bool echoed = waitForText(session, "zzz-target", 15000);
+
+			report.check("a picker behind a pipe still reaches the terminal",
+				picker.saw_list && picker.item_count > 0,
+				std::to_string(picker.item_count));
+			// ls marks a directory with a trailing slash, so the answer is
+			// the listed name rather than the bare one.
+			report.check("a choice behind a pipe comes back out of the pipeline",
+				echoed && picker.answered.rfind("zzz-target", 0) == 0, picker.answered);
+
+			session.stop();
+
+			std::error_code ec;
+			std::filesystem::remove_all(folder, ec);
+		}
+
 		// The banner promises Ctrl-D quits, so the window has to see the shell
 		// go away when it is pressed on an empty line.
 		static void checkCtrlDEndsTheSession(Report& report, const std::wstring& command_line) {
@@ -1429,9 +1615,7 @@ namespace wbshterm {
 		return cut == std::wstring::npos ? std::wstring() : report_path.substr(0, cut + 1);
 	}
 
-	bool runSelfTest(const std::wstring& report_path, const std::wstring& shell_command_line) {
-		test::Report report;
-
+	static void runGridChecks(test::Report& report) {
 		test::checkPlainText(report);
 		test::checkCursorMotion(report);
 		test::checkEraseInLine(report);
@@ -1446,10 +1630,19 @@ namespace wbshterm {
 		test::checkBlockNavigation(report);
 		test::checkBlockOutputSelection(report);
 		test::checkWorkingDirectoryReport(report);
+	}
+
+	static void runPickerChecks(test::Report& report, const std::wstring& directory) {
 		test::checkFuzzyMatching(report);
 		test::checkPickerFiltering(report);
+		test::checkRankingPrefersTightMatches(report);
+		test::checkAnOverlongListSaysSo(report);
 		test::checkPickerSelection(report);
 		test::checkPickRequestParsing(report);
+		test::checkPickListArrivesAsFile(report, directory);
+	}
+
+	static void runViewChecks(test::Report& report) {
 		test::checkScrollbackKeepsLines(report);
 		test::checkAltScreenKeepsHistory(report);
 		test::checkViewScrolling(report);
@@ -1459,32 +1652,57 @@ namespace wbshterm {
 		test::checkCharacterWidths(report);
 		test::checkWideCharactersTakeTwoCells(report);
 		test::checkResizeKeepsContent(report);
+	}
+
+	static void runSettingsChecks(test::Report& report, const std::wstring& directory) {
 		test::checkThemesAreAvailable(report);
-		test::checkConfigRoundTrip(report, reportDirectory(report_path));
-		test::checkThemeOverridesIgnoreOrder(report, reportDirectory(report_path));
+		test::checkConfigRoundTrip(report, directory);
+		test::checkThemeOverridesIgnoreOrder(report, directory);
 		test::checkMenuOffersCustomisation(report);
-		const test::ThemeFolderFixture themes =
-			test::makeThemeFolder(reportDirectory(report_path));
+
+		const test::ThemeFolderFixture themes = test::makeThemeFolder(directory);
 		test::checkThemesFolder(report, themes);
 		test::checkFolderThemeReachesConfigAndMenu(report, themes);
 		test::checkThemesFolderIsCreated(report, themes.themes);
 		test::checkFetchPanelLayout(report);
 		test::checkFetchPanelGrowsWithRows(report);
-		test::checkStartupFetchSetting(report, reportDirectory(report_path));
+		test::checkStartupFetchSetting(report, directory);
 		test::checkShippedThemesAreWrittenOut(report, themes.themes);
 		test::checkThemeEditsAreNoticed(report, themes.config_path);
 		test::removeThemeFolder(themes);
+
 		test::checkMenuChoicesApply(report);
-		test::checkMenuChoicesPersist(report, reportDirectory(report_path));
+		test::checkMenuChoicesPersist(report, directory);
+	}
+
+	static void runKeyChecks(test::Report& report) {
 		test::checkCursorKeyEncoding(report);
 		test::checkModifierParameters(report);
 		test::checkFunctionAndEditingKeys(report);
 		test::checkEraseKeys(report);
 		test::checkTextKeysFallThrough(report);
 		test::checkPasteEncoding(report);
-		test::checkLiveSession(report, shell_command_line);
-		test::checkPickRoundTrip(report, shell_command_line);
-		test::checkCtrlDEndsTheSession(report, shell_command_line);
+	}
+
+	static void runLiveChecks(test::Report& report, const std::wstring& command_line,
+			const std::wstring& directory) {
+		test::checkLiveSession(report, command_line);
+		test::checkPickRoundTrip(report, command_line);
+		test::checkLongPickList(report, command_line, directory);
+		test::checkPipedPickRoundTrip(report, command_line, directory);
+		test::checkCtrlDEndsTheSession(report, command_line);
+	}
+
+	bool runSelfTest(const std::wstring& report_path, const std::wstring& shell_command_line) {
+		test::Report report;
+		const std::wstring directory = reportDirectory(report_path);
+
+		runGridChecks(report);
+		runPickerChecks(report, directory);
+		runViewChecks(report);
+		runSettingsChecks(report, directory);
+		runKeyChecks(report);
+		runLiveChecks(report, shell_command_line, directory);
 
 		test::writeReport(report_path, report.text());
 		return report.passed();

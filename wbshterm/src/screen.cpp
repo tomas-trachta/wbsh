@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 namespace wbshterm {
@@ -440,8 +442,24 @@ namespace wbshterm {
 
 		if (verb == "begin")  pick_handler_->pickBegin(value);
 		if (verb == "item")   pick_handler_->pickItem(value);
+		if (verb == "list")   notePickList(value);
 		if (verb == "end")    pick_handler_->pickEnd();
 		if (verb == "cancel") pick_handler_->pickCancel();
+	}
+
+	// ConPTY forwards only a few kilobytes of OSC output before it starts
+	// dropping the rest, which loses the tail of a long list and the "end"
+	// that opens the overlay with it. Past a handful of entries the shell
+	// therefore writes the list to a file and sends only its path.
+	void Screen::notePickList(const std::string& path) {
+		std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
+		if (!file) return;
+
+		std::string line;
+		while (std::getline(file, line)) {
+			if (!line.empty() && line.back() == '\r') line.pop_back();
+			pick_handler_->pickItem(line);
+		}
 	}
 
 	void Screen::vtOsc(const std::string& text) {

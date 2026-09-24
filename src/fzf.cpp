@@ -22,6 +22,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -448,23 +450,95 @@ namespace wbsh {
 		return encoded;
 	}
 
-	static void sendPickRequest(const std::vector<std::string>& candidates) {
-		std::fputs("\x1b]1337;pick;begin;fzf\a", stdout);
-		for (const std::string& candidate : candidates) {
-			std::fputs(("\x1b]1337;pick;item;" + percentEncodeItem(candidate) + "\a").c_str(),
-				stdout);
+	// ConPTY forwards only a few kilobytes of OSC output before it starts
+	// dropping the rest, so a long list sent item by item loses its tail --
+	// and the "end" that opens the overlay with it. The list travels as a
+	// file instead; only its path goes through the console.
+	static fs::path pickListPath() {
+		std::error_code ec;
+		const fs::path dir = fs::temp_directory_path(ec);
+		if (ec) return fs::path();
+
+		const std::wstring name = L"wbsh-pick-"
+			+ std::to_wstring(static_cast<unsigned long>(GetCurrentProcessId())) + L".txt";
+		return dir / name;
+	}
+
+	static bool writePickList(const fs::path& path, const std::vector<std::string>& candidates) {
+		if (path.empty()) return false;
+
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		if (!out) return false;
+
+		for (const std::string& candidate : candidates) out << candidate << '\n';
+
+		out.flush();
+		return out.good();
+	}
+
+	static void appendPickLine(std::string& request, const std::string& verb,
+			const std::string& value) {
+		request += "\x1b]1337;pick;" + verb;
+		if (!value.empty()) request += ";" + percentEncodeItem(value);
+
+		request += "\a";
+	}
+
+	// conhost only forwards a sequence it has no meaning for once something
+	// else moves the screen along; without that the request sits in it until
+	// the next write, which is long after the user needed the overlay. A
+	// save and restore of the cursor is the cheapest nudge that leaves
+	// nothing behind on screen.
+	static const char* const kPassThroughNudge = "\x1b[s\x1b[u";
+
+	// The request goes to the console device rather than stdout: in
+	// `ls | fzf` stdout is the pipe, and the terminal would never see it.
+	// This is the same reason the in-console picker draws through CONOUT$.
+	//
+	// Virtual terminal processing is left on afterwards on purpose. conhost
+	// forwards the sequence to the terminal on its own schedule, and putting
+	// the old mode back straight after the write loses it on the way out.
+	// Only a run under wbshterm gets here, where VT output is wanted anyway.
+	static void writePickRequest(const std::string& request) {
+		const HANDLE out = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+		if (out == INVALID_HANDLE_VALUE) return;
+
+		DWORD mode = 0;
+		GetConsoleMode(out, &mode);
+		SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT);
+
+		const std::string bytes = request + kPassThroughNudge;
+
+		DWORD wrote = 0;
+		WriteFile(out, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr);
+
+		CloseHandle(out);
+	}
+
+	// Writing the list can fail -- a full or read-only temp directory -- and
+	// a short list still fits through the console, so the item-by-item form
+	// stays as the fallback.
+	static void sendPickRequest(const std::vector<std::string>& candidates,
+			const fs::path& list_path, bool list_written) {
+		std::string request;
+		appendPickLine(request, "begin", "fzf");
+
+		if (list_written) {
+			appendPickLine(request, "list", pathToUtf8(list_path));
+		} else {
+			for (const std::string& candidate : candidates) {
+				appendPickLine(request, "item", candidate);
+			}
 		}
 
-		std::fputs("\x1b]1337;pick;end\a", stdout);
-		std::fflush(stdout);
+		appendPickLine(request, "end", std::string());
+		writePickRequest(request);
 	}
 
 	// The terminal replies by typing the choice, so this reads a line of key
 	// events; an empty one means the user backed out.
-	static bool readPickReply(std::string& selected) {
-		const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
-		if (input == nullptr || input == INVALID_HANDLE_VALUE) return false;
-
+	static bool readPickReplyFrom(HANDLE input, std::string& selected) {
 		std::string line;
 		for (;;) {
 			INPUT_RECORD record{};
@@ -489,11 +563,41 @@ namespace wbsh {
 		return true;
 	}
 
+	// Read the console device rather than stdin: in `ls | fzf` stdin is the
+	// pipe, and reading that ends the pick before the user has chosen
+	// anything -- the terminal answer then lands on the next prompt.
+	static bool readPickReply(std::string& selected) {
+		const HANDLE input = CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+		if (input == INVALID_HANDLE_VALUE) return false;
+
+		DWORD saved_mode = 0;
+		GetConsoleMode(input, &saved_mode);
+		SetConsoleMode(input, saved_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT
+			| ENABLE_PROCESSED_INPUT | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
+
+		const bool answered = readPickReplyFrom(input, selected);
+
+		SetConsoleMode(input, saved_mode);
+		CloseHandle(input);
+		return answered;
+	}
+
 	static int pickThroughTerminal(Executor& exec, const std::vector<std::string>& candidates) {
-		sendPickRequest(candidates);
+		const fs::path list_path = pickListPath();
+		const bool list_written = writePickList(list_path, candidates);
+
+		sendPickRequest(candidates, list_path, list_written);
 
 		std::string selected;
-		if (!readPickReply(selected)) return 130;
+		const bool answered = readPickReply(selected);
+
+		if (list_written) {
+			std::error_code ec;
+			fs::remove(list_path, ec);
+		}
+
+		if (!answered) return 130;
 
 		bool handled = false;
 		const int rc = fzfActOnSelection(exec, selected, handled);

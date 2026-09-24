@@ -51,6 +51,8 @@ Default install location is `%LOCALAPPDATA%\Programs\wbsh`.
 
 ### wbshterm, the terminal
 
+![wbshterm at startup: the screenfetch panel, Catppuccin Mocha theme](./preview_terminal.png)
+
 Every release also ships `wbshterm-setup-x64.exe`: a window that hosts wbsh
 on a pseudoconsole, with themes, a config file, scrollback and selection,
 and shell integration wbsh drives itself. **It bundles `wbsh.exe`**, so it
