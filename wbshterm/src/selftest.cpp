@@ -13,6 +13,7 @@
 #include "menu.h"
 #include "pane_tree.h"
 #include "picker.h"
+#include "scrollbar.h"
 #include "titlebar.h"
 #include "view.h"
 #include "session.h"
@@ -224,6 +225,50 @@ namespace wbshterm {
 			report.check("scrollback reads oldest first", oldest_first, "");
 		}
 
+		static void checkEraseSavedLinesDropsScrollback(Report& report) {
+			Screen screen(10, 2);
+			feedToScreen(screen, "\x1b]633;A\x07one\r\ntwo\r\nthree\r\n\x1b]633;A\x07");
+
+			TerminalView view;
+			view.followOutput(screen);
+			view.scrollBy(2, screen);
+			const int history_before = screen.scrollbackRows();
+			const std::size_t blocks_before = screen.commandBlocks().size();
+
+			feedToScreen(screen, "\x1b[H\x1b[2J\x1b[3J");
+			view.followOutput(screen);
+
+			const bool forgotten = history_before == 2 && screen.scrollbackRows() == 0
+				&& screen.totalRows() == screen.rows();
+			const bool blocks_follow = blocks_before == 2
+				&& screen.commandBlocks().size() == 1
+				&& screen.commandBlocks().front().prompt_row == 1;
+
+			report.check("ED 3 forgets the scrollback", forgotten,
+				std::to_string(screen.scrollbackRows()));
+			report.check("ED 3 drops the command blocks that went with it", blocks_follow,
+				std::to_string(screen.commandBlocks().size()));
+			report.check("a view scrolled into cleared history returns to the bottom",
+				view.scrollOffset() == 0, std::to_string(view.scrollOffset()));
+		}
+
+		// ConPTY never forwards ED 3, so the shell asks over OSC 1337 as
+		// well; both spellings have to end up in the same place.
+		static void checkScrollbackClearRequest(Report& report) {
+			Screen screen(10, 2);
+			feedToScreen(screen, "one\r\ntwo\r\nthree\r\n");
+			const int history_before = screen.scrollbackRows();
+
+			feedToScreen(screen, "\x1b]1337;clear;scrollback\a");
+			const bool forgotten = history_before == 2 && screen.scrollbackRows() == 0;
+			const bool grid_kept = screen.toText().find("three") != std::string::npos;
+
+			report.check("a scrollback clear request forgets the history", forgotten,
+				std::to_string(screen.scrollbackRows()));
+			report.check("a scrollback clear request leaves the grid alone", grid_kept,
+				screen.toText());
+		}
+
 		static void checkAltScreenKeepsHistory(Report& report) {
 			Screen screen(10, 2);
 			feedToScreen(screen, "shell\r\noutput\r\n");
@@ -283,6 +328,65 @@ namespace wbshterm {
 
 			report.check("new output does not slide the text being read",
 				view.topRow(screen) == looking_at, std::to_string(view.topRow(screen)));
+		}
+
+		static ScrollbarFrame testScrollbarFrame() {
+			ScrollbarFrame frame;
+			frame.bounds      = D2D1::RectF(0.0f, 0.0f, 300.0f, 220.0f);
+			frame.padding     = 10.0f;
+			frame.cell_height = 100.0f;
+			return frame;
+		}
+
+		static void checkScrollbarFollowsTheView(Report& report) {
+			Screen screen(10, 2);
+			TerminalView view;
+			const ScrollbarFrame frame = testScrollbarFrame();
+
+			feedToScreen(screen, "one\r\n");
+			view.followOutput(screen);
+			const bool absent = !scrollbarShape(frame, screen, view).present;
+
+			feedToScreen(screen, "two\r\nthree\r\n");
+			view.followOutput(screen);
+			const ScrollbarShape at_bottom = scrollbarShape(frame, screen, view);
+			const bool half_high = at_bottom.present
+				&& thumbHeight(at_bottom) == 100.0f
+				&& at_bottom.thumb.bottom == at_bottom.track.bottom
+				&& at_bottom.track.right <= frame.bounds.right;
+
+			view.scrollBy(2, screen);
+			const ScrollbarShape at_top = scrollbarShape(frame, screen, view);
+			const bool risen = at_top.thumb.top == at_top.track.top;
+
+			const bool round_trip = rowForThumbTop(at_top, at_top.track.top, screen) == 0
+				&& rowForThumbTop(at_top, at_top.track.top + 100.0f, screen) == 2
+				&& rowForThumbTop(at_top, at_top.track.top + 49.0f, screen) == 1;
+
+			report.check("no scrollbar without history", absent, "");
+			report.check("the thumb spans the visible share of the buffer", half_high, "");
+			report.check("scrolling to the oldest line lifts the thumb to the top", risen, "");
+			report.check("a thumb position maps back to its top row", round_trip, "");
+		}
+
+		static void checkScrollbarHitTesting(Report& report) {
+			Screen screen(10, 2);
+			TerminalView view;
+			const ScrollbarFrame frame = testScrollbarFrame();
+
+			feedToScreen(screen, "one\r\ntwo\r\nthree\r\n");
+			view.followOutput(screen);
+			const ScrollbarShape shape = scrollbarShape(frame, screen, view);
+
+			const float x = (shape.track.left + shape.track.right) * 0.5f;
+			const bool on_thumb = thumbHolds(shape, x, shape.thumb.top + 1.0f);
+			const bool on_track = scrollbarHolds(shape, x, shape.track.top + 1.0f)
+				&& !thumbHolds(shape, x, shape.track.top + 1.0f);
+			const bool beside = !scrollbarHolds(shape, shape.track.left - 20.0f, shape.thumb.top);
+
+			report.check("the thumb takes a press on it", on_thumb, "");
+			report.check("the track above the thumb is the bar but not the thumb", on_track, "");
+			report.check("text next to the bar is not the bar", beside, "");
 		}
 
 		static void checkSelectionText(Report& report) {
@@ -2095,8 +2199,12 @@ namespace wbshterm {
 	static void runViewChecks(test::Report& report) {
 		test::checkScrollbackKeepsLines(report);
 		test::checkAltScreenKeepsHistory(report);
+		test::checkEraseSavedLinesDropsScrollback(report);
+		test::checkScrollbackClearRequest(report);
 		test::checkViewScrolling(report);
 		test::checkScrolledViewHoldsStill(report);
+		test::checkScrollbarFollowsTheView(report);
+		test::checkScrollbarHitTesting(report);
 		test::checkSelectionText(report);
 		test::checkSelectionShape(report);
 		test::checkCharacterWidths(report);

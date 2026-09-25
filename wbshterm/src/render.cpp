@@ -275,6 +275,32 @@ namespace wbshterm {
 		canvas.target->PopAxisAlignedClip();
 	}
 
+	// The bar lives in the margin, so the grid keeps every column; a
+	// rounded thumb in the text's own colour is enough to read the depth
+	// of history without a track behind it until the pointer arrives.
+	void Renderer::drawScrollbar(const PaneCanvas& canvas, const ScrollbarShape& shape,
+			bool lit) {
+		if (!shape.present || !prepareBrush(canvas.target)) return;
+
+		const float radius = (shape.track.right - shape.track.left) * 0.5f;
+		const std::uint32_t ink = blend(config_.palette.background,
+			config_.palette.foreground, 0.55f);
+
+		canvas.target->PushAxisAlignedClip(canvas.bounds, D2D1_ANTIALIAS_MODE_ALIASED);
+
+		if (lit) {
+			setBrushColor(ink, 0.15f);
+			canvas.target->FillRoundedRectangle(D2D1::RoundedRect(shape.track, radius, radius),
+				brush_.Get());
+		}
+
+		setBrushColor(ink, lit ? 0.9f : 0.45f);
+		canvas.target->FillRoundedRectangle(D2D1::RoundedRect(shape.thumb, radius, radius),
+			brush_.Get());
+
+		canvas.target->PopAxisAlignedClip();
+	}
+
 	// tmux paints its status bar black on green, and a theme's own green
 	// keeps that recognisable without pinning the colour to one palette.
 	void Renderer::drawStatusBar(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,

@@ -121,9 +121,15 @@ namespace wbshterm {
 		canvas.screen = &screen;
 		canvas.view   = &view;
 
+		ScrollbarFrame frame;
+		frame.bounds      = canvas.bounds;
+		frame.padding     = renderer.padding();
+		frame.cell_height = renderer.metrics().height;
+
 		target->BeginDraw();
 		renderer.draw(canvas);
 		renderer.drawPicker(canvas, picker);
+		renderer.drawScrollbar(canvas, scrollbarShape(frame, screen, view), false);
 		if (FAILED(target->EndDraw())) {
 			out_error = "off-screen drawing failed";
 			return false;

@@ -25,4 +25,13 @@ namespace wbsh {
 	 */
 	void writeTerminalRequest(const std::string& request);
 
+	/**
+	 * @brief Asks the terminal to forget its scrollback.
+	 *
+	 * ConPTY does not forward ED 3, so `clear` and Ctrl-L would leave
+	 * every old line reachable by scrolling up. Sent only where the
+	 * environment says a wbshterm is listening; a no-op elsewhere.
+	 */
+	void requestScrollbackClear();
+
 }  // namespace wbsh

@@ -297,6 +297,12 @@ namespace wbshterm {
 		::SetEnvironmentVariableW(L"WBSHTERM_PANES", L"1");
 	}
 
+	// ConPTY swallows ED 3, so the shell asks for a scrollback clear over
+	// OSC 1337 instead; this says the request will be heard.
+	static void announceScrollbackSupport() {
+		::SetEnvironmentVariableW(L"WBSHTERM_SCROLLBACK", L"1");
+	}
+
 	static int runWindow(const Options& options) {
 		const std::wstring config_path = options.config_path.empty()
 			? defaultConfigPath()
@@ -314,6 +320,7 @@ namespace wbshterm {
 		ensureThemesDirectory(themesDirectory(config_path));
 		announcePickerSupport();
 		announcePaneSupport();
+		announceScrollbackSupport();
 		if (config.startup_fetch) announceStartupCommand();
 
 		TerminalWindow window;

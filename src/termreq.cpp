@@ -11,7 +11,20 @@
 #  include <windows.h>
 #endif /* _WIN32 */
 
+#include <cstdlib>
+
 namespace wbsh {
+
+	static bool terminalClearsScrollback() {
+		const char* flag = std::getenv("WBSHTERM_SCROLLBACK");
+		return flag != nullptr && *flag != '0';
+	}
+
+	void requestScrollbackClear() {
+		if (!terminalClearsScrollback()) return;
+
+		writeTerminalRequest("\x1b]1337;clear;scrollback\a");
+	}
 
 	std::string percentEncodeRequest(const std::string& text) {
 		static const char* kHexDigits = "0123456789ABCDEF";

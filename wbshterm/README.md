@@ -87,6 +87,7 @@ apart from a parsing bug by replaying the same bytes.
 | `screen.h/.cpp` | The cell grid: printing, cursor motion, erase, scroll, SGR, query replies. |
 | `keymap.h/.cpp` | Key presses to bytes: modifiers, cursor-key modes, paste bracketing. |
 | `view.h/.cpp` | What the window looks at: scroll position and selection, in absolute rows. |
+| `scrollbar.h/.cpp` | The thumb in a pane's margin: rows to pixels, and back for a drag. |
 | `config.h/.cpp` | The settings file: parsing, defaults, and the file written on first run. |
 | `theme.h/.cpp` | The built-in colour schemes. |
 | `titlebar.h/.cpp` | Where the caption's lights sit, and what the pointer is over. |
@@ -281,6 +282,7 @@ them ignore them, so wbsh loses nothing elsewhere.
 | `OSC 7;file://…` | Puts the working directory in the title bar |
 | `OSC 1337;pick;…` | Draws the picker as an overlay and answers with the choice |
 | `OSC 1337;tmux;attach` | Starts pane mode, the way typing `tmux` does |
+| `OSC 1337;clear;scrollback` | Forgets the scrollback; ConPTY drops the `ED 3` that `clear` sends |
 
 That turns a wall of scrollback into a list of commands:
 
@@ -466,12 +468,17 @@ afterwards.
 
 | Action | Binding |
 | --- | --- |
-| Scroll | Wheel, Shift+PageUp/PageDown, Ctrl+Shift+Up/Down |
+| Scroll | Wheel, Shift+PageUp/PageDown, Ctrl+Shift+Up/Down, or drag the scrollbar |
 | Select | Drag; double click for a word, triple for the line |
 | Copy | Ctrl+Shift+C, Ctrl+Insert |
 | Customise | Right-click, or Shift+F10 |
 | Font size | Ctrl+=, Ctrl+-, Ctrl+0 |
 | Return to the bottom | Type anything |
+
+A thin scrollbar sits in each pane's right margin once there is history to
+scroll into. It lights up under the pointer, the thumb drags, and a press on
+the track jumps there. `clear` (and `Ctrl-L`) discards the scrollback along
+with the screen, so scrolling up afterwards finds nothing.
 
 Two behaviours are deliberate. New output does **not** yank the view back
 to the bottom while you are reading history — the scroll offset grows by

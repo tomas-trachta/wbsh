@@ -9,6 +9,7 @@
 #include "font.h"
 #include "picker.h"
 #include "screen.h"
+#include "scrollbar.h"
 #include "titlebar.h"
 #include "view.h"
 
@@ -60,6 +61,9 @@ namespace wbshterm {
 
 		/** Paints the overlay over a drawn grid; does nothing when inactive. */
 		void drawPicker(const PaneCanvas& canvas, const Picker& picker);
+
+		/** A lit bar is one under the pointer or being dragged. */
+		void drawScrollbar(const PaneCanvas& canvas, const ScrollbarShape& shape, bool lit);
 
 		void drawDivider(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 		void drawStatusBar(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,

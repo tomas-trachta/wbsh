@@ -36,6 +36,7 @@
 #include "inflate.h"
 #include "numparse.h"
 #include "regexutil.h"
+#include "termreq.h"
 
 namespace wbsh {
 
@@ -547,6 +548,7 @@ namespace wbsh {
 	static int builtin_clear(Executor&, const std::vector<std::string>&) {
 		std::fputs("\x1b[H\x1b[2J\x1b[3J", stdout);
 		std::fflush(stdout);
+		requestScrollbackClear();
 		return 0;
 	}
 

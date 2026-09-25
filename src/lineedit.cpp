@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "strscan.h"
+#include "termreq.h"
 
 namespace wbsh {
 
@@ -335,6 +336,7 @@ namespace wbsh {
 
 	void LineEditor::handleClearScreen() {
 		emit("\x1b[H\x1b[2J\x1b[3J");
+		requestScrollbackClear();
 		last_cursor_row_ = 0;
 		redraw();
 	}

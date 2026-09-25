@@ -501,6 +501,26 @@ namespace wbshterm {
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
+	void TerminalWindow::trackScrollbarHover(LPARAM lparam) {
+		const float x = static_cast<float>(GET_X_LPARAM(lparam));
+		const float y = static_cast<float>(GET_Y_LPARAM(lparam));
+
+		PaneNode* leaf = panes_.leafAt(x, y);
+		if (leaf != nullptr && !scrollbarHolds(scrollbarOf(*leaf), x, y)) leaf = nullptr;
+		if (leaf == scrollbar_hover_) return;
+
+		scrollbar_hover_ = leaf;
+		if (leaf != nullptr) armMouseLeave();
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::clearScrollbarHover() {
+		if (scrollbar_hover_ == nullptr) return;
+
+		scrollbar_hover_ = nullptr;
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
 	void TerminalWindow::setWindowActive(bool active) {
 		title_bar_.setActive(active);
 		::InvalidateRect(window_, nullptr, FALSE);
@@ -707,6 +727,7 @@ namespace wbshterm {
 			const PaneCanvas canvas = canvasFor(*leaf);
 			renderer_.draw(canvas);
 			renderer_.drawPicker(canvas, leaf->pane()->picker());
+			renderer_.drawScrollbar(canvas, scrollbarOf(*leaf), scrollbarLit(*leaf));
 			leaf->pane()->screen().clearDirty();
 		}
 
@@ -774,6 +795,62 @@ namespace wbshterm {
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
+	ScrollbarShape TerminalWindow::scrollbarOf(const PaneNode& leaf) const {
+		ScrollbarFrame frame;
+		frame.bounds      = leaf.bounds();
+		frame.padding     = renderer_.padding();
+		frame.cell_height = renderer_.metrics().height;
+
+		return scrollbarShape(frame, leaf.pane()->screen(), leaf.pane()->view());
+	}
+
+	bool TerminalWindow::scrollbarLit(const PaneNode& leaf) const {
+		return &leaf == scrolling_ || &leaf == scrollbar_hover_;
+	}
+
+	// Pressing the thumb picks it up where it is; pressing the track
+	// brings the thumb under the pointer first, then the drag goes on
+	// from there as if it had been picked up in the middle.
+	bool TerminalWindow::beginScrollbarDrag(LPARAM lparam) {
+		const float x = static_cast<float>(GET_X_LPARAM(lparam));
+		const float y = static_cast<float>(GET_Y_LPARAM(lparam));
+
+		PaneNode* leaf = panes_.leafAt(x, y);
+		if (leaf == nullptr) return false;
+
+		const ScrollbarShape shape = scrollbarOf(*leaf);
+		if (!scrollbarHolds(shape, x, y)) return false;
+
+		scrolling_   = leaf;
+		scroll_grab_ = thumbHolds(shape, x, y) ? y - shape.thumb.top : thumbHeight(shape) * 0.5f;
+		::SetCapture(window_);
+		continueScrollbarDrag(lparam);
+		return true;
+	}
+
+	void TerminalWindow::continueScrollbarDrag(LPARAM lparam) {
+		Pane& pane = *scrolling_->pane();
+		const ScrollbarShape shape = scrollbarOf(*scrolling_);
+		const float thumb_top = static_cast<float>(GET_Y_LPARAM(lparam)) - scroll_grab_;
+
+		pane.view().scrollToRow(rowForThumbTop(shape, thumb_top, pane.screen()), pane.screen());
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::endScrollbarDrag() {
+		if (scrolling_ == nullptr) return;
+
+		scrolling_ = nullptr;
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	bool TerminalWindow::pointerOverScrollbar(float x, float y) const {
+		if (scrolling_ != nullptr) return true;
+
+		const PaneNode* leaf = panes_.leafAt(x, y);
+		return leaf != nullptr && scrollbarHolds(scrollbarOf(*leaf), x, y);
+	}
+
 	// The window class asks for an I-beam; over a divider it has to become
 	// a sizing cursor or there is nothing telling the hands it can move.
 	bool TerminalWindow::onSetCursor() {
@@ -781,7 +858,8 @@ namespace wbshterm {
 		if (::GetCursorPos(&where) == 0 || ::ScreenToClient(window_, &where) == 0) return false;
 
 		if (title_bar_.holdsPoint(static_cast<float>(where.x), static_cast<float>(where.y))
-			|| where.y >= static_cast<int>(status_bounds_.top)) {
+			|| where.y >= static_cast<int>(status_bounds_.top)
+			|| pointerOverScrollbar(static_cast<float>(where.x), static_cast<float>(where.y))) {
 			::SetCursor(::LoadCursorW(nullptr, IDC_ARROW));
 			return true;
 		}
@@ -1092,7 +1170,10 @@ namespace wbshterm {
 			if (customFrame()) return onHitTest(lparam);
 			break;
 		case WM_NCMOUSEMOVE:
-		case WM_MOUSELEAVE: clearTitleHover(); break;
+		case WM_MOUSELEAVE:
+			clearTitleHover();
+			clearScrollbarHover();
+			break;
 		case WM_ACTIVATE:
 			setWindowActive(LOWORD(wparam) != WA_INACTIVE);
 			break;
@@ -1129,6 +1210,7 @@ namespace wbshterm {
 	void TerminalWindow::onMouseDown(LPARAM lparam) {
 		if (titleBarTakesPress(lparam)) return;
 		if (beginDividerDrag(lparam)) return;
+		if (beginScrollbarDrag(lparam)) return;
 
 		PaneNode* leaf = leafFromMouse(lparam);
 		if (leaf == nullptr) return;
@@ -1150,12 +1232,18 @@ namespace wbshterm {
 
 	void TerminalWindow::onMouseMove(WPARAM wparam, LPARAM lparam) {
 		trackTitleHover(lparam);
+		trackScrollbarHover(lparam);
 
 		if ((wparam & MK_LBUTTON) == 0) return;
 		if (title_bar_.pressed() != TitleButton::None) return;
 
 		if (dragging_ != nullptr) {
 			continueDividerDrag(lparam);
+			return;
+		}
+
+		if (scrolling_ != nullptr) {
+			continueScrollbarDrag(lparam);
 			return;
 		}
 
@@ -1168,7 +1256,7 @@ namespace wbshterm {
 	void TerminalWindow::onMouseUp(LPARAM lparam) {
 		if (titleBarTakesRelease(lparam)) return;
 
-		const bool was_dragging = dragging_ != nullptr;
+		const bool was_dragging = dragging_ != nullptr || scrolling_ != nullptr;
 		if (::GetCapture() == window_) ::ReleaseCapture();
 
 		if (was_dragging) return;
@@ -1180,6 +1268,7 @@ namespace wbshterm {
 	// something else mid-drag; either way the drag has to end here or
 	// the divider keeps following the pointer and no pty is resized.
 	void TerminalWindow::onCaptureLost() {
+		endScrollbarDrag();
 		if (dragging_ == nullptr) return;
 
 		dragging_ = nullptr;

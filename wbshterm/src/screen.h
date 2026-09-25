@@ -94,6 +94,9 @@ namespace wbshterm {
 		void setScrollbackLimit(int lines);
 		void clearAll();
 
+		/** Forgets every line that scrolled off; the grid itself stays. */
+		void clearScrollback();
+
 		int columns() const { return columns_; }
 		int rows() const { return rows_; }
 
@@ -165,7 +168,8 @@ namespace wbshterm {
 		void noteTmuxRequest(const std::string& body);
 		void notePickList(const std::string& path);
 		int  currentAbsoluteRow() const;
-		void shiftBlocksAfterTrim();
+		void trimScrollback();
+		void shiftBlocksUp(int lines);
 		void carryContentForward(const std::vector<Cell>& old_cells, int old_columns,
 			int old_rows);
 		void enterAltScreen();

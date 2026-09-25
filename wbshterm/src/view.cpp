@@ -28,13 +28,15 @@ namespace wbshterm {
 
 	// New lines push the grid down; holding the offset steady would slide
 	// the text the reader is looking at, so grow it by as much as arrived.
+	// History can also vanish under the view, when the shell clears it,
+	// and then the offset is pulled back into the rows that remain.
 	void TerminalView::followOutput(const Screen& screen) {
 		const int total = screen.totalRows();
 		const int grown = total - last_total_;
 		last_total_ = total;
 
-		if (scroll_offset_ <= 0 || grown <= 0) return;
-		scroll_offset_ = std::min(scroll_offset_ + grown, maxScrollOffset(screen));
+		if (scroll_offset_ > 0 && grown > 0) scroll_offset_ += grown;
+		scroll_offset_ = std::min(scroll_offset_, maxScrollOffset(screen));
 	}
 
 	void TerminalView::scrollBy(int lines, const Screen& screen) {

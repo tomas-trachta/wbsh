@@ -10,6 +10,7 @@
 #include "menu.h"
 #include "pane_tree.h"
 #include "render.h"
+#include "scrollbar.h"
 #include "view.h"
 
 #include <memory>
@@ -55,6 +56,8 @@ namespace wbshterm {
 		void armMouseLeave();
 		void trackTitleHover(LPARAM lparam);
 		void clearTitleHover();
+		void trackScrollbarHover(LPARAM lparam);
+		void clearScrollbarHover();
 		void setWindowActive(bool active);
 		std::wstring captionText() const;
 		void applyWindowSettings();
@@ -106,6 +109,12 @@ namespace wbshterm {
 		void onCaptureLost();
 		bool beginDividerDrag(LPARAM lparam);
 		void continueDividerDrag(LPARAM lparam);
+		ScrollbarShape scrollbarOf(const PaneNode& leaf) const;
+		bool scrollbarLit(const PaneNode& leaf) const;
+		bool beginScrollbarDrag(LPARAM lparam);
+		void continueScrollbarDrag(LPARAM lparam);
+		void endScrollbarDrag();
+		bool pointerOverScrollbar(float x, float y) const;
 		bool onSetCursor();
 		void showSystemMenu(int screen_x, int screen_y);
 		bool pointIsOnCaption(int screen_x, int screen_y) const;
@@ -142,6 +151,9 @@ namespace wbshterm {
 		int          click_count_     = 0;
 		bool         swallow_next_char_ = false;
 		PaneNode*    dragging_ = nullptr;
+		PaneNode*    scrolling_ = nullptr;
+		PaneNode*    scrollbar_hover_ = nullptr;
+		float        scroll_grab_ = 0.0f;
 		std::wstring directory_hint_;
 		std::string  shown_clock_;
 		D2D1_RECT_F  status_bounds_{};

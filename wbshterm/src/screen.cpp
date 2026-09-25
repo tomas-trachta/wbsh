@@ -83,10 +83,7 @@ namespace wbshterm {
 			if (!alt_screen_) scrollback_.push_back(std::move(line));
 		}
 
-		while (scrollback_.size() > scrollback_limit_) {
-			scrollback_.pop_front();
-			shiftBlocksAfterTrim();
-		}
+		trimScrollback();
 
 		for (int row = 0; row < kept; ++row) {
 			const int source = old_rows - kept + row;
@@ -106,12 +103,22 @@ namespace wbshterm {
 		markAllDirty();
 	}
 
-	void Screen::setScrollbackLimit(int lines) {
-		scrollback_limit_ = static_cast<std::size_t>(std::max(0, lines));
+	void Screen::clearScrollback() {
+		const int dropped = scrollbackRows();
+		scrollback_.clear();
+		shiftBlocksUp(dropped);
+	}
+
+	void Screen::trimScrollback() {
 		while (scrollback_.size() > scrollback_limit_) {
 			scrollback_.pop_front();
-			shiftBlocksAfterTrim();
+			shiftBlocksUp(1);
 		}
+	}
+
+	void Screen::setScrollbackLimit(int lines) {
+		scrollback_limit_ = static_cast<std::size_t>(std::max(0, lines));
+		trimScrollback();
 	}
 
 	Cell& Screen::at(int row, int column) {
@@ -279,10 +286,7 @@ namespace wbshterm {
 			cells_.begin() + static_cast<std::ptrdiff_t>(start)
 				+ static_cast<std::ptrdiff_t>(columns_));
 
-			while (scrollback_.size() > scrollback_limit_) {
-			scrollback_.pop_front();
-			shiftBlocksAfterTrim();
-		}
+		trimScrollback();
 	}
 
 	void Screen::scrollUp(int count) {
@@ -352,13 +356,13 @@ namespace wbshterm {
 		return scrollbackRows() + cursor_.row;
 	}
 
-	// Scrollback drops its oldest lines once it is full, which moves every
-	// absolute row down by one; the blocks have to move with them.
-	void Screen::shiftBlocksAfterTrim() {
+	// Dropping scrollback, a line at a time when it is full or all of it
+	// on a clear, moves every absolute row up; the blocks move with them.
+	void Screen::shiftBlocksUp(int lines) {
 		for (CommandBlock& block : blocks_) {
-			--block.prompt_row;
-			if (block.output_row >= 0) --block.output_row;
-			if (block.end_row >= 0) --block.end_row;
+			block.prompt_row -= lines;
+			if (block.output_row >= 0) block.output_row -= lines;
+			if (block.end_row >= 0) block.end_row -= lines;
 		}
 
 		while (!blocks_.empty() && blocks_.front().prompt_row < 0) {
@@ -432,6 +436,7 @@ namespace wbshterm {
 	void Screen::noteTerminalRequest(const std::string& body) {
 		if (body.rfind("pick;", 0) == 0) notePickRequest(body);
 		if (body.rfind("tmux;", 0) == 0) noteTmuxRequest(body);
+		if (body == "clear;scrollback") clearScrollback();
 	}
 
 	void Screen::noteTmuxRequest(const std::string& body) {
@@ -578,8 +583,10 @@ namespace wbshterm {
 			for (int row = 0; row < cursor_.row; ++row) clearRow(row, 0, columns_ - 1);
 			break;
 		case 2:
-		case 3:
 			for (int row = 0; row < rows_; ++row) clearRow(row, 0, columns_ - 1);
+			break;
+		case 3:
+			clearScrollback();
 			break;
 		default:
 			break;
