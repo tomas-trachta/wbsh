@@ -382,12 +382,16 @@ src/
 sdk/
   include/wbshsdk.h      The C contract a third-party util is written against
   src/wbshsdk.cpp        wbshsdk.dll: host binding, util loading, ABI checks
+  src/wbshsdk_terminal.cpp  Terminal helpers: raw keys in, escape sequences out
   samples/hello/         A working util: one command, one status segment
+  samples/pick/          A fuzzy picker: the terminal helpers end to end
+  samples/procs/         A live process monitor plus a status-bar segment
   tests/sdk.ps1          Integration checks with the sample installed
   README.md              How to write and install a util
 
 tests/                   Shell-script suite + golden files (run-all.sh)
 tools/check_style.py     Mechanical style checker (runs before every build)
+tools/make_icon.py       Renders installer/wbshterm.ico from code (Pillow)
 docs/                    Doxygen config + generated API reference
 installer/
   wbsh.iss               Inno Setup script (per-user, PATH, context menu)
@@ -412,16 +416,18 @@ stdout+stderr against `tests/expected/<name>.out`. The scripts run
 *inside wbsh itself*, so the suite is an end-to-end check of the whole
 lexer → parser → expander → executor pipeline.
 
-The SDK has its own end-to-end checks, which need the sample util built
+The SDK has its own end-to-end checks, which need the sample utils built
 into `x64/Release/plugins`:
 
 ```powershell
 powershell -File sdk	ests\sdk.ps1
 ```
 
-They drive the real wbsh.exe with the sample installed: that it is
-listed, that its command pipes and sets `$?` like any other, and that a
-DLL which is not a util is skipped without taking the good one with it.
+They drive the real wbsh.exe with the samples installed: that they are
+listed, that a util's command pipes and sets `$?` like any other, that a
+DLL which is not a util is skipped without taking the good ones with it,
+and that the `pick` and `procs` samples take keys and draw inside a
+pseudoconsole.
 
 There is currently **no CI**; contributions to add one are welcome. See
 [CONTRIBUTING.md](./CONTRIBUTING.md) for the golden / record workflow.

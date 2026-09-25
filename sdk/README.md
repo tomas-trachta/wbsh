@@ -31,7 +31,11 @@ WBSH_UTIL_API int wbshUtilLoad(WbshHostKind host) {
 
 Include `sdk/include`, link `wbshsdk.lib`, build a DLL. `sdk/samples/hello`
 is a working project that does this and adds a status segment too; copying
-it is the fastest start.
+it is the fastest start. Two bigger ones show what a util can grow into:
+`sdk/samples/pick` is a fuzzy picker in the spirit of fzf, built on the
+terminal helpers below, and `sdk/samples/procs` is a live process monitor
+that redraws on a timer in the shell and puts a process count in the
+terminal's status bar from the same DLL.
 
 ## Installing one
 
@@ -80,18 +84,68 @@ function returns; copy it if you want to keep it.
 **A segment is on the paint path.** `WbshSegmentFn` is called while the
 terminal draws, so return something you already have. Do not read a file,
 take a lock, or wait on anything — the window is not repainting while you
-think.
+think. A segment that has to measure something does it on a thread of its
+own and leaves an atomic behind for the segment to read; `sdk/samples/procs`
+does exactly that, and stops the thread in `wbshUtilUnload`.
 
 **Names are checked.** Empty, over 64 bytes, or carrying a space, a slash
 or a control byte is refused, and a command may not take the name of a
 bundled one: a DLL in a folder does not get to quietly become `ls`.
 
+## Interactive utils
+
+A command that wants the keyboard, not a line of stdin, opens the terminal:
+
+```c
+WbshTerminal* term = wbshTerminalOpen();
+if (term == NULL) { wbshPrintError("no terminal\n"); return 2; }
+
+WbshKey key;
+while (wbshTerminalReadKey(term, &key, -1) > 0) {
+    if (key.kind == WBSH_KEY_ESCAPE) break;
+    if (key.kind == WBSH_KEY_CHAR) wbshTerminalPrint(term, key.text);
+}
+
+wbshTerminalClose(term);
+```
+
+Opening it puts the keyboard in raw mode and turns on escape-sequence
+processing for what you write back; closing it undoes both. Keys come
+decoded: arrows, function keys, Enter, Escape and the rest are a
+`WbshKeyKind`, a typed character is `WBSH_KEY_CHAR` with its UTF-8 in
+`text`, and Ctrl and Alt are bits in `modifiers`. Ctrl+C is a key like
+any other and does not end the process while the terminal is open. A
+resize arrives as `WBSH_KEY_RESIZE`; `wbshTerminalSize` then has the
+new numbers. The timeout is how a util that watches something stays
+responsive: `procs` waits a second for a key and takes a fresh snapshot
+when none comes.
+
+The terminal is the **console device**, not stdin or stdout. In
+`ls | pick | xargs rm` the picker still gets keys and still draws, and
+the line it settles on still goes down the pipe through `wbshPrint`.
+`wbshIsTerminal(fd)` says whether stdin, stdout or stderr is the console
+or a pipe, which is how a util decides whether to read candidates or to
+walk a directory.
+
+Draw with escape sequences. wbshterm runs the shell on a pseudoconsole,
+so the same bytes render the same way there and in a plain console
+window. The alternate screen is the one thing a pseudoconsole drops:
+draw in place and erase what you drew on the way out, the way `pick`
+does, rather than expecting a clean slate to come back on its own.
+
+There is no terminal inside wbshterm.exe itself: `wbshTerminalOpen`
+returns NULL in the terminal host, where a status segment is the way to
+say things.
+
 ## What the SDK gives you
 
 `wbshHost`, `wbshSdkVersion`, `wbshRegisterCommand`,
 `wbshRegisterStatusSegment`, `wbshWriteOut`, `wbshWriteErr`, `wbshPrint`,
-`wbshPrintError`, `wbshWorkingDirectory`, `wbshVariable`. Every one is
-documented where it is declared, in `include/wbshsdk.h`.
+`wbshPrintError`, `wbshWorkingDirectory`, `wbshVariable`, and for the
+terminal `wbshIsTerminal`, `wbshTerminalOpen`, `wbshTerminalClose`,
+`wbshTerminalSize`, `wbshTerminalWrite`, `wbshTerminalPrint`,
+`wbshTerminalReadKey`. Every one is documented where it is declared, in
+`include/wbshsdk.h`.
 
 The terminal has no stdout of its own — a pane's output belongs to the
 shell running in it — so `wbshPrint` writes nowhere there. Say things in

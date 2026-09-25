@@ -59,6 +59,7 @@ extern "C" {
 #define WBSH_ERR_UNSUPPORTED (-3)   /**< this host does not offer that */
 #define WBSH_ERR_BAD_NAME    (-4)   /**< empty, too long, or has a space */
 #define WBSH_ERR_TAKEN       (-5)   /**< something already has that name */
+#define WBSH_ERR_NO_TERMINAL (-6)   /**< no console to talk to, or it went away */
 
 typedef enum WbshHostKind {
 	WBSH_HOST_NONE     = 0,
@@ -143,6 +144,85 @@ WBSH_SDK_API const char* wbshWorkingDirectory(void);
 
 /** A shell or environment variable, or NULL when it is not set. */
 WBSH_SDK_API const char* wbshVariable(const char* name);
+
+/* ---- the terminal -------------------------------------------------- */
+
+/**
+ * @brief The console this process is attached to, taken over for an
+ *        interactive interface.
+ *
+ * Opening it puts the keyboard in raw mode and turns on escape-sequence
+ * processing for output; closing it puts both back. It is the console
+ * device itself and not stdin or stdout, so `ls | mypicker | xargs`
+ * still gets keys and still draws, and a picked line still goes down the
+ * pipe through wbshPrint.
+ *
+ * It exists only where a console does. Inside wbshterm.exe there is none,
+ * and wbshTerminalOpen returns NULL.
+ */
+typedef struct WbshTerminal WbshTerminal;
+
+typedef enum WbshKeyKind {
+	WBSH_KEY_NONE      = 0,
+	WBSH_KEY_CHAR      = 1,    /**< text holds the character, in UTF-8 */
+	WBSH_KEY_ENTER     = 2,
+	WBSH_KEY_ESCAPE    = 3,
+	WBSH_KEY_BACKSPACE = 4,
+	WBSH_KEY_TAB       = 5,
+	WBSH_KEY_DELETE    = 6,
+	WBSH_KEY_INSERT    = 7,
+	WBSH_KEY_UP        = 8,
+	WBSH_KEY_DOWN      = 9,
+	WBSH_KEY_LEFT      = 10,
+	WBSH_KEY_RIGHT     = 11,
+	WBSH_KEY_HOME      = 12,
+	WBSH_KEY_END       = 13,
+	WBSH_KEY_PAGE_UP   = 14,
+	WBSH_KEY_PAGE_DOWN = 15,
+	WBSH_KEY_F1        = 16,   /**< F2 is WBSH_KEY_F1 + 1, and so on to F12 */
+	WBSH_KEY_F12       = 27,
+	WBSH_KEY_RESIZE    = 28    /**< the window changed size; ask wbshTerminalSize */
+} WbshKeyKind;
+
+#define WBSH_MOD_SHIFT 1u
+#define WBSH_MOD_CTRL  2u
+#define WBSH_MOD_ALT   4u
+
+/**
+ * @brief One keystroke, decoded.
+ *
+ * For WBSH_KEY_CHAR, modifiers never carries WBSH_MOD_SHIFT: shift is
+ * already in the character. Ctrl+C is "c" with WBSH_MOD_CTRL. AltGr is
+ * not a modifier at all; it produces the layout's character on its own.
+ */
+typedef struct WbshKey {
+	WbshKeyKind kind;
+	uint32_t    modifiers;
+	char        text[8];   /**< NUL-terminated; empty unless kind is WBSH_KEY_CHAR */
+} WbshKey;
+
+/** 1 when @p fd (0, 1 or 2) is the console rather than a pipe or file. */
+WBSH_SDK_API int wbshIsTerminal(int fd);
+
+/** NULL when there is no console. Pair every open with a close. */
+WBSH_SDK_API WbshTerminal* wbshTerminalOpen(void);
+WBSH_SDK_API void wbshTerminalClose(WbshTerminal* terminal);
+
+/** The visible window in cells. Either out pointer may be NULL. */
+WBSH_SDK_API int wbshTerminalSize(WbshTerminal* terminal, int* out_columns, int* out_rows);
+
+/** Bytes straight to the screen, escape sequences included. */
+WBSH_SDK_API void wbshTerminalWrite(WbshTerminal* terminal, const char* bytes, size_t length);
+WBSH_SDK_API void wbshTerminalPrint(WbshTerminal* terminal, const char* text);
+
+/**
+ * @brief Waits for a key. 1 when @p out_key holds one, 0 on timeout,
+ *        negative when the console is gone.
+ *
+ * @p timeout_ms below zero waits forever; zero only takes what is already
+ * queued. Ctrl+C is delivered as a key and does not end the process.
+ */
+WBSH_SDK_API int wbshTerminalReadKey(WbshTerminal* terminal, WbshKey* out_key, int timeout_ms);
 
 /* ---- what a host calls --------------------------------------------- */
 
