@@ -10,6 +10,7 @@
 #include "vtparse.h"
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -56,6 +57,8 @@ namespace wbshterm {
 
 	private:
 		void readLoop();
+		bool moreOfFrameComing(DWORD read_size, DWORD capacity);
+		void waitForMoreOutput();
 		void watchChildLoop();
 		void appendBytes(const char* data, std::size_t length);
 		std::vector<char> takePending();
@@ -73,6 +76,9 @@ namespace wbshterm {
 		std::vector<char> pending_;
 		std::atomic<bool> stopping_{ false };
 		std::atomic<bool> wake_posted_{ false };
+		HANDLE            gather_timer_ = nullptr;
+		bool              gathering_ = false;
+		std::chrono::steady_clock::time_point gather_started_;
 
 		std::wstring record_path_;
 		HWND wake_window_  = nullptr;

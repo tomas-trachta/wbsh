@@ -60,6 +60,11 @@ namespace wbshterm {
 		void applyWindowSettings();
 		void reloadConfigIfChanged();
 		void onTimer(WPARAM timer);
+		void onBlinkTick();
+		void showCursorSolid();
+		bool anyPaneMidFrame() const;
+		void repaintAfterOutput();
+		void disarmSyncGrace();
 
 		Pane& focused();
 		const Pane& focused() const;
@@ -88,6 +93,7 @@ namespace wbshterm {
 		void closeExitedPanes();
 		void onText(wchar_t character);
 		bool onKeyDown(WPARAM key);
+		bool rightAltTakesKey(const KeyPress& press);
 		bool pickerTakesKey(WPARAM key);
 		void answerPick(const std::string& choice);
 		void pasteFromClipboard();
@@ -142,6 +148,7 @@ namespace wbshterm {
 		TitleBar     title_bar_;
 		bool         dwm_rounds_corners_ = false;
 		bool         tmux_mode_ = false;
+		bool         sync_grace_armed_ = false;
 		KeyPress     prefix_;
 		bool         prefix_pending_ = false;
 

@@ -13,6 +13,12 @@ namespace wbshterm {
 
 	static const float kDimAlpha = 0.65f;
 
+	// Shaping a run is the dear part of a frame, and most runs are the
+	// same text as the frame before: a prompt, a status line, a panel
+	// that has not moved. Their layouts are kept, and the lot is dropped
+	// once it grows past this rather than trimmed one by one.
+	static const std::size_t kLayoutCacheLimit = 2048;
+
 	static D2D1_COLOR_F toColorF(std::uint32_t rgb, float alpha) {
 		const float red   = static_cast<float>((rgb >> 16) & 0xFF) / 255.0f;
 		const float green = static_cast<float>((rgb >> 8) & 0xFF) / 255.0f;
@@ -49,7 +55,30 @@ namespace wbshterm {
 			}
 		}
 
+		for (LayoutCache& cache : layouts_) cache.clear();
 		return font_.create(config.font, out_error);
+	}
+
+	static std::size_t layoutIndex(bool bold, bool italic) {
+		return (bold ? 1u : 0u) + (italic ? 2u : 0u);
+	}
+
+	IDWriteTextLayout* Renderer::layoutFor(const std::wstring& text, bool bold, bool italic) {
+		LayoutCache& cache = layouts_[layoutIndex(bold, italic)];
+		const auto found = cache.find(text);
+		if (found != cache.end()) return found->second.Get();
+
+		if (cache.size() >= kLayoutCacheLimit) cache.clear();
+
+		const CellMetrics& cell_box = font_.metrics();
+		Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+		const HRESULT hr = font_.factory()->CreateTextLayout(text.c_str(),
+			static_cast<UINT32>(text.size()), font_.format(bold, italic),
+			cell_box.width * static_cast<float>(text.size() + 2), cell_box.height,
+			layout.GetAddressOf());
+		if (FAILED(hr)) return nullptr;
+
+		return cache.emplace(text, layout).first->second.Get();
 	}
 
 	void Renderer::applyConfig(const Config& config) {
@@ -479,14 +508,12 @@ namespace wbshterm {
 
 		setBrushColor(resolveForeground(style), alpha);
 
-		const D2D1_RECT_F box = D2D1::RectF(left, top,
-			left + cell_box.width * static_cast<float>(text.size() + 2),
-			top + cell_box.height);
-
-		IDWriteTextFormat* format = font_.format((style.attributes & kAttrBold) != 0,
+		IDWriteTextLayout* layout = layoutFor(text, (style.attributes & kAttrBold) != 0,
 			(style.attributes & kAttrItalic) != 0);
-		canvas.target->DrawText(text.c_str(), static_cast<UINT32>(text.size()), format, box,
-			brush_.Get(), text_options_);
+		if (layout != nullptr) {
+			canvas.target->DrawTextLayout(D2D1::Point2F(left, top), layout, brush_.Get(),
+				text_options_);
+		}
 
 		if ((style.attributes & kAttrUnderline) == 0) return;
 

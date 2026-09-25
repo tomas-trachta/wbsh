@@ -47,6 +47,16 @@ namespace wbshterm {
 		bool on_right = true;
 	};
 
+	/** What the right Alt key means when the layout also uses it as AltGr. */
+	enum class RightAltRole {
+		AltGr,
+		Meta,
+	};
+
+	struct KeyboardSettings {
+		RightAltRole right_alt = RightAltRole::AltGr;
+	};
+
 	struct PaneSettings {
 		std::string prefix       = "ctrl+b";
 		int         divider      = 6;
@@ -59,6 +69,7 @@ namespace wbshterm {
 		WindowSettings window;
 		CursorSettings cursor;
 		PaneSettings   panes;
+		KeyboardSettings keyboard;
 		TitleBarSettings titlebar;
 		Palette        palette;
 		std::string    theme_name      = "catppuccin-mocha";

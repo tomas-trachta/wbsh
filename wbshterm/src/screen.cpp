@@ -516,6 +516,9 @@ namespace wbshterm {
 		if (sequence.private_byte == '?') {
 			if (sequence.final_byte == 'h') applyPrivateMode(sequence, true);
 			if (sequence.final_byte == 'l') applyPrivateMode(sequence, false);
+			if (sequence.final_byte == 'p' && sequence.intermediates == "$") {
+				answerModeReport(sequence);
+			}
 			return;
 		}
 
@@ -664,9 +667,38 @@ namespace wbshterm {
 				else leaveAltScreen();
 				break;
 			case 2004: bracketed_paste_ = enable; break;
+			case 2026: synchronized_output_ = enable; break;
 			default:   break;
 			}
 		}
+	}
+
+	// DECRPM's answers: 1 set, 2 reset, 0 for a mode this grid does not
+	// know. Asking is how a program finds out that synchronized output
+	// will be honoured before it relies on it.
+	int Screen::privateModeState(int mode) const {
+		switch (mode) {
+		case 1:    return application_cursor_ ? 1 : 2;
+		case 25:   return cursor_.visible ? 1 : 2;
+		case 47:
+		case 1047:
+		case 1049: return alt_screen_ ? 1 : 2;
+		case 2004: return bracketed_paste_ ? 1 : 2;
+		case 2026: return synchronized_output_ ? 1 : 2;
+		default:   return 0;
+		}
+	}
+
+	void Screen::answerModeReport(const VtSequence& sequence) {
+		if (responder_ == nullptr) return;
+
+		const int mode = sequence.param(0, 0);
+		std::string reply = "\x1b[?";
+		reply += std::to_string(mode);
+		reply += ";";
+		reply += std::to_string(privateModeState(mode));
+		reply += "$y";
+		responder_->vtRespond(reply);
 	}
 
 	bool Screen::applyExtendedColor(const VtSequence& sequence, std::size_t& index,

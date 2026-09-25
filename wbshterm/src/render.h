@@ -16,6 +16,7 @@
 #include <wrl/client.h>
 
 #include <string>
+#include <unordered_map>
 
 namespace wbshterm {
 
@@ -76,6 +77,7 @@ namespace wbshterm {
 		void drawRowText(const PaneCanvas& canvas, int absolute_row, int viewport_row);
 		void drawRun(const PaneCanvas& canvas, const std::wstring& text, const Cell& style,
 			int row, int column);
+		IDWriteTextLayout* layoutFor(const std::wstring& text, bool bold, bool italic);
 		void drawCursor(const PaneCanvas& canvas);
 		void drawBlockCursor(const PaneCanvas& canvas, float left, float top);
 		void drawPickerRow(const PaneCanvas& canvas, const std::wstring& text, float top,
@@ -97,8 +99,12 @@ namespace wbshterm {
 		std::uint32_t resolveBackground(const Cell& cell) const;
 		void setBrushColor(std::uint32_t rgb, float alpha);
 
+		using LayoutCache =
+			std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<IDWriteTextLayout>>;
+
 		Microsoft::WRL::ComPtr<ID2D1Factory>         factory_;
 		Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;
+		LayoutCache                                  layouts_[4];
 		ID2D1RenderTarget*                           brush_owner_ = nullptr;
 		FontSet                                      font_;
 		Config                                       config_;

@@ -128,6 +128,25 @@ this file knowing they exist. The one wrinkle is that Windows also produces
 a character for a few keys that are handled here — Ctrl+Space, Shift+Tab,
 Ctrl+V — so those, and only those, swallow the character that follows.
 
+### The right Alt key
+
+On a layout that uses the right Alt as AltGr — Czech, German, most of
+Europe — Windows spells it as Ctrl+Alt, and a key that has no third-level
+character produces nothing at all. Left to itself the press would vanish,
+so the window looks the key up in the layout: where AltGr gives it a
+character (`@` under V on a Czech keyboard) that character is typed, as it
+is; where it gives none, the key goes out as Alt plus its own letter, the
+way the left Alt would send it. Programs whose shortcuts want Alt on every
+key can have it:
+
+```ini
+[keyboard]
+right_alt = meta   # altgr is the default described above
+```
+
+With `meta` the right Alt is plain Alt everywhere, and the layout's AltGr
+characters are typed from the other layout, or not at all.
+
 ## The startup panel
 
 Opening a session prints a screenfetch-style panel: the wbsh logo, who and
@@ -491,6 +510,20 @@ emits `ESC[67C` followed by a literal `m`, and every conformant terminal
 renderer, is the ceiling on a large dump. The reader thread only buffers
 bytes and posts one wake-up at a time; parsing and painting happen once per
 drain on the UI thread.
+
+**A frame arrives in pieces, and painting between them is the flicker.**
+A full-screen program such as Claude Code redraws its whole panel at once,
+but the pseudoconsole hands it over as several writes a moment apart, and
+the default four-kilobyte pipe chops a busy screen into more. Painting
+after each piece showed a half-cleared panel for a frame. The pipe is a
+megabyte now, the read buffer a quarter of that, and the reader waits a
+couple of milliseconds for the rest of a burst before waking the window —
+never more than eight, so typing does not lag. A program that asks for
+synchronized output (`CSI ?2026h`… `CSI ?2026l`, answered through DECRQM)
+is painted only once its frame is closed, with a grace timer so a frame
+left open can never freeze the window. Runs of text keep their DirectWrite
+layouts between frames, so a repaint draws shaped runs it already has
+rather than shaping every row again.
 
 **Backspace is DEL, not BS.** ConPTY follows the xterm convention: 0x7f
 is Backspace and 0x08 is Ctrl+Backspace. Windows hands the window 0x08

@@ -12,6 +12,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <iterator>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shell32.lib")
@@ -26,6 +27,8 @@ namespace wbshterm {
 	static const UINT     kConfigPollMs = 1000;
 	static const UINT_PTR kTimerResize = 3;
 	static const UINT     kResizeSettleMs = 80;
+	static const UINT_PTR kTimerSync = 4;
+	static const UINT     kSyncGraceMs = 100;
 	static const int     kWheelLines = 3;
 	static const float   kDividerSlop = 3.0f;
 
@@ -36,8 +39,48 @@ namespace wbshterm {
 		return length > 0 ? std::string(bytes, static_cast<std::size_t>(length)) : std::string();
 	}
 
+	static std::string encodeUtf8(const std::wstring& text) {
+		std::string bytes;
+		for (wchar_t letter : text) bytes += encodeUtf8(letter);
+		return bytes;
+	}
+
 	static bool keyIsDown(int virtual_key) {
 		return (::GetKeyState(virtual_key) & 0x8000) != 0;
+	}
+
+	// Windows spells AltGr as Ctrl+Alt, pressing a Ctrl of its own along
+	// with the right Alt; both down together is how the two are told apart
+	// from a plain Alt.
+	static bool altGrIsDown() {
+		return keyIsDown(VK_RMENU) && keyIsDown(VK_CONTROL);
+	}
+
+	static void clearModifiers(BYTE* state) {
+		static const int kModifiers[] = {
+			VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU, VK_LMENU, VK_RMENU,
+		};
+
+		for (int key : kModifiers) state[key] = 0;
+	}
+
+	// The character the layout gives a key, with or without the Ctrl and
+	// Alt currently held. The flag keeps ToUnicode from consuming a dead
+	// key that is waiting for its letter.
+	static std::wstring layoutTextFor(unsigned int virtual_key, bool with_modifiers) {
+		static const UINT kLeaveKeyboardState = 0x4;
+
+		BYTE state[256] = {};
+		if (::GetKeyboardState(state) == 0) return std::wstring();
+		if (!with_modifiers) clearModifiers(state);
+
+		const UINT scan_code = ::MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC);
+		wchar_t text[8] = {};
+		const int count = ::ToUnicode(virtual_key, scan_code, state, text,
+			static_cast<int>(std::size(text)), kLeaveKeyboardState);
+		if (count <= 0) return std::wstring();
+
+		return std::wstring(text, static_cast<std::size_t>(count));
 	}
 
 	static KeyPress currentKeyPress(WPARAM key) {
@@ -66,7 +109,7 @@ namespace wbshterm {
 	}
 
 	static bool isPasteShortcut(const KeyPress& press) {
-		if (press.virtual_key == 'V' && press.control) return true;
+		if (press.virtual_key == 'V' && press.control && !press.alt) return true;
 		return press.virtual_key == VK_INSERT && press.shift && !press.control;
 	}
 
@@ -301,7 +344,7 @@ namespace wbshterm {
 		if (::IsIconic(window_) != 0) return;
 
 		if (::IsZoomed(window_) != 0) {
-			::SetWindowRgn(window_, nullptr, TRUE);
+			::SetWindowRgn(window_, nullptr, FALSE);
 			return;
 		}
 
@@ -314,7 +357,7 @@ namespace wbshterm {
 
 		const HRGN region = ::CreateRoundRectRgn(0, 0, width + 1, height + 1,
 			kCornerRadius * 2, kCornerRadius * 2);
-		::SetWindowRgn(window_, region, TRUE);
+		::SetWindowRgn(window_, region, FALSE);
 	}
 
 	bool TerminalWindow::customFrame() const {
@@ -844,6 +887,19 @@ namespace wbshterm {
 			return;
 		}
 
+		if (timer == kTimerSync) {
+			disarmSyncGrace();
+			::InvalidateRect(window_, nullptr, FALSE);
+			return;
+		}
+
+		onBlinkTick();
+	}
+
+	// A frame mid-update is left alone even by the blink: the next paint
+	// comes when the update ends, and the cursor with it.
+	void TerminalWindow::onBlinkTick() {
+		if (anyPaneMidFrame()) return;
 		if (statusClockChanged()) ::InvalidateRect(window_, nullptr, FALSE);
 
 		if (!config_.cursor.blink) {
@@ -854,6 +910,48 @@ namespace wbshterm {
 		cursor_phase_ = !cursor_phase_;
 		renderer_.setCursorVisible(cursor_phase_);
 		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	// Typing shows a solid cursor for a whole period before it blinks
+	// again, rather than one that may vanish on the very next tick.
+	void TerminalWindow::showCursorSolid() {
+		cursor_phase_ = true;
+		renderer_.setCursorVisible(true);
+		::SetTimer(window_, kTimerBlink, kBlinkMs, nullptr);
+	}
+
+	bool TerminalWindow::anyPaneMidFrame() const {
+		for (PaneNode* leaf : panes_.leaves()) {
+			if (leaf->pane()->screen().synchronizedOutput()) return true;
+		}
+
+		return false;
+	}
+
+	// A program that asked for synchronized output gets its frame painted
+	// whole: nothing is drawn until it says the update is over. Should it
+	// forget to, the grace timer paints anyway, so a stray sequence can
+	// never freeze the window. The timer is armed once and left to run:
+	// re-arming it on every read would let a program that never closes
+	// its frame keep pushing the paint away.
+	void TerminalWindow::repaintAfterOutput() {
+		if (!anyPaneMidFrame()) {
+			disarmSyncGrace();
+			::InvalidateRect(window_, nullptr, FALSE);
+			return;
+		}
+
+		if (sync_grace_armed_) return;
+
+		sync_grace_armed_ = true;
+		::SetTimer(window_, kTimerSync, kSyncGraceMs, nullptr);
+	}
+
+	void TerminalWindow::disarmSyncGrace() {
+		if (!sync_grace_armed_) return;
+
+		sync_grace_armed_ = false;
+		::KillTimer(window_, kTimerSync);
 	}
 
 	bool TerminalWindow::registerClass(std::string& out_error) {
@@ -1173,10 +1271,10 @@ namespace wbshterm {
 					|| press.virtual_key == '0')) {
 			stepFontSize(press.virtual_key);
 			return true;
-		} else if (press.control && press.shift && press.virtual_key == 'C') {
+		} else if (press.control && press.shift && !press.alt && press.virtual_key == 'C') {
 			copySelection();
 			return true;
-		} else if (press.control && press.virtual_key == VK_INSERT) {
+		} else if (press.control && !press.alt && press.virtual_key == VK_INSERT) {
 			copySelection();
 			return true;
 		} else {
@@ -1360,6 +1458,10 @@ namespace wbshterm {
 	// panes out into nothing collapses every grid to a single cell --
 	// which the commit would then hand to the shells, reflowing them to
 	// one column behind a window nobody can see.
+	//
+	// The paint happens here and now rather than on the next WM_PAINT:
+	// between the two the new area would show whatever was there before,
+	// which during a drag is a flicker at every edge being pulled.
 	void TerminalWindow::onResize() {
 		if (!target_) return;
 
@@ -1374,7 +1476,7 @@ namespace wbshterm {
 		applyCornerRegion();
 		layoutPanes();
 		scheduleGridCommit();
-		::InvalidateRect(window_, nullptr, FALSE);
+		::RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
 	}
 
 	void TerminalWindow::onDpiChanged(WPARAM wparam, LPARAM lparam) {
@@ -1398,7 +1500,7 @@ namespace wbshterm {
 
 		if (changed) {
 			syncTitle();
-			::InvalidateRect(window_, nullptr, FALSE);
+			repaintAfterOutput();
 		}
 
 		closeExitedPanes();
@@ -1459,7 +1561,8 @@ namespace wbshterm {
 	}
 
 	// Alt-held characters arrive as WM_SYSCHAR and go out ESC-prefixed,
-	// which is how a terminal spells Meta.
+	// which is how a terminal spells Meta. A character AltGr produced is
+	// the layout's own and goes out as it is.
 	void TerminalWindow::onText(wchar_t character) {
 		if (swallow_next_char_) {
 			swallow_next_char_ = false;
@@ -1477,7 +1580,7 @@ namespace wbshterm {
 		std::string bytes = encodeUtf8(character);
 		if (bytes.empty()) return;
 
-		if (keyIsDown(VK_MENU)) bytes.insert(bytes.begin(), '\x1b');
+		if (keyIsDown(VK_MENU) && !altGrIsDown()) bytes.insert(bytes.begin(), '\x1b');
 		sendBytes(bytes.data(), bytes.size());
 	}
 
@@ -1509,6 +1612,27 @@ namespace wbshterm {
 		return true;
 	}
 
+	// AltGr held, the layout may or may not have a character for the key.
+	// Where it has one, that is what the key types -- unless the config
+	// says the right Alt is Meta everywhere. Where it has none Windows
+	// sends no character at all, so the key would otherwise vanish; it
+	// goes out as Alt plus whatever the key says on its own.
+	bool TerminalWindow::rightAltTakesKey(const KeyPress& press) {
+		if (!altGrIsDown() || !mayCarryCharacter(press.virtual_key)) return false;
+
+		const std::wstring typed = layoutTextFor(press.virtual_key, true);
+		const bool acts_as_altgr = config_.keyboard.right_alt == RightAltRole::AltGr;
+		if (acts_as_altgr && !typed.empty()) return false;
+
+		const std::wstring plain = layoutTextFor(press.virtual_key, false);
+		if (plain.empty()) return false;
+
+		const std::string bytes = "\x1b" + encodeUtf8(plain);
+		sendBytes(bytes.data(), bytes.size());
+		swallow_next_char_ = !typed.empty();
+		return true;
+	}
+
 	bool TerminalWindow::onKeyDown(WPARAM key) {
 		if (pickerTakesKey(key)) {
 			swallow_next_char_ = true;
@@ -1519,6 +1643,7 @@ namespace wbshterm {
 		swallow_next_char_ = false;
 
 		if (paneKeyTaken(press)) return true;
+		if (rightAltTakesKey(press)) return true;
 
 		if (handleViewShortcut(press)) {
 			swallow_next_char_ = alsoProducesCharacter(press);
@@ -1552,8 +1677,7 @@ namespace wbshterm {
 
 		focused().view().scrollToBottom();
 		focused().view().clearSelection();
-		cursor_phase_ = true;
-		renderer_.setCursorVisible(true);
+		showCursorSolid();
 		::InvalidateRect(window_, nullptr, FALSE);
 		focused().session().writeInput(data, length);
 	}

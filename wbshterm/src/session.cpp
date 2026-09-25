@@ -9,7 +9,19 @@
 
 namespace wbshterm {
 
-	static const DWORD kReadChunk = 16384;
+	static const DWORD kReadChunk = 256 * 1024;
+
+	// A frame from the pseudoconsole can arrive as several writes a
+	// moment apart. Painting between them shows half of it, so a read
+	// waits this long for the rest before the window hears -- but never
+	// holds bytes back beyond the limit, or typing would start to lag.
+	static const long long kGatherGraceMicroseconds = 2000;
+	static const long long kGatherLimitMilliseconds = 8;
+
+	static HANDLE createGatherTimer() {
+		return ::CreateWaitableTimerExW(nullptr, nullptr,
+			CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+	}
 
 	Session::Session() {
 		screen_.setResponder(this);
@@ -41,16 +53,58 @@ namespace wbshterm {
 
 	void Session::readLoop() {
 		std::vector<char> buffer(kReadChunk);
+		gather_timer_ = createGatherTimer();
 
 		for (;;) {
 			const DWORD got = pty_.read(buffer.data(), kReadChunk);
 			if (got == 0) break;
 
 			appendBytes(buffer.data(), got);
+			if (moreOfFrameComing(got, kReadChunk)) continue;
+
 			notifyWindow();
 		}
 
 		notifyWindow();
+		if (gather_timer_ != nullptr) ::CloseHandle(gather_timer_);
+		gather_timer_ = nullptr;
+	}
+
+	bool Session::moreOfFrameComing(DWORD read_size, DWORD capacity) {
+		const auto now = std::chrono::steady_clock::now();
+		if (!gathering_) {
+			gathering_ = true;
+			gather_started_ = now;
+		}
+
+		const auto held = std::chrono::duration_cast<std::chrono::milliseconds>(
+			now - gather_started_).count();
+		if (held >= kGatherLimitMilliseconds) {
+			gathering_ = false;
+			return false;
+		}
+
+		if (read_size == capacity || pty_.bytesAvailable() > 0) return true;
+
+		waitForMoreOutput();
+		if (pty_.bytesAvailable() > 0) return true;
+
+		gathering_ = false;
+		return false;
+	}
+
+	// The default Sleep granularity is a whole video frame, which is far
+	// more than the pause wanted here; a high-resolution timer waits for
+	// as little as asked. Without one the wait is skipped rather than
+	// taken at the coarse length.
+	void Session::waitForMoreOutput() {
+		if (gather_timer_ == nullptr) return;
+
+		LARGE_INTEGER due{};
+		due.QuadPart = -kGatherGraceMicroseconds * 10;
+		if (::SetWaitableTimer(gather_timer_, &due, 0, nullptr, nullptr, FALSE) == 0) return;
+
+		::WaitForSingleObject(gather_timer_, 5);
 	}
 
 	void Session::watchChildLoop() {

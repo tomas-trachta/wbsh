@@ -181,6 +181,34 @@ namespace wbshterm {
 				responder.replies == "\x1b[3;7R", responder.replies);
 		}
 
+		static void checkSynchronizedOutput(Report& report) {
+			Screen screen(80, 24);
+			RecordingResponder responder;
+			screen.setResponder(&responder);
+
+			feedToScreen(screen, "\x1b[?2026h");
+			const bool begun = screen.synchronizedOutput();
+
+			feedToScreen(screen, "\x1b[?2026$p");
+			const bool reported_set = responder.replies == "\x1b[?2026;1$y";
+
+			responder.replies.clear();
+			feedToScreen(screen, "\x1b[?2026l\x1b[?2026$p");
+			const bool ended = !screen.synchronizedOutput()
+				&& responder.replies == "\x1b[?2026;2$y";
+
+			responder.replies.clear();
+			feedToScreen(screen, "\x1b[?9999$p");
+			const bool unknown = responder.replies == "\x1b[?9999;0$y";
+
+			report.check("DECSET 2026 marks a frame as mid-update", begun, "");
+			report.check("DECRQM reports synchronized output as set", reported_set,
+				responder.replies);
+			report.check("DECRST 2026 ends the frame and reports reset", ended, "");
+			report.check("DECRQM reports an unknown mode as unrecognised", unknown,
+				responder.replies);
+		}
+
 		static void checkScrollbackKeepsLines(Report& report) {
 			Screen screen(10, 2);
 			feedToScreen(screen, "one\r\ntwo\r\nthree\r\n");
@@ -376,6 +404,7 @@ namespace wbshterm {
 					"[font]\nfamily = Consolas\nsize = 14\n"
 					"[cursor]\nstyle = bar\nblink = false\n"
 					"[window]\npadding = 24\nopacity = 0.85\n"
+					"[keyboard]\nright_alt = meta\n"
 					"[theme]\nname = nord\nforeground = #ABCDEF\n";
 				std::fwrite(text, 1, std::strlen(text), file);
 				std::fclose(file);
@@ -390,8 +419,11 @@ namespace wbshterm {
 				&& edited.window.opacity < 0.86f;
 			const bool theme = edited.palette.background == 0x2E3440
 				&& edited.palette.foreground == 0xABCDEF;
+			const bool keyboard = config.keyboard.right_alt == RightAltRole::AltGr
+				&& edited.keyboard.right_alt == RightAltRole::Meta;
 
 			report.check("the font is configurable", font, "");
+			report.check("the right Alt key defaults to AltGr and can be Meta", keyboard, "");
 			report.check("the cursor style and blink are configurable", cursor, "");
 			report.check("padding and opacity are configurable", window, "");
 			report.check("a theme applies and single colours override it", theme, "");
@@ -2010,6 +2042,7 @@ namespace wbshterm {
 		test::checkSplitSequence(report);
 		test::checkInsertDelete(report);
 		test::checkQueryReplies(report);
+		test::checkSynchronizedOutput(report);
 		test::checkShellMarksMakeBlocks(report);
 		test::checkBlockNavigation(report);
 		test::checkBlockOutputSelection(report);

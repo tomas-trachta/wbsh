@@ -120,6 +120,9 @@ namespace wbshterm {
 		bool applicationCursorKeys() const { return application_cursor_; }
 		bool bracketedPaste() const { return bracketed_paste_; }
 
+		/** True between DECSET 2026 and its reset: a frame is mid-update. */
+		bool synchronizedOutput() const { return synchronized_output_; }
+
 		bool rowDirty(int row) const;
 		void clearDirty();
 
@@ -180,6 +183,8 @@ namespace wbshterm {
 		void applyEraseInLine(const VtSequence& sequence);
 		void applyInsertDelete(const VtSequence& sequence);
 		void applyPrivateMode(const VtSequence& sequence, bool enable);
+		int  privateModeState(int mode) const;
+		void answerModeReport(const VtSequence& sequence);
 		void applyScrollRegion(const VtSequence& sequence);
 		void answerDeviceAttributes(bool secondary);
 		void answerStatusReport(const VtSequence& sequence);
@@ -210,6 +215,7 @@ namespace wbshterm {
 		std::vector<CommandBlock> blocks_;
 		bool          application_cursor_ = false;
 		bool          bracketed_paste_    = false;
+		bool          synchronized_output_ = false;
 		VtResponder*  responder_ = nullptr;
 		PickHandler*  pick_handler_ = nullptr;
 		TmuxHandler*  tmux_handler_ = nullptr;

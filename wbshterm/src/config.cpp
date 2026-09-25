@@ -56,6 +56,14 @@ namespace wbshterm {
 		"buttons = right   # or left, the way macOS has them\n"
 		"height = 38\n"
 		"\n"
+		"[keyboard]\n"
+		"# What the right Alt key does on a layout that uses it as AltGr.\n"
+		"# altgr types the layout's extra characters (@ on a Czech keyboard,\n"
+		"# { on a German one) and is Alt only on keys that have none; meta\n"
+		"# makes it plain Alt on every key, for programs whose shortcuts\n"
+		"# want it.\n"
+		"right_alt = altgr\n"
+		"\n"
 		"[panes]\n"
 		"# Panes start when you type `tmux`, and are driven from a prefix\n"
 		"# key: prefix then % or | to split into columns, \" or - into\n"
@@ -248,6 +256,14 @@ namespace wbshterm {
 		}
 	}
 
+	static void applyKeyboardSetting(const Setting& setting, Config& config) {
+		if (setting.key != "right_alt") return;
+
+		config.keyboard.right_alt = setting.value == "meta"
+			? RightAltRole::Meta
+			: RightAltRole::AltGr;
+	}
+
 	static void applyPaneSetting(const Setting& setting, Config& config) {
 		if (setting.key == "prefix") config.panes.prefix = setting.value;
 
@@ -389,6 +405,7 @@ namespace wbshterm {
 		if (setting.section == "window") applyWindowSetting(setting, config);
 		if (setting.section == "cursor") applyCursorSetting(setting, config);
 		if (setting.section == "panes")  applyPaneSetting(setting, config);
+		if (setting.section == "keyboard") applyKeyboardSetting(setting, config);
 		if (setting.section == "titlebar") applyTitleBarSetting(setting, config);
 		if (setting.section == "theme")  applyThemeSetting(setting, config);
 		if (setting.section == "startup" && setting.key == "fetch") {

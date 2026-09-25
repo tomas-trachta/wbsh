@@ -48,6 +48,9 @@ namespace wbshterm {
 		/** Blocks until bytes arrive; returns 0 once the session has ended. */
 		DWORD read(char* buffer, DWORD capacity);
 
+		/** Bytes a read() would return right now without blocking. */
+		DWORD bytesAvailable() const;
+
 		bool write(const char* data, DWORD length);
 
 		bool waitForExit(DWORD timeout_ms, DWORD& out_exit_code);

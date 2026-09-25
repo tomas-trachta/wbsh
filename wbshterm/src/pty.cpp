@@ -10,6 +10,11 @@
 
 namespace wbshterm {
 
+	// A pseudoconsole writes a whole frame at once when the pipe has room
+	// for it; the default four kilobytes make it dribble a busy screen out
+	// in pieces, each of which would reach the window on its own.
+	static const DWORD kOutputPipeBytes = 1024 * 1024;
+
 	static std::string describeLastError(const char* call) {
 		const DWORD code = ::GetLastError();
 		char text[160];
@@ -52,7 +57,7 @@ namespace wbshterm {
 			return false;
 		}
 
-		if (!::CreatePipe(&output_read_, &output_write, nullptr, 0)) {
+		if (!::CreatePipe(&output_read_, &output_write, nullptr, kOutputPipeBytes)) {
 			out_error = describeLastError("CreatePipe(output)");
 			closeIfOpen(input_read);
 			return false;
@@ -143,6 +148,14 @@ namespace wbshterm {
 		DWORD got = 0;
 		if (!::ReadFile(output_read_, buffer, capacity, &got, nullptr)) return 0;
 		return got;
+	}
+
+	DWORD PtySession::bytesAvailable() const {
+		if (output_read_ == INVALID_HANDLE_VALUE) return 0;
+
+		DWORD available = 0;
+		if (!::PeekNamedPipe(output_read_, nullptr, 0, nullptr, &available, nullptr)) return 0;
+		return available;
 	}
 
 	bool PtySession::write(const char* data, DWORD length) {
