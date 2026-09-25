@@ -5,6 +5,7 @@
 
 #include "font.h"
 
+#include <algorithm>
 #include <iterator>
 
 #pragma comment(lib, "dwrite.lib")
@@ -18,6 +19,74 @@ namespace wbshterm {
 			const Microsoft::WRL::ComPtr<IDWriteTextFormat>* formats, bool bold, bool italic) {
 		const int index = (bold ? 1 : 0) + (italic ? 2 : 0);
 		return formats[index].Get();
+	}
+
+	static bool localizedName(IDWriteLocalizedStrings* names, std::wstring& out_name) {
+		UINT32 index = 0;
+		BOOL exists = FALSE;
+		if (FAILED(names->FindLocaleName(L"en-us", &index, &exists)) || !exists) index = 0;
+
+		UINT32 length = 0;
+		if (FAILED(names->GetStringLength(index, &length))) return false;
+
+		out_name.assign(static_cast<std::size_t>(length) + 1, L'\0');
+		if (FAILED(names->GetString(index, out_name.data(), length + 1))) return false;
+
+		out_name.resize(length);
+		return !out_name.empty();
+	}
+
+	static bool familyIsMonospaced(IDWriteFontFamily* family) {
+		Microsoft::WRL::ComPtr<IDWriteFont> font;
+		if (FAILED(family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL,
+				DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, font.GetAddressOf()))) {
+			return false;
+		}
+
+		Microsoft::WRL::ComPtr<IDWriteFont1> font1;
+		if (FAILED(font.As(&font1))) return false;
+
+		return font1->IsMonospacedFont() != FALSE;
+	}
+
+	static bool familyName(IDWriteFontFamily* family, std::wstring& out_name) {
+		Microsoft::WRL::ComPtr<IDWriteLocalizedStrings> names;
+		if (FAILED(family->GetFamilyNames(names.GetAddressOf()))) return false;
+
+		return localizedName(names.Get(), out_name);
+	}
+
+	static bool caseInsensitiveLess(const std::wstring& left, const std::wstring& right) {
+		return ::CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_LESS_THAN;
+	}
+
+	std::vector<std::wstring> installedMonospaceFamilies() {
+		std::vector<std::wstring> families;
+
+		Microsoft::WRL::ComPtr<IDWriteFactory> factory;
+		if (FAILED(::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+				reinterpret_cast<IUnknown**>(factory.GetAddressOf())))) {
+			return families;
+		}
+
+		Microsoft::WRL::ComPtr<IDWriteFontCollection> collection;
+		if (FAILED(factory->GetSystemFontCollection(collection.GetAddressOf(), FALSE))) {
+			return families;
+		}
+
+		const UINT32 count = collection->GetFontFamilyCount();
+		for (UINT32 index = 0; index < count; ++index) {
+			Microsoft::WRL::ComPtr<IDWriteFontFamily> family;
+			if (FAILED(collection->GetFontFamily(index, family.GetAddressOf()))) continue;
+			if (!familyIsMonospaced(family.Get())) continue;
+
+			std::wstring name;
+			if (familyName(family.Get(), name)) families.push_back(name);
+		}
+
+		std::sort(families.begin(), families.end(), caseInsensitiveLess);
+		families.erase(std::unique(families.begin(), families.end()), families.end());
+		return families;
 	}
 
 	bool FontSet::create(const FontSettings& settings, std::string& out_error) {

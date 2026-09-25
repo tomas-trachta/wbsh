@@ -11,8 +11,18 @@
 #include "config.h"
 
 #include <string>
+#include <vector>
 
 namespace wbshterm {
+
+	/**
+	 * @brief Every installed family that is monospaced, sorted by name.
+	 *
+	 * What the menu offers: a face that is not fixed-pitch would break the
+	 * grid, so those are left out even though the config file would take
+	 * them. Empty when DirectWrite cannot be reached at all.
+	 */
+	std::vector<std::wstring> installedMonospaceFamilies();
 
 	struct CellMetrics {
 		float width   = 8.0f;

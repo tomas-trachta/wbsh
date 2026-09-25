@@ -170,8 +170,11 @@ would be wiped by the shell's first repaint. wbshterm sets
 ## Making it yours
 
 **Right-click the terminal.** The menu carries the settings people actually
-reach for — theme, font size, cursor style and blinking, opacity, padding —
-plus Copy and Paste, and it ticks whatever is currently set. The last two
+reach for — theme, font, font size, cursor style and blinking, opacity,
+padding — plus Copy and Paste, and it ticks whatever is currently set. The
+Font entry lists every monospace family installed on the machine; a face
+named in the config that is not among them is listed too, so the tick
+always has somewhere to go. The last two
 entries open the configuration file and the themes folder, creating the
 folder and its example if they are not there yet. A choice
 applies at once *and* is written back to the config file, so it is still

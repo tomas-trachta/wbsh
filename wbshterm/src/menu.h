@@ -25,6 +25,7 @@ namespace wbshterm {
 		SetCursorStyle,
 		ToggleBlink,
 		SetFontSize,
+		SetFontFamily,
 		SetOpacity,
 		SetPadding,
 		OpenConfigFile,
@@ -39,23 +40,37 @@ namespace wbshterm {
 	 * testable: the mapping from command id to intent is ordinary code.
 	 */
 	struct MenuChoice {
-		MenuAction  action = MenuAction::None;
-		int         number = 0;
-		float       amount = 0.0f;
-		std::string text;
-		CursorStyle style  = CursorStyle::Block;
+		MenuAction   action = MenuAction::None;
+		int          number = 0;
+		float        amount = 0.0f;
+		std::string  text;
+		std::wstring family;
+		CursorStyle  style  = CursorStyle::Block;
 	};
+
+	/** What the menu can offer beyond its fixed entries. */
+	struct MenuLists {
+		std::vector<std::string>  themes;
+		std::vector<std::wstring> fonts;
+	};
+
+	/**
+	 * @brief The font families the menu lists: the installed ones plus the
+	 *        configured one, so the tick always has somewhere to go.
+	 */
+	std::vector<std::wstring> menuFontFamilies(const Config& config,
+		const std::vector<std::wstring>& installed);
 
 	/**
 	 * @brief Builds the popup, ticking whatever the config currently says.
 	 *
 	 * The caller owns the returned menu and must DestroyMenu it.
 	 */
-	HMENU buildTerminalMenu(const Config& config, const std::vector<std::string>& themes,
+	HMENU buildTerminalMenu(const Config& config, const MenuLists& lists,
 		bool has_selection, bool has_blocks);
 
 	/** Translates a command id from TrackPopupMenu into an intent. */
-	MenuChoice menuChoiceFor(int command_id, const std::vector<std::string>& themes);
+	MenuChoice menuChoiceFor(int command_id, const MenuLists& lists);
 
 	/** Applies a choice to @p config; false when nothing about it changed. */
 	bool applyMenuChoice(const MenuChoice& choice, const std::wstring& themes_directory,

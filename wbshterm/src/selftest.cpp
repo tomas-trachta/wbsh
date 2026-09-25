@@ -8,6 +8,7 @@
 #include "charwidth.h"
 #include "config.h"
 #include "fetch.h"
+#include "font.h"
 #include "keymap.h"
 #include "menu.h"
 #include "pane_tree.h"
@@ -434,7 +435,7 @@ namespace wbshterm {
 		// Every menu entry has to be reachable: walking the real menu is the
 		// only way to know the ids the window will actually receive.
 		static MenuChoice choiceFromMenu(HMENU menu, const std::wstring& label,
-				const std::vector<std::string>& themes) {
+				const MenuLists& lists) {
 			const int count = ::GetMenuItemCount(menu);
 			for (int i = 0; i < count; ++i) {
 				wchar_t text[128] = {};
@@ -442,18 +443,24 @@ namespace wbshterm {
 
 				HMENU child = ::GetSubMenu(menu, i);
 				if (child != nullptr) {
-					const MenuChoice found = choiceFromMenu(child, label, themes);
+					const MenuChoice found = choiceFromMenu(child, label, lists);
 					if (found.action != MenuAction::None) return found;
 					continue;
 				}
 
 				if (label == text) {
 					return menuChoiceFor(static_cast<int>(::GetMenuItemID(menu,
-						static_cast<UINT>(i))), themes);
+						static_cast<UINT>(i))), lists);
 				}
 			}
 
 			return MenuChoice();
+		}
+
+		static MenuLists menuListsFor(const std::vector<std::string>& themes) {
+			MenuLists lists;
+			lists.themes = themes;
+			return lists;
 		}
 
 		// A colour written above the theme name must not be swallowed by it:
@@ -570,8 +577,9 @@ namespace wbshterm {
 				config.palette.ansi[1] == 0xFF0000, "");
 
 			const std::vector<std::string> names = availableThemeNames(fixture.themes);
-			HMENU menu = buildTerminalMenu(config, names, false, false);
-			const MenuChoice chosen = choiceFromMenu(menu, L"midnight", names);
+			const MenuLists lists = menuListsFor(names);
+			HMENU menu = buildTerminalMenu(config, lists, false, false);
+			const MenuChoice chosen = choiceFromMenu(menu, L"midnight", lists);
 			::DestroyMenu(menu);
 
 			report.check("the menu offers themes from the folder",
@@ -650,17 +658,25 @@ namespace wbshterm {
 			Config config;
 			findBuiltInTheme(config.theme_name, config.palette);
 
-			const std::vector<std::string> themes = builtInThemeNames();
-			HMENU menu = buildTerminalMenu(config, themes, true, true);
+			MenuLists lists = menuListsFor(builtInThemeNames());
+			lists.fonts = menuFontFamilies(config, installedMonospaceFamilies());
+			HMENU menu = buildTerminalMenu(config, lists, true, true);
 
-			const MenuChoice theme = choiceFromMenu(menu, L"dracula", themes);
-			const MenuChoice cursor = choiceFromMenu(menu, L"Underline", themes);
-			const MenuChoice font = choiceFromMenu(menu, L"14 pt", themes);
-			const MenuChoice opacity = choiceFromMenu(menu, L"90%", themes);
-			const MenuChoice padding = choiceFromMenu(menu, L"24 px", themes);
+			const MenuChoice theme = choiceFromMenu(menu, L"dracula", lists);
+			const MenuChoice cursor = choiceFromMenu(menu, L"Underline", lists);
+			const MenuChoice font = choiceFromMenu(menu, L"14 pt", lists);
+			const MenuChoice family = choiceFromMenu(menu, L"Consolas", lists);
+			const MenuChoice current = choiceFromMenu(menu, config.font.family, lists);
+			const MenuChoice opacity = choiceFromMenu(menu, L"90%", lists);
+			const MenuChoice padding = choiceFromMenu(menu, L"24 px", lists);
 
 			report.check("the menu offers every built-in theme",
 				theme.action == MenuAction::SetTheme && theme.text == "dracula", theme.text);
+			report.check("the menu offers installed monospace fonts",
+				family.action == MenuAction::SetFontFamily && family.family == L"Consolas", "");
+			report.check("the menu offers the configured font even if not installed",
+				current.action == MenuAction::SetFontFamily
+				&& current.family == config.font.family, "");
 			report.check("the menu offers cursor styles",
 				cursor.action == MenuAction::SetCursorStyle
 				&& cursor.style == CursorStyle::Underline, "");
@@ -711,8 +727,24 @@ namespace wbshterm {
 			const bool was_blinking = config.cursor.blink;
 			applyMenuChoice(blink, std::wstring(), config);
 
+			MenuChoice family;
+			family.action = MenuAction::SetFontFamily;
+			family.family = L"Consolas";
+			const bool family_changed = applyMenuChoice(family, std::wstring(), config);
+
+			std::string section;
+			std::string key;
+			std::string value;
+			settingForChoice(family, config, section, key, value);
+
 			report.check("choosing a theme repaints in its colours",
 				changed && config.palette.background == 0x2E3440, "");
+			report.check("choosing a font changes the family",
+				family_changed && config.font.family == L"Consolas", "");
+			report.check("choosing the same font again changes nothing",
+				!applyMenuChoice(family, std::wstring(), config), "");
+			report.check("a chosen font is written under [font] family",
+				section == "font" && key == "family" && value == "Consolas", value);
 			report.check("choosing the same theme again changes nothing",
 				!applyMenuChoice(theme, std::wstring(), config), "");
 			report.check("blinking toggles", config.cursor.blink != was_blinking, "");

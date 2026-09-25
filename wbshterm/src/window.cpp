@@ -5,6 +5,7 @@
 
 #include "window.h"
 
+#include "font.h"
 #include "utils.h"
 
 #include <dwmapi.h>
@@ -1339,16 +1340,22 @@ namespace wbshterm {
 			::ClientToScreen(window_, &where);
 		}
 
-		const std::vector<std::string> themes =
-			availableThemeNames(themesDirectory(config_path_));
+		MenuLists lists;
+		lists.themes = availableThemeNames(themesDirectory(config_path_));
+		lists.fonts  = menuFontFamilies(config_, installedMonospaceFamilies());
 
-		HMENU menu = buildTerminalMenu(config_, themes, focused().view().hasSelection(),
+		HMENU menu = buildTerminalMenu(config_, lists, focused().view().hasSelection(),
 			!focused().screen().commandBlocks().empty());
 		const int command = ::TrackPopupMenu(menu,
 			TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, where.x, where.y, 0, window_, nullptr);
 		::DestroyMenu(menu);
 
-		if (command != 0) runMenuChoice(menuChoiceFor(command, themes));
+		if (command != 0) runMenuChoice(menuChoiceFor(command, lists));
+	}
+
+	static bool choiceChangesFont(const MenuChoice& choice) {
+		return choice.action == MenuAction::SetFontSize
+			|| choice.action == MenuAction::SetFontFamily;
 	}
 
 	void TerminalWindow::runMenuChoice(const MenuChoice& choice) {
@@ -1387,7 +1394,7 @@ namespace wbshterm {
 			config_stamp_ = settingsStamp(config_path_, config_.theme_name);
 		}
 
-		applyChangedConfig(choice.action == MenuAction::SetFontSize);
+		applyChangedConfig(choiceChangesFont(choice));
 	}
 
 	void TerminalWindow::applyChangedConfig(bool font_changed) {

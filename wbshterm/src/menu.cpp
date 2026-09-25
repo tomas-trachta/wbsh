@@ -25,6 +25,7 @@ namespace wbshterm {
 	static const int kCommandFontBase    = 400;
 	static const int kCommandOpacityBase = 500;
 	static const int kCommandPaddingBase = 600;
+	static const int kCommandFamilyBase  = 1000;
 
 	static const int kFontSizes[]    = { 9, 10, 11, 12, 13, 14, 16, 18, 20 };
 	static const int kOpacityLevels[] = { 100, 97, 94, 90, 85, 80 };
@@ -37,6 +38,31 @@ namespace wbshterm {
 		::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
 			out.data(), needed);
 		return out;
+	}
+
+	static std::string narrow(const std::wstring& text) {
+		const int needed = ::WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+			static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+		std::string out(static_cast<std::size_t>(needed), '\0');
+		::WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+			out.data(), needed, nullptr, nullptr);
+		return out;
+	}
+
+	static bool sameFamily(const std::wstring& left, const std::wstring& right) {
+		return ::CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
+	}
+
+	std::vector<std::wstring> menuFontFamilies(const Config& config,
+			const std::vector<std::wstring>& installed) {
+		std::vector<std::wstring> families = installed;
+
+		for (const std::wstring& family : families) {
+			if (sameFamily(family, config.font.family)) return families;
+		}
+
+		families.insert(families.begin(), config.font.family);
+		return families;
 	}
 
 	static void appendItem(HMENU menu, int id, const std::wstring& label, bool checked) {
@@ -64,6 +90,22 @@ namespace wbshterm {
 			config.cursor.style == CursorStyle::Underline);
 		::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 		appendItem(menu, kCommandBlink, L"Blinking", config.cursor.blink);
+		return menu;
+	}
+
+	// A long list of installed faces would run off the screen; Windows
+	// breaks the column when told to, so it is broken every so often.
+	static HMENU buildFamilyMenu(const Config& config, const std::vector<std::wstring>& fonts) {
+		static const std::size_t kRowsPerColumn = 30;
+
+		HMENU menu = ::CreatePopupMenu();
+		for (std::size_t i = 0; i < fonts.size(); ++i) {
+			const UINT column_break = (i > 0 && i % kRowsPerColumn == 0) ? MF_MENUBARBREAK : 0;
+			const bool checked = sameFamily(fonts[i], config.font.family);
+			::AppendMenuW(menu, MF_STRING | column_break | (checked ? MF_CHECKED : 0),
+				static_cast<UINT_PTR>(kCommandFamilyBase + static_cast<int>(i)), fonts[i].c_str());
+		}
+
 		return menu;
 	}
 
@@ -107,7 +149,7 @@ namespace wbshterm {
 		::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(child), label);
 	}
 
-	HMENU buildTerminalMenu(const Config& config, const std::vector<std::string>& themes,
+	HMENU buildTerminalMenu(const Config& config, const MenuLists& lists,
 			bool has_selection, bool has_blocks) {
 		HMENU menu = ::CreatePopupMenu();
 
@@ -118,7 +160,8 @@ namespace wbshterm {
 			L"Copy last command output");
 		::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-		appendSubMenu(menu, buildThemeMenu(config, themes), L"Theme");
+		appendSubMenu(menu, buildThemeMenu(config, lists.themes), L"Theme");
+		appendSubMenu(menu, buildFamilyMenu(config, lists.fonts), L"Font");
 		appendSubMenu(menu, buildFontMenu(config), L"Font size");
 		appendSubMenu(menu, buildCursorMenu(config), L"Cursor");
 		appendSubMenu(menu, buildOpacityMenu(config), L"Opacity");
@@ -134,36 +177,40 @@ namespace wbshterm {
 		return command_id >= base && command_id < base + static_cast<int>(count);
 	}
 
-	MenuChoice menuChoiceFor(int command_id, const std::vector<std::string>& themes) {
+	static bool listChoiceFor(int command_id, const MenuLists& lists, MenuChoice& out_choice) {
+		if (withinRange(command_id, kCommandFamilyBase, lists.fonts.size())) {
+			const std::size_t index = static_cast<std::size_t>(command_id - kCommandFamilyBase);
+			out_choice.action = MenuAction::SetFontFamily;
+			out_choice.family = lists.fonts[index];
+			return true;
+		}
+
+		if (withinRange(command_id, kCommandThemeBase, lists.themes.size())) {
+			const std::size_t index = static_cast<std::size_t>(command_id - kCommandThemeBase);
+			out_choice.action = MenuAction::SetTheme;
+			out_choice.text   = lists.themes[index];
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool plainChoiceFor(int command_id, MenuChoice& out_choice) {
+		switch (command_id) {
+		case kCommandCopy:       out_choice.action = MenuAction::Copy; return true;
+		case kCommandPaste:      out_choice.action = MenuAction::Paste; return true;
+		case kCommandBlink:      out_choice.action = MenuAction::ToggleBlink; return true;
+		case kCommandOpenConfig: out_choice.action = MenuAction::OpenConfigFile; return true;
+		case kCommandOpenThemes: out_choice.action = MenuAction::OpenThemesFolder; return true;
+		case kCommandLastOutput: out_choice.action = MenuAction::CopyLastOutput; return true;
+		default:                 return false;
+		}
+	}
+
+	MenuChoice menuChoiceFor(int command_id, const MenuLists& lists) {
 		MenuChoice choice;
-
-		if (command_id == kCommandCopy)       { choice.action = MenuAction::Copy; return choice; }
-		if (command_id == kCommandPaste)      { choice.action = MenuAction::Paste; return choice; }
-		if (command_id == kCommandBlink) {
-			choice.action = MenuAction::ToggleBlink;
-			return choice;
-		}
-
-		if (command_id == kCommandOpenConfig) {
-			choice.action = MenuAction::OpenConfigFile;
-			return choice;
-		}
-
-		if (command_id == kCommandOpenThemes) {
-			choice.action = MenuAction::OpenThemesFolder;
-			return choice;
-		}
-
-		if (command_id == kCommandLastOutput) {
-			choice.action = MenuAction::CopyLastOutput;
-			return choice;
-		}
-
-		if (withinRange(command_id, kCommandThemeBase, themes.size())) {
-			choice.action = MenuAction::SetTheme;
-			choice.text   = themes[static_cast<std::size_t>(command_id - kCommandThemeBase)];
-			return choice;
-		}
+		if (plainChoiceFor(command_id, choice)) return choice;
+		if (listChoiceFor(command_id, lists, choice)) return choice;
 
 		if (withinRange(command_id, kCommandCursorBase, 3)) {
 			const int index = command_id - kCommandCursorBase;
@@ -213,6 +260,11 @@ namespace wbshterm {
 		case MenuAction::SetFontSize:
 			config.font.size = static_cast<float>(choice.number);
 			return true;
+		case MenuAction::SetFontFamily:
+			if (choice.family.empty()) return false;
+			if (sameFamily(config.font.family, choice.family)) return false;
+			config.font.family = choice.family;
+			return true;
 		case MenuAction::SetOpacity:
 			config.window.opacity = choice.amount;
 			return true;
@@ -255,6 +307,11 @@ namespace wbshterm {
 			out_section = "font";
 			out_key     = "size";
 			out_value   = std::to_string(choice.number);
+			return true;
+		case MenuAction::SetFontFamily:
+			out_section = "font";
+			out_key     = "family";
+			out_value   = narrow(config.font.family);
 			return true;
 		case MenuAction::SetOpacity:
 			out_section = "window";
