@@ -30,7 +30,10 @@ namespace wbshterm {
 		void followOutput(const Screen& screen);
 
 		void scrollBy(int lines, const Screen& screen);
-		void scrollToBottom();
+		void scrollToBottom(const Screen& screen);
+
+		/** Where the view rests: blank rows under the text stay out of sight. */
+		int restOffset(const Screen& screen) const;
 
 		/** Puts @p absolute_row at the top of the window, as far as it can. */
 		void scrollToRow(int absolute_row, const Screen& screen);
@@ -69,6 +72,7 @@ namespace wbshterm {
 
 		int  scroll_offset_ = 0;
 		int  last_total_    = 0;
+		int  last_rest_     = 0;
 		bool selecting_     = false;
 		bool has_selection_ = false;
 

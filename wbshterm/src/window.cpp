@@ -109,6 +109,15 @@ namespace wbshterm {
 		}
 	}
 
+	static std::uint64_t historyDiskLimit(const Config& config) {
+		return static_cast<std::uint64_t>(std::max(1, config.scrollback_disk_mb))
+			* 1024ull * 1024ull;
+	}
+
+	static bool isSearchShortcut(const KeyPress& press) {
+		return press.virtual_key == 'F' && press.control && press.shift && !press.alt;
+	}
+
 	static bool isPasteShortcut(const KeyPress& press) {
 		if (press.virtual_key == 'V' && press.control && !press.alt) return true;
 		return press.virtual_key == VK_INSERT && press.shift && !press.control;
@@ -183,6 +192,7 @@ namespace wbshterm {
 		if (!pane.start(shell, out_error)) return false;
 
 		pane.screen().setScrollbackLimit(config_.scrollback_lines);
+		pane.screen().setHistoryDiskLimit(historyDiskLimit(config_));
 
 		// The startup panel belongs to the session, not to every pane in
 		// it: a split wants a prompt, not the system information again.
@@ -228,6 +238,7 @@ namespace wbshterm {
 	void TerminalWindow::applyScrollbackLimit() {
 		for (PaneNode* leaf : panes_.leaves()) {
 			leaf->pane()->screen().setScrollbackLimit(config_.scrollback_lines);
+			leaf->pane()->screen().setHistoryDiskLimit(historyDiskLimit(config_));
 		}
 	}
 
@@ -727,6 +738,7 @@ namespace wbshterm {
 			const PaneCanvas canvas = canvasFor(*leaf);
 			renderer_.draw(canvas);
 			renderer_.drawPicker(canvas, leaf->pane()->picker());
+			if (canvas.focused) renderer_.drawSearchBox(canvas, search_);
 			renderer_.drawScrollbar(canvas, scrollbarOf(*leaf), scrollbarLit(*leaf));
 			leaf->pane()->screen().clearDirty();
 		}
@@ -1290,6 +1302,7 @@ namespace wbshterm {
 		Pane& pane = leaf != nullptr ? *leaf->pane() : focused();
 
 		pane.view().scrollBy(notches * kWheelLines, pane.screen());
+		settleHistory(pane);
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
@@ -1673,6 +1686,12 @@ namespace wbshterm {
 			return;
 		}
 
+		if (search_.active()) {
+			search_.typeCharacter(character);
+			::InvalidateRect(window_, nullptr, FALSE);
+			return;
+		}
+
 		std::string bytes = encodeUtf8(character);
 		if (bytes.empty()) return;
 
@@ -1729,6 +1748,39 @@ namespace wbshterm {
 		return true;
 	}
 
+	// Enter finds the previous match, Shift+Enter the next, Escape closes.
+	bool TerminalWindow::searchTakesKey(const KeyPress& press) {
+		if (!search_.active()) return false;
+
+		switch (press.virtual_key) {
+		case VK_RETURN: runSearch(!press.shift); break;
+		case VK_ESCAPE: search_.close(); break;
+		case VK_BACK:   search_.backspace(); break;
+		default:        return false;
+		}
+
+		::InvalidateRect(window_, nullptr, FALSE);
+		return true;
+	}
+
+	void TerminalWindow::runSearch(bool backwards) {
+		Pane& pane = focused();
+		SearchHit hit;
+		if (!search_.find(pane.screen(), pane.view(), backwards, hit)) return;
+
+		pane.view().scrollToRow(hit.row, pane.screen());
+		pane.view().beginSelection({ hit.row, hit.column });
+		pane.view().extendSelection({ hit.row, hit.column + hit.length - 1 });
+		pane.view().endSelection();
+	}
+
+	// A view back at rest has no use for history read from disk.
+	void TerminalWindow::settleHistory(Pane& pane) {
+		if (pane.view().scrollOffset() <= pane.view().restOffset(pane.screen())) {
+			pane.screen().releaseColdHistory();
+		}
+	}
+
 	bool TerminalWindow::onKeyDown(WPARAM key) {
 		if (pickerTakesKey(key)) {
 			swallow_next_char_ = true;
@@ -1737,6 +1789,18 @@ namespace wbshterm {
 
 		const KeyPress press = currentKeyPress(key);
 		swallow_next_char_ = false;
+
+		if (isSearchShortcut(press)) {
+			search_.open();
+			swallow_next_char_ = true;
+			::InvalidateRect(window_, nullptr, FALSE);
+			return true;
+		}
+
+		if (searchTakesKey(press)) {
+			swallow_next_char_ = true;
+			return true;
+		}
 
 		if (paneKeyTaken(press)) return true;
 		if (rightAltTakesKey(press)) return true;
@@ -1771,8 +1835,9 @@ namespace wbshterm {
 	void TerminalWindow::sendBytes(const char* data, std::size_t length) {
 		if (length == 0) return;
 
-		focused().view().scrollToBottom();
+		focused().view().scrollToBottom(focused().screen());
 		focused().view().clearSelection();
+		focused().screen().releaseColdHistory();
 		showCursorSolid();
 		::InvalidateRect(window_, nullptr, FALSE);
 		focused().session().writeInput(data, length);

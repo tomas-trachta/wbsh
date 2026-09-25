@@ -74,7 +74,11 @@ namespace wbshterm {
 		"status = true\n"
 		"\n"
 		"[scrollback]\n"
+		"# Rows kept in memory; older rows are swapped out to a temp file\n"
+		"# and read back when scrolled to. Search covers both.\n"
 		"lines = 10000\n"
+		"# Space the file may take before the oldest history is dropped.\n"
+		"disk_mb = 1024\n"
 		"\n"
 		"[theme]\n"
 		"# catppuccin-mocha, tokyo-night, dracula, nord, gruvbox-dark,\n"
@@ -414,6 +418,10 @@ namespace wbshterm {
 
 		if (setting.section == "scrollback" && setting.key == "lines") {
 			config.scrollback_lines = parseInt(setting.value, config.scrollback_lines);
+		}
+
+		if (setting.section == "scrollback" && setting.key == "disk_mb") {
+			config.scrollback_disk_mb = parseInt(setting.value, config.scrollback_disk_mb);
 		}
 	}
 

@@ -5,6 +5,8 @@
  * @brief The cell grid a VT stream is rendered into.
  */
 
+#include "cell.h"
+#include "history.h"
 #include "vtparse.h"
 
 #include <cstdint>
@@ -13,32 +15,6 @@
 #include <vector>
 
 namespace wbshterm {
-
-	/** Colors are 0x00RRGGBB, or this sentinel for "whatever the theme says". */
-	static const std::uint32_t kDefaultColor = 0xFF000000u;
-
-	/** An ANSI slot rather than a fixed colour: the theme resolves it at paint
-	    time, so changing themes recolours text already on screen. */
-	static const std::uint32_t kPaletteColor = 0xFE000000u;
-
-	enum CellAttr : std::uint16_t {
-		kAttrNone      = 0,
-		kAttrBold      = 1 << 0,
-		kAttrDim       = 1 << 1,
-		kAttrItalic    = 1 << 2,
-		kAttrUnderline = 1 << 3,
-		kAttrReverse   = 1 << 4,
-		kAttrInvisible = 1 << 5,
-		kAttrWide      = 1 << 6,
-		kAttrWideTail  = 1 << 7,
-	};
-
-	struct Cell {
-		char32_t      code       = U' ';
-		std::uint32_t foreground = kDefaultColor;
-		std::uint32_t background = kDefaultColor;
-		std::uint16_t attributes = kAttrNone;
-	};
 
 	/**
 	 * @brief One command, as the shell reported it through OSC 633.
@@ -59,6 +35,54 @@ namespace wbshterm {
 		int  column  = 0;
 		bool visible = true;
 	};
+
+	/**
+	 * @brief Whether a row's line goes on in the row below.
+	 *
+	 * The console reports a wrapped row and a finished line the same way,
+	 * so for a row it painted this stays unknown and is guessed from the
+	 * row's last cell. A reflow knows where it wrapped and where it ended
+	 * a line, and a row keeps that knowledge until its text changes.
+	 */
+	enum class LineBreak : std::uint8_t {
+		kUnknown,
+		kWraps,
+		kEnds,
+	};
+
+	struct HistoryLine {
+		std::vector<Cell> cells;
+		LineBreak         line_break = LineBreak::kUnknown;
+	};
+
+	namespace reflow {
+
+		/** One row of text as it was laid out before a resize. */
+		struct SourceRow {
+			const Cell* cells;
+			int         width;
+			LineBreak   line_break;
+		};
+
+		struct Position {
+			int row    = 0;
+			int column = 0;
+		};
+
+		/** Rows rewrapped to a new width, with where every old row landed. */
+		struct Result {
+			std::deque<HistoryLine> rows;
+			std::vector<int>        row_map;
+			Position                cursor;
+		};
+
+		bool cellHasInk(const Cell& cell);
+
+		/** Rows at and past break_before never join the row before them. */
+		Result rewrap(const std::vector<SourceRow>& sources, int columns,
+			std::size_t break_before, int cursor_source, int cursor_column);
+
+	} /* namespace reflow */
 
 	/**
 	 * @brief A fixed-size grid with no scrollback: M1 renders one screenful.
@@ -91,7 +115,11 @@ namespace wbshterm {
 		Screen(int columns, int rows);
 
 		void resize(int columns, int rows);
+		/** Rows kept in memory before older ones go to disk. */
 		void setScrollbackLimit(int lines);
+
+		/** Bytes of history on disk before the oldest is forgotten. */
+		void setHistoryDiskLimit(std::uint64_t bytes);
 		void clearAll();
 
 		/** Forgets every line that scrolled off; the grid itself stays. */
@@ -101,7 +129,13 @@ namespace wbshterm {
 		int rows() const { return rows_; }
 
 		/** Lines that have scrolled off the top and are still remembered. */
-		int scrollbackRows() const { return static_cast<int>(scrollback_.size()); }
+		int scrollbackRows() const { return cold_.rows() + static_cast<int>(scrollback_.size()); }
+
+		/** Rows swapped out to disk; the oldest history is read back on demand. */
+		int coldRows() const { return cold_.rows(); }
+
+		/** Lets go of history read back from disk; it is read again when looked at. */
+		void releaseColdHistory() const { cold_.releaseCache(); }
 
 		/** Scrollback plus the live grid, the coordinate space the view uses. */
 		int totalRows() const { return scrollbackRows() + rows_; }
@@ -110,6 +144,9 @@ namespace wbshterm {
 		const Cell& cellAt(int absolute_row, int column) const;
 
 		bool onAltScreen() const { return alt_screen_; }
+
+		/** Grid rows down to the last one with text or the cursor, whichever is lower. */
+		int contentRowCount() const;
 
 		/** Commands the shell has marked, oldest first. */
 		const std::vector<CommandBlock>& commandBlocks() const { return blocks_; }
@@ -149,6 +186,7 @@ namespace wbshterm {
 
 	private:
 		Cell& at(int row, int column);
+		void putCell(int row, int column, const Cell& value);
 		void markDirty(int row);
 		void markAllDirty();
 
@@ -169,9 +207,19 @@ namespace wbshterm {
 		void notePickList(const std::string& path);
 		int  currentAbsoluteRow() const;
 		void trimScrollback();
+		void swapOutOldestRows();
+		std::size_t rowsToSwapOut() const;
+		std::vector<std::vector<Cell>> joinRowsForStorage(std::size_t count,
+			std::size_t& out_consumed) const;
+		void remapBlocksForColdWidth(int new_columns);
 		void shiftBlocksUp(int lines);
-		void carryContentForward(const std::vector<Cell>& old_cells, int old_columns,
-			int old_rows);
+		void reflowPrimary(int new_columns, int new_rows);
+		void swapWithPrimary();
+		void clampCursor(CursorState& cursor) const;
+		std::vector<reflow::SourceRow> reflowSources() const;
+		void remapBlocks(const std::vector<int>& row_map, int new_total);
+		void placeReflowedRows(std::deque<HistoryLine>& rows, int grid_top, int new_columns,
+			int new_rows);
 		void enterAltScreen();
 		void leaveAltScreen();
 		void scrollDown(int count);
@@ -199,10 +247,14 @@ namespace wbshterm {
 		int  columns_ = 0;
 		int  rows_    = 0;
 		std::vector<Cell> cells_;
-		std::deque<std::vector<Cell>> scrollback_;
+		std::deque<HistoryLine> scrollback_;
+		HistoryStore      cold_;
 		std::size_t       scrollback_limit_ = 10000;
+		std::uint64_t     disk_limit_ = 1024ull * 1024ull * 1024ull;
 		std::vector<Cell> primary_cells_;
 		CursorState       primary_cursor_;
+		std::vector<LineBreak> row_breaks_;
+		std::vector<LineBreak> primary_breaks_;
 		bool              alt_screen_ = false;
 		std::vector<bool> dirty_;
 

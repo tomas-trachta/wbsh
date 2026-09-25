@@ -74,6 +74,7 @@ namespace wbshterm {
 		Palette        palette;
 		std::string    theme_name      = "catppuccin-mocha";
 		int            scrollback_lines = 10000;
+		int            scrollback_disk_mb = 1024;
 		bool           startup_fetch    = true;
 	};
 

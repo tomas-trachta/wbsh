@@ -17,6 +17,7 @@ namespace wbshterm {
 
 	static const int kTabWidth = 8;
 	static const std::size_t kMaxCommandBlocks = 500;
+	static const std::size_t kSwapChunkRows = 1024;
 
 	static const std::uint32_t kAnsiPalette[16] = {
 		0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5,
@@ -44,76 +45,441 @@ namespace wbshterm {
 		return kDefaultColor;
 	}
 
+	namespace reflow {
+
+		bool cellHasInk(const Cell& cell) {
+			return cell.code != U' ' || cell.background != kDefaultColor
+				|| (cell.attributes & (kAttrWide | kAttrWideTail)) != 0;
+		}
+
+		static bool rowFilledToTheEdge(const SourceRow& row) {
+			if (row.width <= 0) return false;
+
+			const Cell& last = row.cells[row.width - 1];
+			return last.code != U' ' || (last.attributes & (kAttrWide | kAttrWideTail)) != 0;
+		}
+
+		static bool rowGoesOn(const SourceRow& row) {
+			if (row.line_break == LineBreak::kWraps) return true;
+			if (row.line_break == LineBreak::kEnds) return false;
+			return rowFilledToTheEdge(row);
+		}
+
+		static int inkLength(const SourceRow& row) {
+			int length = row.width;
+			while (length > 0 && !cellHasInk(row.cells[length - 1])) --length;
+			return length;
+		}
+
+		struct LogicalLine {
+			std::vector<Cell>        cells;
+			std::vector<std::size_t> row_starts;
+			std::size_t              first_source = 0;
+			LineBreak                ending = LineBreak::kEnds;
+		};
+
+		static bool isWideLead(const LogicalLine& line, std::size_t index) {
+			if ((line.cells[index].attributes & kAttrWide) == 0) return false;
+			if (index + 1 >= line.cells.size()) return false;
+			return (line.cells[index + 1].attributes & kAttrWideTail) != 0;
+		}
+
+		/** Fills rows of a fixed width, keeping a wide character's two cells together. */
+		class RowEmitter {
+		public:
+			RowEmitter(int columns, std::deque<HistoryLine>& out)
+				: columns_(static_cast<std::size_t>(columns)), out_(out) {}
+
+			Position put(const Cell& cell, bool wide_lead) {
+				const bool pair_would_split =
+					wide_lead && columns_ >= 2 && row_.size() == columns_ - 1;
+				if (pair_would_split) row_.push_back(Cell());
+				if (row_.size() == columns_) flush();
+
+				const Position landed = position();
+				row_.push_back(cell);
+				return landed;
+			}
+
+			Position position() const {
+				if (row_.size() == columns_) return { static_cast<int>(out_.size()) + 1, 0 };
+				return { static_cast<int>(out_.size()), static_cast<int>(row_.size()) };
+			}
+
+			// A line cut short at the console's top row keeps its last row
+			// unpadded, so the cells are exactly what precedes the rest.
+			void finishLine(LineBreak ending) {
+				if (ending == LineBreak::kEnds) row_.resize(columns_, Cell());
+				out_.push_back({ std::move(row_), ending });
+				row_.clear();
+			}
+
+		private:
+			void flush() {
+				row_.resize(columns_, Cell());
+				out_.push_back({ std::move(row_), LineBreak::kWraps });
+				row_.clear();
+			}
+
+			std::size_t              columns_;
+			std::deque<HistoryLine>& out_;
+			std::vector<Cell>        row_;
+		};
+
+		// A row keeps its trailing blanks only while it continues on the
+		// next one; the cursor's row keeps at least the cells up to the
+		// cursor, so it lands inside its own line after rewrapping. A line
+		// that goes on into the console's top row is cut there, but stays
+		// marked as going on: once that row has scrolled into history the
+		// two halves meet again and the next reflow rejoins them.
+		static std::size_t gatherLogicalLine(const std::vector<SourceRow>& sources,
+				std::size_t first, std::size_t break_before, int cursor_source,
+				int cursor_column, LogicalLine& line) {
+			line.first_source = first;
+
+			std::size_t index = first;
+			for (;;) {
+				const SourceRow& row = sources[index];
+				const bool goes_on   = rowGoesOn(row) && index + 1 < sources.size();
+				const bool continues = goes_on && index + 1 != break_before;
+
+				int keep = goes_on ? row.width : inkLength(row);
+				if (static_cast<int>(index) == cursor_source) {
+					keep = std::max(keep, std::min(cursor_column + 1, row.width));
+				}
+
+				line.row_starts.push_back(line.cells.size());
+				line.cells.insert(line.cells.end(), row.cells, row.cells + keep);
+
+				++index;
+				if (continues) continue;
+
+				line.ending = goes_on ? row.line_break : LineBreak::kEnds;
+				return index;
+			}
+		}
+
+		static void emitLogicalLine(const LogicalLine& line, RowEmitter& emitter,
+				int cursor_source, int cursor_column, Result& result) {
+			std::vector<Position> landed(line.cells.size() + 1);
+			for (std::size_t index = 0; index < line.cells.size(); ++index) {
+				landed[index] = emitter.put(line.cells[index], isWideLead(line, index));
+			}
+
+			landed[line.cells.size()] = emitter.position();
+
+			for (std::size_t row = 0; row < line.row_starts.size(); ++row) {
+				result.row_map[line.first_source + row] = landed[line.row_starts[row]].row;
+			}
+
+			const std::size_t cursor_offset =
+				static_cast<std::size_t>(cursor_source) - line.first_source;
+			if (cursor_offset < line.row_starts.size()) {
+				const std::size_t at = std::min(line.row_starts[cursor_offset]
+					+ static_cast<std::size_t>(std::max(cursor_column, 0)), line.cells.size());
+				result.cursor = landed[at];
+			}
+
+			emitter.finishLine(line.ending);
+		}
+
+		Result rewrap(const std::vector<SourceRow>& sources, int columns,
+				std::size_t break_before, int cursor_source, int cursor_column) {
+			Result result;
+			result.row_map.assign(sources.size(), 0);
+
+			RowEmitter emitter(columns, result.rows);
+			std::size_t next = 0;
+			while (next < sources.size()) {
+				LogicalLine line;
+				next = gatherLogicalLine(sources, next, break_before, cursor_source,
+					cursor_column, line);
+				emitLogicalLine(line, emitter, cursor_source, cursor_column, result);
+			}
+
+			return result;
+		}
+
+	} /* namespace reflow */
+
 	Screen::Screen(int columns, int rows) {
 		resize(columns, rows);
 	}
 
+	// The pseudoconsole keeps no history and, after a resize, repaints
+	// its whole viewport: rewrapped content sits at the top when it fits
+	// and hangs from the bottom when it does not, the overflow gone for
+	// good. The grid here is laid out the same way, so the repaint lands
+	// on rows that already hold the same text, and the rows the console
+	// forgets are the ones that move into scrollback. Reflow can only
+	// guess where a line was wrapped -- the console reports every wrap
+	// as a plain line break -- so a row filled to its last cell is taken
+	// to continue on the next.
 	void Screen::resize(int columns, int rows) {
-		const std::vector<Cell> old_cells = cells_;
-		const int old_columns = columns_;
-		const int old_rows    = rows_;
+		const int new_columns = std::max(1, columns);
+		const int new_rows    = std::max(1, rows);
 
-		columns_ = std::max(1, columns);
-		rows_    = std::max(1, rows);
+		if (alt_screen_) {
+			swapWithPrimary();
+			reflowPrimary(new_columns, new_rows);
+			swapWithPrimary();
+			cells_.assign(
+				static_cast<std::size_t>(new_columns) * static_cast<std::size_t>(new_rows), Cell());
+			row_breaks_.assign(static_cast<std::size_t>(new_rows), LineBreak::kUnknown);
+		} else {
+			reflowPrimary(new_columns, new_rows);
+		}
 
-		cells_.assign(static_cast<std::size_t>(columns_) * static_cast<std::size_t>(rows_), Cell());
+		columns_ = new_columns;
+		rows_    = new_rows;
 		dirty_.assign(static_cast<std::size_t>(rows_), true);
 
 		scroll_top_    = 0;
 		scroll_bottom_ = rows_ - 1;
 		wrap_pending_  = false;
 
-		carryContentForward(old_cells, old_columns, old_rows);
-
-		cursor_.row    = std::min(cursor_.row, rows_ - 1);
-		cursor_.column = std::min(cursor_.column, columns_ - 1);
+		clampCursor(cursor_);
+		clampCursor(saved_cursor_);
 	}
 
-	void Screen::carryContentForward(const std::vector<Cell>& old_cells, int old_columns,
-			int old_rows) {
-		if (old_cells.empty() || old_columns <= 0 || old_rows <= 0) return;
+	void Screen::swapWithPrimary() {
+		std::swap(cells_, primary_cells_);
+		std::swap(cursor_, primary_cursor_);
+		std::swap(row_breaks_, primary_breaks_);
+	}
 
-		const int kept    = std::min(rows_, old_rows);
-		const int carried = std::min(columns_, old_columns);
+	void Screen::clampCursor(CursorState& cursor) const {
+		cursor.row    = std::min(std::max(cursor.row, 0), rows_ - 1);
+		cursor.column = std::min(std::max(cursor.column, 0), columns_ - 1);
+	}
 
-		for (int row = 0; row < old_rows - kept; ++row) {
-			std::vector<Cell> line(
-				old_cells.begin() + static_cast<std::ptrdiff_t>(row) * old_columns,
-				old_cells.begin() + static_cast<std::ptrdiff_t>(row + 1) * old_columns);
-			if (!alt_screen_) scrollback_.push_back(std::move(line));
+	void Screen::reflowPrimary(int new_columns, int new_rows) {
+		const std::size_t new_size =
+			static_cast<std::size_t>(new_columns) * static_cast<std::size_t>(new_rows);
+		if (cells_.empty()) {
+			cells_.assign(new_size, Cell());
+			row_breaks_.assign(static_cast<std::size_t>(new_rows), LineBreak::kUnknown);
+			cold_.setColumns(new_columns);
+			return;
 		}
 
-		trimScrollback();
+		const std::vector<reflow::SourceRow> sources = reflowSources();
+		const std::size_t hot_rows = scrollback_.size();
+		const int cursor_source = static_cast<int>(hot_rows) + cursor_.row;
+		reflow::Result result = reflow::rewrap(sources, new_columns, hot_rows, cursor_source,
+			cursor_.column);
 
-		for (int row = 0; row < kept; ++row) {
-			const int source = old_rows - kept + row;
-			const int target = rows_ - kept + row;
-			for (int column = 0; column < carried; ++column) {
-				at(target, column) = old_cells[
-					static_cast<std::size_t>(source) * static_cast<std::size_t>(old_columns)
-					+ static_cast<std::size_t>(column)];
+		const int total      = static_cast<int>(result.rows.size());
+		const int grid_start = result.row_map[hot_rows];
+		const int produced   = total - grid_start;
+		const int grid_top   = produced >= new_rows ? total - new_rows : grid_start;
+
+		remapBlocksForColdWidth(new_columns);
+		remapBlocks(result.row_map, std::max(total, grid_top + new_rows));
+		placeReflowedRows(result.rows, grid_top, new_columns, new_rows);
+
+		cursor_.row    = result.cursor.row - grid_top;
+		cursor_.column = result.cursor.column;
+		trimScrollback();
+	}
+
+	int Screen::contentRowCount() const {
+		int last = cursor_.row;
+		for (int row = rows_ - 1; row > last; --row) {
+			for (int column = 0; column < columns_; ++column) {
+				if (reflow::cellHasInk(cell(row, column))) {
+					last = row;
+					break;
+				}
 			}
 		}
 
-		cursor_.row += rows_ - old_rows;
+		return last + 1;
+	}
+
+	std::vector<reflow::SourceRow> Screen::reflowSources() const {
+		std::vector<reflow::SourceRow> sources;
+		sources.reserve(scrollback_.size() + static_cast<std::size_t>(rows_));
+
+		for (const HistoryLine& line : scrollback_) {
+			sources.push_back({ line.cells.data(), static_cast<int>(line.cells.size()),
+				line.line_break });
+		}
+
+		const int content = contentRowCount();
+		for (int row = 0; row < content; ++row) {
+			sources.push_back({ &cell(row, 0), columns_,
+				row_breaks_[static_cast<std::size_t>(row)] });
+		}
+
+		return sources;
+	}
+
+	// Rows on disk are not rewrapped here; the store counts them afresh
+	// for the new width, and a block pointing into them follows its line.
+	void Screen::remapBlocksForColdWidth(int new_columns) {
+		const int old_cold = cold_.rows();
+		std::vector<HistoryLocation> located;
+		for (const CommandBlock& block : blocks_) {
+			located.push_back(block.prompt_row < old_cold ? cold_.locate(block.prompt_row)
+				: HistoryLocation{ -1, 0 });
+			located.push_back(block.output_row >= 0 && block.output_row < old_cold
+				? cold_.locate(block.output_row) : HistoryLocation{ -1, 0 });
+			located.push_back(block.end_row >= 0 && block.end_row < old_cold
+				? cold_.locate(block.end_row) : HistoryLocation{ -1, 0 });
+		}
+
+		cold_.setColumns(new_columns);
+
+		const int shift = cold_.rows() - old_cold;
+		const auto mapped = [&](int row, const HistoryLocation& where) {
+			if (where.line >= 0) return cold_.rowOf(where);
+			return row < 0 ? row : row + shift;
+		};
+
+		std::size_t at = 0;
+		for (CommandBlock& block : blocks_) {
+			block.prompt_row = mapped(block.prompt_row, located[at++]);
+			block.output_row = mapped(block.output_row, located[at++]);
+			block.end_row    = mapped(block.end_row, located[at++]);
+		}
+	}
+
+	// Rows below the disk history sit at row_map's indices plus the disk
+	// rows, already recounted for the new width by the time this runs.
+	void Screen::remapBlocks(const std::vector<int>& row_map, int new_total) {
+		const int cold = cold_.rows();
+		const auto mapped = [&](int row) {
+			if (row < cold) return row;
+
+			const std::size_t index = static_cast<std::size_t>(row - cold);
+			if (index < row_map.size()) return cold + row_map[index];
+
+			const int past_content = static_cast<int>(index + 1 - row_map.size());
+			return cold + std::min(row_map.back() + past_content, new_total - 1);
+		};
+
+		for (CommandBlock& block : blocks_) {
+			block.prompt_row = mapped(block.prompt_row);
+			if (block.output_row >= 0) block.output_row = mapped(block.output_row);
+			if (block.end_row >= 0) block.end_row = mapped(block.end_row);
+		}
+	}
+
+	void Screen::placeReflowedRows(std::deque<HistoryLine>& rows, int grid_top, int new_columns,
+			int new_rows) {
+		const std::size_t width = static_cast<std::size_t>(new_columns);
+		cells_.assign(width * static_cast<std::size_t>(new_rows), Cell());
+		row_breaks_.assign(static_cast<std::size_t>(new_rows), LineBreak::kUnknown);
+
+		for (int row = 0; row < new_rows; ++row) {
+			const std::size_t source = static_cast<std::size_t>(grid_top + row);
+			if (source >= rows.size()) break;
+
+			const std::vector<Cell>& line = rows[source].cells;
+			const std::size_t count = std::min(line.size(), width);
+			std::copy(line.begin(), line.begin() + static_cast<std::ptrdiff_t>(count),
+				cells_.begin()
+					+ static_cast<std::ptrdiff_t>(static_cast<std::size_t>(row) * width));
+			row_breaks_[static_cast<std::size_t>(row)] = rows[source].line_break;
+		}
+
+		scrollback_.clear();
+		for (int row = 0; row < grid_top; ++row) {
+			scrollback_.push_back(std::move(rows[static_cast<std::size_t>(row)]));
+		}
 	}
 
 	void Screen::clearAll() {
 		cells_.assign(cells_.size(), Cell());
+		row_breaks_.assign(static_cast<std::size_t>(rows_), LineBreak::kUnknown);
 		markAllDirty();
 	}
 
 	void Screen::clearScrollback() {
 		const int dropped = scrollbackRows();
 		scrollback_.clear();
+		cold_.clear();
 		shiftBlocksUp(dropped);
 	}
 
+	// Memory holds the newest rows; past the limit the oldest go to disk a
+	// chunk at a time, and only when the disk cannot take them are they
+	// forgotten instead.
 	void Screen::trimScrollback() {
-		while (scrollback_.size() > scrollback_limit_) {
-			scrollback_.pop_front();
-			shiftBlocksUp(1);
+		while (rowsToSwapOut() > 0) {
+			const std::size_t before = scrollback_.size();
+			swapOutOldestRows();
+			if (scrollback_.size() == before) break;
 		}
+
+		while (cold_.bytesOnDisk() > disk_limit_) {
+			const int dropped = cold_.dropOldestChunk();
+			if (dropped == 0) break;
+			shiftBlocksUp(dropped);
+		}
+	}
+
+	std::size_t Screen::rowsToSwapOut() const {
+		if (scrollback_.size() <= scrollback_limit_ + kSwapChunkRows) return 0;
+		return kSwapChunkRows;
+	}
+
+	static bool rowGoesOnInHistory(const HistoryLine& line) {
+		if (line.line_break == LineBreak::kWraps) return true;
+		if (line.line_break == LineBreak::kEnds || line.cells.empty()) return false;
+
+		const Cell& last = line.cells.back();
+		return last.code != U' ' || (last.attributes & (kAttrWide | kAttrWideTail)) != 0;
+	}
+
+	// Whole lines go to disk, so the chunk stretches to where the last
+	// line ends. A stored line spans exactly the rows it did here: a line
+	// shorter than its rows would leave everything below it renumbered,
+	// so it is padded out to keep its row count.
+	std::vector<std::vector<Cell>> Screen::joinRowsForStorage(std::size_t count,
+			std::size_t& out_consumed) const {
+		std::vector<std::vector<Cell>> lines;
+		std::vector<Cell> line;
+		int rows_in_line = 0;
+		out_consumed = 0;
+
+		for (std::size_t index = 0; index < scrollback_.size(); ++index) {
+			const HistoryLine& row = scrollback_[index];
+			const bool goes_on = rowGoesOnInHistory(row) && index + 1 < scrollback_.size();
+			++rows_in_line;
+
+			if (goes_on) {
+				line.insert(line.end(), row.cells.begin(), row.cells.end());
+				continue;
+			}
+
+			std::size_t ink = row.cells.size();
+			while (ink > 0 && !reflow::cellHasInk(row.cells[ink - 1])) --ink;
+			line.insert(line.end(), row.cells.begin(),
+				row.cells.begin() + static_cast<std::ptrdiff_t>(ink));
+
+			const std::size_t needed = lengthSpanningRows(rows_in_line, columns_);
+			if (line.size() < needed) line.resize(needed, Cell());
+
+			lines.push_back(std::move(line));
+			line.clear();
+			rows_in_line = 0;
+			out_consumed = index + 1;
+			if (out_consumed >= count) break;
+		}
+
+		return lines;
+	}
+
+	void Screen::swapOutOldestRows() {
+		std::size_t consumed = 0;
+		const std::vector<std::vector<Cell>> lines = joinRowsForStorage(rowsToSwapOut(), consumed);
+		if (consumed == 0) return;
+
+		if (!cold_.append(lines)) shiftBlocksUp(static_cast<int>(consumed));
+		scrollback_.erase(scrollback_.begin(),
+			scrollback_.begin() + static_cast<std::ptrdiff_t>(consumed));
 	}
 
 	void Screen::setScrollbackLimit(int lines) {
@@ -121,10 +487,32 @@ namespace wbshterm {
 		trimScrollback();
 	}
 
+	void Screen::setHistoryDiskLimit(std::uint64_t bytes) {
+		disk_limit_ = bytes;
+		trimScrollback();
+	}
+
 	Cell& Screen::at(int row, int column) {
 		const std::size_t index = static_cast<std::size_t>(row) * static_cast<std::size_t>(columns_)
 			+ static_cast<std::size_t>(column);
 		return cells_[index];
+	}
+
+	static bool sameCell(const Cell& left, const Cell& right) {
+		return left.code == right.code && left.foreground == right.foreground
+			&& left.background == right.background && left.attributes == right.attributes;
+	}
+
+	// The console repaints the grid after a resize with the very text the
+	// reflow laid out; a write that changes nothing keeps what the reflow
+	// knew about the row's line break.
+	void Screen::putCell(int row, int column, const Cell& value) {
+		Cell& target = at(row, column);
+		if (!sameCell(target, value)) {
+			row_breaks_[static_cast<std::size_t>(row)] = LineBreak::kUnknown;
+		}
+
+		target = value;
 	}
 
 	const Cell& Screen::cell(int row, int column) const {
@@ -137,8 +525,12 @@ namespace wbshterm {
 		const int history = scrollbackRows();
 		if (absolute_row >= history) return cell(absolute_row - history, column);
 
+		const int cold = cold_.rows();
+		if (absolute_row < cold) return cold_.cellAt(absolute_row, column);
+
 		static const Cell blank;
-		const std::vector<Cell>& line = scrollback_[static_cast<std::size_t>(absolute_row)];
+		const std::size_t hot_index = static_cast<std::size_t>(absolute_row - cold);
+		const std::vector<Cell>& line = scrollback_[hot_index].cells;
 		const std::size_t index = static_cast<std::size_t>(column);
 		return index < line.size() ? line[index] : blank;
 	}
@@ -187,6 +579,7 @@ namespace wbshterm {
 		if (width == 0) return;
 
 		if (wrap_pending_) {
+			row_breaks_[static_cast<std::size_t>(cursor_.row)] = LineBreak::kWraps;
 			carriageReturn();
 			lineFeed();
 			wrap_pending_ = false;
@@ -198,17 +591,17 @@ namespace wbshterm {
 			lineFeed();
 		}
 
-		Cell& target = at(cursor_.row, cursor_.column);
-		target = pen_;
-		target.code = code;
-		if (width == 2) target.attributes |= kAttrWide;
+		Cell glyph = pen_;
+		glyph.code = code;
+		if (width == 2) glyph.attributes |= kAttrWide;
+		putCell(cursor_.row, cursor_.column, glyph);
 		markDirty(cursor_.row);
 
 		if (width == 2 && cursor_.column + 1 < columns_) {
-			Cell& tail = at(cursor_.row, cursor_.column + 1);
-			tail = pen_;
+			Cell tail = pen_;
 			tail.code = U' ';
 			tail.attributes |= kAttrWideTail;
+			putCell(cursor_.row, cursor_.column + 1, tail);
 			++cursor_.column;
 		}
 
@@ -267,11 +660,9 @@ namespace wbshterm {
 		const int first = std::max(0, from_column);
 		const int last  = std::min(columns_ - 1, to_column);
 
-		for (int column = first; column <= last; ++column) {
-			Cell& target = at(row, column);
-			target = Cell();
-			target.background = pen_.background;
-		}
+		Cell blank;
+		blank.background = pen_.background;
+		for (int column = first; column <= last; ++column) putCell(row, column, blank);
 
 		markDirty(row);
 	}
@@ -282,9 +673,12 @@ namespace wbshterm {
 
 		const std::size_t start =
 			static_cast<std::size_t>(row) * static_cast<std::size_t>(columns_);
-		scrollback_.emplace_back(cells_.begin() + static_cast<std::ptrdiff_t>(start),
+		HistoryLine line;
+		line.cells.assign(cells_.begin() + static_cast<std::ptrdiff_t>(start),
 			cells_.begin() + static_cast<std::ptrdiff_t>(start)
 				+ static_cast<std::ptrdiff_t>(columns_));
+		line.line_break = row_breaks_[static_cast<std::size_t>(row)];
+		scrollback_.push_back(std::move(line));
 
 		trimScrollback();
 	}
@@ -299,10 +693,13 @@ namespace wbshterm {
 					at(row, column) = cell(row + 1, column);
 				}
 
+				row_breaks_[static_cast<std::size_t>(row)] =
+					row_breaks_[static_cast<std::size_t>(row) + 1];
 				markDirty(row);
 			}
 
 			clearRow(scroll_bottom_, 0, columns_ - 1);
+			row_breaks_[static_cast<std::size_t>(scroll_bottom_)] = LineBreak::kUnknown;
 		}
 	}
 
@@ -314,10 +711,13 @@ namespace wbshterm {
 					at(row, column) = cell(row - 1, column);
 				}
 
+				row_breaks_[static_cast<std::size_t>(row)] =
+					row_breaks_[static_cast<std::size_t>(row) - 1];
 				markDirty(row);
 			}
 
 			clearRow(scroll_top_, 0, columns_ - 1);
+			row_breaks_[static_cast<std::size_t>(scroll_top_)] = LineBreak::kUnknown;
 		}
 	}
 
@@ -612,6 +1012,7 @@ namespace wbshterm {
 			}
 
 			clearRow(cursor_.row, cursor_.column, cursor_.column + count - 1);
+			row_breaks_[static_cast<std::size_t>(cursor_.row)] = LineBreak::kUnknown;
 			break;
 		case 'P':
 			for (int column = cursor_.column; column < columns_; ++column) {
@@ -620,6 +1021,7 @@ namespace wbshterm {
 					: Cell();
 			}
 
+			row_breaks_[static_cast<std::size_t>(cursor_.row)] = LineBreak::kUnknown;
 			markDirty(cursor_.row);
 			break;
 		case 'X':
@@ -646,9 +1048,11 @@ namespace wbshterm {
 
 		primary_cells_  = cells_;
 		primary_cursor_ = cursor_;
+		primary_breaks_ = row_breaks_;
 		alt_screen_     = true;
 
 		cells_.assign(cells_.size(), Cell());
+		row_breaks_.assign(row_breaks_.size(), LineBreak::kUnknown);
 		moveCursor(0, 0);
 		markAllDirty();
 	}
@@ -657,7 +1061,11 @@ namespace wbshterm {
 		if (!alt_screen_) return;
 
 		alt_screen_ = false;
-		if (primary_cells_.size() == cells_.size()) cells_ = primary_cells_;
+		if (primary_cells_.size() == cells_.size()) {
+			cells_      = primary_cells_;
+			row_breaks_ = primary_breaks_;
+		}
+
 		cursor_ = primary_cursor_;
 		markAllDirty();
 	}

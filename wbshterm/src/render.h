@@ -8,6 +8,7 @@
 #include "config.h"
 #include "font.h"
 #include "picker.h"
+#include "search.h"
 #include "screen.h"
 #include "scrollbar.h"
 #include "titlebar.h"
@@ -61,6 +62,9 @@ namespace wbshterm {
 
 		/** Paints the overlay over a drawn grid; does nothing when inactive. */
 		void drawPicker(const PaneCanvas& canvas, const Picker& picker);
+
+		/** A one-line prompt in the pane's top-right corner; nothing when closed. */
+		void drawSearchBox(const PaneCanvas& canvas, const SearchBox& search);
 
 		/** A lit bar is one under the pointer or being dragged. */
 		void drawScrollbar(const PaneCanvas& canvas, const ScrollbarShape& shape, bool lit);

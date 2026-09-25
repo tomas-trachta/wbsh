@@ -30,6 +30,8 @@ namespace wbshterm {
 		if (!gridSizePending()) return;
 
 		session_.resize(wanted_columns_, wanted_rows_);
+		view_.clearSelection();
+		view_.followOutput(screen());
 	}
 
 	// A pick arrives while the pty bytes that carried it are being parsed,

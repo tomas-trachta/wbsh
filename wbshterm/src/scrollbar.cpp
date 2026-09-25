@@ -51,7 +51,8 @@ namespace wbshterm {
 	ScrollbarShape scrollbarShape(const ScrollbarFrame& frame, const Screen& screen,
 			const TerminalView& view) {
 		ScrollbarShape shape;
-		if (screen.onAltScreen() || screen.totalRows() <= screen.rows()) return shape;
+		const int hidden = screen.totalRows() - screen.rows();
+		if (screen.onAltScreen() || hidden <= view.restOffset(screen)) return shape;
 
 		shape.track = trackFor(frame, screen);
 		if (trackHeight(shape) <= 0.0f) return shape;

@@ -26,16 +26,30 @@ namespace wbshterm {
 		return std::max(0, screen.totalRows() - screen.rows());
 	}
 
+	// A grown grid is laid out from the top, the way the console repaints
+	// it, which leaves blank rows under the text while history sits just
+	// above the window. Resting the view on the last row of text shows
+	// that history where the blanks would be.
+	int TerminalView::restOffset(const Screen& screen) const {
+		if (screen.onAltScreen()) return 0;
+		return std::min(screen.rows() - screen.contentRowCount(), maxScrollOffset(screen));
+	}
+
 	// New lines push the grid down; holding the offset steady would slide
 	// the text the reader is looking at, so grow it by as much as arrived.
-	// History can also vanish under the view, when the shell clears it,
-	// and then the offset is pulled back into the rows that remain.
+	// A view at rest stays at rest, following the text as it fills the
+	// grid. History can also vanish under the view, when the shell clears
+	// it, and then the offset is pulled back into the rows that remain.
 	void TerminalView::followOutput(const Screen& screen) {
 		const int total = screen.totalRows();
 		const int grown = total - last_total_;
+		const bool resting = scroll_offset_ <= last_rest_;
 		last_total_ = total;
+		last_rest_  = restOffset(screen);
 
-		if (scroll_offset_ > 0 && grown > 0) scroll_offset_ += grown;
+		if (resting) scroll_offset_ = last_rest_;
+		else if (grown > 0) scroll_offset_ += grown;
+
 		scroll_offset_ = std::min(scroll_offset_, maxScrollOffset(screen));
 	}
 
@@ -48,8 +62,9 @@ namespace wbshterm {
 		scroll_offset_ = std::min(std::max(scroll_offset_ + lines, 0), maxScrollOffset(screen));
 	}
 
-	void TerminalView::scrollToBottom() {
-		scroll_offset_ = 0;
+	void TerminalView::scrollToBottom(const Screen& screen) {
+		last_rest_    = restOffset(screen);
+		scroll_offset_ = last_rest_;
 	}
 
 	void TerminalView::scrollToRow(int absolute_row, const Screen& screen) {

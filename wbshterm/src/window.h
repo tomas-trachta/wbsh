@@ -10,6 +10,7 @@
 #include "menu.h"
 #include "pane_tree.h"
 #include "render.h"
+#include "search.h"
 #include "scrollbar.h"
 #include "view.h"
 
@@ -98,6 +99,9 @@ namespace wbshterm {
 		bool onKeyDown(WPARAM key);
 		bool rightAltTakesKey(const KeyPress& press);
 		bool pickerTakesKey(WPARAM key);
+		bool searchTakesKey(const KeyPress& press);
+		void runSearch(bool backwards);
+		void settleHistory(Pane& pane);
 		void answerPick(const std::string& choice);
 		void pasteFromClipboard();
 		KeyModes currentModes() const;
@@ -163,6 +167,7 @@ namespace wbshterm {
 		bool         sync_grace_armed_ = false;
 		KeyPress     prefix_;
 		bool         prefix_pending_ = false;
+		SearchBox    search_;
 
 		Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
 	};

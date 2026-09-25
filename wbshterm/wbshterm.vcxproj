@@ -191,6 +191,9 @@
 
   <ItemGroup>
     <ClInclude Include="src\font.h" />
+    <ClInclude Include="src\cell.h" />
+    <ClInclude Include="src\history.h" />
+    <ClInclude Include="src\search.h" />
     <ClInclude Include="src\picker.h" />
     <ClInclude Include="src\pane.h" />
     <ClInclude Include="src\pane_tree.h" />
@@ -216,6 +219,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\font.cpp" />
+    <ClCompile Include="src\history.cpp" />
+    <ClCompile Include="src\search.cpp" />
     <ClCompile Include="src\picker.cpp" />
     <ClCompile Include="src\pane.cpp" />
     <ClCompile Include="src\pane_tree.cpp" />

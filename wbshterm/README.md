@@ -452,28 +452,37 @@ re-lays out and repaints immediately but tells no pty anything until the
 pointer settles. This is why a pane's text lags its rectangle for a moment
 mid-drag.
 
-**Scrollback is per pane.** The configured limit applies to each of them,
-so the memory a window can hold scales with how many panes are in it.
+**Scrollback is per pane.** The configured in-memory limit applies to each
+of them, and each keeps its own history file.
 
-**A split does not rewrap** — see [Remaining](#remaining). A pane that
-changes width carries its text over rather than reflowing it, the same
-thing that happens when the window is resized.
+**A split rewraps** the same way a window resize does: the pane's text is
+reflowed to its new width, with the part that no longer fits going into
+scrollback.
 
 ## Scrollback and selection
 
-Lines that scroll off the top are kept — 10,000 of them — and the view
-addresses scrollback and the live grid as one coordinate space, so a
-selection stays on the text it was made on no matter what arrives
-afterwards.
+Lines that scroll off the top are kept for the whole session. The newest
+10,000 rows (`[scrollback] lines`) stay in memory; older ones are swapped
+out to a temporary file a chunk at a time and read back when you scroll to
+them, then let go of again once you return to the bottom or type. The file
+is deleted with the session, and `disk_mb` caps how much it may grow before
+the oldest history is forgotten. The view addresses history and the live
+grid as one coordinate space, so a selection stays on the text it was made
+on no matter what arrives afterwards.
 
 | Action | Binding |
 | --- | --- |
 | Scroll | Wheel, Shift+PageUp/PageDown, Ctrl+Shift+Up/Down, or drag the scrollbar |
+| Search the session | Ctrl+Shift+F, then Enter for older, Shift+Enter for newer, Esc to close |
 | Select | Drag; double click for a word, triple for the line |
 | Copy | Ctrl+Shift+C, Ctrl+Insert |
 | Customise | Right-click, or Shift+F10 |
 | Font size | Ctrl+=, Ctrl+-, Ctrl+0 |
 | Return to the bottom | Type anything |
+
+Search is case-insensitive and covers everything from the live grid back to
+the oldest line on disk; each hit scrolls into view and is highlighted as a
+selection, so Ctrl+Shift+C copies it.
 
 A thin scrollbar sits in each pane's right margin once there is history to
 scroll into. It lights up under the pointer, the thumb drags, and a press on
@@ -483,17 +492,28 @@ with the screen, so scrolling up afterwards finds nothing.
 Two behaviours are deliberate. New output does **not** yank the view back
 to the bottom while you are reading history — the scroll offset grows by
 however many lines arrived, so the text under your eyes stays put — and the
-cursor is not painted while scrolled back, because it belongs to the live
-grid rather than to what is on screen.
+cursor is only painted while its row is on screen.
+
+## Resizing
+
+Text rewraps when the window or a pane changes width. The pseudoconsole
+keeps no history of its own and repaints its whole viewport after a resize,
+so the grid is laid out the way the console will paint it: from the top
+when the text fits, hanging from the bottom when it does not, with the rows
+the console forgets moving into scrollback. The console never says where a
+line was wrapped, so the first reflow guesses from a row filled to its last
+cell; from then on every row remembers whether its line goes on, which
+keeps a drag through many widths from breaking lines at spaces.
+
+One seam remains: a line whose tail lands on the console's top row stays
+split there until more output scrolls that row into history, at which point
+the next reflow joins it back together.
 
 ## Remaining
 
-
-**Text does not rewrap when the window is resized.** Content is carried
-over — the grid keeps what fits and pushes the rest into scrollback — but a
-line that wrapped at the old width stays broken where it was. Rewrapping
-needs the grid to record where a line continues, which is the next piece of
-work here.
+**Deep history rewraps by plain chunking.** Lines on disk are stored whole
+and cut into rows of the current width when read back, without keeping a
+wide character's two cells together at the edge.
 
 ## Things learned the hard way
 

@@ -275,6 +275,34 @@ namespace wbshterm {
 		canvas.target->PopAxisAlignedClip();
 	}
 
+	// The box sits over the top-right corner, away from the prompt at the
+	// bottom, and reads as a question until a match answers it.
+	void Renderer::drawSearchBox(const PaneCanvas& canvas, const SearchBox& search) {
+		if (!search.active() || !prepareBrush(canvas.target)) return;
+
+		const CellMetrics& cell = font_.metrics();
+		const D2D1_POINT_2F origin = originOf(canvas);
+		const std::wstring text = search.caption();
+		const float width = static_cast<float>(text.size() + 2) * cell.width;
+		const float right = origin.x + static_cast<float>(canvas.screen->columns()) * cell.width;
+		const float left  = std::max(origin.x, right - width);
+		const float top   = origin.y;
+
+		canvas.target->PushAxisAlignedClip(canvas.bounds, D2D1_ANTIALIAS_MODE_ALIASED);
+
+		setBrushColor(config_.palette.selection, 1.0f);
+		canvas.target->FillRectangle(D2D1::RectF(left, top, right, top + cell.height),
+			brush_.Get());
+
+		setBrushColor(config_.palette.foreground, 1.0f);
+		canvas.target->DrawText(text.c_str(), static_cast<UINT32>(text.size()),
+			font_.format(false, false),
+			D2D1::RectF(left + cell.width, top, right, top + cell.height), brush_.Get(),
+			text_options_);
+
+		canvas.target->PopAxisAlignedClip();
+	}
+
 	// The bar lives in the margin, so the grid keeps every column; a
 	// rounded thumb in the text's own colour is enough to read the depth
 	// of history without a track behind it until the pointer arrives.
@@ -549,19 +577,20 @@ namespace wbshterm {
 			brush_.Get(), 1.0f);
 	}
 
-	// Scrolled back into history there is no live cursor to show: the one
-	// on screen belongs to the bottom of the buffer. An unfocused pane gets
-	// a hollow box that never blinks, the way vim and tmux mark theirs.
+	// Scrolled back past the cursor's row there is no live cursor to show.
+	// An unfocused pane gets a hollow box that never blinks, the way vim
+	// and tmux mark theirs.
 	void Renderer::drawCursor(const PaneCanvas& canvas) {
 		const CursorState& cursor = canvas.screen->cursor();
-		if (!cursor.visible || canvas.view->scrollOffset() != 0) return;
-		if (cursor.row >= canvas.screen->rows()) return;
+		const int viewport_row = canvas.screen->scrollbackRows() + cursor.row
+			- canvas.view->topRow(*canvas.screen);
+		if (!cursor.visible || viewport_row < 0 || viewport_row >= canvas.screen->rows()) return;
 		if (cursor.column >= canvas.screen->columns()) return;
 
 		const CellMetrics& cell_box = font_.metrics();
 		const D2D1_POINT_2F origin = originOf(canvas);
 		const float left = origin.x + static_cast<float>(cursor.column) * cell_box.width;
-		const float top  = origin.y + static_cast<float>(cursor.row) * cell_box.height;
+		const float top  = origin.y + static_cast<float>(viewport_row) * cell_box.height;
 
 		setBrushColor(config_.palette.cursor, 1.0f);
 

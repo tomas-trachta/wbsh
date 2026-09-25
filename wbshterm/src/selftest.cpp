@@ -9,11 +9,13 @@
 #include "config.h"
 #include "fetch.h"
 #include "font.h"
+#include "history.h"
 #include "keymap.h"
 #include "menu.h"
 #include "pane_tree.h"
 #include "picker.h"
 #include "scrollbar.h"
+#include "search.h"
 #include "titlebar.h"
 #include "view.h"
 #include "session.h"
@@ -302,7 +304,7 @@ namespace wbshterm {
 			view.scrollBy(100, screen);
 			const bool clamped = view.topRow(screen) == 0;
 
-			view.scrollToBottom();
+			view.scrollToBottom(screen);
 			const bool returned = view.scrollOffset() == 0;
 
 			report.check("the view starts at the bottom", starts_at_bottom, "");
@@ -367,6 +369,34 @@ namespace wbshterm {
 			report.check("the thumb spans the visible share of the buffer", half_high, "");
 			report.check("scrolling to the oldest line lifts the thumb to the top", risen, "");
 			report.check("a thumb position maps back to its top row", round_trip, "");
+		}
+
+		static void checkGrownGridRestsOnItsText(Report& report) {
+			Screen screen(20, 3);
+			feedToScreen(screen, "one\r\ntwo\r\nthree\r\nfour\r\n");
+
+			TerminalView view;
+			view.followOutput(screen);
+			screen.resize(20, 6);
+			view.followOutput(screen);
+
+			report.check("a grown grid rests with history over its blank rows",
+				view.topRow(screen) == 0, std::to_string(view.topRow(screen)));
+
+			const ScrollbarFrame frame = testScrollbarFrame();
+			report.check("no scrollbar while everything fits at rest",
+				!scrollbarShape(frame, screen, view).present, "");
+
+			view.scrollBy(1, screen);
+			view.scrollToBottom(screen);
+			report.check("typing returns the view to rest, not to the blank rows",
+				view.topRow(screen) == 0, std::to_string(view.topRow(screen)));
+
+			feedToScreen(screen, "five\r\nsix\r\nseven\r\n");
+			view.followOutput(screen);
+			report.check("a resting view follows the text as it fills the grid",
+				view.topRow(screen) == 2 && view.scrollOffset() == 0,
+				std::to_string(view.topRow(screen)));
 		}
 
 		static void checkScrollbarHitTesting(Report& report) {
@@ -473,6 +503,339 @@ namespace wbshterm {
 				&& grown.find("third") != std::string::npos, grown);
 			report.check("rows pushed off by a resize become scrollback",
 				screen.scrollbackRows() > 0, std::to_string(screen.scrollbackRows()));
+		}
+
+		static std::string absoluteRowText(const Screen& screen, int row) {
+			std::string text;
+			for (int column = 0; column < screen.columns(); ++column) {
+				const char32_t code = screen.cellAt(row, column).code;
+				text.push_back(code < 0x80 ? static_cast<char>(code) : '?');
+			}
+
+			while (!text.empty() && text.back() == ' ') text.pop_back();
+			return text;
+		}
+
+		static std::string everyRowJoined(const Screen& screen) {
+			std::string text;
+			for (int row = 0; row < screen.totalRows(); ++row) {
+				text += absoluteRowText(screen, row);
+			}
+			return text;
+		}
+
+		static std::string rowsContaining(const Screen& screen, const std::string& needle) {
+			std::string text;
+			for (int row = 0; row < screen.totalRows(); ++row) {
+				const std::string line = absoluteRowText(screen, row);
+				if (line.find(needle) == std::string::npos) continue;
+
+				text += std::to_string(row) + ": " + line + "\n";
+			}
+
+			return text;
+		}
+
+		static bool someRowIsExactly(const Screen& screen, const std::string& wanted) {
+			for (int row = 0; row < screen.totalRows(); ++row) {
+				if (absoluteRowText(screen, row) == wanted) return true;
+			}
+
+			return false;
+		}
+
+		static std::vector<Cell> cellsOf(const std::string& text) {
+			std::vector<Cell> cells;
+			for (const char letter : text) {
+				Cell cell;
+				cell.code = static_cast<char32_t>(letter);
+				cells.push_back(cell);
+			}
+
+			return cells;
+		}
+
+		static std::string storeRowText(const HistoryStore& store, int row) {
+			std::string text;
+			for (int column = 0; column < store.columns(); ++column) {
+				text.push_back(static_cast<char>(store.cellAt(row, column).code));
+			}
+
+			while (!text.empty() && text.back() == ' ') text.pop_back();
+			return text;
+		}
+
+		static void checkHistoryStoreRoundTrip(Report& report) {
+			HistoryStore store;
+			store.setColumns(10);
+
+			std::vector<std::vector<Cell>> lines;
+			lines.push_back(cellsOf("first"));
+			lines.push_back(cellsOf("a line longer than ten"));
+			lines.push_back(cellsOf("third"));
+			const bool stored = store.append(lines);
+
+			report.check("history goes to disk", stored && store.bytesOnDisk() > 0,
+				std::to_string(store.bytesOnDisk()));
+			report.check("stored lines wrap to the store's width", store.rows() == 5,
+				std::to_string(store.rows()));
+			report.check("a stored row reads back from disk",
+				storeRowText(store, 0) == "first" && storeRowText(store, 1) == "a line lon"
+					&& storeRowText(store, 3) == "en" && storeRowText(store, 4) == "third",
+				storeRowText(store, 1) + "|" + storeRowText(store, 3));
+
+			store.setColumns(30);
+			report.check("a new width recounts the rows without reading the file",
+				store.rows() == 3 && storeRowText(store, 1) == "a line longer than ten",
+				std::to_string(store.rows()));
+
+			const HistoryLocation where = store.locate(2);
+			report.check("a row locates its line and back",
+				where.line == 2 && where.offset == 0 && store.rowOf(where) == 2,
+				std::to_string(where.line));
+
+			store.releaseCache();
+			report.check("released history reads back again", storeRowText(store, 2) == "third",
+				storeRowText(store, 2));
+
+			const int dropped = store.dropOldestChunk();
+			report.check("dropping the oldest chunk forgets its rows",
+				dropped == 3 && store.rows() == 0, std::to_string(dropped));
+		}
+
+		static void feedNumberedLines(Screen& screen, int count) {
+			for (int index = 0; index < count; ++index) {
+				feedToScreen(screen, "line-" + std::to_string(index) + "\r\n");
+			}
+		}
+
+		static void checkOldRowsSwapOutToDisk(Report& report) {
+			Screen screen(12, 2);
+			screen.setScrollbackLimit(0);
+			feedNumberedLines(screen, 1100);
+
+			report.check("rows past the limit move to disk a chunk at a time",
+				screen.coldRows() == 1024 && screen.scrollbackRows() == 1099,
+				std::to_string(screen.coldRows()) + " " + std::to_string(screen.scrollbackRows()));
+			report.check("swapped-out rows keep their place in history",
+				absoluteRowText(screen, 0) == "line-0"
+					&& absoluteRowText(screen, 1023) == "line-1023"
+					&& absoluteRowText(screen, 1024) == "line-1024"
+					&& absoluteRowText(screen, 1099) == "line-1099",
+				absoluteRowText(screen, 0) + "|" + absoluteRowText(screen, 1024));
+
+			screen.resize(5, 2);
+			report.check("history on disk rewraps to a narrower width",
+				absoluteRowText(screen, 0) == "line-" && absoluteRowText(screen, 1) == "0"
+					&& absoluteRowText(screen, 2) == "line-",
+				absoluteRowText(screen, 0) + "|" + absoluteRowText(screen, 1));
+
+			screen.resize(12, 2);
+			report.check("and back to one row each when widened again",
+				screen.coldRows() == 1024 && absoluteRowText(screen, 1023) == "line-1023",
+				std::to_string(screen.coldRows()));
+
+			screen.releaseColdHistory();
+			report.check("clearing history empties the disk too",
+				(feedToScreen(screen, "\x1b[3J"), screen.coldRows() == 0
+					&& screen.scrollbackRows() == 0),
+				std::to_string(screen.coldRows()));
+		}
+
+		static void checkCommandBlocksFollowSwappedRows(Report& report) {
+			Screen screen(12, 2);
+			screen.setScrollbackLimit(0);
+			feedToScreen(screen, "\x1b]633;A\x07$ early\r\n");
+			feedNumberedLines(screen, 1100);
+
+			const std::vector<CommandBlock>& blocks = screen.commandBlocks();
+			report.check("a command block still points at its prompt on disk",
+				blocks.size() == 1 && blocks[0].prompt_row == 0
+					&& absoluteRowText(screen, blocks[0].prompt_row) == "$ early",
+				blocks.empty() ? "no block" : std::to_string(blocks[0].prompt_row));
+
+			screen.resize(5, 2);
+			report.check("and follows it through a rewrap of disk history",
+				blocks.size() == 1 && absoluteRowText(screen, blocks[0].prompt_row) == "$ ear",
+				blocks.empty() ? "no block" : absoluteRowText(screen, blocks[0].prompt_row));
+		}
+
+		static void typeInto(SearchBox& search, const std::string& text) {
+			for (const char letter : text) search.typeCharacter(static_cast<wchar_t>(letter));
+		}
+
+		static void checkSearchReachesDiskHistory(Report& report) {
+			Screen screen(12, 2);
+			screen.setScrollbackLimit(0);
+			feedNumberedLines(screen, 1100);
+
+			TerminalView view;
+			view.followOutput(screen);
+
+			SearchBox search;
+			search.open();
+			typeInto(search, "LINE-0");
+
+			SearchHit hit;
+			const bool found = search.find(screen, view, true, hit);
+			report.check("search finds a line that lives on disk, case aside",
+				found && hit.row == 0 && hit.column == 0 && hit.length == 6,
+				std::to_string(hit.row));
+
+			search.backspace();
+			typeInto(search, "42");
+			const bool newest = search.find(screen, view, true, hit) && hit.row == 429;
+			const bool older  = search.find(screen, view, true, hit) && hit.row == 428;
+			const bool newer  = search.find(screen, view, false, hit) && hit.row == 429;
+			report.check("repeated finds walk older, then newer again", newest && older && newer,
+				std::to_string(hit.row));
+
+			search.backspace();
+			search.backspace();
+			typeInto(search, "nowhere");
+			const bool missed = !search.find(screen, view, true, hit);
+			report.check("a miss says so in the caption",
+				missed && search.caption().find(L"no match") != std::wstring::npos, "");
+		}
+
+		static void checkResizeRewrapsLongLines(Report& report) {
+			Screen screen(10, 4);
+			feedToScreen(screen, "abcdefghijklmnop\r\n");
+
+			screen.resize(20, 4);
+			const std::string widened = screen.toText();
+			report.check("widening joins a wrapped line back together",
+				widened == "abcdefghijklmnop\n\n\n\n", widened);
+
+			screen.resize(6, 4);
+			const std::string narrowed = screen.toText();
+			report.check("narrowing wraps a long line across rows",
+				narrowed == "abcdef\nghijkl\nmnop\n\n", narrowed);
+			report.check("the cursor follows its line through a rewrap",
+				screen.cursor().row == 3 && screen.cursor().column == 0,
+				std::to_string(screen.cursor().row));
+		}
+
+		static void checkResizeRewrapsScrollback(Report& report) {
+			Screen screen(10, 2);
+			feedToScreen(screen, "abcdefghijklmnop\r\nsecond\r\nthird\r\n");
+
+			screen.resize(20, 2);
+			report.check("widening rewraps scrollback too",
+				screen.scrollbackRows() == 2 && absoluteRowText(screen, 0) == "abcdefghijklmnop"
+					&& absoluteRowText(screen, 1) == "second",
+				absoluteRowText(screen, 0) + "|" + absoluteRowText(screen, 1));
+
+			screen.resize(4, 2);
+			report.check("narrowing pushes what no longer fits into scrollback",
+				screen.scrollbackRows() == 7 && absoluteRowText(screen, 4) == "seco"
+					&& absoluteRowText(screen, 6) == "thir" && screen.toText() == "d\n\n",
+				std::to_string(screen.scrollbackRows()) + " " + screen.toText());
+
+			screen.resize(20, 2);
+			report.check("widening rejoins history but never across the console's top row",
+				screen.scrollbackRows() == 3 && absoluteRowText(screen, 0) == "abcdefghijklmnop"
+					&& absoluteRowText(screen, 1) == "second"
+					&& absoluteRowText(screen, 2) == "thir" && screen.toText() == "d\n\n",
+				std::to_string(screen.scrollbackRows()) + " " + absoluteRowText(screen, 0));
+		}
+
+		static void checkRewrapKeepsWrapsInsideSpaces(Report& report) {
+			Screen screen(8, 12);
+			feedToScreen(screen, "abc     xyz\r\n");
+
+			screen.resize(20, 12);
+			report.check("a line that wrapped inside a run of spaces is joined back",
+				firstLine(screen.toText()) == "abc     xyz", screen.toText());
+
+			for (const int columns : { 4, 6, 9, 20 }) screen.resize(columns, 12);
+			report.check("a grid line survives a drag through several widths",
+				firstLine(screen.toText()) == "abc     xyz", screen.toText());
+		}
+
+		static void checkDragKeepsHistoryLinesWhole(Report& report) {
+			Screen screen(8, 3);
+			feedToScreen(screen, "abc     xyz\r\none\r\ntwo\r\nthree\r\nfour\r\n");
+
+			for (const int columns : { 4, 6, 9, 20 }) screen.resize(columns, 3);
+			report.check("a history line survives a drag through several widths",
+				absoluteRowText(screen, 0) == "abc     xyz" && absoluteRowText(screen, 1) == "one",
+				absoluteRowText(screen, 0) + "|" + absoluteRowText(screen, 1));
+		}
+
+		static std::string gridAsRepaint(const Screen& screen) {
+			std::string bytes = "\x1b[H";
+			for (int row = 0; row < screen.rows(); ++row) {
+				std::string text;
+				for (int column = 0; column < screen.columns(); ++column) {
+					const char32_t code = screen.cell(row, column).code;
+					text.push_back(code < 0x80 ? static_cast<char>(code) : '?');
+				}
+
+				while (!text.empty() && text.back() == ' ') text.pop_back();
+				bytes += text + "\x1b[K";
+				if (row + 1 < screen.rows()) bytes += "\r\n";
+			}
+
+			return bytes;
+		}
+
+		static void checkLineCutAtTheConsoleTopRowRejoins(Report& report) {
+			Screen screen(32, 4);
+			feedToScreen(screen, "drag-c 1 trach trach   11022336 2026-09-25 21:17 wbsh.pdb\r\n"
+				"pad-one\r\npad-two\r\n");
+
+			for (const int columns : { 13, 32, 132 }) {
+				screen.resize(columns, 4);
+				feedToScreen(screen, gridAsRepaint(screen));
+			}
+
+			const std::string cut = rowsContaining(screen, "drag-c");
+			feedToScreen(screen, "\r\ntail-one\r\ntail-two\r\ntail-three\r\n");
+			screen.resize(120, 4);
+			feedToScreen(screen, gridAsRepaint(screen));
+
+			const std::string whole = "drag-c 1 trach trach   11022336 2026-09-25 21:17 wbsh.pdb";
+			report.check("a line the console's top row cut in two rejoins once it scrolls off",
+				someRowIsExactly(screen, whole),
+				"before: " + cut + "after: " + rowsContaining(screen, "drag-c"));
+		}
+
+		static void checkGrowingRowsKeepsContentAtTheTop(Report& report) {
+			Screen screen(20, 3);
+			feedToScreen(screen, "one\r\ntwo\r\nthree\r\nfour\r\n");
+
+			screen.resize(20, 6);
+			report.check("growing keeps the grid where the console repaints it",
+				screen.toText() == "three\nfour\n\n\n\n\n" && screen.cursor().row == 2
+					&& screen.scrollbackRows() == 2,
+				screen.toText());
+		}
+
+		static void checkResizeMovesCommandBlocks(Report& report) {
+			Screen screen(10, 4);
+			feedToScreen(screen, "abcdefghijklmnop\r\n\x1b]633;A\x07$ \r\n");
+
+			screen.resize(20, 4);
+			const std::vector<CommandBlock>& blocks = screen.commandBlocks();
+			report.check("a command block follows its prompt through a rewrap",
+				blocks.size() == 1 && blocks[0].prompt_row == 1
+					&& absoluteRowText(screen, 1) == "$",
+				blocks.empty() ? "no block" : std::to_string(blocks[0].prompt_row));
+		}
+
+		static void checkResizeOnAltScreenReflowsThePrimary(Report& report) {
+			Screen screen(10, 3);
+			feedToScreen(screen, "abc\r\nabcdefghijklmnop\r\n");
+			feedToScreen(screen, "\x1b[?1049h");
+
+			screen.resize(20, 3);
+			report.check("the alt screen resizes to a blank grid",
+				screen.toText() == "\n\n\n", screen.toText());
+
+			feedToScreen(screen, "\x1b[?1049l");
+			report.check("leaving the alt screen shows the rewrapped primary",
+				firstLine(screen.toText()) == "abcdefghijklmnop", screen.toText());
 		}
 
 		static void checkThemesAreAvailable(Report& report) {
@@ -1413,6 +1776,95 @@ namespace wbshterm {
 				session.screen().toText());
 		}
 
+		static void resizeAndSettle(Session& session, int columns, int rows) {
+			session.resize(columns, rows);
+			std::this_thread::sleep_for(std::chrono::milliseconds(700));
+			session.drainOutput();
+		}
+
+		// The console repaints its viewport after a resize and forgets the
+		// rest, which then lives only in scrollback here. Every line has to
+		// survive that hand-off exactly once, and a line that wrapped on the
+		// way out has to come back as one row once there is room again. The
+		// padding keeps the probe line clear of the console's top row, where
+		// a line the console cut in two stays cut.
+		static void checkResizeKeepsEveryLineOnce(Report& report, Session& session) {
+			const std::string line =
+				"reflow-0123456789abcdefghijklmnopqrstuvwxyz-"
+				"0123456789abcdefghijklmnopqrstuvwxyz-end";
+			runCommand(session, "echo " + line);
+			if (!waitForText(session, "\n" + line + "\n", 6000)) {
+				report.check("the reflow probe line is echoed", false, session.screen().toText());
+				return;
+			}
+
+			runCommand(session, "echo pad-one; echo pad-two; echo pad-three");
+			if (!waitForText(session, "\npad-three\n", 6000)) {
+				report.check("the padding after the probe line is echoed", false,
+					session.screen().toText());
+				return;
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(400));
+			resizeAndSettle(session, 40, 5);
+			const std::size_t narrow_copies =
+				countOccurrences(everyRowJoined(session.screen()), line);
+			report.check("narrowing keeps each line exactly once across history and grid",
+				narrow_copies == 2, std::to_string(narrow_copies));
+
+			resizeAndSettle(session, 132, 24);
+			const std::size_t wide_copies =
+				countOccurrences(everyRowJoined(session.screen()), line);
+			report.check("widening keeps each line exactly once across history and grid",
+				wide_copies == 2, std::to_string(wide_copies));
+			report.check("widening unwraps a line that had scrolled into history",
+				someRowIsExactly(session.screen(), line), session.screen().toText());
+		}
+
+		// A drag commits one width after another. Rows the reflow laid out
+		// remember where their line wrapped, so a wrap that fell inside a
+		// run of spaces is not mistaken for the end of a line at the next
+		// width; the console's own repaint must leave that knowledge alone.
+		// A line the console's top row cut in two is whole again once enough
+		// output has scrolled that row into history.
+		static void checkDraggingThroughWidthsKeepsHistory(Report& report, Session& session) {
+			const std::vector<std::string> lines = {
+				"drag-a 1 trach trach          0 2026-09-25 19:08 plugins/",
+				"drag-b 1 trach trach    1065984 2026-09-25 21:17 wbsh.exe",
+				"drag-c 1 trach trach   11022336 2026-09-25 21:17 wbsh.pdb",
+			};
+			for (const std::string& line : lines) runCommand(session, "echo \"" + line + "\"");
+			runCommand(session, "echo drag-pad-one; echo drag-pad-two; echo drag-pad-three");
+			if (!waitForText(session, "\ndrag-pad-three\n", 6000)) {
+				report.check("the drag probe lines are echoed", false, session.screen().toText());
+				return;
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(400));
+			for (const int columns : { 100, 60, 32, 13, 32, 132 }) {
+				resizeAndSettle(session, columns, 24);
+			}
+
+			runCommand(session,
+				"i=0; while [ $i -lt 30 ]; do echo drag-tail-$i; i=$((i+1)); done");
+			if (!waitForText(session, "\ndrag-tail-29\n", 8000)) {
+				report.check("the lines after the drag are echoed", false,
+					session.screen().toText());
+				return;
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(400));
+			resizeAndSettle(session, 120, 24);
+
+			bool intact = true;
+			for (const std::string& line : lines) {
+				intact = intact && someRowIsExactly(session.screen(), line);
+			}
+
+			report.check("dragging through several widths keeps history lines whole", intact,
+				rowsContaining(session.screen(), "drag-"));
+		}
+
 		// cat would echo the literal text back; only the shell expands the
 		// arithmetic, so the expanded form proves Ctrl-C got us a prompt.
 		static void checkInterrupt(Report& report, Session& session) {
@@ -1803,6 +2255,8 @@ namespace wbshterm {
 			checkPagerReturnsToShell(report, session);
 			checkInterrupt(report, session);
 			checkResizeReachesTheShell(report, session);
+			checkResizeKeepsEveryLineOnce(report, session);
+			checkDraggingThroughWidthsKeepsHistory(report, session);
 			session.stop();
 		}
 
@@ -2204,12 +2658,25 @@ namespace wbshterm {
 		test::checkViewScrolling(report);
 		test::checkScrolledViewHoldsStill(report);
 		test::checkScrollbarFollowsTheView(report);
+		test::checkGrownGridRestsOnItsText(report);
 		test::checkScrollbarHitTesting(report);
 		test::checkSelectionText(report);
 		test::checkSelectionShape(report);
 		test::checkCharacterWidths(report);
 		test::checkWideCharactersTakeTwoCells(report);
 		test::checkResizeKeepsContent(report);
+		test::checkResizeRewrapsLongLines(report);
+		test::checkResizeRewrapsScrollback(report);
+		test::checkRewrapKeepsWrapsInsideSpaces(report);
+		test::checkDragKeepsHistoryLinesWhole(report);
+		test::checkLineCutAtTheConsoleTopRowRejoins(report);
+		test::checkGrowingRowsKeepsContentAtTheTop(report);
+		test::checkResizeMovesCommandBlocks(report);
+		test::checkResizeOnAltScreenReflowsThePrimary(report);
+		test::checkHistoryStoreRoundTrip(report);
+		test::checkOldRowsSwapOutToDisk(report);
+		test::checkCommandBlocksFollowSwappedRows(report);
+		test::checkSearchReachesDiskHistory(report);
 	}
 
 	static void runLayoutChecks(test::Report& report) {
