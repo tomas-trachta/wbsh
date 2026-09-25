@@ -5,12 +5,12 @@
 
 #include "fetch.h"
 
+#include "sysinfo.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif /* WIN32_LEAN_AND_MEAN */
 #include <windows.h>
-
-#include <lmcons.h>
 
 #include <cstdio>
 #include <string>
@@ -103,20 +103,6 @@ namespace wbshterm {
 		if (width == 0 || height == 0) return std::string();
 
 		return std::to_string(width) + "x" + std::to_string(height);
-	}
-
-	static std::string userName() {
-		wchar_t name[UNLEN + 1] = {};
-		DWORD size = UNLEN + 1;
-		if (!::GetUserNameW(name, &size)) return "user";
-		return narrowText(name);
-	}
-
-	static std::string hostName() {
-		wchar_t name[MAX_COMPUTERNAME_LENGTH + 1] = {};
-		DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
-		if (!::GetComputerNameW(name, &size)) return "windows";
-		return narrowText(name);
 	}
 
 	static std::wstring executableDirectory() {

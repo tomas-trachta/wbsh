@@ -24,6 +24,7 @@ namespace wbshterm {
 		SetTheme,
 		SetCursorStyle,
 		ToggleBlink,
+		ToggleStatusBar,
 		SetFontSize,
 		SetFontFamily,
 		SetOpacity,

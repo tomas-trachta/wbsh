@@ -30,6 +30,8 @@ namespace wbshterm {
 	static const UINT     kResizeSettleMs = 80;
 	static const UINT_PTR kTimerSync = 4;
 	static const UINT     kSyncGraceMs = 100;
+	static const UINT_PTR kTimerSystem = 5;
+	static const int      kSystemRefreshFloorMs = 250;
 	static const int     kWheelLines = 3;
 	static const float   kDividerSlop = 3.0f;
 
@@ -257,10 +259,16 @@ namespace wbshterm {
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
+	// The bar is there for the machine's readings whenever it is turned on,
+	// and for the pane list once `tmux` has been typed, whichever asked.
 	float TerminalWindow::statusHeight() const {
-		if (!tmux_mode_ || !config_.panes.status) return 0.0f;
+		if (!config_.statusbar.enabled && !tmuxBarShown()) return 0.0f;
 
 		return renderer_.metrics().height;
+	}
+
+	bool TerminalWindow::tmuxBarShown() const {
+		return tmux_mode_ && config_.panes.status;
 	}
 
 	static std::string lastPathSegment(const std::string& path) {
@@ -277,7 +285,10 @@ namespace wbshterm {
 
 	// tmux's own shape: the session on the left, then every window with the
 	// active one starred. Panes stand in for windows; there is one session.
+	// Before that, who and where, the way a prompt would say it.
 	std::string TerminalWindow::statusLeft() const {
+		if (!tmuxBarShown()) return userName() + "@" + hostName();
+
 		std::string text = "[wbsh]";
 
 		const std::vector<PaneNode*> leaves = panes_.leaves();
@@ -290,24 +301,20 @@ namespace wbshterm {
 		return text;
 	}
 
-	static std::string computerName() {
-		wchar_t name[MAX_COMPUTERNAME_LENGTH + 1] = {};
-		DWORD length = MAX_COMPUTERNAME_LENGTH + 1;
-		if (::GetComputerNameW(name, &length) == 0) return std::string();
-
-		std::string narrow(length, '\0');
-		::WideCharToMultiByte(CP_UTF8, 0, name, static_cast<int>(length),
-			narrow.data(), static_cast<int>(length), nullptr, nullptr);
-		return narrow;
+	static void appendStatusPart(std::vector<std::string>& parts, const std::string& part) {
+		if (!part.empty()) parts.push_back(part);
 	}
 
-	// A util's segments sit to the left of the host and clock, which is
-	// where tmux's own status-right additions go.
-	std::string TerminalWindow::statusRight() const {
-		const std::string segments = utilSegmentText();
-		const std::string fixed = "\"" + computerName() + "\" " + shown_clock_;
-
-		return segments.empty() ? fixed : segments + "  " + fixed;
+	// A util's segments sit to the left of the machine's readings and the
+	// clock, which is where tmux's own status-right additions go. The host
+	// is named here only in pane mode; otherwise the left end already has it.
+	std::vector<std::string> TerminalWindow::statusRight() const {
+		std::vector<std::string> parts;
+		appendStatusPart(parts, utilSegmentText());
+		appendStatusPart(parts, shown_system_);
+		if (tmuxBarShown()) appendStatusPart(parts, "\"" + hostName() + "\"");
+		if (config_.statusbar.clock) appendStatusPart(parts, shown_clock_);
+		return parts;
 	}
 
 	static std::string clockText() {
@@ -327,13 +334,37 @@ namespace wbshterm {
 	// The clock only moves once a minute, so the window is only repainted
 	// for it once a minute rather than on every blink.
 	bool TerminalWindow::statusClockChanged() {
-		if (statusHeight() == 0.0f) return false;
+		if (statusHeight() == 0.0f || !config_.statusbar.clock) return false;
 
 		const std::string now = clockText();
 		if (now == shown_clock_) return false;
 
 		shown_clock_ = now;
 		return true;
+	}
+
+	// The readings are only worth taking while there is a bar to show them
+	// in; the first one is taken at once so the bar never opens empty.
+	void TerminalWindow::armSystemTimer() {
+		if (!config_.statusbar.enabled) {
+			::KillTimer(window_, kTimerSystem);
+			shown_system_.clear();
+			return;
+		}
+
+		const int interval = std::max(config_.statusbar.refresh_ms, kSystemRefreshFloorMs);
+		::SetTimer(window_, kTimerSystem, static_cast<UINT>(interval), nullptr);
+		refreshSystemInfo();
+	}
+
+	void TerminalWindow::refreshSystemInfo() {
+		monitor_.sample();
+
+		const std::string now = systemInfoText(monitor_.latest(), config_.statusbar);
+		if (now == shown_system_) return;
+
+		shown_system_ = now;
+		if (!anyPaneMidFrame()) ::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 
@@ -752,8 +783,13 @@ namespace wbshterm {
 		}
 
 		if (statusHeight() > 0.0f) {
-			renderer_.drawStatusBar(target_.Get(), status_bounds_, statusLeft(),
-				statusRight());
+			StatusBarCanvas bar;
+			bar.target = target_.Get();
+			bar.bounds = status_bounds_;
+			bar.left   = statusLeft();
+			bar.right  = statusRight();
+			bar.tmux   = tmuxBarShown();
+			renderer_.drawStatusBar(bar);
 		}
 
 		if (!customFrame()) return;
@@ -919,6 +955,7 @@ namespace wbshterm {
 
 		::SetTimer(window_, kTimerBlink, kBlinkMs, nullptr);
 		::SetTimer(window_, kTimerConfig, kConfigPollMs, nullptr);
+		armSystemTimer();
 
 		::ShowWindow(window_, SW_SHOW);
 		::UpdateWindow(window_);
@@ -962,6 +999,7 @@ namespace wbshterm {
 		parseKeyBinding(config_.panes.prefix, prefix_);
 		applyScrollbackLimit();
 		applyWindowSettings();
+		armSystemTimer();
 		onResize();
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
@@ -981,6 +1019,11 @@ namespace wbshterm {
 		if (timer == kTimerSync) {
 			disarmSyncGrace();
 			::InvalidateRect(window_, nullptr, FALSE);
+			return;
+		}
+
+		if (timer == kTimerSystem) {
+			refreshSystemInfo();
 			return;
 		}
 
@@ -1072,6 +1115,7 @@ namespace wbshterm {
 
 		// A custom frame puts the caption inside the client area, so the
 		// window has to be that much taller to leave the grid its rows.
+		wanted.bottom += static_cast<LONG>(statusHeight());
 		if (customFrame()) wanted.bottom += static_cast<LONG>(titleHeight());
 		else ::AdjustWindowRect(&wanted, WS_OVERLAPPEDWINDOW, FALSE);
 
@@ -1507,6 +1551,7 @@ namespace wbshterm {
 		renderer_.setCursorVisible(true);
 		cursor_phase_ = true;
 		applyWindowSettings();
+		armSystemTimer();
 		onResize();
 		::InvalidateRect(window_, nullptr, FALSE);
 	}

@@ -19,6 +19,7 @@ namespace wbshterm {
 	static const int kCommandOpenConfig  = 103;
 	static const int kCommandOpenThemes  = 104;
 	static const int kCommandLastOutput  = 105;
+	static const int kCommandStatusBar   = 106;
 
 	static const int kCommandThemeBase   = 200;
 	static const int kCommandCursorBase  = 300;
@@ -166,6 +167,7 @@ namespace wbshterm {
 		appendSubMenu(menu, buildCursorMenu(config), L"Cursor");
 		appendSubMenu(menu, buildOpacityMenu(config), L"Opacity");
 		appendSubMenu(menu, buildPaddingMenu(config), L"Padding");
+		appendItem(menu, kCommandStatusBar, L"Status bar", config.statusbar.enabled);
 
 		::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 		::AppendMenuW(menu, MF_STRING, kCommandOpenConfig, L"Edit configuration file…");
@@ -203,6 +205,7 @@ namespace wbshterm {
 		case kCommandOpenConfig: out_choice.action = MenuAction::OpenConfigFile; return true;
 		case kCommandOpenThemes: out_choice.action = MenuAction::OpenThemesFolder; return true;
 		case kCommandLastOutput: out_choice.action = MenuAction::CopyLastOutput; return true;
+		case kCommandStatusBar:  out_choice.action = MenuAction::ToggleStatusBar; return true;
 		default:                 return false;
 		}
 	}
@@ -257,6 +260,9 @@ namespace wbshterm {
 		case MenuAction::ToggleBlink:
 			config.cursor.blink = !config.cursor.blink;
 			return true;
+		case MenuAction::ToggleStatusBar:
+			config.statusbar.enabled = !config.statusbar.enabled;
+			return true;
 		case MenuAction::SetFontSize:
 			config.font.size = static_cast<float>(choice.number);
 			return true;
@@ -302,6 +308,11 @@ namespace wbshterm {
 			out_section = "cursor";
 			out_key     = "blink";
 			out_value   = config.cursor.blink ? "true" : "false";
+			return true;
+		case MenuAction::ToggleStatusBar:
+			out_section = "statusbar";
+			out_key     = "enabled";
+			out_value   = config.statusbar.enabled ? "true" : "false";
 			return true;
 		case MenuAction::SetFontSize:
 			out_section = "font";

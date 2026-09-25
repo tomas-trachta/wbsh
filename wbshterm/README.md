@@ -100,6 +100,7 @@ apart from a parsing bug by replaying the same bytes.
 | `font.h/.cpp` | DirectWrite faces and the measured cell box. |
 | `render.h/.cpp` | Direct2D painting of a grid onto any render target. |
 | `window.h/.cpp` | The Win32 window and its frame, message handlers, key encoding, pane commands, and the status bar. |
+| `sysinfo.h/.cpp` | The machine's readings for the status bar: load, memory, disk, battery. |
 | `snapshot.h/.cpp` | Off-screen WIC target and PNG encode. |
 | `replay.h/.cpp` | Recording in, grid out, no shell involved. |
 | `selftest.h/.cpp` | The headless checks. |
@@ -172,7 +173,8 @@ would be wiped by the shell's first repaint. wbshterm sets
 
 **Right-click the terminal.** The menu carries the settings people actually
 reach for — theme, font, font size, cursor style and blinking, opacity,
-padding — plus Copy and Paste, and it ticks whatever is currently set. The
+padding, the status bar — plus Copy and Paste, and it ticks whatever is
+currently set. The
 Font entry lists every monospace family installed on the machine; a face
 named in the config that is not among them is listed too, so the tick
 always has somewhere to go. The last two
@@ -338,6 +340,41 @@ And conhost passes such a sequence on only once something else moves the
 screen along, so the request ends with a save and restore of the cursor —
 a nudge that leaves nothing on screen.
 
+## The status bar
+
+A bar runs along the bottom of the window. On the left, who and where you
+are, `user@host`. On the right, what the machine is doing: CPU load,
+memory in use over the total, free space on the system drive, the battery
+where there is one (a `+` means it is on mains), and the time. A util that
+registers a status segment (see the SDK) is shown ahead of the readings.
+
+The readings are taken every two seconds and the bar is only repainted
+when something in it has changed, so it costs nothing while the machine
+is idle. The CPU figure is the share of the last interval that was not
+idle, the same number Task Manager shows.
+
+Type `tmux` and the bar turns green and takes tmux's own shape: the pane
+list on the left, the host and clock on the right, the readings between
+(see [Panes](#panes)). Each part of the bar can be turned off, or the
+whole of it; the right-click menu toggles it too.
+
+```ini
+[statusbar]
+enabled = true
+cpu = true
+memory = true
+disk = true         # free space on the system drive
+battery = true      # shown only on a machine that has one
+clock = true
+refresh_ms = 2000   # how often the readings are taken
+```
+
+Text in the bar is drawn from the grid font and kept to ASCII, so it never
+reaches for a fallback face. When the window is too narrow for both ends,
+parts of the right-hand text are dropped from its start, the way tmux
+cuts status-right: a util's segments go first, the clock at the far edge
+stays.
+
 ## The window's own frame
 
 wbshterm draws its caption rather than letting Windows draw one: a slim bar
@@ -381,8 +418,8 @@ the cut-out corners stand on their own.
 
 ## Panes
 
-Type `tmux`. A status bar appears, the prefix key comes alive, and the
-window starts holding a tree of panes — each with its own shell, grid,
+Type `tmux`. The status bar turns green and starts listing panes, the
+prefix key comes alive, and the window starts holding a tree of panes — each with its own shell, grid,
 scrollback and selection. Until then `Ctrl-B` is the shell's, which is
 the point: it is a line-editing key right up to the moment it is not.
 
@@ -423,8 +460,11 @@ turns into a sizing cursor over one.
 prefix = ctrl+b     # ctrl / alt / shift in any order, then one key
 divider = 6         # pixels between panes
 focus_border = true # outline the focused pane when there is more than one
-status = true       # the bar along the bottom
+status = true       # list the panes in the status bar
 ```
+
+`status = false` leaves the bar as it was before `tmux` was typed: still
+there if `[statusbar]` has it on, just without the pane list.
 
 ### How `tmux` reaches the terminal
 

@@ -19,6 +19,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace wbshterm {
 
@@ -29,6 +30,22 @@ namespace wbshterm {
 		const Screen*       screen  = nullptr;
 		const TerminalView* view    = nullptr;
 		bool                focused = true;
+	};
+
+	/**
+	 * @brief The bar along the bottom: text at each end, and its look.
+	 *
+	 * The right end is given in parts so that, when the window is too
+	 * narrow for all of them, whole parts go rather than half a word. In
+	 * pane mode the bar takes tmux's green, so typing `tmux` shows; the
+	 * rest of the time it is a quiet strip in the theme's own colours.
+	 */
+	struct StatusBarCanvas {
+		ID2D1RenderTarget*       target = nullptr;
+		D2D1_RECT_F              bounds{};
+		std::string              left;
+		std::vector<std::string> right;
+		bool                     tmux = false;
 	};
 
 	/** The window's own caption: what it says, and how it is feeling. */
@@ -70,8 +87,7 @@ namespace wbshterm {
 		void drawScrollbar(const PaneCanvas& canvas, const ScrollbarShape& shape, bool lit);
 
 		void drawDivider(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
-		void drawStatusBar(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
-			const std::string& left, const std::string& right);
+		void drawStatusBar(const StatusBarCanvas& canvas);
 		void drawTitleBar(const TitleBarCanvas& canvas);
 		void drawFocusBorder(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 
@@ -90,7 +106,7 @@ namespace wbshterm {
 		void drawBlockCursor(const PaneCanvas& canvas, float left, float top);
 		void drawPickerRow(const PaneCanvas& canvas, const std::wstring& text, float top,
 			float width, bool highlighted);
-		void drawStatusText(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
+		float drawStatusText(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
 			const std::string& text, bool to_the_right);
 		void drawTitleLights(const TitleBarCanvas& canvas);
 		void drawTitleText(const TitleBarCanvas& canvas);

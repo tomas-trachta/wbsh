@@ -73,6 +73,19 @@ namespace wbshterm {
 		"focus_border = true\n"
 		"status = true\n"
 		"\n"
+		"[statusbar]\n"
+		"# The bar along the bottom: what the machine is doing, and the time.\n"
+		"enabled = true\n"
+		"cpu = true\n"
+		"memory = true\n"
+		"# Free space on the system drive.\n"
+		"disk = true\n"
+		"# Shown only on a machine that has one.\n"
+		"battery = true\n"
+		"clock = true\n"
+		"# How often the readings are taken, in milliseconds.\n"
+		"refresh_ms = 2000\n"
+		"\n"
 		"[scrollback]\n"
 		"# Rows kept in memory; older rows are swapped out to a temp file\n"
 		"# and read back when scrolled to. Search covers both.\n"
@@ -282,6 +295,20 @@ namespace wbshterm {
 		if (setting.key == "status") config.panes.status = parseBool(setting.value);
 	}
 
+	static void applyStatusBarSetting(const Setting& setting, Config& config) {
+		StatusBarSettings& bar = config.statusbar;
+		if (setting.key == "enabled") bar.enabled = parseBool(setting.value);
+		if (setting.key == "cpu")     bar.cpu     = parseBool(setting.value);
+		if (setting.key == "memory")  bar.memory  = parseBool(setting.value);
+		if (setting.key == "disk")    bar.disk    = parseBool(setting.value);
+		if (setting.key == "battery") bar.battery = parseBool(setting.value);
+		if (setting.key == "clock")   bar.clock   = parseBool(setting.value);
+
+		if (setting.key == "refresh_ms") {
+			bar.refresh_ms = parseInt(setting.value, bar.refresh_ms);
+		}
+	}
+
 	static void applyWindowSetting(const Setting& setting, Config& config) {
 		if (setting.key == "padding") {
 			config.window.padding = parseInt(setting.value, config.window.padding);
@@ -411,6 +438,7 @@ namespace wbshterm {
 		if (setting.section == "panes")  applyPaneSetting(setting, config);
 		if (setting.section == "keyboard") applyKeyboardSetting(setting, config);
 		if (setting.section == "titlebar") applyTitleBarSetting(setting, config);
+		if (setting.section == "statusbar") applyStatusBarSetting(setting, config);
 		if (setting.section == "theme")  applyThemeSetting(setting, config);
 		if (setting.section == "startup" && setting.key == "fetch") {
 			config.startup_fetch = parseBool(setting.value);

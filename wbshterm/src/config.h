@@ -64,6 +64,17 @@ namespace wbshterm {
 		bool        status       = true;
 	};
 
+	/** The bar along the bottom: whether it is there, and what it reports. */
+	struct StatusBarSettings {
+		bool enabled    = true;
+		bool cpu        = true;
+		bool memory     = true;
+		bool disk       = true;
+		bool battery    = true;
+		bool clock      = true;
+		int  refresh_ms = 2000;
+	};
+
 	struct Config {
 		FontSettings   font;
 		WindowSettings window;
@@ -71,6 +82,7 @@ namespace wbshterm {
 		PaneSettings   panes;
 		KeyboardSettings keyboard;
 		TitleBarSettings titlebar;
+		StatusBarSettings statusbar;
 		Palette        palette;
 		std::string    theme_name      = "catppuccin-mocha";
 		int            scrollback_lines = 10000;

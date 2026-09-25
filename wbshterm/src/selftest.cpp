@@ -19,6 +19,7 @@
 #include "titlebar.h"
 #include "view.h"
 #include "session.h"
+#include "sysinfo.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1136,6 +1137,7 @@ namespace wbshterm {
 			const MenuChoice current = choiceFromMenu(menu, config.font.family, lists);
 			const MenuChoice opacity = choiceFromMenu(menu, L"90%", lists);
 			const MenuChoice padding = choiceFromMenu(menu, L"24 px", lists);
+			const MenuChoice bar = choiceFromMenu(menu, L"Status bar", lists);
 
 			report.check("the menu offers every built-in theme",
 				theme.action == MenuAction::SetTheme && theme.text == "dracula", theme.text);
@@ -1176,6 +1178,8 @@ namespace wbshterm {
 
 			report.check("the menu offers padding levels",
 				padding.action == MenuAction::SetPadding && padding.number == 24, "");
+			report.check("the menu offers the status bar",
+				bar.action == MenuAction::ToggleStatusBar, "");
 
 			::DestroyMenu(menu);
 		}
@@ -1337,6 +1341,61 @@ namespace wbshterm {
 			report.check("the startup panel can be switched off",
 				!off.startup_fetch && on.startup_fetch, "");
 			_wremove(path.c_str());
+		}
+
+		static void checkStatusBarSettings(Report& report, const std::wstring& directory) {
+			const std::wstring path = directory + L"wbshterm-statusbar.conf";
+			writeTextFile(path,
+				"[statusbar]\nenabled = false\ncpu = false\nbattery = false\n"
+				"clock = false\nrefresh_ms = 500\n");
+
+			Config edited;
+			std::string error;
+			loadConfig(path, edited, error);
+
+			const Config defaults;
+			report.check("the status bar is on by default and reports everything",
+				defaults.statusbar.enabled && defaults.statusbar.cpu && defaults.statusbar.memory
+				&& defaults.statusbar.disk && defaults.statusbar.battery
+				&& defaults.statusbar.clock, "");
+			report.check("[statusbar] settings are read",
+				!edited.statusbar.enabled && !edited.statusbar.cpu && edited.statusbar.memory
+				&& !edited.statusbar.battery && !edited.statusbar.clock
+				&& edited.statusbar.refresh_ms == 500, "");
+			_wremove(path.c_str());
+		}
+
+		static void checkSystemInfoText(Report& report) {
+			SystemSample sample;
+			sample.cpu_percent     = 12;
+			sample.memory_used_mb  = 8294;
+			sample.memory_total_mb = 32665;
+			sample.disk_letter     = 'C';
+			sample.disk_free_gb    = 120;
+			sample.battery_percent = 85;
+			sample.on_mains        = true;
+
+			StatusBarSettings all;
+			const std::string text = systemInfoText(sample, all);
+			report.check("the readings are put into words",
+				text == "cpu 12%  mem 8.1G/31.9G  C: 120G free  bat 85%+", text);
+
+			StatusBarSettings some;
+			some.cpu  = false;
+			some.disk = false;
+			const std::string chosen = systemInfoText(sample, some);
+			report.check("only the readings asked for are shown",
+				chosen == "mem 8.1G/31.9G  bat 85%+", chosen);
+
+			SystemSample unknown;
+			report.check("a reading that could not be taken is left out",
+				systemInfoText(unknown, all).empty(), systemInfoText(unknown, all));
+
+			SystemMonitor monitor;
+			monitor.sample();
+			report.check("the first sample has no load figure yet",
+				monitor.latest().cpu_percent == -1
+				&& monitor.latest().memory_total_mb > 0, "");
 		}
 
 		// The shell says where a prompt began, where its output began, and
@@ -2711,6 +2770,8 @@ namespace wbshterm {
 		test::checkFetchPanelLayout(report);
 		test::checkFetchPanelGrowsWithRows(report);
 		test::checkStartupFetchSetting(report, directory);
+		test::checkStatusBarSettings(report, directory);
+		test::checkSystemInfoText(report);
 		test::checkShippedThemesAreWrittenOut(report, themes.themes);
 		test::checkThemeEditsAreNoticed(report, themes.config_path);
 		test::removeThemeFolder(themes);

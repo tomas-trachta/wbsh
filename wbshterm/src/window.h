@@ -12,6 +12,7 @@
 #include "render.h"
 #include "search.h"
 #include "scrollbar.h"
+#include "sysinfo.h"
 #include "view.h"
 
 #include <memory>
@@ -82,9 +83,12 @@ namespace wbshterm {
 		bool paneCharacterTaken(wchar_t character);
 		void runPaneCommand(wchar_t character);
 		float statusHeight() const;
+		bool tmuxBarShown() const;
 		std::string statusLeft() const;
-		std::string statusRight() const;
+		std::vector<std::string> statusRight() const;
 		bool statusClockChanged();
+		void armSystemTimer();
+		void refreshSystemInfo();
 		void layoutPanes();
 		void scheduleGridCommit();
 		void commitGridSizes();
@@ -160,6 +164,8 @@ namespace wbshterm {
 		float        scroll_grab_ = 0.0f;
 		std::wstring directory_hint_;
 		std::string  shown_clock_;
+		std::string  shown_system_;
+		SystemMonitor monitor_;
 		D2D1_RECT_F  status_bounds_{};
 		TitleBar     title_bar_;
 		bool         dwm_rounds_corners_ = false;

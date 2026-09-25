@@ -331,21 +331,53 @@ namespace wbshterm {
 
 	// tmux paints its status bar black on green, and a theme's own green
 	// keeps that recognisable without pinning the colour to one palette.
-	void Renderer::drawStatusBar(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
-			const std::string& left, const std::string& right) {
-		if (!prepareBrush(target)) return;
+	static const float kStatusBarTint = 0.08f;
+	static const float kStatusTextAlpha = 0.85f;
 
-		setBrushColor(config_.palette.ansi[2], 1.0f);
-		target->FillRectangle(bounds, brush_.Get());
+	static const char* const kStatusGap = "  ";
 
-		setBrushColor(config_.palette.background, 1.0f);
-		drawStatusText(target, bounds, left, false);
-		drawStatusText(target, bounds, right, true);
+	// Parts are dropped from the front until the rest fits, the way tmux
+	// cuts status-right: the clock at the far end stays, a util's segment
+	// goes first.
+	static std::string joinPartsThatFit(const std::vector<std::string>& parts,
+			std::size_t cells) {
+		std::string text;
+		for (auto part = parts.rbegin(); part != parts.rend(); ++part) {
+			const std::string joined = text.empty() ? *part : *part + kStatusGap + text;
+			if (joined.size() > cells) break;
+
+			text = joined;
+		}
+
+		return text;
 	}
 
-	void Renderer::drawStatusText(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
+	void Renderer::drawStatusBar(const StatusBarCanvas& canvas) {
+		if (!prepareBrush(canvas.target)) return;
+
+		const Palette& palette = config_.palette;
+		const std::uint32_t fill = canvas.tmux
+			? palette.ansi[2]
+			: blend(palette.background, palette.foreground, kStatusBarTint);
+		setBrushColor(fill, 1.0f);
+		canvas.target->FillRectangle(canvas.bounds, brush_.Get());
+
+		if (canvas.tmux) setBrushColor(palette.background, 1.0f);
+		else setBrushColor(palette.foreground, kStatusTextAlpha);
+
+		const float taken = drawStatusText(canvas.target, canvas.bounds, canvas.left, false);
+
+		D2D1_RECT_F remaining = canvas.bounds;
+		remaining.left = taken;
+		const float room = remaining.right - padding() - remaining.left;
+		const auto cells = static_cast<std::size_t>(std::max(room, 0.0f) / font_.metrics().width);
+		drawStatusText(canvas.target, remaining, joinPartsThatFit(canvas.right, cells), true);
+	}
+
+	// Returns where the text ends, so the other end knows how far it may go.
+	float Renderer::drawStatusText(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
 			const std::string& text, bool to_the_right) {
-		if (text.empty()) return;
+		if (text.empty()) return bounds.left;
 
 		const std::wstring wide = widenAscii(text);
 		const CellMetrics& cell = font_.metrics();
@@ -360,6 +392,8 @@ namespace wbshterm {
 			D2D1::RectF(left, bounds.top, left + width + cell.width, bounds.bottom),
 			brush_.Get(), text_options_);
 		target->PopAxisAlignedClip();
+
+		return left + width + cell.width;
 	}
 
 	// macOS's own three, and the grey they all go when the window is not
