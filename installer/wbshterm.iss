@@ -5,7 +5,7 @@
 ; Driven by installer\build.ps1, which stages payload into stage-wbshterm\.
 
 #ifndef AppVersion
-#define AppVersion "1.0.19"
+#define AppVersion "1.0.20"
 #endif
 
 [Setup]
