@@ -358,6 +358,11 @@ namespace wbshterm {
 		refreshSystemInfo();
 	}
 
+	HHOOK    TerminalWindow::hook_          = nullptr;
+	HWND     TerminalWindow::hook_owner_    = nullptr;
+	KeyPress TerminalWindow::hook_key_      = {};
+	bool     TerminalWindow::hook_key_held_ = false;
+
 	static UINT hotkeyModifiers(const KeyPress& press) {
 		UINT modifiers = MOD_NOREPEAT;
 		if (press.control) modifiers |= MOD_CONTROL;
@@ -366,16 +371,60 @@ namespace wbshterm {
 		return modifiers;
 	}
 
-	// The key is taken system-wide, so only the first window to ask gets
-	// it; the rest, and any window while the installer's shortcut holds
-	// the same key, fail quietly and leave the job to whoever has it.
+	static bool modifierDown(int key) {
+		return (::GetAsyncKeyState(key) & 0x8000) != 0;
+	}
+
+	static bool hookEventMatches(const KBDLLHOOKSTRUCT& event, const KeyPress& binding) {
+		return event.vkCode == binding.virtual_key
+			&& modifierDown(VK_CONTROL) == binding.control
+			&& modifierDown(VK_MENU) == binding.alt
+			&& modifierDown(VK_SHIFT) == binding.shift;
+	}
+
+	// The key is seen here before Explorer's own hotkey for the installer's
+	// shortcut gets it, which would otherwise only bring this window to
+	// the front. It is swallowed so nothing else acts on it, and a held key
+	// opens one window, not one per repeat. The newest window's hook is
+	// called first, so with several open exactly one of them answers.
+	LRESULT CALLBACK TerminalWindow::keyboardHook(int code, WPARAM wparam, LPARAM lparam) {
+		if (code != HC_ACTION) return ::CallNextHookEx(hook_, code, wparam, lparam);
+
+		const auto& event = *reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
+		const bool down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+
+		if (!down && event.vkCode == hook_key_.virtual_key) hook_key_held_ = false;
+		if (!down || !hookEventMatches(event, hook_key_)) {
+			return ::CallNextHookEx(hook_, code, wparam, lparam);
+		}
+
+		if (!hook_key_held_) ::PostMessageW(hook_owner_, WM_HOTKEY, kHotkeyNewWindow, 0);
+		hook_key_held_ = true;
+		return 1;
+	}
+
+	// A hook sees every key on the machine but acts on one, and is only
+	// there while a window is; should it be refused, RegisterHotKey is
+	// asked instead, which serves until the shortcut holds the same key.
 	void TerminalWindow::armNewWindowHotkey() {
+		disarmNewWindowHotkey();
+		if (!parseKeyBinding(config_.keyboard.new_window, hook_key_)) return;
+
+		hook_owner_ = window_;
+		hook_ = ::SetWindowsHookExW(WH_KEYBOARD_LL, &TerminalWindow::keyboardHook,
+			::GetModuleHandleW(nullptr), 0);
+		if (hook_ != nullptr) return;
+
+		::RegisterHotKey(window_, kHotkeyNewWindow, hotkeyModifiers(hook_key_),
+			hook_key_.virtual_key);
+	}
+
+	void TerminalWindow::disarmNewWindowHotkey() {
+		if (hook_ != nullptr) ::UnhookWindowsHookEx(hook_);
+
+		hook_ = nullptr;
+		hook_key_held_ = false;
 		::UnregisterHotKey(window_, kHotkeyNewWindow);
-
-		KeyPress press;
-		if (!parseKeyBinding(config_.keyboard.new_window, press)) return;
-
-		::RegisterHotKey(window_, kHotkeyNewWindow, hotkeyModifiers(press), press.virtual_key);
 	}
 
 	// The same executable with the same arguments, so a --config or
@@ -1286,6 +1335,7 @@ namespace wbshterm {
 		case kMessagePtyData: onPtyData(); return 0;
 		case WM_CLOSE:       ::DestroyWindow(window_); return 0;
 		case WM_DESTROY:
+			disarmNewWindowHotkey();
 			stopEveryPane();
 			::PostQuitMessage(0);
 			return 0;

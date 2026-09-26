@@ -39,6 +39,7 @@ namespace wbshterm {
 	private:
 		static LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wparam,
 			LPARAM lparam);
+		static LRESULT CALLBACK keyboardHook(int code, WPARAM wparam, LPARAM lparam);
 		LRESULT handleMessage(UINT message, WPARAM wparam, LPARAM lparam);
 
 		bool registerClass(std::string& out_error);
@@ -89,6 +90,7 @@ namespace wbshterm {
 		bool statusClockChanged();
 		void armSystemTimer();
 		void armNewWindowHotkey();
+		void disarmNewWindowHotkey();
 		void refreshSystemInfo();
 		void layoutPanes();
 		void scheduleGridCommit();
@@ -173,6 +175,11 @@ namespace wbshterm {
 		bool         tmux_mode_ = false;
 		bool         sync_grace_armed_ = false;
 		KeyPress     prefix_;
+
+		static HHOOK    hook_;
+		static HWND     hook_owner_;
+		static KeyPress hook_key_;
+		static bool     hook_key_held_;
 		bool         prefix_pending_ = false;
 		SearchBox    search_;
 

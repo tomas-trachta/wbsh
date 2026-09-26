@@ -60,7 +60,7 @@ Name: "{app}\plugins"
 [Icons]
 ; The Start Menu shortcut carries the Linux desktop's terminal key, so
 ; Ctrl+Alt+T opens a window even when none is running; a running window
-; asks for the same key and yields to this when it is taken.
+; catches the key itself before Explorer can answer it with this.
 Name: "{userprograms}\wbshterm"; Filename: "{app}\wbshterm.exe"; WorkingDir: "%USERPROFILE%"; HotKey: "Ctrl+Alt+T"
 Name: "{userdesktop}\wbshterm";  Filename: "{app}\wbshterm.exe"; WorkingDir: "%USERPROFILE%"; Tasks: desktopicon
 

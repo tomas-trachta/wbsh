@@ -154,9 +154,11 @@ characters are typed from the other layout, or not at all.
 
 `Ctrl+Alt+T` opens a new wbshterm from anywhere, the way it does on a
 Linux desktop. The installer puts the key on the Start Menu shortcut, so
-it works with no window open; a running window registers the same key
-system-wide as well, for an install that has no shortcut. The key is a
-setting, and an empty one turns it off:
+it works with no window open. A running window watches for the key
+itself, with a keyboard hook, because Explorer would otherwise answer a
+shortcut's key by bringing the window that is already open to the front
+rather than opening another. The key is a setting, and an empty one turns
+it off:
 
 ```ini
 [keyboard]
