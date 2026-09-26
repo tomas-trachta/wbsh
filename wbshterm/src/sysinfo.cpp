@@ -107,46 +107,63 @@ namespace wbshterm {
 		return text;
 	}
 
-	static void appendPart(std::string& text, const std::string& part) {
-		if (part.empty()) return;
-		if (!text.empty()) text += "  ";
+	static void appendSegment(std::vector<StatusSegment>& segments, const StatusSegment& segment) {
+		if (segment.value.empty()) return;
 
-		text += part;
+		segments.push_back(segment);
 	}
 
-	static std::string cpuPart(const SystemSample& sample) {
-		if (sample.cpu_percent < 0) return std::string();
+	static int cpuTint(int percent) {
+		if (percent >= kCpuHotPercent) return kTintRed;
+		if (percent >= kCpuWarmPercent) return kTintYellow;
 
-		return "cpu " + std::to_string(sample.cpu_percent) + "%";
+		return kTintPlain;
 	}
 
-	static std::string memoryPart(const SystemSample& sample) {
-		if (sample.memory_total_mb == 0) return std::string();
+	static StatusSegment cpuSegment(const SystemSample& sample) {
+		if (sample.cpu_percent < 0) return StatusSegment();
 
-		return "mem " + gigabytes(sample.memory_used_mb) + "/" + gigabytes(sample.memory_total_mb);
+		return { "cpu", std::to_string(sample.cpu_percent) + "%", cpuTint(sample.cpu_percent) };
 	}
 
-	static std::string diskPart(const SystemSample& sample) {
-		if (sample.disk_letter == 0) return std::string();
+	static StatusSegment memorySegment(const SystemSample& sample) {
+		if (sample.memory_total_mb == 0) return StatusSegment();
 
-		return std::string(1, sample.disk_letter) + ": " + std::to_string(sample.disk_free_gb)
-			+ "G free";
+		return { "mem",
+			gigabytes(sample.memory_used_mb) + "/" + gigabytes(sample.memory_total_mb) };
 	}
 
-	static std::string batteryPart(const SystemSample& sample) {
-		if (sample.battery_percent < 0) return std::string();
+	static StatusSegment diskSegment(const SystemSample& sample) {
+		if (sample.disk_letter == 0) return StatusSegment();
 
-		return "bat " + std::to_string(sample.battery_percent) + "%"
-			+ (sample.on_mains ? "+" : "");
+		const int tint = sample.disk_free_gb < kDiskLowGb ? kTintRed : kTintPlain;
+		return { std::string(1, sample.disk_letter) + ":",
+			std::to_string(sample.disk_free_gb) + "G free", tint };
 	}
 
-	std::string systemInfoText(const SystemSample& sample, const StatusBarSettings& settings) {
-		std::string text;
-		if (settings.cpu)     appendPart(text, cpuPart(sample));
-		if (settings.memory)  appendPart(text, memoryPart(sample));
-		if (settings.disk)    appendPart(text, diskPart(sample));
-		if (settings.battery) appendPart(text, batteryPart(sample));
-		return text;
+	static int batteryTint(const SystemSample& sample) {
+		if (sample.on_mains) return kTintGreen;
+		if (sample.battery_percent <= kBatteryLowPercent) return kTintRed;
+
+		return kTintPlain;
+	}
+
+	static StatusSegment batterySegment(const SystemSample& sample) {
+		if (sample.battery_percent < 0) return StatusSegment();
+
+		return { "bat",
+			std::to_string(sample.battery_percent) + "%" + (sample.on_mains ? "+" : ""),
+			batteryTint(sample) };
+	}
+
+	std::vector<StatusSegment> systemInfoSegments(const SystemSample& sample,
+			const StatusBarSettings& settings) {
+		std::vector<StatusSegment> segments;
+		if (settings.cpu)     appendSegment(segments, cpuSegment(sample));
+		if (settings.memory)  appendSegment(segments, memorySegment(sample));
+		if (settings.disk)    appendSegment(segments, diskSegment(sample));
+		if (settings.battery) appendSegment(segments, batterySegment(sample));
+		return segments;
 	}
 
 	static std::string narrowName(const wchar_t* name, DWORD length) {

@@ -6,6 +6,7 @@
 #include "render.h"
 
 #include <algorithm>
+#include <cmath>
 
 #pragma comment(lib, "d2d1.lib")
 
@@ -329,71 +330,163 @@ namespace wbshterm {
 		canvas.target->PopAxisAlignedClip();
 	}
 
-	// tmux paints its status bar black on green, and a theme's own green
-	// keeps that recognisable without pinning the colour to one palette.
-	static const float kStatusBarTint = 0.08f;
-	static const float kStatusTextAlpha = 0.85f;
+	// The bar sits a shade above the grid, the way the caption does at the
+	// top, with the same hairline to part them; labels are kept quiet so
+	// the figures read first. In pane mode it takes tmux's black on green
+	// instead, and a theme's own green keeps that recognisable without
+	// pinning the colour to one palette.
+	static const float kStatusFillTint     = 0.05f;
+	static const float kStatusEdgeTint     = 0.16f;
+	static const float kStatusLabelAlpha   = 0.45f;
+	static const float kStatusValueAlpha   = 0.85f;
+	static const float kStatusDividerAlpha = 0.18f;
+	static const float kTmuxLabelAlpha     = 0.65f;
+	static const float kTmuxDividerAlpha   = 0.35f;
+	static const float kDividerInset       = 0.28f;
 
-	static const char* const kStatusGap = "  ";
+	// Segments sit three columns apart: a space, a hairline, a space.
+	static const std::size_t kSegmentGapCells = 3;
 
-	// Parts are dropped from the front until the rest fits, the way tmux
-	// cuts status-right: the clock at the far end stays, a util's segment
-	// goes first.
-	static std::string joinPartsThatFit(const std::vector<std::string>& parts,
-			std::size_t cells) {
-		std::string text;
-		for (auto part = parts.rbegin(); part != parts.rend(); ++part) {
-			const std::string joined = text.empty() ? *part : *part + kStatusGap + text;
-			if (joined.size() > cells) break;
+	static StatusInk quietInk(const Palette& palette) {
+		StatusInk ink;
+		ink.fill          = blend(palette.background, palette.foreground, kStatusFillTint);
+		ink.edge          = blend(palette.background, palette.foreground, kStatusEdgeTint);
+		ink.text          = palette.foreground;
+		ink.label_alpha   = kStatusLabelAlpha;
+		ink.value_alpha   = kStatusValueAlpha;
+		ink.divider_alpha = kStatusDividerAlpha;
+		ink.tinted        = true;
+		return ink;
+	}
 
-			text = joined;
+	static StatusInk tmuxInk(const Palette& palette) {
+		StatusInk ink;
+		ink.fill          = palette.ansi[2];
+		ink.edge          = palette.ansi[2];
+		ink.text          = palette.background;
+		ink.label_alpha   = kTmuxLabelAlpha;
+		ink.value_alpha   = 1.0f;
+		ink.divider_alpha = kTmuxDividerAlpha;
+		ink.tinted        = false;
+		return ink;
+	}
+
+	static std::size_t rowCells(const std::vector<StatusSegment>& segments, std::size_t first) {
+		std::size_t cells = 0;
+		for (std::size_t index = first; index < segments.size(); ++index) {
+			if (index > first) cells += kSegmentGapCells;
+
+			cells += segmentCells(segments[index]);
 		}
 
-		return text;
+		return cells;
+	}
+
+	// Segments are dropped from the front until the rest fits, the way
+	// tmux cuts status-right: the clock at the far end stays, a util's
+	// segment goes first.
+	static std::size_t firstSegmentThatFits(const std::vector<StatusSegment>& segments,
+			std::size_t cells) {
+		std::size_t first = segments.size();
+		while (first > 0 && rowCells(segments, first - 1) <= cells) --first;
+
+		return first;
 	}
 
 	void Renderer::drawStatusBar(const StatusBarCanvas& canvas) {
 		if (!prepareBrush(canvas.target)) return;
 
-		const Palette& palette = config_.palette;
-		const std::uint32_t fill = canvas.tmux
-			? palette.ansi[2]
-			: blend(palette.background, palette.foreground, kStatusBarTint);
-		setBrushColor(fill, 1.0f);
-		canvas.target->FillRectangle(canvas.bounds, brush_.Get());
+		const StatusInk ink = canvas.tmux ? tmuxInk(config_.palette) : quietInk(config_.palette);
+		drawStatusBackdrop(canvas, ink);
 
-		if (canvas.tmux) setBrushColor(palette.background, 1.0f);
-		else setBrushColor(palette.foreground, kStatusTextAlpha);
+		canvas.target->PushAxisAlignedClip(canvas.bounds, D2D1_ANTIALIAS_MODE_ALIASED);
 
-		const float taken = drawStatusText(canvas.target, canvas.bounds, canvas.left, false);
+		const float cell = font_.metrics().width;
+		const float left_edge  = canvas.bounds.left + padding();
+		const float right_edge = canvas.bounds.right - padding();
+		const float taken = drawStatusRow(canvas, ink, canvas.left, 0, left_edge);
 
-		D2D1_RECT_F remaining = canvas.bounds;
-		remaining.left = taken;
-		const float room = remaining.right - padding() - remaining.left;
-		const auto cells = static_cast<std::size_t>(std::max(room, 0.0f) / font_.metrics().width);
-		drawStatusText(canvas.target, remaining, joinPartsThatFit(canvas.right, cells), true);
+		const float gap = taken > left_edge ? static_cast<float>(kSegmentGapCells) * cell : 0.0f;
+		const float room = right_edge - taken - gap;
+		const auto cells = static_cast<std::size_t>(std::max(room, 0.0f) / cell);
+		const std::size_t first = firstSegmentThatFits(canvas.right, cells);
+		const float width = static_cast<float>(rowCells(canvas.right, first)) * cell;
+		drawStatusRow(canvas, ink, canvas.right, first, right_edge - width);
+
+		canvas.target->PopAxisAlignedClip();
 	}
 
-	// Returns where the text ends, so the other end knows how far it may go.
-	float Renderer::drawStatusText(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
-			const std::string& text, bool to_the_right) {
-		if (text.empty()) return bounds.left;
+	void Renderer::drawStatusBackdrop(const StatusBarCanvas& canvas, const StatusInk& ink) {
+		const D2D1_RECT_F& bounds = canvas.bounds;
 
+		setBrushColor(ink.fill, 1.0f);
+		canvas.target->FillRectangle(bounds, brush_.Get());
+
+		setBrushColor(ink.edge, 1.0f);
+		canvas.target->FillRectangle(
+			D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.top + 1.0f), brush_.Get());
+	}
+
+	// Returns where the row ends, so the other end knows how far it may go.
+	float Renderer::drawStatusRow(const StatusBarCanvas& canvas, const StatusInk& ink,
+			const std::vector<StatusSegment>& segments, std::size_t first, float left) {
+		const float gap = static_cast<float>(kSegmentGapCells) * font_.metrics().width;
+		float x = left;
+
+		for (std::size_t index = first; index < segments.size(); ++index) {
+			if (index > first) {
+				drawStatusDivider(canvas, ink, x + gap * 0.5f);
+				x += gap;
+			}
+
+			x = drawStatusSegment(canvas, ink, segments[index], x);
+		}
+
+		return x;
+	}
+
+	float Renderer::drawStatusSegment(const StatusBarCanvas& canvas, const StatusInk& ink,
+			const StatusSegment& segment, float left) {
+		float x = left;
+		if (!segment.label.empty()) {
+			setBrushColor(ink.text, ink.label_alpha);
+			x = drawStatusRun(canvas, segment.label, x) + font_.metrics().width;
+		}
+
+		if (ink.tinted && segment.tint != kTintPlain) {
+			setBrushColor(config_.palette.ansi[segment.tint], 1.0f);
+		} else {
+			setBrushColor(ink.text, ink.value_alpha);
+		}
+
+		return drawStatusRun(canvas, segment.value, x);
+	}
+
+	float Renderer::drawStatusRun(const StatusBarCanvas& canvas, const std::string& text,
+			float left) {
 		const std::wstring wide = widenAscii(text);
 		const CellMetrics& cell = font_.metrics();
 		const float width = static_cast<float>(wide.size()) * cell.width;
-		const float left = to_the_right
-			? bounds.right - padding() - width
-			: bounds.left + padding();
 
-		target->PushAxisAlignedClip(bounds, D2D1_ANTIALIAS_MODE_ALIASED);
-		target->DrawText(wide.c_str(), static_cast<UINT32>(wide.size()),
+		canvas.target->DrawText(wide.c_str(), static_cast<UINT32>(wide.size()),
 			font_.format(false, false),
-			D2D1::RectF(left, bounds.top, left + width + cell.width, bounds.bottom),
+			D2D1::RectF(left, canvas.bounds.top, left + width + cell.width, canvas.bounds.bottom),
 			brush_.Get(), text_options_);
-		target->PopAxisAlignedClip();
 
-		return left + width + cell.width;
+		return left + width;
+	}
+
+	// A hairline between segments, shorter than the row so it reads as a
+	// mark rather than a wall.
+	void Renderer::drawStatusDivider(const StatusBarCanvas& canvas, const StatusInk& ink,
+			float center) {
+		const float inset = (canvas.bounds.bottom - canvas.bounds.top) * kDividerInset;
+		const float x = std::floor(center);
+
+		setBrushColor(ink.text, ink.divider_alpha);
+		canvas.target->FillRectangle(
+			D2D1::RectF(x, canvas.bounds.top + inset, x + 1.0f, canvas.bounds.bottom - inset),
+			brush_.Get());
 	}
 
 	// macOS's own three, and the grey they all go when the window is not

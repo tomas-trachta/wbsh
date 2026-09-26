@@ -210,6 +210,7 @@
     <ClInclude Include="src\replay.h" />
     <ClInclude Include="src\screen.h" />
     <ClInclude Include="src\scrollbar.h" />
+    <ClInclude Include="src\status.h" />
     <ClInclude Include="src\sysinfo.h" />
     <ClInclude Include="src\selftest.h" />
     <ClInclude Include="src\session.h" />
@@ -239,6 +240,7 @@
     <ClCompile Include="src\replay.cpp" />
     <ClCompile Include="src\screen.cpp" />
     <ClCompile Include="src\scrollbar.cpp" />
+    <ClCompile Include="src\status.cpp" />
     <ClCompile Include="src\sysinfo.cpp" />
     <ClCompile Include="src\selftest.cpp" />
     <ClCompile Include="src\session.cpp" />

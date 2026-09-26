@@ -286,8 +286,8 @@ namespace wbshterm {
 	// tmux's own shape: the session on the left, then every window with the
 	// active one starred. Panes stand in for windows; there is one session.
 	// Before that, who and where, the way a prompt would say it.
-	std::string TerminalWindow::statusLeft() const {
-		if (!tmuxBarShown()) return userName() + "@" + hostName();
+	std::vector<StatusSegment> TerminalWindow::statusLeft() const {
+		if (!tmuxBarShown()) return { { "", userName() + "@" + hostName(), kTintGreen } };
 
 		std::string text = "[wbsh]";
 
@@ -298,23 +298,23 @@ namespace wbshterm {
 		}
 
 		if (panes_.zoomed()) text += " Z";
-		return text;
+		return { { "", text } };
 	}
 
-	static void appendStatusPart(std::vector<std::string>& parts, const std::string& part) {
-		if (!part.empty()) parts.push_back(part);
+	static void appendStatusValue(std::vector<StatusSegment>& segments, const std::string& value) {
+		if (!value.empty()) segments.push_back({ "", value });
 	}
 
 	// A util's segments sit to the left of the machine's readings and the
 	// clock, which is where tmux's own status-right additions go. The host
 	// is named here only in pane mode; otherwise the left end already has it.
-	std::vector<std::string> TerminalWindow::statusRight() const {
-		std::vector<std::string> parts;
-		appendStatusPart(parts, utilSegmentText());
-		appendStatusPart(parts, shown_system_);
-		if (tmuxBarShown()) appendStatusPart(parts, "\"" + hostName() + "\"");
-		if (config_.statusbar.clock) appendStatusPart(parts, shown_clock_);
-		return parts;
+	std::vector<StatusSegment> TerminalWindow::statusRight() const {
+		std::vector<StatusSegment> segments;
+		appendStatusValue(segments, utilSegmentText());
+		segments.insert(segments.end(), shown_system_.begin(), shown_system_.end());
+		if (tmuxBarShown()) appendStatusValue(segments, "\"" + hostName() + "\"");
+		if (config_.statusbar.clock) appendStatusValue(segments, shown_clock_);
+		return segments;
 	}
 
 	static std::string clockText() {
@@ -360,7 +360,8 @@ namespace wbshterm {
 	void TerminalWindow::refreshSystemInfo() {
 		monitor_.sample();
 
-		const std::string now = systemInfoText(monitor_.latest(), config_.statusbar);
+		const std::vector<StatusSegment> now = systemInfoSegments(monitor_.latest(),
+			config_.statusbar);
 		if (now == shown_system_) return;
 
 		shown_system_ = now;
@@ -1095,6 +1096,8 @@ namespace wbshterm {
 		description.lpfnWndProc   = &TerminalWindow::windowProc;
 		description.hInstance     = ::GetModuleHandleW(nullptr);
 		description.hCursor       = ::LoadCursorW(nullptr, IDC_IBEAM);
+		description.hIcon         = ::LoadIconW(description.hInstance, MAKEINTRESOURCEW(1));
+		description.hIconSm       = description.hIcon;
 		description.lpszClassName = kClassName;
 
 		if (::RegisterClassExW(&description) == 0

@@ -84,8 +84,8 @@ namespace wbshterm {
 		void runPaneCommand(wchar_t character);
 		float statusHeight() const;
 		bool tmuxBarShown() const;
-		std::string statusLeft() const;
-		std::vector<std::string> statusRight() const;
+		std::vector<StatusSegment> statusLeft() const;
+		std::vector<StatusSegment> statusRight() const;
 		bool statusClockChanged();
 		void armSystemTimer();
 		void refreshSystemInfo();
@@ -164,7 +164,7 @@ namespace wbshterm {
 		float        scroll_grab_ = 0.0f;
 		std::wstring directory_hint_;
 		std::string  shown_clock_;
-		std::string  shown_system_;
+		std::vector<StatusSegment> shown_system_;
 		SystemMonitor monitor_;
 		D2D1_RECT_F  status_bounds_{};
 		TitleBar     title_bar_;

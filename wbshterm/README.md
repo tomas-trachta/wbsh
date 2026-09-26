@@ -100,6 +100,7 @@ apart from a parsing bug by replaying the same bytes.
 | `font.h/.cpp` | DirectWrite faces and the measured cell box. |
 | `render.h/.cpp` | Direct2D painting of a grid onto any render target. |
 | `window.h/.cpp` | The Win32 window and its frame, message handlers, key encoding, pane commands, and the status bar. |
+| `status.h/.cpp` | A status bar segment: a label, a value, and the colour it takes. |
 | `sysinfo.h/.cpp` | The machine's readings for the status bar: load, memory, disk, battery. |
 | `snapshot.h/.cpp` | Off-screen WIC target and PNG encode. |
 | `replay.h/.cpp` | Recording in, grid out, no shell involved. |
@@ -342,11 +343,17 @@ a nudge that leaves nothing on screen.
 
 ## The status bar
 
-A bar runs along the bottom of the window. On the left, who and where you
-are, `user@host`. On the right, what the machine is doing: CPU load,
-memory in use over the total, free space on the system drive, the battery
-where there is one (a `+` means it is on mains), and the time. A util that
-registers a status segment (see the SDK) is shown ahead of the readings.
+A bar runs along the bottom of the window, a shade lighter than the grid
+with a hairline above it, the way the caption is at the top. On the left,
+who and where you are, `user@host`. On the right, what the machine is
+doing: CPU load, memory in use over the total, free space on the system
+drive, the battery where there is one (a `+` means it is on mains), and
+the time. Each reading is a quiet label and a brighter figure, with a
+hairline between one reading and the next. A figure changes colour when
+it wants looking at: the load goes yellow past 60% and red past 85%, the
+drive red under 10 GB free, the battery green on mains and red at 20% or
+less. A util that registers a status segment (see the SDK) is shown ahead
+of the readings.
 
 The readings are taken every two seconds and the bar is only repainted
 when something in it has changed, so it costs nothing while the machine
@@ -354,8 +361,8 @@ is idle. The CPU figure is the share of the last interval that was not
 idle, the same number Task Manager shows.
 
 Type `tmux` and the bar turns green and takes tmux's own shape: the pane
-list on the left, the host and clock on the right, the readings between
-(see [Panes](#panes)). Each part of the bar can be turned off, or the
+list on the left, the host and clock on the right, the readings between,
+all in black the way tmux paints them (see [Panes](#panes)). Each part of the bar can be turned off, or the
 whole of it; the right-click menu toggles it too.
 
 ```ini

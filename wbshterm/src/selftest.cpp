@@ -1376,20 +1376,37 @@ namespace wbshterm {
 			sample.on_mains        = true;
 
 			StatusBarSettings all;
-			const std::string text = systemInfoText(sample, all);
+			const std::vector<StatusSegment> segments = systemInfoSegments(sample, all);
+			const std::string text = statusLine(segments);
 			report.check("the readings are put into words",
 				text == "cpu 12%  mem 8.1G/31.9G  C: 120G free  bat 85%+", text);
+			report.check("a reading is a label and a value",
+				segments.size() == 4 && segments[0].label == "cpu" && segments[0].value == "12%"
+				&& segments[2].label == "C:", "");
+			report.check("a calm load stays plain and a battery on mains goes green",
+				segments[0].tint == kTintPlain && segments[3].tint == kTintGreen, "");
+
+			SystemSample strained = sample;
+			strained.cpu_percent     = 91;
+			strained.disk_free_gb    = 3;
+			strained.battery_percent = 9;
+			strained.on_mains        = false;
+			const std::vector<StatusSegment> warned = systemInfoSegments(strained, all);
+			report.check("a hot load, a full drive and a low battery turn red",
+				warned[0].tint == kTintRed && warned[2].tint == kTintRed
+				&& warned[3].tint == kTintRed, "");
 
 			StatusBarSettings some;
 			some.cpu  = false;
 			some.disk = false;
-			const std::string chosen = systemInfoText(sample, some);
+			const std::string chosen = statusLine(systemInfoSegments(sample, some));
 			report.check("only the readings asked for are shown",
 				chosen == "mem 8.1G/31.9G  bat 85%+", chosen);
 
 			SystemSample unknown;
 			report.check("a reading that could not be taken is left out",
-				systemInfoText(unknown, all).empty(), systemInfoText(unknown, all));
+				systemInfoSegments(unknown, all).empty(),
+				statusLine(systemInfoSegments(unknown, all)));
 
 			SystemMonitor monitor;
 			monitor.sample();

@@ -6,8 +6,10 @@
  */
 
 #include "config.h"
+#include "status.h"
 
 #include <string>
+#include <vector>
 
 namespace wbshterm {
 
@@ -47,9 +49,18 @@ namespace wbshterm {
 	/**
 	 * @brief The reading as the bar shows it, only the parts asked for.
 	 *
-	 * ASCII only: the bar is drawn with the grid font and no fallback.
+	 * ASCII only: the bar is drawn with the grid font and no fallback. A
+	 * load past kCpuWarmPercent turns its value yellow and past
+	 * kCpuHotPercent red; a battery goes green on mains and red once it
+	 * is down to kBatteryLowPercent; a drive goes red under kDiskLowGb.
 	 */
-	std::string systemInfoText(const SystemSample& sample, const StatusBarSettings& settings);
+	std::vector<StatusSegment> systemInfoSegments(const SystemSample& sample,
+		const StatusBarSettings& settings);
+
+	static const int                kCpuWarmPercent    = 60;
+	static const int                kCpuHotPercent     = 85;
+	static const int                kBatteryLowPercent = 20;
+	static const unsigned long long kDiskLowGb         = 10;
 
 	std::string userName();
 	std::string hostName();

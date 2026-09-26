@@ -17,6 +17,8 @@
 #include <d2d1_1.h>
 #include <wrl/client.h>
 
+#include "status.h"
+
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -33,19 +35,30 @@ namespace wbshterm {
 	};
 
 	/**
-	 * @brief The bar along the bottom: text at each end, and its look.
+	 * @brief The bar along the bottom: segments at each end, and its look.
 	 *
-	 * The right end is given in parts so that, when the window is too
-	 * narrow for all of them, whole parts go rather than half a word. In
-	 * pane mode the bar takes tmux's green, so typing `tmux` shows; the
-	 * rest of the time it is a quiet strip in the theme's own colours.
+	 * Both ends are given in segments so that, when the window is too
+	 * narrow for all of them, whole segments go rather than half a word.
+	 * In pane mode the bar takes tmux's green, so typing `tmux` shows;
+	 * the rest of the time it is a quiet strip in the theme's own colours.
 	 */
 	struct StatusBarCanvas {
-		ID2D1RenderTarget*       target = nullptr;
-		D2D1_RECT_F              bounds{};
-		std::string              left;
-		std::vector<std::string> right;
-		bool                     tmux = false;
+		ID2D1RenderTarget*         target = nullptr;
+		D2D1_RECT_F                bounds{};
+		std::vector<StatusSegment> left;
+		std::vector<StatusSegment> right;
+		bool                       tmux = false;
+	};
+
+	/** The colours one status bar is painted in, settled once per frame. */
+	struct StatusInk {
+		std::uint32_t fill = 0;
+		std::uint32_t edge = 0;
+		std::uint32_t text = 0;
+		float         label_alpha   = 1.0f;
+		float         value_alpha   = 1.0f;
+		float         divider_alpha = 1.0f;
+		bool          tinted        = true;
 	};
 
 	/** The window's own caption: what it says, and how it is feeling. */
@@ -106,8 +119,13 @@ namespace wbshterm {
 		void drawBlockCursor(const PaneCanvas& canvas, float left, float top);
 		void drawPickerRow(const PaneCanvas& canvas, const std::wstring& text, float top,
 			float width, bool highlighted);
-		float drawStatusText(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds,
-			const std::string& text, bool to_the_right);
+		void drawStatusBackdrop(const StatusBarCanvas& canvas, const StatusInk& ink);
+		float drawStatusRow(const StatusBarCanvas& canvas, const StatusInk& ink,
+			const std::vector<StatusSegment>& segments, std::size_t first, float left);
+		float drawStatusSegment(const StatusBarCanvas& canvas, const StatusInk& ink,
+			const StatusSegment& segment, float left);
+		float drawStatusRun(const StatusBarCanvas& canvas, const std::string& text, float left);
+		void drawStatusDivider(const StatusBarCanvas& canvas, const StatusInk& ink, float center);
 		void drawTitleLights(const TitleBarCanvas& canvas);
 		void drawTitleText(const TitleBarCanvas& canvas);
 		void drawTitleGlyph(const TitleBarCanvas& canvas, TitleButton which);
