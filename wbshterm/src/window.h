@@ -88,6 +88,7 @@ namespace wbshterm {
 		std::vector<StatusSegment> statusRight() const;
 		bool statusClockChanged();
 		void armSystemTimer();
+		void armNewWindowHotkey();
 		void refreshSystemInfo();
 		void layoutPanes();
 		void scheduleGridCommit();

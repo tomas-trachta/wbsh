@@ -873,7 +873,7 @@ namespace wbshterm {
 					"[font]\nfamily = Consolas\nsize = 14\n"
 					"[cursor]\nstyle = bar\nblink = false\n"
 					"[window]\npadding = 24\nopacity = 0.85\n"
-					"[keyboard]\nright_alt = meta\n"
+					"[keyboard]\nright_alt = meta\nnew_window = ctrl+shift+n\n"
 					"[theme]\nname = nord\nforeground = #ABCDEF\n";
 				std::fwrite(text, 1, std::strlen(text), file);
 				std::fclose(file);
@@ -890,9 +890,13 @@ namespace wbshterm {
 				&& edited.palette.foreground == 0xABCDEF;
 			const bool keyboard = config.keyboard.right_alt == RightAltRole::AltGr
 				&& edited.keyboard.right_alt == RightAltRole::Meta;
+			const bool hotkey = config.keyboard.new_window == "ctrl+alt+t"
+				&& edited.keyboard.new_window == "ctrl+shift+n";
 
 			report.check("the font is configurable", font, "");
 			report.check("the right Alt key defaults to AltGr and can be Meta", keyboard, "");
+			report.check("the new-window hotkey is Ctrl+Alt+T unless the file says otherwise",
+				hotkey, "");
 			report.check("the cursor style and blink are configurable", cursor, "");
 			report.check("padding and opacity are configurable", window, "");
 			report.check("a theme applies and single colours override it", theme, "");

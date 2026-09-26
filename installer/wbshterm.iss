@@ -58,7 +58,10 @@ Source: "stage-wbshterm\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignorevers
 Name: "{app}\plugins"
 
 [Icons]
-Name: "{userprograms}\wbshterm"; Filename: "{app}\wbshterm.exe"; WorkingDir: "%USERPROFILE%"
+; The Start Menu shortcut carries the Linux desktop's terminal key, so
+; Ctrl+Alt+T opens a window even when none is running; a running window
+; asks for the same key and yields to this when it is taken.
+Name: "{userprograms}\wbshterm"; Filename: "{app}\wbshterm.exe"; WorkingDir: "%USERPROFILE%"; HotKey: "Ctrl+Alt+T"
 Name: "{userdesktop}\wbshterm";  Filename: "{app}\wbshterm.exe"; WorkingDir: "%USERPROFILE%"; Tasks: desktopicon
 
 [Run]

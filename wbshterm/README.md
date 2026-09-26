@@ -150,6 +150,23 @@ right_alt = meta   # altgr is the default described above
 With `meta` the right Alt is plain Alt everywhere, and the layout's AltGr
 characters are typed from the other layout, or not at all.
 
+### Opening another window
+
+`Ctrl+Alt+T` opens a new wbshterm from anywhere, the way it does on a
+Linux desktop. The installer puts the key on the Start Menu shortcut, so
+it works with no window open; a running window registers the same key
+system-wide as well, for an install that has no shortcut. The key is a
+setting, and an empty one turns it off:
+
+```ini
+[keyboard]
+new_window = ctrl+alt+t
+```
+
+On a layout where the right Alt is AltGr, Windows spells AltGr+T as
+Ctrl+Alt+T too, so the right Alt opens a window as readily as the left
+one; pick another key if the layout has a character there.
+
 ## The startup panel
 
 Opening a session prints a screenfetch-style panel: the wbsh logo, who and

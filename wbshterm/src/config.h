@@ -53,8 +53,10 @@ namespace wbshterm {
 		Meta,
 	};
 
+	/** new_window is a system-wide hotkey; empty turns it off. */
 	struct KeyboardSettings {
-		RightAltRole right_alt = RightAltRole::AltGr;
+		RightAltRole right_alt  = RightAltRole::AltGr;
+		std::string  new_window = "ctrl+alt+t";
 	};
 
 	struct PaneSettings {

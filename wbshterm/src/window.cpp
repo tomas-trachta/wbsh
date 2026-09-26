@@ -31,6 +31,7 @@ namespace wbshterm {
 	static const UINT_PTR kTimerSync = 4;
 	static const UINT     kSyncGraceMs = 100;
 	static const UINT_PTR kTimerSystem = 5;
+	static const int      kHotkeyNewWindow = 1;
 	static const int      kSystemRefreshFloorMs = 250;
 	static const int     kWheelLines = 3;
 	static const float   kDividerSlop = 3.0f;
@@ -355,6 +356,45 @@ namespace wbshterm {
 		const int interval = std::max(config_.statusbar.refresh_ms, kSystemRefreshFloorMs);
 		::SetTimer(window_, kTimerSystem, static_cast<UINT>(interval), nullptr);
 		refreshSystemInfo();
+	}
+
+	static UINT hotkeyModifiers(const KeyPress& press) {
+		UINT modifiers = MOD_NOREPEAT;
+		if (press.control) modifiers |= MOD_CONTROL;
+		if (press.alt)     modifiers |= MOD_ALT;
+		if (press.shift)   modifiers |= MOD_SHIFT;
+		return modifiers;
+	}
+
+	// The key is taken system-wide, so only the first window to ask gets
+	// it; the rest, and any window while the installer's shortcut holds
+	// the same key, fail quietly and leave the job to whoever has it.
+	void TerminalWindow::armNewWindowHotkey() {
+		::UnregisterHotKey(window_, kHotkeyNewWindow);
+
+		KeyPress press;
+		if (!parseKeyBinding(config_.keyboard.new_window, press)) return;
+
+		::RegisterHotKey(window_, kHotkeyNewWindow, hotkeyModifiers(press), press.virtual_key);
+	}
+
+	// The same executable with the same arguments, so a --config or
+	// --shell given to this window is given to the next one too.
+	static void openAnotherWindow() {
+		wchar_t path[MAX_PATH] = {};
+		if (::GetModuleFileNameW(nullptr, path, MAX_PATH) == 0) return;
+
+		std::wstring command_line = ::GetCommandLineW();
+		STARTUPINFOW startup{};
+		startup.cb = sizeof(startup);
+		PROCESS_INFORMATION process{};
+		if (::CreateProcessW(path, command_line.data(), nullptr, nullptr, FALSE, 0, nullptr,
+				nullptr, &startup, &process) == 0) {
+			return;
+		}
+
+		::CloseHandle(process.hThread);
+		::CloseHandle(process.hProcess);
 	}
 
 	void TerminalWindow::refreshSystemInfo() {
@@ -957,6 +997,7 @@ namespace wbshterm {
 		::SetTimer(window_, kTimerBlink, kBlinkMs, nullptr);
 		::SetTimer(window_, kTimerConfig, kConfigPollMs, nullptr);
 		armSystemTimer();
+		armNewWindowHotkey();
 
 		::ShowWindow(window_, SW_SHOW);
 		::UpdateWindow(window_);
@@ -1001,6 +1042,7 @@ namespace wbshterm {
 		applyScrollbackLimit();
 		applyWindowSettings();
 		armSystemTimer();
+		armNewWindowHotkey();
 		onResize();
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
@@ -1240,6 +1282,7 @@ namespace wbshterm {
 		case WM_CONTEXTMENU: onContextMenu(lparam); return 0;
 		case WM_ERASEBKGND:  return 1;
 		case WM_TIMER:       onTimer(wparam); return 0;
+		case WM_HOTKEY:      openAnotherWindow(); return 0;
 		case kMessagePtyData: onPtyData(); return 0;
 		case WM_CLOSE:       ::DestroyWindow(window_); return 0;
 		case WM_DESTROY:

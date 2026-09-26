@@ -63,6 +63,10 @@ namespace wbshterm {
 		"# makes it plain Alt on every key, for programs whose shortcuts\n"
 		"# want it.\n"
 		"right_alt = altgr\n"
+		"# Opens another window from anywhere, the way Ctrl+Alt+T does on a\n"
+		"# Linux desktop, for as long as one wbshterm is running. Leave it\n"
+		"# empty to turn it off.\n"
+		"new_window = ctrl+alt+t\n"
 		"\n"
 		"[panes]\n"
 		"# Panes start when you type `tmux`, and are driven from a prefix\n"
@@ -274,6 +278,7 @@ namespace wbshterm {
 	}
 
 	static void applyKeyboardSetting(const Setting& setting, Config& config) {
+		if (setting.key == "new_window") config.keyboard.new_window = setting.value;
 		if (setting.key != "right_alt") return;
 
 		config.keyboard.right_alt = setting.value == "meta"
