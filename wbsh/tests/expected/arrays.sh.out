@@ -1,5 +1,5 @@
 === 1. indexed: dense
-len=4 all=zero one two three second=one last=OOR
+len=4 all=zero one two three second=one last=three
 === 2. indexed: keys / values / star vs at
 keys: 0 1 2 3
 vals @: zero one two three
@@ -20,7 +20,7 @@ sparse len:  3
   unquoted (gets word-split):
     [a a b b c c]
 === 7. unset element
-after unset u[1]: keys=0 1 2 3 vals=a b c d
+after unset u[1]: keys=0 2 3 vals=a c d
 === 8. assoc array
   m[apple]=red
   m[banana]=yellow
