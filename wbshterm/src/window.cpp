@@ -13,6 +13,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstring>
 #include <iterator>
 
 #pragma comment(lib, "dwmapi.lib")
@@ -22,6 +23,7 @@ namespace wbshterm {
 
 	static const wchar_t kClassName[] = L"wbshtermWindow";
 	static const UINT    kMessagePtyData = WM_APP + 1;
+	static const UINT    kMessageReload  = WM_APP + 2;
 	static const UINT_PTR kTimerBlink = 1;
 	static const UINT_PTR kTimerConfig = 2;
 	static const UINT     kBlinkMs = 530;
@@ -31,8 +33,11 @@ namespace wbshterm {
 	static const UINT_PTR kTimerSync = 4;
 	static const UINT     kSyncGraceMs = 100;
 	static const UINT_PTR kTimerSystem = 5;
+	static const UINT_PTR kTimerScript = 6;
+	static const UINT     kScriptTickMs = 33;
 	static const int      kHotkeyNewWindow = 1;
 	static const int      kSystemRefreshFloorMs = 250;
+	static const float    kDefaultFontSize = 11.0f;
 	static const int     kWheelLines = 3;
 	static const float   kDividerSlop = 3.0f;
 	static const std::string kImagePasteKey = "\x1bv";
@@ -289,19 +294,53 @@ namespace wbshterm {
 	// tmux's own shape: the session on the left, then every window with the
 	// active one starred. Panes stand in for windows; there is one session.
 	// Before that, who and where, the way a prompt would say it.
-	std::vector<StatusSegment> TerminalWindow::statusLeft() const {
-		if (!tmuxBarShown()) return { { "", userName() + "@" + hostName(), kTintGreen } };
+	static std::vector<StatusSegment> defaultStatusLeft(const StatusContext& context) {
+		if (!context.tmux) return { { "", context.user + "@" + context.host, kTintGreen } };
 
 		std::string text = "[wbsh]";
 
-		const std::vector<PaneNode*> leaves = panes_.leaves();
-		for (std::size_t i = 0; i < leaves.size(); ++i) {
-			text += " " + std::to_string(i) + ":" + paneName(*leaves[i]->pane());
-			text += leaves[i] == panes_.focused() ? "*" : " ";
+		for (std::size_t i = 0; i < context.panes.size(); ++i) {
+			text += " " + std::to_string(i) + ":" + context.panes[i];
+			text += i == context.focused_pane ? "*" : " ";
 		}
 
-		if (panes_.zoomed()) text += " Z";
+		if (context.zoomed) text += " Z";
 		return { { "", text } };
+	}
+
+	StatusContext TerminalWindow::statusContext() const {
+		StatusContext context;
+		context.sample    = monitor_.latest();
+		context.user      = userName();
+		context.host      = hostName();
+		context.clock     = shown_clock_;
+		context.directory = focused().screen().workingDirectory();
+		context.tmux      = tmuxBarShown();
+		context.zoomed    = panes_.zoomed();
+
+		const std::vector<PaneNode*> leaves = panes_.leaves();
+		for (std::size_t i = 0; i < leaves.size(); ++i) {
+			context.panes.push_back(paneName(*leaves[i]->pane()));
+			if (leaves[i] == panes_.focused()) context.focused_pane = i;
+		}
+
+		return context;
+	}
+
+	std::vector<StatusSegment> TerminalWindow::statusLeft() {
+		const StatusContext context = statusContext();
+		std::vector<StatusSegment> segments = defaultStatusLeft(context);
+		script_.statusSegments(ScriptEvent::StatusLeft, context, segments);
+		return segments;
+	}
+
+	// A broken script says so where it would have drawn: the first line of
+	// the error, in red, ahead of everything else.
+	void TerminalWindow::appendScriptError(std::vector<StatusSegment>& segments) const {
+		const std::string& error = script_.lastError();
+		if (error.empty()) return;
+
+		segments.push_back({ "lua", error.substr(0, error.find('\n')), kTintRed });
 	}
 
 	static void appendStatusValue(std::vector<StatusSegment>& segments, const std::string& value) {
@@ -311,12 +350,17 @@ namespace wbshterm {
 	// A util's segments sit to the left of the machine's readings and the
 	// clock, which is where tmux's own status-right additions go. The host
 	// is named here only in pane mode; otherwise the left end already has it.
-	std::vector<StatusSegment> TerminalWindow::statusRight() const {
+	std::vector<StatusSegment> TerminalWindow::statusRight() {
+		const StatusContext context = statusContext();
+
 		std::vector<StatusSegment> segments;
 		appendStatusValue(segments, utilSegmentText());
 		segments.insert(segments.end(), shown_system_.begin(), shown_system_.end());
-		if (tmuxBarShown()) appendStatusValue(segments, "\"" + hostName() + "\"");
-		if (config_.statusbar.clock) appendStatusValue(segments, shown_clock_);
+		if (context.tmux) appendStatusValue(segments, "\"" + context.host + "\"");
+		if (config_.statusbar.clock) appendStatusValue(segments, context.clock);
+
+		script_.statusSegments(ScriptEvent::StatusRight, context, segments);
+		appendScriptError(segments);
 		return segments;
 	}
 
@@ -663,6 +707,8 @@ namespace wbshterm {
 	// The taskbar keeps the whole path; the caption shows the leaf, the way
 	// a Mac window is named for the folder rather than the route to it.
 	std::wstring TerminalWindow::captionText() const {
+		if (title_scripted_) return shown_title_;
+
 		const std::size_t cut = shown_title_.find_last_of(L"/\\");
 		if (cut == std::wstring::npos || cut + 1 >= shown_title_.size()) return shown_title_;
 
@@ -1020,7 +1066,7 @@ namespace wbshterm {
 		command_line_ = command_line;
 		config_       = config;
 		config_path_  = config_path;
-		config_stamp_ = settingsStamp(config_path, config_.theme_name);
+		loadScript();
 
 		if (!renderer_.create(config_, out_error)) {
 			Config fallback = config_;
@@ -1035,6 +1081,7 @@ namespace wbshterm {
 
 		parseKeyBinding(config_.panes.prefix, prefix_);
 		loadUtils();
+		if (config_.startup_fetch) announceStartupFetch();
 
 		auto first = std::make_unique<Pane>();
 		Pane* only = first.get();
@@ -1048,6 +1095,7 @@ namespace wbshterm {
 		::SetTimer(window_, kTimerBlink, kBlinkMs, nullptr);
 		::SetTimer(window_, kTimerConfig, kConfigPollMs, nullptr);
 		armSystemTimer();
+		armScriptTimer();
 		armNewWindowHotkey();
 
 		::ShowWindow(window_, SW_SHOW);
@@ -1072,13 +1120,14 @@ namespace wbshterm {
 	void TerminalWindow::reloadConfigIfChanged() {
 		if (config_path_.empty()) return;
 
-		const unsigned long long stamp = settingsStamp(config_path_, config_.theme_name);
+		const unsigned long long stamp = scriptedSettingsStamp(config_path_, config_.theme_name);
 		if (stamp == config_stamp_) return;
 		config_stamp_ = stamp;
 
 		Config reloaded;
 		std::string error;
 		if (!loadConfig(config_path_, reloaded, error)) return;
+		script_.load(scriptPath(config_path_), config_path_, reloaded);
 
 		const bool font_changed = reloaded.font.family != config_.font.family
 			|| reloaded.font.size != config_.font.size
@@ -1093,6 +1142,7 @@ namespace wbshterm {
 		applyScrollbackLimit();
 		applyWindowSettings();
 		armSystemTimer();
+		armScriptTimer();
 		armNewWindowHotkey();
 		onResize();
 		::InvalidateRect(window_, nullptr, FALSE);
@@ -1118,6 +1168,11 @@ namespace wbshterm {
 
 		if (timer == kTimerSystem) {
 			refreshSystemInfo();
+			return;
+		}
+
+		if (timer == kTimerScript) {
+			onScriptTick();
 			return;
 		}
 
@@ -1337,6 +1392,7 @@ namespace wbshterm {
 		case WM_TIMER:       onTimer(wparam); return 0;
 		case WM_HOTKEY:      openAnotherWindow(); return 0;
 		case kMessagePtyData: onPtyData(); return 0;
+		case kMessageReload:  config_stamp_ = 0; reloadConfigIfChanged(); return 0;
 		case WM_CLOSE:       ::DestroyWindow(window_); return 0;
 		case WM_DESTROY:
 			disarmNewWindowHotkey();
@@ -1620,6 +1676,11 @@ namespace wbshterm {
 			return;
 		}
 
+		if (choice.action == MenuAction::OpenScriptFile) {
+			openScriptFile();
+			return;
+		}
+
 		if (choice.action == MenuAction::OpenThemesFolder) {
 			openThemesFolder();
 			return;
@@ -1637,7 +1698,7 @@ namespace wbshterm {
 		std::string value;
 		if (!config_path_.empty() && settingForChoice(choice, config_, section, key, value)) {
 			updateConfigValue(config_path_, section, key, value);
-			config_stamp_ = settingsStamp(config_path_, config_.theme_name);
+			config_stamp_ = scriptedSettingsStamp(config_path_, config_.theme_name);
 		}
 
 		applyChangedConfig(choiceChangesFont(choice));
@@ -1663,6 +1724,13 @@ namespace wbshterm {
 		::ShellExecuteW(window_, L"open", directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 	}
 
+	void TerminalWindow::openScriptFile() {
+		const std::wstring path = scriptPath(config_path_);
+		if (path.empty() || !writeExampleScript(path)) return;
+
+		::ShellExecuteW(window_, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	}
+
 	void TerminalWindow::openConfigFile() {
 		if (config_path_.empty()) return;
 		if (configStamp(config_path_) == 0) writeDefaultConfig(config_path_);
@@ -1671,22 +1739,24 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::stepFontSize(unsigned int virtual_key) {
-		const float previous = config_.font.size;
-
-		if (virtual_key == '0') config_.font.size = 11.0f;
-		else if (virtual_key == VK_OEM_MINUS || virtual_key == VK_SUBTRACT) {
-			config_.font.size -= 1.0f;
-		} else {
-			config_.font.size += 1.0f;
+		if (virtual_key == '0') {
+			applyFontSize(kDefaultFontSize);
+			return;
 		}
 
-		config_.font.size = std::min(std::max(config_.font.size, 6.0f), 48.0f);
-		if (config_.font.size == previous) return;
+		const bool smaller = virtual_key == VK_OEM_MINUS || virtual_key == VK_SUBTRACT;
+		applyFontSize(config_.font.size + (smaller ? -1.0f : 1.0f));
+	}
 
+	void TerminalWindow::applyFontSize(float size) {
+		const float clamped = std::min(std::max(size, 6.0f), 48.0f);
+		if (clamped == config_.font.size) return;
+
+		config_.font.size = clamped;
 		if (!config_path_.empty()) {
 			updateConfigValue(config_path_, "font", "size",
 				std::to_string(static_cast<int>(config_.font.size)));
-			config_stamp_ = settingsStamp(config_path_, config_.theme_name);
+			config_stamp_ = scriptedSettingsStamp(config_path_, config_.theme_name);
 		}
 
 		applyChangedConfig(true);
@@ -1786,10 +1856,12 @@ namespace wbshterm {
 
 	void TerminalWindow::syncTitle() {
 		const std::string& directory = focused().screen().workingDirectory();
-		const std::string& title = directory.empty()
+		std::string title = directory.empty()
 			? focused().screen().title()
 			: directory;
 		if (title.empty()) return;
+
+		title_scripted_ = script_.title(title, directory, title);
 
 		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, title.c_str(),
 			static_cast<int>(title.size()), nullptr, 0);
@@ -1947,6 +2019,7 @@ namespace wbshterm {
 			return true;
 		}
 
+		if (scriptKeyTaken(press)) return true;
 		if (paneKeyTaken(press)) return true;
 		if (rightAltTakesKey(press)) return true;
 
@@ -2036,6 +2109,169 @@ namespace wbshterm {
 		}
 
 		return static_cast<int>(message.wParam);
+	}
+
+	void TerminalWindow::loadScript() {
+		script_.load(scriptPath(config_path_), config_path_, config_);
+		config_stamp_ = scriptedSettingsStamp(config_path_, config_.theme_name);
+		script_started_ = ::GetTickCount64();
+		palette_scripted_ = false;
+	}
+
+	// The frame clock only runs while a script is listening for it; a
+	// terminal with no animation must not wake thirty times a second.
+	void TerminalWindow::armScriptTimer() {
+		if (script_.handles(ScriptEvent::Tick)) {
+			::SetTimer(window_, kTimerScript, kScriptTickMs, nullptr);
+			return;
+		}
+
+		::KillTimer(window_, kTimerScript);
+		showBasePalette();
+	}
+
+	void TerminalWindow::showBasePalette() {
+		if (!palette_scripted_) return;
+
+		palette_scripted_ = false;
+		renderer_.applyConfig(config_);
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	static bool samePalette(const Palette& left, const Palette& right) {
+		return std::memcmp(&left, &right, sizeof(Palette)) == 0;
+	}
+
+	// A frame that answers nothing hands the theme back; one that answers
+	// the same colours as last time costs no repaint. The title is asked
+	// for again each frame so a title handler can animate too. A failing handler
+	// stops the clock rather than logging the same error thirty times a
+	// second; the status bar shows it either way.
+	void TerminalWindow::onScriptTick() {
+		const double seconds =
+			static_cast<double>(::GetTickCount64() - script_started_) / 1000.0;
+
+		Palette frame;
+		const bool painted = script_.tick(seconds, config_.palette, frame);
+		syncTitle();
+		if (!painted) {
+			if (!script_.lastError().empty()) ::KillTimer(window_, kTimerScript);
+			showBasePalette();
+			return;
+		}
+
+		if (palette_scripted_ && samePalette(frame, shown_palette_)) return;
+
+		shown_palette_ = frame;
+		palette_scripted_ = true;
+
+		Config shown = config_;
+		shown.palette = frame;
+		renderer_.applyConfig(shown);
+		if (!anyPaneMidFrame()) ::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	// wbsh runs WBSH_INIT_COMMAND once its interactive session is up, which
+	// is the only way to get output into a console conhost owns: ask the
+	// shell to print it rather than drawing over its screen.
+	void TerminalWindow::announceStartupFetch() const {
+		wchar_t path[MAX_PATH] = {};
+		const DWORD length = ::GetModuleFileNameW(nullptr, path, MAX_PATH);
+		if (length == 0) return;
+
+		std::wstring command = L"\"" + std::wstring(path, length) + L"\" --fetch";
+		if (!config_path_.empty()) command += L" --config \"" + config_path_ + L"\"";
+		::SetEnvironmentVariableW(L"WBSH_INIT_COMMAND", command.c_str());
+	}
+
+	// A binding runs before the terminal's own shortcuts and before the
+	// shell hears the key, so a script can take any of them over.
+	bool TerminalWindow::scriptKeyTaken(const KeyPress& press) {
+		if (!script_.runBinding(press, *this)) return false;
+
+		swallow_next_char_ = alsoProducesCharacter(press);
+		::InvalidateRect(window_, nullptr, FALSE);
+		return true;
+	}
+
+	void TerminalWindow::newWindow() {
+		openAnotherWindow();
+	}
+
+	void TerminalWindow::copySelected() {
+		copySelection();
+	}
+
+	void TerminalWindow::pasteClipboard() {
+		pasteFromClipboard();
+	}
+
+	void TerminalWindow::copyLastOutput() {
+		copyLastCommandOutput();
+	}
+
+	void TerminalWindow::sendText(const std::string& text) {
+		sendBytes(text.data(), text.size());
+	}
+
+	void TerminalWindow::scrollLines(int lines) {
+		focused().view().scrollBy(lines, focused().screen());
+	}
+
+	void TerminalWindow::fontSizeStep(int delta) {
+		applyFontSize(config_.font.size + static_cast<float>(delta));
+	}
+
+	void TerminalWindow::fontSizeReset() {
+		applyFontSize(kDefaultFontSize);
+	}
+
+	bool TerminalWindow::setTheme(const std::string& name) {
+		Palette palette;
+		if (!findTheme(themesDirectory(config_path_), name, palette)) return false;
+
+		MenuChoice choice;
+		choice.action = MenuAction::SetTheme;
+		choice.text   = name;
+		runMenuChoice(choice);
+		return true;
+	}
+
+	void TerminalWindow::openSearch() {
+		search_.open();
+	}
+
+	void TerminalWindow::jumpCommand(bool backwards) {
+		jumpToCommand(backwards);
+	}
+
+	void TerminalWindow::splitPane(SplitAxis axis) {
+		splitFocused(axis);
+	}
+
+	void TerminalWindow::closePane() {
+		closeFocused();
+	}
+
+	void TerminalWindow::zoomPane() {
+		toggleZoom();
+	}
+
+	void TerminalWindow::movePane(PaneMove move) {
+		switch (move) {
+		case PaneMove::Left:  focusNeighbour(PaneDirection::Left); return;
+		case PaneMove::Right: focusNeighbour(PaneDirection::Right); return;
+		case PaneMove::Up:    focusNeighbour(PaneDirection::Up); return;
+		case PaneMove::Down:  focusNeighbour(PaneDirection::Down); return;
+		case PaneMove::Next:
+		default:              focusNextPane(); return;
+		}
+	}
+
+	// The binding asking for this is still running inside the Lua state a
+	// reload would close, so the reload waits for the next message.
+	void TerminalWindow::reloadSettings() {
+		::PostMessageW(window_, kMessageReload, 0, 0);
 	}
 
 } /* namespace wbshterm */

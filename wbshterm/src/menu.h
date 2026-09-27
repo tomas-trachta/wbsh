@@ -31,6 +31,7 @@ namespace wbshterm {
 		SetPadding,
 		OpenConfigFile,
 		OpenThemesFolder,
+		OpenScriptFile,
 		CopyLastOutput,
 	};
 

@@ -36,6 +36,6 @@ namespace wbshterm {
 	std::string renderFetchPanel(const FetchInfo& info);
 
 	/** Writes the panel to standard output, for `wbshterm --fetch`. */
-	int printFetchPanel(const Config& config);
+	int printFetchPanel(const FetchInfo& info);
 
 } /* namespace wbshterm */

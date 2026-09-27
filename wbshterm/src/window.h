@@ -10,6 +10,7 @@
 #include "menu.h"
 #include "pane_tree.h"
 #include "render.h"
+#include "script.h"
 #include "search.h"
 #include "scrollbar.h"
 #include "sysinfo.h"
@@ -28,7 +29,7 @@ namespace wbshterm {
 	 * create(): the reader posts a message and this class drains the
 	 * bytes, so the grid is only ever touched here.
 	 */
-	class TerminalWindow : public TmuxHandler {
+	class TerminalWindow : public TmuxHandler, public ScriptActions {
 	public:
 		bool create(const std::wstring& command_line, const Config& config,
 			const std::wstring& config_path, std::string& out_error);
@@ -37,6 +38,23 @@ namespace wbshterm {
 		void recordTo(const std::wstring& path) { record_path_ = path; }
 
 		void tmuxAttach() override;
+
+		void newWindow() override;
+		void copySelected() override;
+		void pasteClipboard() override;
+		void copyLastOutput() override;
+		void sendText(const std::string& text) override;
+		void scrollLines(int lines) override;
+		void fontSizeStep(int delta) override;
+		void fontSizeReset() override;
+		bool setTheme(const std::string& name) override;
+		void openSearch() override;
+		void jumpCommand(bool backwards) override;
+		void splitPane(SplitAxis axis) override;
+		void closePane() override;
+		void zoomPane() override;
+		void movePane(PaneMove move) override;
+		void reloadSettings() override;
 
 	private:
 		static LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wparam,
@@ -87,8 +105,17 @@ namespace wbshterm {
 		void runPaneCommand(wchar_t character);
 		float statusHeight() const;
 		bool tmuxBarShown() const;
-		std::vector<StatusSegment> statusLeft() const;
-		std::vector<StatusSegment> statusRight() const;
+		std::vector<StatusSegment> statusLeft();
+		std::vector<StatusSegment> statusRight();
+		StatusContext statusContext() const;
+		void appendScriptError(std::vector<StatusSegment>& segments) const;
+		void loadScript();
+		bool scriptKeyTaken(const KeyPress& press);
+		void openScriptFile();
+		void announceStartupFetch() const;
+		void armScriptTimer();
+		void onScriptTick();
+		void showBasePalette();
 		bool statusClockChanged();
 		void armSystemTimer();
 		void armNewWindowHotkey();
@@ -138,6 +165,7 @@ namespace wbshterm {
 		void openConfigFile();
 		void openThemesFolder();
 		void stepFontSize(unsigned int virtual_key);
+		void applyFontSize(float size);
 		bool handleViewShortcut(const KeyPress& press);
 		void copySelection();
 		bool jumpToCommand(bool backwards);
@@ -159,6 +187,11 @@ namespace wbshterm {
 		std::wstring shown_title_;
 		Config       config_;
 		std::wstring config_path_;
+		ScriptHost   script_;
+		bool         title_scripted_ = false;
+		unsigned long long script_started_ = 0;
+		bool         palette_scripted_ = false;
+		Palette      shown_palette_;
 		unsigned long long config_stamp_ = 0;
 		bool         cursor_phase_ = true;
 		GridPoint    last_click_;

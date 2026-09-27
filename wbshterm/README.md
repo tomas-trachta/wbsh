@@ -213,12 +213,12 @@ padding, the status bar — plus Copy and Paste, and it ticks whatever is
 currently set. The
 Font entry lists every monospace family installed on the machine; a face
 named in the config that is not among them is listed too, so the tick
-always has somewhere to go. The last two
-entries open the configuration file and the themes folder, creating the
-folder and its example if they are not there yet. A choice
+always has somewhere to go. The last three
+entries open the configuration file, the themes folder and `init.lua`, creating
+what is not there yet. A choice
 applies at once *and* is written back to the config file, so it is still
 there tomorrow; the rest of the file, comments included, is left exactly as
-you wrote it. The last entry opens the file itself in your editor.
+you wrote it.
 
 `Ctrl+=` and `Ctrl+-` change the font size from the keyboard, `Ctrl+0`
 puts it back.
@@ -295,6 +295,99 @@ Previewing a theme needs no window:
 ```powershell
 .\build\wbshterm.exe --snapshot preview.png --config theme.conf --feed "ls --color\r"
 ```
+
+### Scripting it in Lua
+
+Beside the config file lives `init.lua`, run by an embedded Lua 5.4 after
+the file has been read and again whenever it is saved. Right-click and
+choose **Edit init.lua…** to open it; the first run writes one that is
+all comments, so the whole surface is there to uncomment. A script error
+never takes the terminal down: the defaults stand, the first line of the
+error shows in red at the right of the status bar, and the whole of it is
+in `init.log` next to the script, where `wbshterm.log(...)` also writes.
+
+Settings come first. `wbshterm.config` holds every section of the config
+file under the same names, already filled in from it, and whatever the
+script leaves there wins:
+
+```lua
+wbshterm.config.font.size = 12
+wbshterm.config.theme.name = "nord"
+wbshterm.config.theme.ansi[2] = "#FF6B6B"   -- 1-based; ansi[1] is black
+wbshterm.config.statusbar.battery = false
+```
+
+Then the chrome. A handler is given what the terminal was about to show
+and returns what to show instead; returning `nil` keeps the default.
+
+| Event | Given | Returns |
+| --- | --- | --- |
+| `status_right` | `info`: `cpu`, `memory_used_mb`, `memory_total_mb`, `disk_letter`, `disk_free_gb`, `disk_total_gb`, `battery`, `on_mains`, `user`, `host`, `clock`, `directory`, `tmux`, `panes`, `focused_pane`, `zoomed`, and `segments`, the default list | a list of segments |
+| `status_left` | the same `info` | a list of segments |
+| `title` | `info.title` (what the taskbar shows), `info.directory` | a string |
+| `fetch` | `rows`, the startup panel's `{ label, value }` list | a list of rows |
+| `tick` | `info.time` in seconds, `info.palette` (the theme's colours) | the colours to paint this frame |
+
+A segment is `{ label = "cpu", value = "42%", tint = "red" }` — the label
+quiet, the value bright, the tint one of `red`, `green`, `yellow` or
+absent — or just a string for the value alone.
+
+```lua
+wbshterm.on("status_right", function(info)
+    local load = { label = "load", value = info.cpu .. "%" }
+    if info.cpu > 85 then load.tint = "red" end
+    table.insert(info.segments, 1, load)
+    return info.segments
+end)
+
+wbshterm.on("title", function(info)
+    return info.tmux and "tmux" or info.title
+end)
+```
+
+A `tick` handler is an animation: registering one starts a clock at
+about thirty frames a second, and whatever palette the handler returns is
+painted for that frame, over the theme, without touching the config. The
+status bar and title are redrawn with every frame too, so a handler for
+those can animate as well. Returning `nil` hands the theme back. A sample
+with a breathing background, a rainbow cursor and a scanner in the status
+bar is in `wbshterm/samples/vfx.lua`.
+
+```lua
+wbshterm.on("tick", function(info)
+    local pulse = math.floor(128 + 127 * math.sin(info.time * 3))
+    return { cursor = string.format("#%02X40%02X", pulse, 255 - pulse) }
+end)
+```
+
+Key bindings run before the terminal's own shortcuts and before the
+shell hears the key, so any of them can be taken over. A binding is
+modifiers and one key — `ctrl`, `alt`, `shift`; a letter or digit,
+`f1` to `f12`, `enter`, `tab`, `space`, `escape`, `backspace`, `delete`,
+`insert`, `home`, `end`, `pageup`, `pagedown` or an arrow. The function
+is handed nothing and acts through `wbshterm.actions`:
+
+```lua
+wbshterm.bind("ctrl+shift+n", function() wbshterm.actions.new_window() end)
+wbshterm.bind("ctrl+shift+d", function() wbshterm.actions.split("columns") end)
+wbshterm.bind("f12", function() wbshterm.actions.theme("dracula") end)
+```
+
+| Action | Does |
+| --- | --- |
+| `new_window()` | Opens another window with the same arguments |
+| `copy()`, `paste()`, `copy_last_output()` | What the menu entries do |
+| `send(text)` | Types `text` into the shell; end a command with `"\r"` |
+| `scroll(lines)` | Scrolls the view up by `lines`, down when negative |
+| `font_size(delta)` | Steps the font size; `font_size(0)` puts it back |
+| `theme(name)` | Switches theme, and says whether the name was known |
+| `search()`, `previous_command()`, `next_command()` | The Ctrl+F / Ctrl+PageUp / Ctrl+PageDown shortcuts |
+| `split("columns"` or `"rows")`, `close_pane()`, `zoom()`, `focus("left"` … `"next")` | The pane commands, without the prefix |
+| `reload()` | Re-reads the config and this script |
+
+The standard Lua libraries are all there, and `require` looks in the
+script's own folder. Lua is compiled into wbshterm (see `wbshterm/lua`,
+MIT); nothing else is installed.
 
 ## Text that is not ASCII
 

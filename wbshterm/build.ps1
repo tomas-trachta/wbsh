@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Builds the wbshterm M0 ConPTY spike with the installed MSVC toolchain.
+    Builds wbshterm, Lua included, with the installed MSVC toolchain.
 #>
 [CmdletBinding()]
 param(
@@ -38,20 +38,38 @@ function Import-VcEnvironment {
     }
 }
 
+# Lua is C that MSVC's /W4 does not like; it gets its own pass without /WX.
+function Invoke-LuaBuild {
+    param([string]$LuaDir, [string]$OutputDir, [string[]]$Optimization)
+
+    $luaOut = Join-Path $OutputDir 'lua'
+    New-Item -ItemType Directory -Force -Path $luaOut | Out-Null
+    $sources = Get-ChildItem -Path $LuaDir -Filter *.c | ForEach-Object { $_.FullName }
+
+    $arguments = @('/nologo', '/c', '/W3', '/D_CRT_SECURE_NO_WARNINGS', "/Fo$luaOut\") + $Optimization + $sources
+    & cl @arguments | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "cl.exe failed on Lua with exit code $LASTEXITCODE." }
+
+    return Get-ChildItem -Path $luaOut -Filter *.obj | ForEach-Object { $_.FullName }
+}
+
 function Invoke-ClBuild {
     param([string]$SourceDir, [string]$OutputDir, [string]$Configuration)
 
     $optimization = if ($Configuration -eq 'Release') { '/O2', '/MD' } else { '/Od', '/Zi', '/MDd' }
     $sources = Get-ChildItem -Path $SourceDir -Filter *.cpp | ForEach-Object { $_.FullName }
+    $luaDir = Join-Path (Split-Path -Parent $SourceDir) 'lua'
+    $luaObjects = Invoke-LuaBuild -LuaDir $luaDir -OutputDir $OutputDir -Optimization $optimization
 
     $arguments = @(
         '/nologo', '/std:c++17', '/W4', '/WX', '/EHsc', '/permissive-', '/utf-8',
-        '/D_CRT_SECURE_NO_WARNINGS', '/DWIN32_LEAN_AND_MEAN', '/DNOMINMAX', '/DUNICODE', '/D_UNICODE'
-    ) + $optimization + $sources + @(
+        '/D_CRT_SECURE_NO_WARNINGS', '/DWIN32_LEAN_AND_MEAN', '/DNOMINMAX', '/DUNICODE', '/D_UNICODE',
+        "/I$luaDir", "/I$(Join-Path (Split-Path -Parent (Split-Path -Parent $SourceDir)) 'sdk\include')"
+    ) + $optimization + $sources + $luaObjects + @(
         "/Fe:$(Join-Path $OutputDir 'wbshterm.exe')",
         "/Fo:$OutputDir\",
         '/link', '/SUBSYSTEM:WINDOWS', '/ENTRY:wWinMainCRTStartup',
-        'kernel32.lib', 'user32.lib'
+        'kernel32.lib', 'user32.lib', 'gdi32.lib'
     )
 
     & cl @arguments

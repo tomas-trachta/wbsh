@@ -14,6 +14,7 @@
 #include "menu.h"
 #include "pane_tree.h"
 #include "picker.h"
+#include "script.h"
 #include "scrollbar.h"
 #include "search.h"
 #include "titlebar.h"
@@ -1345,6 +1346,274 @@ namespace wbshterm {
 				std::to_string(large_lines));
 		}
 
+		class RecordingActions : public ScriptActions {
+		public:
+			void newWindow() override { log_ += "new_window;"; }
+			void copySelected() override { log_ += "copy;"; }
+			void pasteClipboard() override { log_ += "paste;"; }
+			void copyLastOutput() override { log_ += "copy_last_output;"; }
+			void sendText(const std::string& text) override { log_ += "send(" + text + ");"; }
+			void scrollLines(int lines) override {
+				log_ += "scroll(" + std::to_string(lines) + ");";
+			}
+			void fontSizeStep(int delta) override {
+				log_ += "font(" + std::to_string(delta) + ");";
+			}
+			void fontSizeReset() override { log_ += "font(reset);"; }
+			bool setTheme(const std::string& name) override {
+				log_ += "theme(" + name + ");";
+				return true;
+			}
+			void openSearch() override { log_ += "search;"; }
+			void jumpCommand(bool backwards) override { log_ += backwards ? "previous;" : "next;"; }
+			void splitPane(SplitAxis axis) override {
+				log_ += axis == SplitAxis::Columns ? "split(columns);" : "split(rows);";
+			}
+			void closePane() override { log_ += "close_pane;"; }
+			void zoomPane() override { log_ += "zoom;"; }
+			void movePane(PaneMove move) override {
+				log_ += move == PaneMove::Next ? "focus(next);" : "focus;";
+			}
+			void reloadSettings() override { log_ += "reload;"; }
+
+			const std::string& log() const { return log_; }
+
+		private:
+			std::string log_;
+		};
+
+		struct ScriptFixture {
+			std::wstring config_path;
+			std::wstring script_path;
+		};
+
+		static ScriptFixture makeScriptFixture(const std::wstring& directory, const char* text) {
+			ScriptFixture fixture;
+			fixture.config_path = directory + L"wbshterm-script.conf";
+			fixture.script_path = directory + L"init.lua";
+			writeTextFile(fixture.script_path, text);
+			return fixture;
+		}
+
+		static void removeScriptFixture(const ScriptFixture& fixture) {
+			_wremove(fixture.script_path.c_str());
+			_wremove((fixture.config_path.substr(0, fixture.config_path.find_last_of(L"/\\") + 1)
+				+ L"init.log").c_str());
+		}
+
+		static KeyPress pressOf(const char* binding) {
+			KeyPress press;
+			parseKeyBinding(binding, press);
+			return press;
+		}
+
+		static void checkScriptOverridesConfig(Report& report, const std::wstring& directory) {
+			const ScriptFixture fixture = makeScriptFixture(directory,
+				"wbshterm.config.font.size = 13\n"
+				"wbshterm.config.cursor.style = \"bar\"\n"
+				"wbshterm.config.theme.name = \"nord\"\n"
+				"wbshterm.config.theme.foreground = \"#ABCDEF\"\n"
+				"wbshterm.config.statusbar.clock = false\n"
+				"wbshterm.config.font.fallback = { \"Segoe UI Symbol\" }\n");
+
+			Config config;
+			ScriptHost host;
+			const bool loaded = host.load(fixture.script_path, fixture.config_path, config);
+			report.check("init.lua loads", loaded && host.loaded(), host.lastError());
+
+			Palette nord;
+			findTheme(themesDirectory(fixture.config_path), "nord", nord);
+			report.check("the script's settings win over the file",
+				config.font.size == 13.0f && config.cursor.style == CursorStyle::Bar
+					&& !config.statusbar.clock, "");
+			report.check("naming a theme from the script loads its palette",
+				config.theme_name == "nord" && config.palette.background == nord.background, "");
+			report.check("a colour set from the script goes on top of the theme",
+				config.palette.foreground == 0xABCDEF, "");
+			report.check("a list setting is read back whole",
+				config.font.fallback.size() == 1
+					&& config.font.fallback[0] == L"Segoe UI Symbol", "");
+
+			removeScriptFixture(fixture);
+
+			Config untouched;
+			ScriptHost none;
+			report.check("a missing init.lua is not an error",
+				none.load(fixture.script_path, fixture.config_path, untouched)
+					&& !none.loaded(), "");
+		}
+
+		static void checkScriptStatusHandlers(Report& report, const std::wstring& directory) {
+			const ScriptFixture fixture = makeScriptFixture(directory,
+				"wbshterm.on(\"status_right\", function(info)\n"
+				"    table.insert(info.segments, 1,\n"
+				"        { label = \"cpu\", value = tostring(info.cpu), tint = \"red\" })\n"
+				"    table.insert(info.segments, info.user .. \"@\" .. info.host)\n"
+				"    return info.segments\n"
+				"end)\n"
+				"wbshterm.on(\"status_left\", function(info) return nil end)\n");
+
+			Config config;
+			ScriptHost host;
+			host.load(fixture.script_path, fixture.config_path, config);
+
+			StatusContext context;
+			context.sample.cpu_percent = 42;
+			context.user = "me";
+			context.host = "box";
+
+			std::vector<StatusSegment> right = { { "", "12:00" } };
+			const bool replaced = host.statusSegments(ScriptEvent::StatusRight, context, right);
+			report.check("a status handler reshapes the right end",
+				replaced && right.size() == 3 && right[0].label == "cpu" && right[0].value == "42"
+					&& right[0].tint == kTintRed && right[1].value == "12:00"
+					&& right[2].value == "me@box", host.lastError());
+
+			std::vector<StatusSegment> left = { { "", "default" } };
+			const bool kept = !host.statusSegments(ScriptEvent::StatusLeft, context, left);
+			report.check("a handler returning nil keeps the default",
+				kept && left.size() == 1 && left[0].value == "default", host.lastError());
+			report.check("handlers are known by name",
+				host.handles(ScriptEvent::StatusRight) && !host.handles(ScriptEvent::Title), "");
+
+			removeScriptFixture(fixture);
+		}
+
+		static void checkScriptTitleAndFetch(Report& report, const std::wstring& directory) {
+			const ScriptFixture fixture = makeScriptFixture(directory,
+				"wbshterm.on(\"title\", function(info)\n"
+				"    return \"wbsh: \" .. info.title .. \" in \" .. info.directory\n"
+				"end)\n"
+				"wbshterm.on(\"fetch\", function(rows)\n"
+				"    table.insert(rows, { label = \"Mood\", value = \"good\" })\n"
+				"    return rows\n"
+				"end)\n");
+
+			Config config;
+			ScriptHost host;
+			host.load(fixture.script_path, fixture.config_path, config);
+
+			std::string title;
+			const bool titled = host.title("wbsh", "C:/work", title);
+			report.check("a title handler names the window",
+				titled && title == "wbsh: wbsh in C:/work", host.lastError());
+
+			std::vector<FetchRow> rows = { { "OS", "Windows" } };
+			const bool fetched = host.fetchRows(rows);
+			report.check("a fetch handler adds to the startup panel",
+				fetched && rows.size() == 2 && rows[1].label == "Mood" && rows[1].value == "good",
+				host.lastError());
+
+			removeScriptFixture(fixture);
+		}
+
+		static void checkScriptTick(Report& report, const std::wstring& directory) {
+			const ScriptFixture fixture = makeScriptFixture(directory,
+				"wbshterm.on(\"tick\", function(info)\n"
+				"    if info.time < 1 then return nil end\n"
+				"    return { cursor = \"#112233\", ansi = { [3] = \"#445566\" },\n"
+				"        background = info.palette.foreground }\n"
+				"end)\n");
+
+			Config config;
+			ScriptHost host;
+			host.load(fixture.script_path, fixture.config_path, config);
+			report.check("a tick handler is known", host.handles(ScriptEvent::Tick), "");
+
+			Palette frame;
+			report.check("a frame answering nil leaves the theme alone",
+				!host.tick(0.5, config.palette, frame), host.lastError());
+
+			const bool painted = host.tick(2.0, config.palette, frame);
+			report.check("a frame paints the colours it names over the theme",
+				painted && frame.cursor == 0x112233 && frame.ansi[2] == 0x445566
+					&& frame.background == config.palette.foreground
+					&& frame.foreground == config.palette.foreground
+					&& frame.ansi[0] == config.palette.ansi[0], host.lastError());
+
+			removeScriptFixture(fixture);
+		}
+
+		static void checkScriptBindings(Report& report, const std::wstring& directory) {
+			const ScriptFixture fixture = makeScriptFixture(directory,
+				"wbshterm.bind(\"ctrl+shift+n\", function() wbshterm.actions.new_window() end)\n"
+				"wbshterm.bind(\"ctrl+shift+s\", function()\n"
+				"    wbshterm.actions.split(\"rows\")\n"
+				"    wbshterm.actions.send(\"ls\\r\")\n"
+				"    wbshterm.actions.font_size(2)\n"
+				"    wbshterm.actions.focus(\"next\")\n"
+				"end)\n");
+
+			Config config;
+			ScriptHost host;
+			host.load(fixture.script_path, fixture.config_path, config);
+
+			report.check("bound keys are known",
+				host.binds(pressOf("ctrl+shift+n")) && !host.binds(pressOf("ctrl+n")), "");
+
+			RecordingActions actions;
+			const bool ran = host.runBinding(pressOf("ctrl+shift+s"), actions);
+			report.check("a binding drives the window",
+				ran && actions.log() == "split(rows);send(ls\r);font(2);focus(next);",
+				actions.log() + " " + host.lastError());
+			report.check("an unbound key is passed on",
+				!host.runBinding(pressOf("ctrl+n"), actions), "");
+
+			removeScriptFixture(fixture);
+
+			const ScriptFixture early = makeScriptFixture(directory,
+				"wbshterm.actions.copy()\n");
+			ScriptHost eager;
+			const bool refused = !eager.load(early.script_path, early.config_path, config);
+			report.check("actions outside a binding are refused",
+				refused && eager.lastError().find("key binding") != std::string::npos,
+				eager.lastError());
+			removeScriptFixture(early);
+		}
+
+		static void checkScriptErrorsAreKept(Report& report, const std::wstring& directory) {
+			const ScriptFixture broken = makeScriptFixture(directory, "this is not lua\n");
+
+			Config config;
+			ScriptHost host;
+			const bool failed = !host.load(broken.script_path, broken.config_path, config);
+			report.check("a script that does not parse is reported",
+				failed && !host.loaded() && !host.lastError().empty(), host.lastError());
+			removeScriptFixture(broken);
+
+			const ScriptFixture faulty = makeScriptFixture(directory,
+				"wbshterm.on(\"title\", function(info) return info.missing.field end)\n");
+			ScriptHost runtime;
+			runtime.load(faulty.script_path, faulty.config_path, config);
+
+			std::string title;
+			const bool kept = !runtime.title("wbsh", "", title);
+			report.check("a handler that fails keeps the default and the error",
+				kept && runtime.loaded()
+					&& runtime.lastError().find("missing") != std::string::npos,
+				runtime.lastError());
+			removeScriptFixture(faulty);
+		}
+
+		static void checkExampleScript(Report& report, const std::wstring& directory) {
+			const std::wstring path = directory + L"init.lua";
+			_wremove(path.c_str());
+			report.check("the example init.lua is written", writeExampleScript(path), "");
+
+			Config config;
+			ScriptHost host;
+			const bool loaded = host.load(path, directory + L"wbshterm-script.conf", config);
+			report.check("the example script runs and changes nothing",
+				loaded && host.loaded() && !host.handles(ScriptEvent::StatusRight)
+					&& config.font.size == Config().font.size, host.lastError());
+
+			writeTextFile(path, "-- edited\n");
+			report.check("an existing init.lua is left alone", writeExampleScript(path), "");
+			report.check("the script stamp follows the file",
+				scriptedSettingsStamp(directory + L"wbshterm-script.conf", "nord") != 0, "");
+			_wremove(path.c_str());
+		}
+
 		static void checkStartupFetchSetting(Report& report, const std::wstring& directory) {
 			const std::wstring path = directory + L"wbshterm-startup.conf";
 			writeTextFile(path, "[startup]\nfetch = false\n");
@@ -2620,6 +2889,16 @@ namespace wbshterm {
 					&& stacked.virtual_key == VK_SPACE, "");
 
 			KeyPress ignored;
+			KeyPress function_key;
+			report.check("a binding names a function key",
+				parseKeyBinding("ctrl+f12", function_key) && function_key.control
+					&& function_key.virtual_key == VK_F12, "");
+
+			KeyPress page;
+			report.check("a binding names a navigation key",
+				parseKeyBinding("shift+pageup", page) && page.shift && page.virtual_key == VK_PRIOR,
+				"");
+
 			report.check("a binding naming no key is refused",
 				!parseKeyBinding("ctrl+", ignored), "");
 			report.check("a binding naming two keys is refused",
@@ -2825,6 +3104,16 @@ namespace wbshterm {
 		test::checkMenuChoicesPersist(report, directory);
 	}
 
+	static void runScriptChecks(test::Report& report, const std::wstring& directory) {
+		test::checkScriptOverridesConfig(report, directory);
+		test::checkScriptStatusHandlers(report, directory);
+		test::checkScriptTitleAndFetch(report, directory);
+		test::checkScriptTick(report, directory);
+		test::checkScriptBindings(report, directory);
+		test::checkScriptErrorsAreKept(report, directory);
+		test::checkExampleScript(report, directory);
+	}
+
 	static void runKeyChecks(test::Report& report) {
 		test::checkCursorKeyEncoding(report);
 		test::checkModifierParameters(report);
@@ -2855,6 +3144,7 @@ namespace wbshterm {
 		runLayoutChecks(report);
 		runTitleBarChecks(report);
 		runSettingsChecks(report, directory);
+		runScriptChecks(report, directory);
 		runKeyChecks(report);
 		runLiveChecks(report, shell_command_line, directory);
 

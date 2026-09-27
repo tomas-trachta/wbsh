@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "fetch.h"
+#include "script.h"
 #include "replay.h"
 #include "selftest.h"
 #include "snapshot.h"
@@ -261,8 +262,25 @@ namespace wbshterm {
 		return 1;
 	}
 
+	// The panel is printed by a second wbshterm, so the script runs here
+	// too: its config edits and its fetch handler shape what is shown.
 	static int runFetch(const Options& options) {
-		return printFetchPanel(loadSnapshotConfig(options));
+		const std::wstring config_path = options.config_path.empty()
+			? defaultConfigPath()
+			: options.config_path;
+
+		Config config;
+		findBuiltInTheme(config.theme_name, config.palette);
+
+		std::string error;
+		if (!config_path.empty()) loadConfig(config_path, config, error);
+
+		ScriptHost script;
+		script.load(scriptPath(config_path), config_path, config);
+
+		FetchInfo info = gatherFetchInfo(config);
+		script.fetchRows(info.rows);
+		return printFetchPanel(info);
 	}
 
 	static int runReplay(const Options& options) {
@@ -278,18 +296,6 @@ namespace wbshterm {
 
 		reportFailure(error);
 		return 1;
-	}
-
-	// wbsh runs WBSH_INIT_COMMAND once its interactive session is up, which
-	// is the only way to get output into a console conhost owns: ask the
-	// shell to print it rather than drawing over its screen.
-	static void announceStartupCommand() {
-		wchar_t path[MAX_PATH] = {};
-		const DWORD length = ::GetModuleFileNameW(nullptr, path, MAX_PATH);
-		if (length == 0) return;
-
-		const std::wstring command = L"\"" + std::wstring(path, length) + L"\" --fetch";
-		::SetEnvironmentVariableW(L"WBSH_INIT_COMMAND", command.c_str());
 	}
 
 	// Tells the shell this terminal draws pickers itself. Separate from the
@@ -325,10 +331,10 @@ namespace wbshterm {
 		}
 
 		ensureThemesDirectory(themesDirectory(config_path));
+		writeExampleScript(scriptPath(config_path));
 		announcePickerSupport();
 		announcePaneSupport();
 		announceScrollbackSupport();
-		if (config.startup_fetch) announceStartupCommand();
 
 		TerminalWindow window;
 		if (!options.record_path.empty()) window.recordTo(options.record_path);

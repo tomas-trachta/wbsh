@@ -20,6 +20,7 @@ namespace wbshterm {
 	static const int kCommandOpenThemes  = 104;
 	static const int kCommandLastOutput  = 105;
 	static const int kCommandStatusBar   = 106;
+	static const int kCommandOpenScript  = 107;
 
 	static const int kCommandThemeBase   = 200;
 	static const int kCommandCursorBase  = 300;
@@ -172,6 +173,7 @@ namespace wbshterm {
 		::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 		::AppendMenuW(menu, MF_STRING, kCommandOpenConfig, L"Edit configuration file…");
 		::AppendMenuW(menu, MF_STRING, kCommandOpenThemes, L"Open themes folder…");
+		::AppendMenuW(menu, MF_STRING, kCommandOpenScript, L"Edit init.lua…");
 		return menu;
 	}
 
@@ -204,6 +206,7 @@ namespace wbshterm {
 		case kCommandBlink:      out_choice.action = MenuAction::ToggleBlink; return true;
 		case kCommandOpenConfig: out_choice.action = MenuAction::OpenConfigFile; return true;
 		case kCommandOpenThemes: out_choice.action = MenuAction::OpenThemesFolder; return true;
+		case kCommandOpenScript: out_choice.action = MenuAction::OpenScriptFile; return true;
 		case kCommandLastOutput: out_choice.action = MenuAction::CopyLastOutput; return true;
 		case kCommandStatusBar:  out_choice.action = MenuAction::ToggleStatusBar; return true;
 		default:                 return false;

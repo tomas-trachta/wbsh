@@ -269,8 +269,8 @@ namespace wbshterm {
 		return written;
 	}
 
-	int printFetchPanel(const Config& config) {
-		const std::string panel = renderFetchPanel(gatherFetchInfo(config));
+	int printFetchPanel(const FetchInfo& info) {
+		const std::string panel = renderFetchPanel(info);
 
 		if (writeAll(::GetStdHandle(STD_OUTPUT_HANDLE), panel)) return 0;
 		return writeToParentConsole(panel) ? 0 : 1;

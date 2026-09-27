@@ -184,6 +184,32 @@ namespace wbshterm {
 		return joined;
 	}
 
+	struct NamedKey {
+		const char*  name;
+		unsigned int virtual_key;
+	};
+
+	static const NamedKey kNamedKeys[] = {
+		{ "enter",     VK_RETURN }, { "backspace", VK_BACK },   { "delete",   VK_DELETE },
+		{ "insert",    VK_INSERT }, { "home",      VK_HOME },   { "end",      VK_END },
+		{ "pageup",    VK_PRIOR },  { "pagedown",  VK_NEXT },   { "up",       VK_UP },
+		{ "down",      VK_DOWN },   { "left",      VK_LEFT },   { "right",    VK_RIGHT },
+		{ "f1",  VK_F1 },  { "f2",  VK_F2 },  { "f3",  VK_F3 },  { "f4",  VK_F4 },
+		{ "f5",  VK_F5 },  { "f6",  VK_F6 },  { "f7",  VK_F7 },  { "f8",  VK_F8 },
+		{ "f9",  VK_F9 },  { "f10", VK_F10 }, { "f11", VK_F11 }, { "f12", VK_F12 },
+	};
+
+	static bool namedBindingKey(const std::string& name, unsigned int& out_key) {
+		for (const NamedKey& key : kNamedKeys) {
+			if (name == key.name) {
+				out_key = key.virtual_key;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	static bool virtualKeyNamed(const std::string& name, unsigned int& out_key) {
 		if (name.size() == 1) {
 			const char letter = name[0];
@@ -204,7 +230,7 @@ namespace wbshterm {
 		if (name == "tab")    { out_key = VK_TAB;    return true; }
 		if (name == "escape") { out_key = VK_ESCAPE; return true; }
 
-		return false;
+		return namedBindingKey(name, out_key);
 	}
 
 	static std::string nextBindingPart(const std::string& text, std::size_t& at) {
