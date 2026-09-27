@@ -190,6 +190,15 @@ Copy-Item (Join-Path $ScriptDir 'wbshterm-here.cmd')       $termStage
 Copy-Item $sdkPath                                         $termStage
 Copy-CrtDlls -Destination $termStage
 
+# Microsoft's current ConPTY rides along (wbshterm\conpty\fetch.ps1 pins the
+# version). wbshterm loads it from its own directory and falls back to the
+# pseudoconsole built into Windows when the files are missing.
+foreach ($name in @('conpty.dll', 'OpenConsole.exe')) {
+    $src = Join-Path $RepoRoot "wbshterm\conpty\$name"
+    if (Test-Path $src) { Copy-Item $src $termStage }
+    else { Write-Warning "Bundled ConPTY file missing: $src (run wbshterm\conpty\fetch.ps1)" }
+}
+
 $termZipPath = Join-Path $outDir "wbshterm-$Version-portable-$Platform.zip"
 if (Test-Path $termZipPath) { Remove-Item $termZipPath -Force }
 Compress-Archive -Path (Join-Path $termStage '*') -DestinationPath $termZipPath

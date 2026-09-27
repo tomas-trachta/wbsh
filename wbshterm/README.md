@@ -27,6 +27,13 @@ and an "Open wbshterm here" entry in the Explorer right-click menu.
 installer. Your settings and themes in `%APPDATA%\wbshterm` are left alone
 when you uninstall.
 
+Beside the terminal sit `conpty.dll` and `OpenConsole.exe`: Microsoft's
+current pseudoconsole, the one Windows Terminal ships, under the MIT
+licence. Windows 10 never updates the console built into it, and the one
+it froze in 2019 turns a busy program into a slow trickle; the bundled one
+hands over a large write about five times faster and reflows on its own.
+Delete the two files and the terminal falls back to the system console.
+
 ## Build and run
 
 `wbshterm.vcxproj` is part of `wbsh.sln`, so Visual Studio and msbuild build
@@ -41,6 +48,13 @@ msbuild ..\wbsh.sln /t:wbshterm /p:Configuration=Release /p:Platform=x64
 `build.ps1` builds the same sources without Visual Studio, to
 `wbshterm\build\`. Both paths compile at `/W4 /WX` and run the style
 checker; keep them flag-compatible.
+
+`conpty\` holds the pinned `Microsoft.Windows.Console.ConPTY` package:
+`conpty.dll`, `OpenConsole.exe`, its licence and version. They are checked
+in so a clone builds offline; the project's post-build step copies them
+next to `wbshterm.exe`, and `conpty\fetch.ps1` refreshes them after a
+version bump. `pty.cpp` looks for the DLL beside the executable and takes
+`CreatePseudoConsole` from kernel32 when it is not there.
 
 ```powershell
 .\build.ps1
@@ -82,7 +96,7 @@ apart from a parsing bug by replaying the same bytes.
 
 | File | Responsibility |
 | --- | --- |
-| `pty.h/.cpp` | `PtySession`: pseudoconsole, pipes, child lifetime. |
+| `pty.h/.cpp` | `PtySession`: pseudoconsole, pipes, child lifetime. Loads `conpty.dll` from beside the executable, else uses the system one. |
 | `vtparse.h/.cpp` | Bytes to VT actions (DEC state machine) and UTF-8 decoding. |
 | `screen.h/.cpp` | The cell grid: printing, cursor motion, erase, scroll, SGR, query replies. |
 | `keymap.h/.cpp` | Key presses to bytes: modifiers, cursor-key modes, paste bracketing. |
@@ -566,18 +580,21 @@ cursor is only painted while its row is on screen.
 
 ## Resizing
 
-Text rewraps when the window or a pane changes width. The pseudoconsole
-keeps no history of its own and repaints its whole viewport after a resize,
-so the grid is laid out the way the console will paint it: from the top
-when the text fits, hanging from the bottom when it does not, with the rows
-the console forgets moving into scrollback. The console never says where a
-line was wrapped, so the first reflow guesses from a row filled to its last
-cell; from then on every row remembers whether its line goes on, which
-keeps a drag through many widths from breaking lines at spaces.
+Text rewraps when the window or a pane changes width. The bundled console
+sends nothing at all after a resize: it reflows its own buffer and trusts
+the terminal to have done the same, so what the grid lays out is what
+stays. The console built into Windows 10 keeps no history and repaints its
+whole viewport instead, so the grid is laid out the way that console will
+paint it: from the top when the text fits, hanging from the bottom when it
+does not, with the rows the console forgets moving into scrollback. That
+console never says where a line was wrapped, so the first reflow guesses
+from a row filled to its last cell; from then on every row remembers
+whether its line goes on, which keeps a drag through many widths from
+breaking lines at spaces. The same layout serves both consoles.
 
-One seam remains: a line whose tail lands on the console's top row stays
-split there until more output scrolls that row into history, at which point
-the next reflow joins it back together.
+One seam remains under the system console: a line whose tail lands on the
+console's top row stays split there until more output scrolls that row into
+history, at which point the next reflow joins it back together.
 
 ## Remaining
 
@@ -606,10 +623,30 @@ in the stream is not necessarily a bug in this terminal: vim under ConPTY
 emits `ESC[67C` followed by a literal `m`, and every conformant terminal
 (this one, Windows Terminal) paints that `m`.
 
-**ConPTY throughput is ~1.5 MB/s** (M0: 989 KB in 634 ms). The pty, not the
-renderer, is the ceiling on a large dump. The reader thread only buffers
-bytes and posts one wake-up at a time; parsing and painting happen once per
-drain on the UI thread.
+**The pty, not the renderer, is the ceiling on a large dump.** The console
+built into Windows 10 hands over about 1.4 KB per millisecond however it is
+fed (M0: 989 KB in 634 ms; a 4,000-line transcript in 590 ms, during which
+parsing took 33 ms and every frame painted in step). Claude Code's Ctrl+O
+reprints its whole transcript, 600 KB for a modest session, and that
+trickle was the whole wait. Microsoft's current console, bundled since
+then, takes a single 326 KB write in about 30 ms where the old one took
+150 to 180. The reader thread only buffers bytes and posts one wake-up at a
+time; parsing and painting happen once per drain on the UI thread.
+
+**The two consoles disagree about stray control bytes.** The one built
+into Windows 10 stores a C0 byte it has no handling for (SI, SO, ENQ...)
+as its OEM glyph, moves its cursor past it, and passes the raw byte on, so
+the grid must take a cell too or the relative move it sends next lands a
+column short. The bundled console passes the byte through as well but
+treats it as xterm does, zero width. `Session` tells the grid which console
+is serving, and `Screen` prints the glyph only for the old one.
+
+**The bundled console announces itself.** Its first bytes are `CSI 1 t`,
+DA1, `CSI ?1004 h` (focus reports), `CSI ?9001 h` (win32-input-mode) and a
+DECAWM toggle; none of them needs an answer beyond DA1, and plain VT input
+is still accepted, so the terminal ignores the rest. What follows is far
+closer to what the program wrote than the old console's regenerated
+stream: no clear, no cursor homing, no per-row erase.
 
 **A frame arrives in pieces, and painting between them is the flicker.**
 A full-screen program such as Claude Code redraws its whole panel at once,

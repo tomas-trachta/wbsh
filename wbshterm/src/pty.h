@@ -57,6 +57,9 @@ namespace wbshterm {
 
 		bool childAlive() const;
 
+		/** True when the conpty.dll beside the executable serves, not Windows' own. */
+		static bool usesBundledConsole();
+
 		/** For waiting on the child; the session keeps ownership. */
 		HANDLE childHandle() const { return child_; }
 

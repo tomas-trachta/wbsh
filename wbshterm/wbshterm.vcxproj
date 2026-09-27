@@ -86,6 +86,15 @@
     <IntDir>$(ProjectDir)build\msbuild\$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
 
+  <!-- The bundled pseudoconsole rides along with the executable; pty.cpp
+       loads it from there and falls back to the system one if absent. -->
+  <ItemDefinitionGroup>
+    <PostBuildEvent>
+      <Command>xcopy /Y /D /Q "$(ProjectDir)conpty\conpty.dll" "$(OutDir)" &amp;&amp; xcopy /Y /D /Q "$(ProjectDir)conpty\OpenConsole.exe" "$(OutDir)"</Command>
+      <Message>Copying bundled ConPTY next to wbshterm.exe...</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>

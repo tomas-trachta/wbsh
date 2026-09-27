@@ -1,0 +1,4 @@
+Microsoft.Windows.Console.ConPTY 1.24.260710001
+https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/1.24.260710001
+https://github.com/microsoft/terminal
+License: MIT (LICENSE.txt)

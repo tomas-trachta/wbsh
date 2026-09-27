@@ -108,6 +108,14 @@ namespace wbshterm {
 				firstLine(grid) == "  s", firstLine(grid));
 		}
 
+		static void checkShiftInIsZeroWidthWithoutGlyphs(Report& report) {
+			Screen screen(10, 2);
+			screen.setControlGlyphs(false);
+			const std::string grid = feedToScreen(screen, "\x1b[1;3H\x0f\x08s");
+			report.check("SI is zero width once control glyphs are off",
+				firstLine(grid) == " s", firstLine(grid));
+		}
+
 		static void checkWrapAndScroll(Report& report) {
 			Screen screen(4, 2);
 			const std::string grid = feedToScreen(screen, "aaaabbbbcccc");
@@ -2720,6 +2728,7 @@ namespace wbshterm {
 		test::checkCursorMotion(report);
 		test::checkEraseInLine(report);
 		test::checkShiftInTakesACell(report);
+		test::checkShiftInIsZeroWidthWithoutGlyphs(report);
 		test::checkWrapAndScroll(report);
 		test::checkSgrColors(report);
 		test::checkTruecolorAndOsc(report);

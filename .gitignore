@@ -446,3 +446,7 @@ tests/_run_tmp/
 # Machine-local editor / tooling files.
 *.sublime-*
 compile_commands.json
+
+# Microsoft's current ConPTY, vendored for wbshterm (see wbshterm/conpty/fetch.ps1).
+!wbshterm/conpty/conpty.dll
+!wbshterm/conpty/OpenConsole.exe

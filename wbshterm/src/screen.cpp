@@ -647,6 +647,8 @@ namespace wbshterm {
 	}
 
 	void Screen::printControlGlyph(unsigned char control) {
+		if (!control_glyphs_) return;
+
 		const char32_t glyph = consoleGlyphFor(control);
 		if (glyph != 0) writeChar(glyph);
 	}

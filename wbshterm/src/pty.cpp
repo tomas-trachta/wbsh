@@ -6,6 +6,7 @@
 #include "pty.h"
 
 #include <cstdio>
+#include <string>
 #include <vector>
 
 namespace wbshterm {
@@ -14,6 +15,70 @@ namespace wbshterm {
 	// for it; the default four kilobytes make it dribble a busy screen out
 	// in pieces, each of which would reach the window on its own.
 	static const DWORD kOutputPipeBytes = 1024 * 1024;
+
+	typedef HRESULT (WINAPI *CreateConsoleFn)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
+	typedef HRESULT (WINAPI *ResizeConsoleFn)(HPCON, COORD);
+	typedef void    (WINAPI *CloseConsoleFn)(HPCON);
+
+	struct ConsoleApi {
+		CreateConsoleFn create = nullptr;
+		ResizeConsoleFn resize = nullptr;
+		CloseConsoleFn  close  = nullptr;
+	};
+
+	static std::wstring directoryOfThisExe() {
+		wchar_t path[MAX_PATH] = {};
+		const DWORD length = ::GetModuleFileNameW(nullptr, path, MAX_PATH);
+		const std::wstring full(path, length);
+		const std::size_t slash = full.find_last_of(L"\\/");
+		return slash == std::wstring::npos ? std::wstring() : full.substr(0, slash + 1);
+	}
+
+	// Windows 10 never updates the pseudoconsole built into it, and the
+	// one it froze in 2019 turns a busy program into a slow trickle. A
+	// conpty.dll beside the executable is Microsoft's current one, the
+	// build Windows Terminal ships, and it launches the OpenConsole.exe
+	// next to it in place of the system conhost. Without the file the
+	// system one serves, so a bare wbshterm.exe still runs.
+	static ConsoleApi loadBundledConsole() {
+		ConsoleApi api;
+		const std::wstring path = directoryOfThisExe() + L"conpty.dll";
+		const HMODULE library = ::LoadLibraryExW(path.c_str(), nullptr,
+			LOAD_WITH_ALTERED_SEARCH_PATH);
+		if (library == nullptr) return api;
+
+		api.create = reinterpret_cast<CreateConsoleFn>(
+			::GetProcAddress(library, "ConptyCreatePseudoConsole"));
+		api.resize = reinterpret_cast<ResizeConsoleFn>(
+			::GetProcAddress(library, "ConptyResizePseudoConsole"));
+		api.close = reinterpret_cast<CloseConsoleFn>(
+			::GetProcAddress(library, "ConptyClosePseudoConsole"));
+		if (api.create != nullptr && api.resize != nullptr && api.close != nullptr) return api;
+
+		::FreeLibrary(library);
+		return ConsoleApi();
+	}
+
+	static ConsoleApi systemConsole() {
+		ConsoleApi api;
+		api.create = &::CreatePseudoConsole;
+		api.resize = &::ResizePseudoConsole;
+		api.close  = &::ClosePseudoConsole;
+		return api;
+	}
+
+	static const ConsoleApi& consoleApi() {
+		static const ConsoleApi api = [] {
+			const ConsoleApi bundled = loadBundledConsole();
+			return bundled.create != nullptr ? bundled : systemConsole();
+		}();
+
+		return api;
+	}
+
+	bool PtySession::usesBundledConsole() {
+		return consoleApi().create != &::CreatePseudoConsole;
+	}
 
 	static std::string describeLastError(const char* call) {
 		const DWORD code = ::GetLastError();
@@ -64,7 +129,7 @@ namespace wbshterm {
 		}
 
 		const COORD extent = { size.columns, size.rows };
-		const HRESULT hr = ::CreatePseudoConsole(extent, input_read, output_write, 0, &console_);
+		const HRESULT hr = consoleApi().create(extent, input_read, output_write, 0, &console_);
 
 		closeIfOpen(input_read);
 		closeIfOpen(output_write);
@@ -139,7 +204,7 @@ namespace wbshterm {
 		if (console_ == nullptr) return false;
 
 		const COORD extent = { size.columns, size.rows };
-		return SUCCEEDED(::ResizePseudoConsole(console_, extent));
+		return SUCCEEDED(consoleApi().resize(console_, extent));
 	}
 
 	DWORD PtySession::read(char* buffer, DWORD capacity) {
@@ -191,7 +256,7 @@ namespace wbshterm {
 		closeIfOpen(input_write_);
 
 		if (console_ != nullptr) {
-			::ClosePseudoConsole(console_);
+			consoleApi().close(console_);
 			console_ = nullptr;
 		}
 	}

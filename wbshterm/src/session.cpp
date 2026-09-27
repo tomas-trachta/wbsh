@@ -39,6 +39,7 @@ namespace wbshterm {
 		size.columns = static_cast<SHORT>(columns);
 		size.rows    = static_cast<SHORT>(rows);
 		if (!pty_.open(shell, size, out_error)) return false;
+		screen_.setControlGlyphs(!PtySession::usesBundledConsole());
 
 		stop_signal_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
 		reader_ = std::thread(&Session::readLoop, this);

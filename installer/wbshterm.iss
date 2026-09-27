@@ -51,6 +51,10 @@ Source: "stage-wbshterm\wbshsdk.dll";        DestDir: "{app}"; Flags: ignorevers
 Source: "stage-wbshterm\msvcp140.dll";      DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage-wbshterm\vcruntime140.dll";  DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage-wbshterm\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; Microsoft's current ConPTY (MIT, see wbshterm\conpty). Optional: without it
+; wbshterm uses the pseudoconsole built into Windows, which is far slower.
+Source: "stage-wbshterm\conpty.dll";         DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "stage-wbshterm\OpenConsole.exe";    DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 ; Where a third-party util goes. Created empty so there is somewhere

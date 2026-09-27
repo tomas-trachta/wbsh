@@ -178,6 +178,16 @@ namespace wbshterm {
 		/** Answers device and cursor queries; without one they go unanswered. */
 		void setResponder(VtResponder* responder) { responder_ = responder; }
 
+		/**
+		 * @brief Whether a C0 byte the console leaves alone takes a cell.
+		 *
+		 * The pseudoconsole built into Windows 10 stores such a byte as its
+		 * OEM glyph and moves its cursor past it, so the grid must too or
+		 * the relative move it sends next lands a column short. Microsoft's
+		 * current console treats them as xterm does, zero width.
+		 */
+		void setControlGlyphs(bool enabled) { control_glyphs_ = enabled; }
+
 		/** Without one, pick requests from the shell are ignored. */
 		void setPickHandler(PickHandler* handler) { pick_handler_ = handler; }
 
@@ -273,6 +283,7 @@ namespace wbshterm {
 		bool          application_cursor_ = false;
 		bool          bracketed_paste_    = false;
 		bool          synchronized_output_ = false;
+		bool          control_glyphs_     = true;
 		VtResponder*  responder_ = nullptr;
 		PickHandler*  pick_handler_ = nullptr;
 		TmuxHandler*  tmux_handler_ = nullptr;
