@@ -8,7 +8,7 @@
   <PropertyGroup Label="Version">
     <WbshVersionMajor>1</WbshVersionMajor>
     <WbshVersionMinor>0</WbshVersionMinor>
-    <WbshVersionPatch>23</WbshVersionPatch>
+    <WbshVersionPatch>24</WbshVersionPatch>
     <WbshVersion>$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)</WbshVersion>
   </PropertyGroup>
 </Project>
