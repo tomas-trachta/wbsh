@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    The one property sheet a util project needs. Import it after
+    Microsoft.Cpp.props with WbshSdkDir pointing at the folder this file
+    is in; a project that lives in the SDK tree sets nothing, and one that
+    lives elsewhere passes -p:WbshSdkDir=<path to the SDK> to msbuild.
+
+    Inside the wbsh repository the DLL lands in the plugins folder beside
+    the freshly built wbsh.exe, so the tests find it. Anywhere else it
+    lands in bin\ next to the project.
+  -->
+  <PropertyGroup>
+    <WbshSdkDir Condition="'$(WbshSdkDir)'==''">$(MSBuildThisFileDirectory)</WbshSdkDir>
+    <WbshRepoLayout Condition="Exists('$(WbshSdkDir)..\wbsh.sln')">true</WbshRepoLayout>
+    <OutDir Condition="'$(WbshRepoLayout)'=='true'">$(WbshSdkDir)..\$(Platform)\$(Configuration)\plugins\</OutDir>
+    <OutDir Condition="'$(WbshRepoLayout)'!='true'">$(ProjectDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)build\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(WbshSdkDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;UNICODE;_UNICODE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>kernel32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

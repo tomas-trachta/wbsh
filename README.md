@@ -200,15 +200,21 @@ HELLO, TOMAS!
 | --- | --- |
 | `<install>\plugins\` | Utils that ship with an install |
 | `%APPDATA%\wbsh\plugins\` | A user's own, no administrator needed |
+| each folder in `WBSH_PLUGINS` | A developer's own build output |
 
-A util's command redirects, pipes and sets `$?` like any other, but cannot take
-a bundled command's name. The contract is C (`sdk/include/wbshsdk.h`) and
-ABI-versioned: a mismatched or non-util DLL is named and skipped without
-affecting the others. `wbsh.exe` reaches the SDK through `LoadLibrary`, so
-without `wbshsdk.dll` beside it the shell runs exactly as before.
+A util's command redirects, pipes and sets `$?` like any other, has `help`
+text and Tab completion of its own, and cannot take a bundled command's name.
+The contract is C (`sdk/include/wbshsdk.h`), ABI-versioned and unlinked: the
+host hands a util a table of functions when it loads, so any compiler that
+makes a DLL will do. A mismatched or non-util DLL is named and skipped without
+affecting the others, and `utils` says why. `utils load <dll>` and
+`utils reload` keep the edit-run loop inside one shell. `wbsh.exe` reaches the
+SDK through `LoadLibrary`, so without `wbshsdk.dll` beside it the shell runs
+exactly as before.
 
-See [sdk/README.md](sdk/README.md) to write one; `sdk/samples/hello` is a
-working project to copy.
+Every release carries `wbsh-sdk-<version>.zip` with the header, a template
+project for MSBuild and CMake, the samples and the SDK's symbols. See
+[sdk/README.md](sdk/README.md) to write one.
 
 ---
 
@@ -222,7 +228,7 @@ Requires Windows 10 1903+, Visual Studio 2022 or Build Tools 2022 with the
 & "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
     .\wbsh\wbsh.vcxproj -p:Configuration=Release -p:Platform=x64
 
-.\installer\build.ps1                        # installer + portable ZIP, version from version.props
+.\installer\build.ps1                        # installers, portable ZIPs and the SDK ZIP, version from version.props
 ```
 
 The binary lands at `x64\Release\wbsh.exe`; installer output goes to
@@ -233,7 +239,7 @@ The binary lands at `x64\Release\wbsh.exe`; installer output goes to
 ```
 wbsh/        The shell: wbsh.vcxproj, src/, tests/ (golden suite, run-all.sh)
 wbshterm/    The terminal: Win32 window, renderer, VT parser, panes; vendored ConPTY
-sdk/         The util SDK: wbshsdk.dll, include/wbshsdk.h, samples/, tests/
+sdk/         The util SDK: wbshsdk.dll, include/wbshsdk.h, template/, samples/, tests/
 installer/   Inno Setup script and build.ps1
 tools/       check_style.py (runs before every build), make_icon.py
 docs/        Doxygen config; regenerate with `doxygen docs/Doxyfile`

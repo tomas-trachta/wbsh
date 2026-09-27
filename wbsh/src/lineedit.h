@@ -156,6 +156,9 @@ namespace wbsh {
 		// path completion).
 		std::vector<std::string> toolCompletions(const std::string& prefix,
 		                                         const Tok& tok);
+		std::vector<std::string> pluginCompletions(const PluginCommand& plugin,
+		                                           const std::string& prefix,
+		                                           const std::vector<std::string>& prev);
 		std::vector<std::string> specCompletions(const Executor::CompletionSpec& spec,
 		                                         const std::string& prefix, const Tok& tok,
 		                                         const std::vector<std::string>& prev);

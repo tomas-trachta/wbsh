@@ -87,9 +87,94 @@ try {
     $withDecoy = Invoke-Shell 'utils'
     Assert-That 'a DLL that is not a util does not stop the others' `
         ($withDecoy -match 'hello') $withDecoy
+    Assert-That '`utils` lists the DLL that was refused, with the reason' `
+        (($withDecoy -match 'not loaded:') -and ($withDecoy -match 'not-a-util\.dll: not a wbsh util')) $withDecoy
 }
 finally {
     Remove-Item $decoy -Force -ErrorAction SilentlyContinue
+}
+
+# --- what the shell knows about a util's command --------------------------
+
+$helpOne = Invoke-Shell 'help hello'
+Assert-That '`help NAME` prints the summary and usage a util registered' `
+    (($helpOne -match 'hello: Says hello') -and ($helpOne -match 'usage: hello \[name\]')) $helpOne
+
+$helpAll = Invoke-Shell 'help'
+Assert-That '`help` lists the commands utils added, apart from the builtins' `
+    (($helpAll -match 'added by utils:') -and ($helpAll -match 'hello\s+Says hello')) $helpAll
+
+$setVar = Invoke-Shell 'hello --set GREETED yes; echo GREETED=$GREETED'
+Assert-That 'a util can set a variable in the shell that ran it' ($setVar -match 'GREETED=yes') $setVar
+
+# --- loading by hand, reloading, and the developer's own folder -----------
+
+$loadTwice = Invoke-Shell "utils load '$(($PluginDir -replace '\\', '/') + '/hello.dll')'; echo status=`$?"
+Assert-That '`utils load` refuses a second copy of a loaded util, by name' `
+    (($loadTwice -match 'already loaded') -and ($loadTwice -match 'status=1')) $loadTwice
+
+$reloaded = Invoke-Shell 'utils reload; hello again'
+Assert-That '`utils reload` drops and reloads everything, and the commands still work' `
+    (($reloaded -match 'hello\s+1\.0\.0') -and ($reloaded -match 'Hello, again!')) $reloaded
+
+$extraDir = Join-Path $env:TEMP 'wbsh-sdk-extra-plugins'
+New-Item -ItemType Directory -Path $extraDir -Force | Out-Null
+Copy-Item (Join-Path $PluginDir 'hello.dll') (Join-Path $extraDir 'hello.dll') -Force
+$savedExtra = $env:WBSH_PLUGINS
+$env:WBSH_PLUGINS = $extraDir
+try {
+    $viaEnv = Invoke-Shell 'utils'
+    Assert-That 'WBSH_PLUGINS names an extra folder the shell scans' `
+        ($viaEnv -match [regex]::Escape($extraDir)) $viaEnv
+}
+finally {
+    $env:WBSH_PLUGINS = $savedExtra
+    Remove-Item $extraDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- the template, built outside the repository ----------------------------
+# The zip lays the SDK out as include\, wbshutil.props and template\ side
+# by side; the same shape is made in a temp folder, the template is built
+# there with msbuild, and the DLL it produces is loaded by hand.
+
+function Find-MSBuild {
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) { return $null }
+
+    $vsRoot = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+    if (-not $vsRoot) { return $null }
+
+    $msbuild = Join-Path $vsRoot 'MSBuild\Current\Bin\MSBuild.exe'
+    if (Test-Path $msbuild) { return $msbuild }
+    return $null
+}
+
+$sdkRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$msbuild = Find-MSBuild
+$standalone = Join-Path $env:TEMP 'wbsh-sdk-standalone'
+if ($msbuild) {
+    Remove-Item $standalone -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $standalone | Out-Null
+    Copy-Item (Join-Path $sdkRoot 'include')        (Join-Path $standalone 'include')  -Recurse
+    Copy-Item (Join-Path $sdkRoot 'template')       (Join-Path $standalone 'template') -Recurse
+    Copy-Item (Join-Path $sdkRoot 'wbshutil.props') $standalone
+
+    $templateProject = Join-Path $standalone 'template\myutil.vcxproj'
+    & $msbuild $templateProject -nologo -v:quiet -p:Configuration=Release -p:Platform=x64 | Out-Null
+    $templateDll = Join-Path $standalone 'template\bin\x64\Release\myutil.dll'
+    Assert-That 'the template builds outside the repository, as plain C, into bin\' `
+        (Test-Path $templateDll) "msbuild exit $LASTEXITCODE"
+
+    if (Test-Path $templateDll) {
+        $byHand = Invoke-Shell "utils load '$($templateDll -replace '\\', '/')'; myutil; help myutil"
+        Assert-That '`utils load` brings a DLL into the running shell' `
+            (($byHand -match 'hello from a util') -and ($byHand -match 'usage: myutil')) $byHand
+    }
+
+    Remove-Item $standalone -Recurse -Force -ErrorAction SilentlyContinue
+}
+else {
+    Write-Host 'skip the template build: msbuild not found'
 }
 
 # --- the pick sample: the terminal helpers ---------------------------------
@@ -159,6 +244,7 @@ public static class PtyDriver {
             case "ESC":   return new byte[] { 27 };
             case "DOWN":  return new byte[] { 27, (byte)'[', (byte)'B' };
             case "CTRLC": return new byte[] { 3 };
+            case "TAB":   return new byte[] { 9 };
             default:      return Encoding.UTF8.GetBytes(token);
         }
     }
@@ -258,6 +344,17 @@ Assert-That 'Escape cancels with status 1 and prints nothing' `
 $interrupted = Invoke-Picker @('CTRLC')
 Assert-That 'Ctrl+C reaches the util as a key and ends it with status 130' `
     (($interrupted.Picked -eq '') -and ($interrupted.Screen -match 'rc=130')) $interrupted.Screen
+
+# --- Ctrl+C as a question, and Tab on a util's argument ---------------------
+
+$cancelled = Invoke-InConsole 'hello --wait' @('CTRLC')
+Assert-That 'a running command sees Ctrl+C through cancelled() and ends with status 130' `
+    (($cancelled -match 'cancelled') -and ($cancelled -match 'rc=130')) $cancelled
+
+$exit = 0
+$completed = [PtyDriver]::Run("`"$Shell`" -r", @('hello --wh', 'TAB', 'ENTER', 'exit', 'ENTER'), 700, 8000, [ref]$exit)
+Assert-That 'Tab on a util argument completes through the util''s own callback' `
+    (($completed -match '--where') -and ($completed -match 'You are in')) $completed
 
 # --- the procs sample: both hosts, a timed refresh, a piped fallback -------
 

@@ -148,6 +148,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\wbshsdk.h" />
+    <ClInclude Include="src\wbshsdk_internal.h" />
     <ClCompile Include="src\wbshsdk.cpp" />
     <ClCompile Include="src\wbshsdk_terminal.cpp" />
   </ItemGroup>

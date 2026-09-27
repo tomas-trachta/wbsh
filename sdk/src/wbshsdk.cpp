@@ -12,6 +12,8 @@
 
 #include "wbshsdk.h"
 
+#include "wbshsdk_internal.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif /* WIN32_LEAN_AND_MEAN */
@@ -40,10 +42,12 @@ namespace wbshsdk_detail {
 	struct LoadedUtil {
 		HMODULE              module = nullptr;
 		const WbshUtilInfo*  info   = nullptr;
+		std::wstring         path;
 		void               (*unload)(void) = nullptr;
 	};
 
 	static WbshHostApi             g_host;
+	static WbshApi                 g_api;
 	static bool                    g_bound = false;
 	static std::vector<LoadedUtil> g_utils;
 
@@ -81,6 +85,129 @@ namespace wbshsdk_detail {
 		return true;
 	}
 
+	/* ---- the table handed to utils ---------------------------------- */
+
+	static const char* apiVersion(void) {
+		return WBSH_SDK_VERSION_TEXT;
+	}
+
+	// The struct may grow at the end, so a util built against a shorter
+	// one is read for as much as it says it filled in and zeroes stand in
+	// for the rest.
+	static WbshCommand paddedCommand(const WbshCommand* command) {
+		WbshCommand padded;
+		std::memset(&padded, 0, sizeof(padded));
+
+		const std::size_t given = static_cast<std::size_t>(command->size);
+		const std::size_t known = sizeof(WbshCommand);
+		std::memcpy(&padded, command, given < known ? given : known);
+
+		padded.size = static_cast<uint32_t>(known);
+		return padded;
+	}
+
+	static int apiRegisterCommand(const WbshCommand* command) {
+		if (!g_bound) return WBSH_ERR_NO_HOST;
+		if (command == nullptr || command->size < offsetof(WbshCommand, user)) {
+			return WBSH_ERR_BAD_NAME;
+		}
+
+		const WbshCommand padded = paddedCommand(command);
+		if (!nameIsUsable(padded.name) || padded.fn == nullptr) return WBSH_ERR_BAD_NAME;
+		if (g_host.register_command == nullptr) return WBSH_ERR_UNSUPPORTED;
+
+		return g_host.register_command(g_host.context, &padded);
+	}
+
+	static int apiRegisterSegment(const char* name, WbshSegmentFn fn, void* user) {
+		if (!g_bound) return WBSH_ERR_NO_HOST;
+		if (!nameIsUsable(name) || fn == nullptr) return WBSH_ERR_BAD_NAME;
+		if (g_host.register_segment == nullptr) return WBSH_ERR_UNSUPPORTED;
+
+		return g_host.register_segment(g_host.context, name, fn, user);
+	}
+
+	static void apiWriteOut(const char* bytes, size_t length) {
+		if (!g_bound || g_host.write_out == nullptr || bytes == nullptr) return;
+
+		g_host.write_out(g_host.context, bytes, length);
+	}
+
+	static void apiWriteErr(const char* bytes, size_t length) {
+		if (!g_bound || g_host.write_err == nullptr || bytes == nullptr) return;
+
+		g_host.write_err(g_host.context, bytes, length);
+	}
+
+	static void apiPrint(const char* text) {
+		if (text == nullptr) return;
+
+		apiWriteOut(text, std::strlen(text));
+	}
+
+	static void apiPrintError(const char* text) {
+		if (text == nullptr) return;
+
+		apiWriteErr(text, std::strlen(text));
+	}
+
+	static const char* apiWorkingDirectory(void) {
+		if (!g_bound || g_host.working_directory == nullptr) return nullptr;
+
+		return g_host.working_directory(g_host.context);
+	}
+
+	static const char* apiVariable(const char* name) {
+		if (!g_bound || g_host.variable == nullptr || name == nullptr) return nullptr;
+
+		return g_host.variable(g_host.context, name);
+	}
+
+	static int apiSetVariable(const char* name, const char* value) {
+		if (!g_bound) return WBSH_ERR_NO_HOST;
+		if (name == nullptr || *name == '\0') return WBSH_ERR_BAD_NAME;
+		if (g_host.set_variable == nullptr) return WBSH_ERR_UNSUPPORTED;
+
+		return g_host.set_variable(g_host.context, name, value);
+	}
+
+	static int apiCancelled(void) {
+		if (!g_bound || g_host.cancelled == nullptr) return 0;
+
+		return g_host.cancelled(g_host.context);
+	}
+
+	static void apiCompleteAdd(WbshCompletion* completion, const char* text) {
+		if (!g_bound || g_host.complete_add == nullptr) return;
+		if (completion == nullptr || text == nullptr) return;
+
+		g_host.complete_add(g_host.context, completion, text);
+	}
+
+	static void fillApi(WbshApi& api) {
+		std::memset(&api, 0, sizeof(api));
+		api.size = static_cast<uint32_t>(sizeof(api));
+		api.abi  = WBSH_SDK_ABI;
+		api.host = g_host.kind;
+
+		api.version           = apiVersion;
+		api.register_command  = apiRegisterCommand;
+		api.register_segment  = apiRegisterSegment;
+		api.write_out         = apiWriteOut;
+		api.write_err         = apiWriteErr;
+		api.print             = apiPrint;
+		api.print_error       = apiPrintError;
+		api.working_directory = apiWorkingDirectory;
+		api.variable          = apiVariable;
+		api.set_variable      = apiSetVariable;
+		api.cancelled         = apiCancelled;
+		api.complete_add      = apiCompleteAdd;
+
+		fillTerminalApi(api);
+	}
+
+	/* ---- binding the host ------------------------------------------- */
+
 	// The struct may grow at the end, so a host built against an older
 	// header is taken at its word for as much as it says it filled in and
 	// zeroes stand in for the rest.
@@ -93,18 +220,21 @@ namespace wbshsdk_detail {
 
 		g_host.size = static_cast<uint32_t>(known);
 		g_bound = true;
+		fillApi(g_api);
 	}
+
+	/* ---- loading utils ---------------------------------------------- */
 
 	struct UtilEntries {
 		const WbshUtilInfo* (*describe)(void) = nullptr;
-		int  (*load)(WbshHostKind) = nullptr;
+		int  (*load)(const WbshApi*) = nullptr;
 		void (*unload)(void) = nullptr;
 	};
 
 	static bool findEntries(HMODULE module, UtilEntries& out_entries) {
 		out_entries.describe = reinterpret_cast<const WbshUtilInfo* (*)(void)>(
 			reinterpret_cast<void*>(::GetProcAddress(module, "wbshUtilDescribe")));
-		out_entries.load = reinterpret_cast<int (*)(WbshHostKind)>(
+		out_entries.load = reinterpret_cast<int (*)(const WbshApi*)>(
 			reinterpret_cast<void*>(::GetProcAddress(module, "wbshUtilLoad")));
 		out_entries.unload = reinterpret_cast<void (*)(void)>(
 			reinterpret_cast<void*>(::GetProcAddress(module, "wbshUtilUnload")));
@@ -112,32 +242,57 @@ namespace wbshsdk_detail {
 		return out_entries.describe != nullptr && out_entries.load != nullptr;
 	}
 
+	static bool nameAlreadyLoaded(const char* name) {
+		if (name == nullptr) return false;
+
+		for (const LoadedUtil& util : g_utils) {
+			if (util.info->name != nullptr && std::strcmp(util.info->name, name) == 0) return true;
+		}
+
+		return false;
+	}
+
+	// The reason a DLL is refused is the one thing a developer needs from
+	// this function, so each refusal is spelled out rather than folded
+	// into a single "could not load".
+	static const char* refusal(HMODULE module, const UtilEntries& entries,
+			const WbshUtilInfo* info) {
+		if (module == nullptr) return "cannot be loaded as a DLL";
+		if (info == nullptr) return "not a wbsh util: no wbshUtilDescribe";
+		if (info->abi != WBSH_SDK_ABI) return "built for a different SDK ABI";
+		if (!nameIsUsable(info->name)) return "describes itself with an unusable name";
+		if (nameAlreadyLoaded(info->name)) return "a util with that name is already loaded";
+		if (entries.load == nullptr) return "not a wbsh util: no wbshUtilLoad";
+
+		return nullptr;
+	}
+
+	static std::string abiDetail(const WbshUtilInfo* info) {
+		if (info == nullptr || info->abi == WBSH_SDK_ABI) return std::string();
+
+		return " (util " + std::to_string(info->abi) + ", host "
+			+ std::to_string(WBSH_SDK_ABI) + ")";
+	}
+
 	static bool loadOne(const std::wstring& path, WbshLogFn log, void* context) {
 		const std::string shown = narrow(path.c_str());
 
 		const HMODULE module = ::LoadLibraryW(path.c_str());
-		if (module == nullptr) {
-			report(log, context, shown + ": cannot be loaded");
-			return false;
-		}
-
 		UtilEntries entries;
-		const WbshUtilInfo* info = findEntries(module, entries) ? entries.describe() : nullptr;
+		if (module != nullptr) findEntries(module, entries);
+		const WbshUtilInfo* info = entries.describe != nullptr ? entries.describe() : nullptr;
 
-		if (info == nullptr) {
-			report(log, context, shown + ": not a wbsh util");
-			::FreeLibrary(module);
+		const char* why = refusal(module, entries, info);
+		if (why != nullptr) {
+			report(log, context, shown + ": " + why + abiDetail(info));
+			if (module != nullptr) ::FreeLibrary(module);
 			return false;
 		}
 
-		if (info->abi != WBSH_SDK_ABI) {
-			report(log, context, shown + ": built for a different SDK");
-			::FreeLibrary(module);
-			return false;
-		}
-
-		if (entries.load(g_host.kind) != WBSH_OK) {
-			report(log, context, shown + ": refused to load");
+		const int answer = entries.load(&g_api);
+		if (answer != WBSH_OK) {
+			report(log, context, shown + ": refused to load (returned "
+				+ std::to_string(answer) + ")");
 			if (entries.unload != nullptr) entries.unload();
 			::FreeLibrary(module);
 			return false;
@@ -146,6 +301,7 @@ namespace wbshsdk_detail {
 		LoadedUtil util;
 		util.module = module;
 		util.info   = info;
+		util.path   = path;
 		util.unload = entries.unload;
 		g_utils.push_back(util);
 		return true;
@@ -154,70 +310,6 @@ namespace wbshsdk_detail {
 } /* namespace wbshsdk_detail */
 
 using namespace wbshsdk_detail;
-
-extern "C" {
-
-WbshHostKind wbshHost(void) {
-	return g_bound ? g_host.kind : WBSH_HOST_NONE;
-}
-
-const char* wbshSdkVersion(void) {
-	return WBSH_SDK_VERSION_TEXT;
-}
-
-int wbshRegisterCommand(const char* name, WbshCommandFn fn, void* user) {
-	if (!g_bound) return WBSH_ERR_NO_HOST;
-	if (!nameIsUsable(name) || fn == nullptr) return WBSH_ERR_BAD_NAME;
-	if (g_host.register_command == nullptr) return WBSH_ERR_UNSUPPORTED;
-
-	return g_host.register_command(g_host.context, name, fn, user);
-}
-
-int wbshRegisterStatusSegment(const char* name, WbshSegmentFn fn, void* user) {
-	if (!g_bound) return WBSH_ERR_NO_HOST;
-	if (!nameIsUsable(name) || fn == nullptr) return WBSH_ERR_BAD_NAME;
-	if (g_host.register_segment == nullptr) return WBSH_ERR_UNSUPPORTED;
-
-	return g_host.register_segment(g_host.context, name, fn, user);
-}
-
-void wbshWriteOut(const char* bytes, size_t length) {
-	if (!g_bound || g_host.write_out == nullptr || bytes == nullptr) return;
-
-	g_host.write_out(g_host.context, bytes, length);
-}
-
-void wbshWriteErr(const char* bytes, size_t length) {
-	if (!g_bound || g_host.write_err == nullptr || bytes == nullptr) return;
-
-	g_host.write_err(g_host.context, bytes, length);
-}
-
-void wbshPrint(const char* text) {
-	if (text == nullptr) return;
-
-	wbshWriteOut(text, std::strlen(text));
-}
-
-void wbshPrintError(const char* text) {
-	if (text == nullptr) return;
-
-	wbshWriteErr(text, std::strlen(text));
-}
-
-const char* wbshWorkingDirectory(void) {
-	if (!g_bound || g_host.working_directory == nullptr) return nullptr;
-
-	return g_host.working_directory(g_host.context);
-}
-
-const char* wbshVariable(const char* name) {
-	if (!g_bound || g_host.variable == nullptr || name == nullptr) return nullptr;
-
-	return g_host.variable(g_host.context, name);
-}
-
-}  /* extern "C" */
 
 extern "C" {
 
@@ -253,6 +345,13 @@ int wbshSdkLoadDirectory(const wchar_t* directory, WbshLogFn log, void* context)
 	return loaded;
 }
 
+int wbshSdkLoadFile(const wchar_t* path, WbshLogFn log, void* context) {
+	if (!g_bound) return WBSH_ERR_NO_HOST;
+	if (path == nullptr || *path == L'\0') return WBSH_ERR_BAD_NAME;
+
+	return loadOne(path, log, context) ? 1 : 0;
+}
+
 // Callbacks registered by a util point into its DLL, so a host has to have
 // dropped every one of them before this runs or the next call goes into
 // freed pages.
@@ -275,6 +374,12 @@ const WbshUtilInfo* wbshSdkInfoAt(int index) {
 	if (index < 0 || index >= wbshSdkCount()) return nullptr;
 
 	return g_utils[static_cast<std::size_t>(index)].info;
+}
+
+const wchar_t* wbshSdkPathAt(int index) {
+	if (index < 0 || index >= wbshSdkCount()) return nullptr;
+
+	return g_utils[static_cast<std::size_t>(index)].path.c_str();
 }
 
 }  /* extern "C" */

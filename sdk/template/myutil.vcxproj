@@ -21,10 +21,10 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{C3D4E5F6-7A8B-4C9D-0E1F-2A3B4C5D6E7F}</ProjectGuid>
-    <RootNamespace>pick</RootNamespace>
+    <ProjectGuid>{F6A7B8C9-0D1E-4F2A-3B4C-5D6E7F8091A2}</ProjectGuid>
+    <RootNamespace>myutil</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <WbshSdkDir Condition="'$(WbshSdkDir)'==''">$(ProjectDir)..\..\</WbshSdkDir>
+    <WbshSdkDir Condition="'$(WbshSdkDir)'==''">$(ProjectDir)..\</WbshSdkDir>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -80,7 +80,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="pick.cpp" />
+    <ClCompile Include="myutil.c" />
   </ItemGroup>
   <Target Name="WbshSdkCheck" BeforeTargets="ClCompile">
     <Error Condition="!Exists('$(WbshSdkDir)wbshutil.props')" Text="The wbsh SDK was not found at $(WbshSdkDir). Pass -p:WbshSdkDir=&lt;folder holding wbshutil.props&gt; to msbuild." />

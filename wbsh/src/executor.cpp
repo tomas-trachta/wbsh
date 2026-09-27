@@ -6,6 +6,7 @@
 
 #include "executor.h"
 
+#include "interrupt.h"
 #include "utils.h"
 
 #ifdef _WIN32
@@ -2566,6 +2567,7 @@ namespace wbsh {
 		for (const std::string& arg : args) argv.push_back(arg.c_str());
 		argv.push_back(nullptr);
 
+		ScopedCtrlCCapture capture;
 		return command.fn(command.user, static_cast<int>(argv.size()) - 1, argv.data());
 	}
 

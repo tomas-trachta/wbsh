@@ -85,16 +85,48 @@ namespace wbshterm {
 			return cut == std::wstring::npos ? std::wstring() : full.substr(0, cut + 1);
 		}
 
-		static std::wstring userPluginDirectory() {
-			wchar_t* roaming = nullptr;
+		static std::wstring environmentValue(const wchar_t* name) {
+			wchar_t* value = nullptr;
 			std::size_t length = 0;
-			if (_wdupenv_s(&roaming, &length, L"APPDATA") != 0 || roaming == nullptr) {
+			if (_wdupenv_s(&value, &length, name) != 0 || value == nullptr) {
 				return std::wstring();
 			}
 
-			const std::wstring folder = std::wstring(roaming) + L"\\wbsh\\plugins";
-			std::free(roaming);
-			return folder;
+			const std::wstring copy(value);
+			std::free(value);
+			return copy;
+		}
+
+		static std::wstring userPluginDirectory() {
+			const std::wstring roaming = environmentValue(L"APPDATA");
+			return roaming.empty() ? std::wstring() : roaming + L"\\wbsh\\plugins";
+		}
+
+		// The same folder list the shell reads, so a util under development
+		// shows up in both hosts from one setting.
+		static void appendExtraDirectories(std::vector<std::wstring>& folders) {
+			const std::wstring extra = environmentValue(L"WBSH_PLUGINS");
+
+			std::size_t start = 0;
+			while (start <= extra.size()) {
+				std::size_t stop = extra.find(L';', start);
+				if (stop == std::wstring::npos) stop = extra.size();
+
+				const std::wstring folder = extra.substr(start, stop - start);
+				if (!folder.empty()) folders.push_back(folder);
+				start = stop + 1;
+			}
+		}
+
+		static std::vector<std::wstring> pluginDirectories() {
+			std::vector<std::wstring> folders;
+			folders.push_back(directoryOfThisExe() + L"plugins");
+
+			const std::wstring mine = userPluginDirectory();
+			if (!mine.empty()) folders.push_back(mine);
+
+			appendExtraDirectories(folders);
+			return folders;
 		}
 
 		struct SdkEntries {
@@ -128,6 +160,9 @@ namespace wbshterm {
 			api.write_err         = nullptr;
 			api.working_directory = workingDirectory;
 			api.variable          = variable;
+			api.set_variable      = nullptr;
+			api.cancelled         = nullptr;
+			api.complete_add      = nullptr;
 			return api;
 		}
 
@@ -148,10 +183,9 @@ namespace wbshterm {
 		const WbshHostApi api = utils_detail::terminalApi();
 		if (entries.bind(&api) != WBSH_OK) return;
 
-		entries.load((here + L"plugins").c_str(), utils_detail::complain, nullptr);
-
-		const std::wstring mine = utils_detail::userPluginDirectory();
-		if (!mine.empty()) entries.load(mine.c_str(), utils_detail::complain, nullptr);
+		for (const std::wstring& folder : utils_detail::pluginDirectories()) {
+			entries.load(folder.c_str(), utils_detail::complain, nullptr);
+		}
 
 		utils_detail::g_loaded = entries.count();
 	}

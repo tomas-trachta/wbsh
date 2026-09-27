@@ -8,6 +8,8 @@
 #   5. Compile both .iss files, emitting wbsh-setup-x64.exe and
 #      wbshterm-setup-x64.exe into output\.
 #   6. Zip each staged tree into output\<product>-<ver>-portable-x64.zip.
+#   7. Zip the SDK (header, property sheet, samples, template, docs,
+#      symbols) into output\wbsh-sdk-<ver>.zip.
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
@@ -175,6 +177,44 @@ $zipPath = Join-Path $outDir "wbsh-$Version-portable-$Platform.zip"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath
 Write-Host "    portable -> $zipPath" -ForegroundColor Green
+
+# --- The SDK zip -----------------------------------------------------------
+# What a third-party developer needs and nothing they do not: the header,
+# the property sheet, the samples and the template as source, the docs,
+# and the SDK's symbols so a crash inside a util has a readable stack.
+# No import library: a util is not linked against anything.
+Write-Host "==> Staging the SDK" -ForegroundColor Cyan
+$sdkStage = Join-Path $ScriptDir 'stage-sdk'
+if (Test-Path $sdkStage) { Remove-Item $sdkStage -Recurse -Force }
+New-Item -ItemType Directory -Path $sdkStage | Out-Null
+
+$sdkRoot = Join-Path $RepoRoot 'sdk'
+Copy-Item (Join-Path $sdkRoot 'include')        (Join-Path $sdkStage 'include')  -Recurse
+Copy-Item (Join-Path $sdkRoot 'template')       (Join-Path $sdkStage 'template') -Recurse
+Copy-Item (Join-Path $sdkRoot 'wbshutil.props') $sdkStage
+Copy-Item (Join-Path $sdkRoot 'README.md')      $sdkStage
+Copy-Item (Join-Path $sdkRoot 'CHANGELOG.md')   $sdkStage
+
+$sampleStage = Join-Path $sdkStage 'samples'
+New-Item -ItemType Directory -Path $sampleStage | Out-Null
+foreach ($sample in Get-ChildItem (Join-Path $sdkRoot 'samples') -Directory) {
+    $target = Join-Path $sampleStage $sample.Name
+    New-Item -ItemType Directory -Path $target | Out-Null
+    Get-ChildItem $sample.FullName -File | Copy-Item -Destination $target
+}
+
+foreach ($stray in Get-ChildItem $sdkStage -Recurse -Directory -Include 'bin', 'build') {
+    Remove-Item $stray.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$sdkPdb = Join-Path $RepoRoot "$Platform\$Configuration\wbshsdk.pdb"
+if (Test-Path $sdkPdb) { Copy-Item $sdkPdb $sdkStage }
+else { Write-Warning "SDK symbols not found at $sdkPdb; the SDK zip ships without them." }
+
+$sdkZipPath = Join-Path $outDir "wbsh-sdk-$Version.zip"
+if (Test-Path $sdkZipPath) { Remove-Item $sdkZipPath -Force }
+Compress-Archive -Path (Join-Path $sdkStage '*') -DestinationPath $sdkZipPath
+Write-Host "    sdk      -> $sdkZipPath" -ForegroundColor Green
 
 # --- Stage the terminal ----------------------------------------------------
 # wbsh.exe ships with it: wbshterm looks for the shell next to itself, so a

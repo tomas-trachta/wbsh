@@ -34,6 +34,8 @@
 #include <unordered_map>
 #include <vector>
 
+struct WbshCompletion;
+
 namespace wbsh {
 
 	/**
@@ -88,7 +90,11 @@ namespace wbsh {
 	 */
 	struct PluginCommand {
 		int (*fn)(void* user, int argc, const char* const* argv) = nullptr;
+		void (*complete)(void* user, int argc, const char* const* argv,
+			WbshCompletion* completion) = nullptr;
 		void* user = nullptr;
+		std::string summary;
+		std::string usage;
 	};
 
 	/**
@@ -249,6 +255,16 @@ namespace wbsh {
 		void registerBuiltin(std::string name, BuiltinFn fn);
 		bool registerPluginCommand(std::string name, PluginCommand command);
 		void clearPluginCommands() { plugin_commands_.clear(); }
+		const PluginCommand* pluginCommand(const std::string& name) const {
+			auto it = plugin_commands_.find(name);
+			return it == plugin_commands_.end() ? nullptr : &it->second;
+		}
+		std::vector<std::string> pluginCommandNames() const {
+			std::vector<std::string> v;
+			v.reserve(plugin_commands_.size());
+			for (const auto& kv : plugin_commands_) v.push_back(kv.first);
+			return v;
+		}
 		bool isBuiltin(const std::string& name) const;
 		bool isFunction(const std::string& name) const;
 		std::vector<std::string> builtinNames() const {

@@ -6,6 +6,8 @@
 
 #include "repl.h"
 
+#include "interrupt.h"
+
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
@@ -29,7 +31,6 @@
 #  endif
 #endif /* _WIN32 */
 
-#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <ctime>
@@ -102,17 +103,6 @@ namespace wbsh {
 	}
 
 #ifdef _WIN32
-	static std::atomic<bool> g_ctrlc_pending{ false };
-
-	static BOOL WINAPI ctrlCHandler(DWORD ctrl) {
-		if (ctrl == CTRL_C_EVENT || ctrl == CTRL_BREAK_EVENT) {
-			g_ctrlc_pending.store(true);
-			return TRUE;
-		}
-
-		return FALSE;
-	}
-
 	static void setupConsoleWindow() {
 		::SetConsoleTitleW(L"wbsh");
 		const HWND hwnd = ::GetConsoleWindow();
@@ -571,7 +561,7 @@ namespace wbsh {
 
 	static void initConsoleAndSignals(ReplState& state) {
 #ifdef _WIN32
-		::SetConsoleCtrlHandler(ctrlCHandler, TRUE);
+		installCtrlCHandler();
 		::SetConsoleOutputCP(CP_UTF8);
 		captureConsoleModes(state);
 		setupConsoleWindow();
@@ -720,7 +710,7 @@ namespace wbsh {
 	}
 
 	static void handlePendingCtrlC(Executor& exec, ReplState& state) {
-		if (!g_ctrlc_pending.exchange(false)) return;
+		if (!takeCtrlC()) return;
 
 		state.buffer.clear();
 		state.waiting_for_more = false;

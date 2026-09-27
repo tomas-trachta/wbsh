@@ -8,7 +8,7 @@
  * console at all, which is what wbshterm.exe is.
  */
 
-#include "wbshsdk.h"
+#include "wbshsdk_internal.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
@@ -255,73 +255,79 @@ namespace wbshsdk_terminal_detail {
 		}
 	}
 
+	static int isTerminal(int fd) {
+		if (fd < 0 || fd > 2) return 0;
+
+		const HANDLE handle = standardHandle(fd);
+		if (handle == INVALID_HANDLE_VALUE || handle == nullptr) return 0;
+
+		DWORD mode = 0;
+		return ::GetConsoleMode(handle, &mode) != 0 ? 1 : 0;
+	}
+
+	static WbshTerminal* terminalOpen(void) {
+		WbshTerminal* terminal = new (std::nothrow) WbshTerminal();
+		if (terminal == nullptr) return nullptr;
+
+		if (!openDevices(*terminal) || !enterRawMode(*terminal)) {
+			closeDevices(*terminal);
+			delete terminal;
+			return nullptr;
+		}
+
+		return terminal;
+	}
+
+	static void terminalClose(WbshTerminal* terminal) {
+		if (terminal == nullptr) return;
+
+		leaveRawMode(*terminal);
+		closeDevices(*terminal);
+		delete terminal;
+	}
+
+	static int terminalSize(WbshTerminal* terminal, int* out_columns, int* out_rows) {
+		if (terminal == nullptr) return WBSH_ERR_NO_TERMINAL;
+
+		CONSOLE_SCREEN_BUFFER_INFO info{};
+		if (!::GetConsoleScreenBufferInfo(terminal->output, &info)) return WBSH_ERR_NO_TERMINAL;
+
+		if (out_columns != nullptr) *out_columns = info.srWindow.Right - info.srWindow.Left + 1;
+		if (out_rows != nullptr) *out_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+		return WBSH_OK;
+	}
+
+	static void terminalWrite(WbshTerminal* terminal, const char* bytes, size_t length) {
+		if (terminal == nullptr || bytes == nullptr || length == 0) return;
+
+		DWORD written = 0;
+		::WriteFile(terminal->output, bytes, static_cast<DWORD>(length), &written, nullptr);
+	}
+
+	static void terminalPrint(WbshTerminal* terminal, const char* text) {
+		if (text == nullptr) return;
+
+		terminalWrite(terminal, text, std::strlen(text));
+	}
+
+	static int terminalReadKey(WbshTerminal* terminal, WbshKey* out_key, int timeout_ms) {
+		if (out_key == nullptr) return WBSH_ERR_BAD_NAME;
+		clearKey(*out_key);
+		if (terminal == nullptr) return WBSH_ERR_NO_TERMINAL;
+
+		return waitForKey(*terminal, *out_key, timeout_ms);
+	}
+
 }  /* namespace wbshsdk_terminal_detail */
 
 using namespace wbshsdk_terminal_detail;
 
-extern "C" {
-
-int wbshIsTerminal(int fd) {
-	if (fd < 0 || fd > 2) return 0;
-
-	const HANDLE handle = standardHandle(fd);
-	if (handle == INVALID_HANDLE_VALUE || handle == nullptr) return 0;
-
-	DWORD mode = 0;
-	return ::GetConsoleMode(handle, &mode) != 0 ? 1 : 0;
+void wbshsdk_detail::fillTerminalApi(WbshApi& api) {
+	api.is_terminal       = isTerminal;
+	api.terminal_open     = terminalOpen;
+	api.terminal_close    = terminalClose;
+	api.terminal_size     = terminalSize;
+	api.terminal_write    = terminalWrite;
+	api.terminal_print    = terminalPrint;
+	api.terminal_read_key = terminalReadKey;
 }
-
-WbshTerminal* wbshTerminalOpen(void) {
-	WbshTerminal* terminal = new (std::nothrow) WbshTerminal();
-	if (terminal == nullptr) return nullptr;
-
-	if (!openDevices(*terminal) || !enterRawMode(*terminal)) {
-		closeDevices(*terminal);
-		delete terminal;
-		return nullptr;
-	}
-
-	return terminal;
-}
-
-void wbshTerminalClose(WbshTerminal* terminal) {
-	if (terminal == nullptr) return;
-
-	leaveRawMode(*terminal);
-	closeDevices(*terminal);
-	delete terminal;
-}
-
-int wbshTerminalSize(WbshTerminal* terminal, int* out_columns, int* out_rows) {
-	if (terminal == nullptr) return WBSH_ERR_NO_TERMINAL;
-
-	CONSOLE_SCREEN_BUFFER_INFO info{};
-	if (!::GetConsoleScreenBufferInfo(terminal->output, &info)) return WBSH_ERR_NO_TERMINAL;
-
-	if (out_columns != nullptr) *out_columns = info.srWindow.Right - info.srWindow.Left + 1;
-	if (out_rows != nullptr) *out_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
-	return WBSH_OK;
-}
-
-void wbshTerminalWrite(WbshTerminal* terminal, const char* bytes, size_t length) {
-	if (terminal == nullptr || bytes == nullptr || length == 0) return;
-
-	DWORD written = 0;
-	::WriteFile(terminal->output, bytes, static_cast<DWORD>(length), &written, nullptr);
-}
-
-void wbshTerminalPrint(WbshTerminal* terminal, const char* text) {
-	if (text == nullptr) return;
-
-	wbshTerminalWrite(terminal, text, std::strlen(text));
-}
-
-int wbshTerminalReadKey(WbshTerminal* terminal, WbshKey* out_key, int timeout_ms) {
-	if (out_key == nullptr) return WBSH_ERR_BAD_NAME;
-	clearKey(*out_key);
-	if (terminal == nullptr) return WBSH_ERR_NO_TERMINAL;
-
-	return waitForKey(*terminal, *out_key, timeout_ms);
-}
-
-}  /* extern "C" */

@@ -450,3 +450,10 @@ compile_commands.json
 # Microsoft's current ConPTY, vendored for wbshterm (see wbshterm/conpty/fetch.ps1).
 !wbshterm/conpty/conpty.dll
 !wbshterm/conpty/OpenConsole.exe
+
+# Util builds: the samples and the template put objects in build\ beside
+# the project, and a template built outside the repository layout puts its
+# DLL in bin\.
+sdk/samples/*/build/
+sdk/template/build/
+sdk/template/bin/

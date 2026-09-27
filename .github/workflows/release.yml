@@ -83,7 +83,8 @@ jobs:
               "installer\output\wbsh-setup-x64.exe",
               "installer\output\wbshterm-setup-x64.exe",
               "installer\output\wbsh-$version-portable-x64.zip",
-              "installer\output\wbshterm-$version-portable-x64.zip"
+              "installer\output\wbshterm-$version-portable-x64.zip",
+              "installer\output\wbsh-sdk-$version.zip"
           )
 
           $missing = $expected | Where-Object { -not (Test-Path $_) }

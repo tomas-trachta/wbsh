@@ -33,6 +33,10 @@
 #include <thread>
 #include <vector>
 
+// The host's functions arrive with wbshUtilLoad and stay valid for as
+// long as the DLL is loaded, so one global is the whole of the plumbing.
+static const WbshApi* wbsh = nullptr;
+
 namespace procs {
 
 	struct Row {
@@ -194,7 +198,7 @@ namespace procs {
 
 	static void fitToWindow(Monitor& monitor) {
 		int rows = 0;
-		if (wbshTerminalSize(monitor.terminal, &monitor.columns, &rows) != WBSH_OK) return;
+		if (wbsh->terminal_size(monitor.terminal, &monitor.columns, &rows) != WBSH_OK) return;
 
 		monitor.visible_rows = rows > 4 ? static_cast<std::size_t>(rows) - 4 : 1;
 	}
@@ -211,7 +215,7 @@ namespace procs {
 		}
 
 		monitor.drawn_lines = 2 + (end - monitor.first_shown);
-		wbshTerminalWrite(monitor.terminal, frame.data(), frame.size());
+		wbsh->terminal_write(monitor.terminal, frame.data(), frame.size());
 	}
 
 	/* ---- keys -------------------------------------------------------- */
@@ -274,7 +278,7 @@ namespace procs {
 
 		while (true) {
 			WbshKey key;
-			const int got = wbshTerminalReadKey(monitor.terminal, &key, 1000);
+			const int got = wbsh->terminal_read_key(monitor.terminal, &key, 1000);
 			if (got < 0) return 1;
 
 			if (got == 0 || wantsRefresh(key)) refresh(monitor);
@@ -291,25 +295,25 @@ namespace procs {
 		std::vector<Row> rows = snapshot();
 		sortRows(rows, SortBy::Memory);
 
-		wbshPrint((headingLine() + "\n").c_str());
-		for (const Row& row : rows) wbshPrint((rowLine(row) + "\n").c_str());
+		wbsh->print((headingLine() + "\n").c_str());
+		for (const Row& row : rows) wbsh->print((rowLine(row) + "\n").c_str());
 		return 0;
 	}
 
 	static int runMonitor() {
 		Monitor monitor;
-		monitor.terminal = wbshTerminalOpen();
+		monitor.terminal = wbsh->terminal_open();
 		if (monitor.terminal == nullptr) return printOnce();
 
 		const int status = runLoop(monitor);
 		const std::string clear = erasePrevious(monitor);
-		wbshTerminalWrite(monitor.terminal, clear.data(), clear.size());
-		wbshTerminalClose(monitor.terminal);
+		wbsh->terminal_write(monitor.terminal, clear.data(), clear.size());
+		wbsh->terminal_close(monitor.terminal);
 		return status;
 	}
 
 	static int usage() {
-		wbshPrint("usage: procs          watch the process table, q to quit\n"
+		wbsh->print("usage: procs          watch the process table, q to quit\n"
 		          "       procs --once   print it once and exit\n");
 		return 0;
 	}
@@ -317,9 +321,9 @@ namespace procs {
 	static int command(void*, int argc, const char* const* argv) {
 		if (argc > 1 && std::strcmp(argv[1], "--help") == 0) return usage();
 		if (argc > 1 && std::strcmp(argv[1], "--once") == 0) return printOnce();
-		if (argc > 1) { wbshPrintError("procs: unknown option\n"); return 2; }
+		if (argc > 1) { wbsh->print_error("procs: unknown option\n"); return 2; }
 
-		return wbshIsTerminal(1) ? runMonitor() : printOnce();
+		return wbsh->is_terminal(1) ? runMonitor() : printOnce();
 	}
 
 	/* ---- the segment ------------------------------------------------- */
@@ -384,11 +388,25 @@ WBSH_UTIL_API const WbshUtilInfo* wbshUtilDescribe(void) {
 	return &kInfo;
 }
 
-WBSH_UTIL_API int wbshUtilLoad(WbshHostKind host) {
-	if (host == WBSH_HOST_SHELL) wbshRegisterCommand("procs", procs::command, nullptr);
+static int registerProcs(void) {
+	WbshCommand command;
+	std::memset(&command, 0, sizeof(command));
+	command.size    = sizeof(command);
+	command.name    = "procs";
+	command.summary = "Watches the machine's processes, live.";
+	command.usage   = "procs [--once]";
+	command.fn      = procs::command;
 
-	if (host == WBSH_HOST_TERMINAL
-		&& wbshRegisterStatusSegment("procs", procs::segment, nullptr) == WBSH_OK) {
+	return wbsh->register_command(&command);
+}
+
+WBSH_UTIL_API int wbshUtilLoad(const WbshApi* api) {
+	wbsh = api;
+
+	if (api->host == WBSH_HOST_SHELL) registerProcs();
+
+	if (api->host == WBSH_HOST_TERMINAL
+		&& api->register_segment("procs", procs::segment, nullptr) == WBSH_OK) {
 		procs::startCounting();
 	}
 
@@ -397,6 +415,7 @@ WBSH_UTIL_API int wbshUtilLoad(WbshHostKind host) {
 
 WBSH_UTIL_API void wbshUtilUnload(void) {
 	procs::stopCounting();
+	wbsh = nullptr;
 }
 
 }  /* extern "C" */

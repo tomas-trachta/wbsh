@@ -2342,6 +2342,18 @@ namespace wbsh {
 		return 0;
 	}
 
+	static void printUtilCommandIndex(Executor& exec) {
+		std::vector<std::string> names = exec.pluginCommandNames();
+		if (names.empty()) return;
+
+		std::sort(names.begin(), names.end());
+		std::printf("\nadded by utils:\n\n");
+		for (const std::string& name : names) {
+			const PluginCommand* plugin = exec.pluginCommand(name);
+			std::printf("  %-14s %s\n", name.c_str(), plugin->summary.c_str());
+		}
+	}
+
 	static void printBuiltinIndex(Executor& exec) {
 		std::printf("wbsh built-in commands:\n\n");
 
@@ -2353,7 +2365,22 @@ namespace wbsh {
 		}
 
 		if (names.size() % kHelpColumns != 0) std::printf("\n");
+		printUtilCommandIndex(exec);
 		std::printf("\nUse `help NAME` for more on a specific builtin.\n");
+	}
+
+	// A util's command knows its own usage; a bundled one is documented by
+	// bash(1), which is where the reader is sent.
+	static void printCommandHelp(Executor& exec, const std::string& name) {
+		const PluginCommand* plugin = exec.pluginCommand(name);
+		if (plugin == nullptr) {
+			std::printf("%s: %s — see bash(1) for full semantics\n", name.c_str(), name.c_str());
+			return;
+		}
+
+		std::printf("%s: %s\n", name.c_str(),
+			plugin->summary.empty() ? "a command added by a util" : plugin->summary.c_str());
+		if (!plugin->usage.empty()) std::printf("usage: %s\n", plugin->usage.c_str());
 	}
 
 	static int builtin_help(Executor& exec, const std::vector<std::string>& args) {
@@ -2370,7 +2397,7 @@ namespace wbsh {
 				continue;
 			}
 
-			std::printf("%s: %s — see bash(1) for full semantics\n", name.c_str(), name.c_str());
+			printCommandHelp(exec, name);
 		}
 
 		return status;

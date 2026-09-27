@@ -25,6 +25,7 @@
 
 #include "strscan.h"
 #include "termreq.h"
+#include "utils.h"
 
 namespace wbsh {
 
@@ -726,12 +727,40 @@ namespace wbsh {
 		const Executor::CompletionSpec* spec = exec_.completionSpec(head);
 		if (spec != nullptr) return specCompletions(*spec, prefix, tok, prev);
 
+		const PluginCommand* plugin = exec_.pluginCommand(head);
+		if (plugin != nullptr && plugin->complete != nullptr) {
+			return pluginCompletions(*plugin, prefix, prev);
+		}
+
 		if (head == "git")     return gitCompletions(prefix, prev);
 		if (head == "docker")  return dockerCompletions(prefix, prev);
 		if (head == "npm")     return npmCompletions(prefix, prev);
 		if (head == "cargo")   return cargoCompletions(prefix, prev);
 		if (head == "kubectl" || head == "k") return kubectlCompletions(prefix, prev);
 		return {};
+	}
+
+	// A util is asked the way a program sees its arguments: the words so
+	// far with the one being typed last, and it answers through the SDK's
+	// add function into the list handed to it here.
+	std::vector<std::string> LineEditor::pluginCompletions(const PluginCommand& plugin,
+	                                                       const std::string& prefix,
+	                                                       const std::vector<std::string>& prev) {
+		std::vector<const char*> argv;
+		argv.reserve(prev.size() + 2);
+		for (const std::string& word : prev) argv.push_back(word.c_str());
+		argv.push_back(prefix.c_str());
+		argv.push_back(nullptr);
+
+		WbshCompletion completion;
+		plugin.complete(plugin.user, static_cast<int>(argv.size()) - 1, argv.data(), &completion);
+
+		std::vector<std::string> matches;
+		for (const std::string& candidate : completion.items) {
+			if (candidate.compare(0, prefix.size(), prefix) == 0) matches.push_back(candidate);
+		}
+
+		return matches;
 	}
 
 	static void appendLooseBranches(const fs::path& gitdir,

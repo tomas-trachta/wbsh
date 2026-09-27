@@ -25,6 +25,10 @@
 #include <string>
 #include <vector>
 
+// The host's functions arrive with wbshUtilLoad and stay valid for as
+// long as the DLL is loaded, so one global is the whole of the plumbing.
+static const WbshApi* wbsh = nullptr;
+
 namespace pick {
 
 	struct Match {
@@ -187,7 +191,7 @@ namespace pick {
 	static void fitToWindow(Picker& picker) {
 		int columns = 0;
 		int rows = 0;
-		if (wbshTerminalSize(picker.terminal, &columns, &rows) != WBSH_OK) return;
+		if (wbsh->terminal_size(picker.terminal, &columns, &rows) != WBSH_OK) return;
 
 		const std::size_t room = rows > 3 ? static_cast<std::size_t>(rows) - 3 : 1;
 		picker.visible_rows = std::min<std::size_t>(room, 15);
@@ -202,7 +206,7 @@ namespace pick {
 
 	static void render(Picker& picker) {
 		int columns = 0;
-		wbshTerminalSize(picker.terminal, &columns, nullptr);
+		wbsh->terminal_size(picker.terminal, &columns, nullptr);
 		const std::size_t width = columns > 4 ? static_cast<std::size_t>(columns) - 3 : 1;
 
 		keepSelectionVisible(picker);
@@ -215,7 +219,7 @@ namespace pick {
 		}
 
 		picker.drawn_lines = 1 + (end - picker.first_shown);
-		wbshTerminalWrite(picker.terminal, frame.data(), frame.size());
+		wbsh->terminal_write(picker.terminal, frame.data(), frame.size());
 	}
 
 	/* ---- editing ----------------------------------------------------- */
@@ -307,7 +311,7 @@ namespace pick {
 
 		while (true) {
 			WbshKey key;
-			if (wbshTerminalReadKey(picker.terminal, &key, -1) <= 0) return Outcome::Cancelled;
+			if (wbsh->terminal_read_key(picker.terminal, &key, -1) <= 0) return Outcome::Cancelled;
 
 			const Outcome verdict = handleKey(picker, key);
 			render(picker);
@@ -329,7 +333,7 @@ namespace pick {
 			std::vector<std::string>& out_lines) {
 		for (int i = 1; i < argc; ++i) out_lines.push_back(argv[i]);
 
-		if (out_lines.empty() && !wbshIsTerminal(0)) readCandidatesFromStdin(out_lines);
+		if (out_lines.empty() && !wbsh->is_terminal(0)) readCandidatesFromStdin(out_lines);
 	}
 
 	static int exitStatus(Outcome outcome) {
@@ -344,51 +348,51 @@ namespace pick {
 	static int runPicker(std::vector<std::string> candidates) {
 		Picker picker;
 		picker.candidates = std::move(candidates);
-		picker.terminal = wbshTerminalOpen();
+		picker.terminal = wbsh->terminal_open();
 		if (picker.terminal == nullptr) {
-			wbshPrintError("pick: no terminal to draw on\n");
+			wbsh->print_error("pick: no terminal to draw on\n");
 			return 2;
 		}
 
 		const Outcome outcome = runLoop(picker);
 		const std::string clear = erasePrevious(picker);
-		wbshTerminalWrite(picker.terminal, clear.data(), clear.size());
-		wbshTerminalClose(picker.terminal);
+		wbsh->terminal_write(picker.terminal, clear.data(), clear.size());
+		wbsh->terminal_close(picker.terminal);
 
 		if (outcome == Outcome::Accepted) {
-			wbshPrint(picker.candidates[picker.matches[picker.selected].index].c_str());
-			wbshPrint("\n");
+			wbsh->print(picker.candidates[picker.matches[picker.selected].index].c_str());
+			wbsh->print("\n");
 		}
 
 		return exitStatus(outcome);
 	}
 
 	static int reportSize() {
-		WbshTerminal* terminal = wbshTerminalOpen();
-		if (terminal == nullptr) { wbshPrint("no terminal\n"); return 1; }
+		WbshTerminal* terminal = wbsh->terminal_open();
+		if (terminal == nullptr) { wbsh->print("no terminal\n"); return 1; }
 
 		int columns = 0;
 		int rows = 0;
-		const int status = wbshTerminalSize(terminal, &columns, &rows);
-		wbshTerminalClose(terminal);
-		if (status != WBSH_OK) { wbshPrint("no terminal\n"); return 1; }
+		const int status = wbsh->terminal_size(terminal, &columns, &rows);
+		wbsh->terminal_close(terminal);
+		if (status != WBSH_OK) { wbsh->print("no terminal\n"); return 1; }
 
 		char line[64];
 		std::snprintf(line, sizeof(line), "%dx%d\n", columns, rows);
-		wbshPrint(line);
+		wbsh->print(line);
 		return 0;
 	}
 
 	static int reportTty() {
 		char line[64];
 		std::snprintf(line, sizeof(line), "stdin=%d stdout=%d stderr=%d\n",
-			wbshIsTerminal(0), wbshIsTerminal(1), wbshIsTerminal(2));
-		wbshPrint(line);
+			wbsh->is_terminal(0), wbsh->is_terminal(1), wbsh->is_terminal(2));
+		wbsh->print(line);
 		return 0;
 	}
 
 	static int usage() {
-		wbshPrint("usage: pick [item...]     choose one of the items, or of the lines on stdin\n"
+		wbsh->print("usage: pick [item...]     choose one of the items, or of the lines on stdin\n"
 		          "       pick --size        print the terminal's columns and rows\n"
 		          "       pick --tty         say which of stdin, stdout, stderr is a terminal\n");
 		return 0;
@@ -401,7 +405,7 @@ namespace pick {
 
 		std::vector<std::string> candidates;
 		gatherCandidates(argc, argv, candidates);
-		if (candidates.empty()) { wbshPrintError("pick: nothing to choose from\n"); return 1; }
+		if (candidates.empty()) { wbsh->print_error("pick: nothing to choose from\n"); return 1; }
 
 		return runPicker(std::move(candidates));
 	}
@@ -421,13 +425,28 @@ WBSH_UTIL_API const WbshUtilInfo* wbshUtilDescribe(void) {
 	return &kInfo;
 }
 
-WBSH_UTIL_API int wbshUtilLoad(WbshHostKind host) {
-	if (host == WBSH_HOST_SHELL) wbshRegisterCommand("pick", pick::command, nullptr);
+static int registerPick(void) {
+	WbshCommand command;
+	std::memset(&command, 0, sizeof(command));
+	command.size    = sizeof(command);
+	command.name    = "pick";
+	command.summary = "Picks one line out of many, fuzzily.";
+	command.usage   = "pick [choice...] | ... | pick";
+	command.fn      = pick::command;
+
+	return wbsh->register_command(&command);
+}
+
+WBSH_UTIL_API int wbshUtilLoad(const WbshApi* api) {
+	wbsh = api;
+
+	if (api->host == WBSH_HOST_SHELL) registerPick();
 
 	return WBSH_OK;
 }
 
 WBSH_UTIL_API void wbshUtilUnload(void) {
+	wbsh = nullptr;
 }
 
 }  /* extern "C" */
