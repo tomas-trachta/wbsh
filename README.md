@@ -1,77 +1,55 @@
 # wbsh
 
-A Bash-compatible shell for Windows. Drop-in replacement for Git Bash, built
-from scratch in C++17 with a POSIX shell grammar, ANSI-aware line editing,
-and a curated set of bundled coreutils so a fresh install is useful out of
-the box.
+A Bash-compatible shell for Windows: a drop-in replacement for Git Bash,
+written from scratch in C++17 with a real POSIX shell grammar, a readline-style
+line editor, and bundled coreutils so a fresh install is useful immediately.
 
 ![wbsh running the test suite in Windows Terminal](./preview.png)
 
-> Status: **early but released.** Tagged 1.0.x releases exist and a
-> 44-script golden test suite runs on every build, but there is no CI yet
-> and behavior may still change between minor versions. Use at your own
-> risk for critical workflows.
+> Status: **early but released.** Tagged 1.0.x releases exist and a golden test
+> suite runs on every build, but there is no CI yet and behavior may change
+> between minor versions.
 
 ---
 
 ## Why wbsh
 
-Git Bash works, but it is a thin re-skin of MSYS2 with quirks that leak
-through (PATH translation surprises, sluggish `fork`-on-Windows, an aging
-MinTTY). wbsh aims to be cleaner integration for modern Windows:
+Git Bash is a thin re-skin of MSYS2, and its quirks leak through: PATH
+translation surprises, slow `fork` emulation, an aging MinTTY. wbsh is built
+for modern Windows instead:
 
-- **Native console first.** Uses `SetConsoleMode` with virtual-terminal
-  processing and DWM immersive dark-mode. Renders correctly in Windows
-  Terminal, conhost, VS Code's integrated terminal, and JetBrains terminals.
-- **Single self-contained binary.** No MSYS layer, no Cygwin DLL. The exe
-  is ~1 MB; the installer is ~2.5 MB including the VC++ runtime.
-- **Bash semantics, not approximations.** Real lexer + parser + AST +
-  expander — not a regex hack on top of `cmd.exe`.
-- **Bundled coreutils.** `ls`, `grep`, `sed`, `awk`, `find`, `xargs`,
-  `tar`, `gzip`, `curl`, hashes, etc. are built in, so you can script
-  before installing anything else. System `git`, `vim`, `less` etc. are
-  auto-discovered on PATH.
-- **POSIX path translation.** `/c/Users/...` ↔ `C:\Users\...` Cygwin/MSYS-style
-  conversion when invoking native Windows .exe.
+- **Native console.** VT-mode output and immersive dark mode; renders correctly
+  in Windows Terminal, conhost, VS Code, and JetBrains terminals.
+- **One self-contained binary.** No MSYS or Cygwin layer. ~1 MB exe, ~2.5 MB
+  installer including the VC++ runtime.
+- **Real Bash semantics.** Lexer, parser, AST and expander, not a wrapper
+  around `cmd.exe`.
+- **Bundled coreutils.** `ls`, `grep`, `sed`, `awk`, `find`, `tar`, `curl`,
+  hashes and more are built in. System `git`, `vim`, `less` are auto-discovered.
+- **Path translation.** `/c/Users/...` ↔ `C:\Users\...` when invoking native
+  Windows executables.
 
 ---
 
 ## Install
 
-### Installer (recommended)
+**Installer.** Download `wbsh-setup-x64.exe` from
+[Releases](https://github.com/tomas-trachta/wbsh/releases). Per-user, no UAC,
+installs to `%LOCALAPPDATA%\Programs\wbsh`, with opt-in tasks to add `wbsh` to
+your `PATH` and an "Open wbsh here" Explorer context-menu entry.
 
-Download `wbsh-setup-x64.exe` from the
-[Releases](https://github.com/tomas-trachta/wbsh/releases) page and run it. The
-installer is **per-user** (no UAC) and offers two opt-in tasks:
-
-- Add `wbsh` to your user `PATH`.
-- Register an "Open wbsh here" entry in the Explorer right-click menu.
-
-Default install location is `%LOCALAPPDATA%\Programs\wbsh`.
-
-### wbshterm, the terminal
+**wbshterm.** Every release also ships `wbshterm-setup-x64.exe`, a terminal
+that hosts wbsh on a pseudoconsole with themes, a config file, scrollback and
+selection, tmux-style panes, and shell integration. It bundles `wbsh.exe`, so
+it works on its own; installing both is fine. See
+[wbshterm/README.md](wbshterm/README.md).
 
 ![wbshterm at startup: the screenfetch panel, Catppuccin Mocha theme](./preview_terminal.png)
 
-Every release also ships `wbshterm-setup-x64.exe`: a window that hosts wbsh
-on a pseudoconsole, with themes, a config file, scrollback and selection,
-tmux-style split panes (type `tmux`), and shell integration wbsh drives
-itself. **It bundles `wbsh.exe`**, so it works on its own — installing
-both is fine, they live in separate folders and uninstall independently.
-See [wbshterm/README.md](wbshterm/README.md).
+**Portable ZIP.** `wbsh-<version>-portable-x64.zip` (or the `wbshterm-` one):
+extract and run. No registry, no PATH changes.
 
-Default install location is `%LOCALAPPDATA%\Programs\wbshterm`.
-
-### Portable ZIP
-
-Download `wbsh-<version>-portable-x64.zip`, extract, and run `wbsh.exe`.
-No registry, no PATH changes, no install. Ships the same VC++ runtime
-DLLs alongside the binary. `wbshterm-<version>-portable-x64.zip` does the
-same for the terminal, with the shell beside it.
-
-### winget / scoop
-
-Pending — not yet published.
+**winget / scoop.** Not yet published.
 
 ---
 
@@ -83,130 +61,85 @@ $ wbsh
    type `exit` or press `Ctrl-D` to quit
 trach@DESKTOP /c/Users/trach (main)$ ls
 Documents  Downloads  Desktop  ...
+
+$ wbsh -c 'for i in {1..3}; do printf "%02d\n" "$((i * 7))"; done'
+07
+14
+21
 ```
 
 Pipelines, redirection, control flow, functions, command substitution,
-arithmetic expansion, brace expansion, parameter expansion, glob
-expansion, here-docs, here-strings, traps — all work.
-
-```sh
-$ wbsh -c 'echo "$((6 * 7))"'
-42
-
-$ wbsh -c 'for i in {1..5}; do printf "%02d\n" "$i"; done'
-01
-02
-03
-04
-05
-```
-
----
-
-## Command-line interface
+arithmetic, brace, parameter and glob expansion, here-docs, here-strings and
+traps all work.
 
 ```
 wbsh                          interactive shell (TTY auto-detect)
 wbsh [opts] -c <command>      run / dump the given string
 wbsh [opts] <file>            run / dump the file (- for stdin)
 
-modes (default for files = dump AST):
   -i, --interactive           force interactive REPL
-  -r, --run                   actually execute the script
-  -e, --expand                walk the AST and dump expanded words
+  -r, --run                   execute the script (default for files is an AST dump)
+  -e, --expand                dump expanded words
   -t, --tokens                dump the token stream
   --no-ast                    suppress the AST dump
   -h, --help                  show help
 ```
 
-The default no-`-r` behavior of dumping the AST is a debugging aid — useful
-when developing wbsh itself. Pass `-r` to actually execute scripts.
+The default AST dump for files is a debugging aid; pass `-r` to run scripts.
 
 ---
 
 ## Line editing
 
-Interactive sessions run through a raw-mode line editor with persistent
-history, kill ring, programmable + filename + per-tool tab completion
-(git, docker, npm, cargo, kubectl), reverse-incremental search, and
-PowerShell-style inline predictions — the rest of the best matching
-history entry is shown as dim ghost text, and entries whose last run
-failed are never suggested. The key bindings follow readline / bash:
+Persistent history, kill ring, programmable and per-tool tab completion (git,
+docker, npm, cargo, kubectl), reverse-incremental search, and inline
+predictions: the rest of the best matching history entry appears as dim ghost
+text, and entries whose last run failed are never suggested. Bindings follow
+readline:
 
 | Keys | Action |
 |------|--------|
-| `Enter`                              | submit the current line |
-| `Backspace` / `Delete`               | delete left / right |
 | `Tab`                                | complete; second `Tab` lists candidates |
-| `← / →` or `Ctrl-B / Ctrl-F`         | move cursor by one character |
 | `→` at end of line                   | accept the inline prediction |
-| `Home / End` or `Ctrl-A / Ctrl-E`    | jump to start / end of line |
-| `↑ / ↓` or `Ctrl-P / Ctrl-N`         | walk history |
-| `Ctrl-R`                             | reverse-incremental history search |
-| `Ctrl-S`                             | step forward through search matches |
-| `Esc` / `Ctrl-G`                     | cancel the search and restore the line |
+| `← / →`, `Ctrl-B / Ctrl-F`           | move by one character |
+| `Home / End`, `Ctrl-A / Ctrl-E`      | start / end of line |
+| `↑ / ↓`, `Ctrl-P / Ctrl-N`           | walk history |
+| `Ctrl-R` / `Ctrl-S`                  | search history backward / forward |
+| `Esc` / `Ctrl-G`                     | cancel the search |
 | `Ctrl-U / Ctrl-K`                    | kill to start / end of line |
-| `Ctrl-W`                             | kill the word before the cursor |
-| `Ctrl-V`                             | paste from the system clipboard |
+| `Ctrl-W`                             | kill the previous word |
+| `Ctrl-V`                             | paste from the clipboard |
 | `Ctrl-L`                             | clear the screen |
-| `Ctrl-C`                             | abandon the current line, fresh prompt |
-| `Ctrl-D` (empty line)                | exit the shell |
-
-Inside `Ctrl-R`, printable characters extend the query, `Backspace` shrinks
-it, `Ctrl-R` / `Ctrl-S` cycle to the next older / newer match, `Enter`
-accepts and submits the matched line, and any other editing key accepts
-the match without submitting.
+| `Ctrl-C`                             | abandon the line |
+| `Ctrl-D` (empty line)                | exit |
 
 ---
 
 ## Configuration
 
-### `~/.wbshrc`
-
-Sourced once at the start of every interactive session. Set aliases,
-export environment variables, define functions, override `PS1`:
+`~/.wbshrc` is sourced at the start of every interactive session:
 
 ```sh
-# ~/.wbshrc
 export EDITOR=code
-export PAGER=less
-
 alias ll='ls -lah'
 alias gs='git status'
-alias ..='cd ..'
-
-# A custom prompt: bright-magenta cwd, branch in yellow.
 PS1='\[\e[35;1m\]\w\[\e[0m\]\g \$ '
 ```
 
-### Environment variables
-
 | Variable    | Effect                                                          |
 |-------------|-----------------------------------------------------------------|
-| `PS1`       | Primary prompt. Escapes documented below.                       |
-| `PS2`       | Continuation prompt for multi-line input (default `> `).        |
-| `PATH`      | Stored in POSIX form (`/c/Users/...`). Auto-translated for spawns. |
-| `HOME`      | Defaults to `%USERPROFILE%`, normalized to POSIX form.          |
+| `PS1`, `PS2` | Primary and continuation prompts. Escapes below.               |
+| `PATH`      | Stored in POSIX form, auto-translated for spawns.               |
+| `HOME`      | Defaults to `%USERPROFILE%` in POSIX form.                      |
 | `HISTFILE`  | History file (default `$HOME/.wbsh_history`).                   |
-| `COLUMNS`, `LINES` | Auto-updated on window resize; fires the `WINCH` trap.   |
-| `WBSH_GIT_NO_DIRTY` | Set to skip the `git status` working-tree check in the `\g` prompt (useful on huge repos). |
-| `WBSH_NO_PATHCONV`, `MSYS_NO_PATHCONV` | Set (also as a `VAR=1 cmd` prefix) to suppress POSIX→Win32 argument translation for spawned commands. |
+| `COLUMNS`, `LINES` | Updated on resize; fires the `WINCH` trap.               |
+| `WBSH_GIT_NO_DIRTY` | Skip the working-tree check in the `\g` prompt (huge repos). |
+| `WBSH_NO_PATHCONV`, `MSYS_NO_PATHCONV` | Suppress POSIX→Win32 argument translation for spawned commands. |
 
-### `PS1` / `PS2` escapes
-
-| Escape | Expands to |
-|--------|------------|
-| `\u`   | `$USER` (or `%USERNAME%`) |
-| `\h` / `\H` | short / long hostname |
-| `\w`   | working directory (POSIX, with `~` for `$HOME`) |
-| `\W`   | basename of the working directory |
-| `\g`   | ` (branch)` when inside a git repo, yellow on a TTY |
-| `\t`   | `HH:MM:SS` |
-| `\s`   | literal `wbsh` |
-| `\n` `\r` `\a` `\e` `\\` `\$` | the obvious things |
-| `\[` `\]` | non-printing region markers (accepted and dropped; the editor measures rendered width itself) |
-
-Default `PS1` (with color):
+Prompt escapes: `\u` user, `\h` / `\H` short / long hostname, `\w` / `\W`
+working directory / its basename, `\g` ` (branch)` inside a git repo, `\t`
+time, `\s` `wbsh`, plus `\n` `\r` `\a` `\e` `\\` `\$` and the `\[` `\]`
+non-printing markers. Default `PS1`:
 
 ```
 \[\e[32;1m\]\u@\h\[\e[0m\] \[\e[36;1m\]\w\[\e[0m\]\g\$
@@ -216,249 +149,112 @@ Default `PS1` (with color):
 
 ## Bundled builtins
 
-### Shell builtins
-`:`, `true`, `false`, `echo`, `printf`, `exec`, `pwd`, `cd`, `exit`, `return`,
-`break`, `continue`, `export`, `unset`, `shift`, `set`, `eval`, `source` /
-`.`, `type`, `command`, `read`, `test` / `[`, `local`, `alias`, `unalias`,
-`history`, `trap`, `getopts`, `declare` / `typeset`, `mapfile` / `readarray`,
-`shopt`, `let`, `umask`, `hash`, `times`, `caller`, `help`, `compgen`,
-`complete`, `compopt`, `readonly`, `jobs`, `wait`, `fg`, `bg`, `disown`.
+**Shell:** `:`, `true`, `false`, `echo`, `printf`, `exec`, `pwd`, `cd`, `exit`,
+`return`, `break`, `continue`, `export`, `unset`, `shift`, `set`, `eval`,
+`source` / `.`, `type`, `command`, `read`, `test` / `[`, `local`, `alias`,
+`unalias`, `history`, `trap`, `getopts`, `declare` / `typeset`, `mapfile` /
+`readarray`, `shopt`, `let`, `umask`, `hash`, `times`, `caller`, `help`,
+`compgen`, `complete`, `compopt`, `readonly`, `jobs`, `wait`, `fg`, `bg`,
+`disown`.
 
-### Coreutils (built in, no external dependency)
-`ls`, `cat`, `clear`, `which`, `mkdir`, `rmdir`, `rm`, `cp`, `mv`, `touch`,
-`head`, `tail`, `wc`, `whoami`, `hostname`, `env`, `sleep`, `basename`,
-`dirname`, `sort`, `uniq`, `tr`, `cut`, `tee`, `paste`, `tac`, `rev`, `nl`,
-`date`, `seq`, `uname`, `id`, `realpath`, `readlink`, `expr`, `grep`, `find`,
-`xargs`, `pushd`, `popd`, `dirs`, `xxd`, `od`, `fold`, `column`, `expand`,
-`unexpand`, `comm`, `yes`, `nproc`, `tput`, `mktemp`, `kill`, `sed`, `awk` /
-`gawk`, `bc`, `gzip`, `gunzip`, `zcat`, `zip`, `unzip`, `stat`, `chmod`, `ln`,
-`cmp`, `diff`, `du`, `df`, `md5sum`, `sha1sum`, `sha256sum`, `sha512sum`,
-`base64`, `curl`, `tar`, `fzf`, `tmux`, `utils`.
+**Coreutils:** `ls`, `cat`, `clear`, `which`, `mkdir`, `rmdir`, `rm`, `cp`,
+`mv`, `touch`, `head`, `tail`, `wc`, `whoami`, `hostname`, `env`, `sleep`,
+`basename`, `dirname`, `sort`, `uniq`, `tr`, `cut`, `tee`, `paste`, `tac`,
+`rev`, `nl`, `date`, `seq`, `uname`, `id`, `realpath`, `readlink`, `expr`,
+`grep`, `find`, `xargs`, `pushd`, `popd`, `dirs`, `xxd`, `od`, `fold`,
+`column`, `expand`, `unexpand`, `comm`, `yes`, `nproc`, `tput`, `mktemp`,
+`kill`, `sed`, `awk` / `gawk`, `bc`, `gzip`, `gunzip`, `zcat`, `zip`, `unzip`,
+`stat`, `chmod`, `ln`, `cmp`, `diff`, `du`, `df`, `md5sum`, `sha1sum`,
+`sha256sum`, `sha512sum`, `base64`, `curl`, `tar`, `fzf`, `tmux`, `utils`.
 
-`tmux` is not the real tmux: it asks a terminal that hosts panes itself
-to start doing so. Under wbshterm it opens pane mode — splits, a status
-bar, and a `Ctrl-B` prefix; see
-[wbshterm/README.md](wbshterm/README.md#panes). Anywhere else it says so
-and exits non-zero, so it never silently pretends to have worked. There
-is no server: nothing detaches, and nothing outlives the window. Install
-the real tmux on a remote host for that.
+`tmux` is not the real tmux: under wbshterm it opens pane mode (splits, status
+bar, `Ctrl-B` prefix; see [wbshterm/README.md](wbshterm/README.md#panes)),
+anywhere else it says so and exits non-zero. There is no server and nothing
+outlives the window.
 
-`fzf` is an interactive fuzzy picker in the spirit of
-[junegunn/fzf](https://github.com/junegunn/fzf): pipe candidate lines into
-it (`ls | fzf`, `history | fzf`, …), type to narrow them incrementally,
-and the selected line is printed to stdout on Enter. With no piped input
-it lists the current directory tree. It talks to the console device
-directly (`CONIN$`/`CONOUT$`), so it works mid-pipeline even though its own
-stdin/stdout are redirected. Since it's a builtin (not a subprocess), a
-bare `fzf` typed at the prompt acts on the pick instead of just printing
-it: a directory `cd`s straight into it, and a file opens through its
-file association (double-click semantics), falling back to the classic
-"Open With" picker if Windows has none. `cd "$(fzf)"`, `vim $(fzf)`, and
-other captured/piped uses keep printing the selection so they stay
-composable.
+`fzf` is a fuzzy picker in the spirit of
+[junegunn/fzf](https://github.com/junegunn/fzf): pipe lines in, type to narrow,
+Enter prints the selection. With no input it lists the directory tree. It works
+mid-pipeline because it talks to the console device directly. Typed bare at the
+prompt it acts on the pick: a directory is entered, a file opens through its
+file association. Captured or piped uses keep printing the selection.
 
-`git`, `vim`/`vi`, `less`, `ssh`, etc. are not bundled — wbsh expects them on
-PATH and auto-discovers `git` from the standard install locations
-(`Program Files\Git\cmd`, scoop, chocolatey, …).
-
----
-
-## Building from source
-
-### Requirements
-
-- Windows 10 1903+ (for VT-mode console + immersive dark mode).
-- Visual Studio 2022 or Build Tools 2022 with the **Desktop development with
-  C++** workload (provides MSBuild + MSVC v143 + Windows 10 SDK).
-- (Optional, for the installer) [Inno Setup 6](https://jrsoftware.org/isdl.php)
-  — install via `winget install JRSoftware.InnoSetup`.
-
-### Compile
-
-```powershell
-# From the repo root.
-& "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
-    .\wbsh\wbsh.vcxproj -p:Configuration=Release -p:Platform=x64
-```
-
-The binary lands at `x64\Release\wbsh.exe`.
-
-For a Debug build, swap `Release` → `Debug`. The Debug binary requires the
-Debug VC++ runtime (`/MDd`) and is not redistributable.
-
-### Build the installer + portable ZIP
-
-```powershell
-.\installer\build.ps1                        # reads the version from version.props
-.\installer\build.ps1 -Version 1.0.8         # one-off override
-```
-
-This builds Release|x64, stages `wbsh.exe` plus the VC++ runtime DLLs,
-emits `installer\output\wbsh-<ver>-portable-x64.zip` and (if Inno Setup is
-installed) `installer\output\wbsh-setup-x64.exe`.
+`git`, `vim`, `less`, `ssh` and the like are expected on PATH; `git` is
+auto-discovered from the standard install locations.
 
 ---
 
 ## Third-party utils
 
-A util is a DLL someone else wrote. Drop it in `plugins` and its commands
-join the shell and its segments join the terminal's status bar — no
-rebuild, no patch, nothing to register.
+A util is a DLL dropped into `plugins`: its commands join the shell and its
+segments join the terminal's status bar, with no rebuild or registration.
 
 ```
 $ utils
 hello            1.0.0      A worked example: one command and one status segment.
-$ hello Tomas
-Hello, Tomas!
 $ hello Tomas | tr a-z A-Z
 HELLO, TOMAS!
 ```
-
-A util's command is a command like any other: it redirects, it pipes, it
-sets `$?`. It is refused the name of a bundled one, so nothing dropped in
-a folder quietly becomes `ls`.
 
 | Folder | For |
 | --- | --- |
 | `<install>\plugins\` | Utils that ship with an install |
 | `%APPDATA%\wbsh\plugins\` | A user's own, no administrator needed |
 
-Both hosts load the same DLL. wbsh.exe offers it commands, stdout and
-shell variables; wbshterm.exe offers it status-bar segments. They are
-separate processes, so a util that does both is loaded twice and each
-half keeps its own state.
-
-The contract is C — `sdk/include/wbshsdk.h` — so a util built with another
-compiler, or another language, loads fine. It is versioned: a util built
-against a different `WBSH_SDK_ABI` is named and skipped rather than
-crashing something later. A DLL that is not a util at all is skipped the
-same way, and never costs the ones beside it.
-
-**wbsh.exe stays a single self-contained binary.** It reaches the SDK
-through `LoadLibrary`, never a link, so a bare wbsh.exe with no
-`wbshsdk.dll` beside it runs exactly as before — no SDK simply means no
-utils.
+A util's command redirects, pipes and sets `$?` like any other, but cannot take
+a bundled command's name. The contract is C (`sdk/include/wbshsdk.h`) and
+ABI-versioned: a mismatched or non-util DLL is named and skipped without
+affecting the others. `wbsh.exe` reaches the SDK through `LoadLibrary`, so
+without `wbshsdk.dll` beside it the shell runs exactly as before.
 
 See [sdk/README.md](sdk/README.md) to write one; `sdk/samples/hello` is a
 working project to copy.
 
-## Project layout
+---
 
-Three products, one directory each, every one with its own `src/`:
+## Building from source
+
+Requires Windows 10 1903+, Visual Studio 2022 or Build Tools 2022 with the
+**Desktop development with C++** workload, and optionally
+[Inno Setup 6](https://jrsoftware.org/isdl.php) for the installer.
+
+```powershell
+& "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
+    .\wbsh\wbsh.vcxproj -p:Configuration=Release -p:Platform=x64
+
+.\installer\build.ps1                        # installer + portable ZIP, version from version.props
+```
+
+The binary lands at `x64\Release\wbsh.exe`; installer output goes to
+`installer\output\`.
+
+### Layout
 
 ```
-wbsh/                    The shell
-  wbsh.vcxproj           MSBuild project (outputs to <repo>/x64/<Config>)
-  tests/                 Shell-script suite + golden files (run-all.sh)
-  src/
-    main.cpp               Entry point: UTF-8 argv decoding, CLI dispatch
-    repl.cpp/h             Interactive REPL: console setup, prompt, signals
-    lineedit.cpp/h         Raw-mode line editor: history, completion,
-                           reverse search, inline predictions
-    script.cpp/h           Non-interactive runner (-c / file / stdin)
-    setup.cpp/h            Startup env seeding: PATH repair, git/docker discovery
-    lexer.cpp/h            POSIX shell tokenizer
-    parser.cpp/h           Recursive-descent parser → AST
-    ast.h                  AST node definitions
-    arena.h                Bump allocator that owns the AST nodes
-    printer.cpp/h          Token / AST dump pretty-printer
-    expander.cpp/h         Parameter / arithmetic / command / glob / brace expansion
-    executor.cpp/h         Pipelines, redirection, process spawn, control flow
-    environment.cpp/h      Variables, exports, arrays, shell options
-    builtins.cpp           Shell builtins (cd, export, declare, trap, jobs, …)
-    coreutils.cpp          File / system coreutils + shared helpers
-    coreutils_text.cpp     sort, uniq, grep, sed, find, xargs, …
-    coreutils_archive.cpp  tar, gzip, gunzip, zcat, zip, unzip
-    coreutils_encoding.cpp base64, xxd, od
-    coreutils_bc.cpp       bc calculator
-    coreutils_curl.cpp     curl (WinHTTP)
-    coreutils_hash.cpp     md5sum / sha1sum / sha256sum / sha512sum (BCrypt)
-    awk.cpp/h              Embedded awk implementation
-    inflate.cpp/h          DEFLATE decoder used by gunzip / zcat / unzip
-    pathconv.cpp/h         POSIX ↔ Windows path translation
-    fnmatch.h              Glob pattern matcher (expansion, case, ${var#pat})
-    numparse.h             Error-as-value numeric parsing
-    regexutil.h            Error-as-value std::regex adapters
-    source.h               Source locations shared by lexer / parser
-    termreq.h/.cpp         OSC requests to a terminal that hosts panes
-    tmux.cpp               `tmux`: asks the terminal to start pane mode
-    utils.cpp/h            Loading third-party utils through the SDK
-
-wbshterm/                The terminal (see wbshterm/README.md)
-  wbshterm.vcxproj       MSBuild project (outputs next to wbsh.exe)
-  conpty/                Microsoft's current ConPTY, vendored (fetch.ps1)
-  tests/smoke.ps1        Drives the built binary: self-test, snapshot, replay
-  src/                   Win32 window, renderer, VT parser, panes, picker
-
-sdk/                     The util SDK
-  wbshsdk.vcxproj        MSBuild project for wbshsdk.dll
-  include/wbshsdk.h      The C contract a third-party util is written against
-  src/wbshsdk.cpp        wbshsdk.dll: host binding, util loading, ABI checks
-  src/wbshsdk_terminal.cpp  Terminal helpers: raw keys in, escape sequences out
-  samples/hello/         A working util: one command, one status segment
-  samples/pick/          A fuzzy picker: the terminal helpers end to end
-  samples/procs/         A live process monitor plus a status-bar segment
-  tests/sdk.ps1          Integration checks with the sample installed
-  README.md              How to write and install a util
-
-version.props            Single source of truth for the version
-wbsh.sln                 Solution tying the three projects + samples together
-tools/check_style.py     Mechanical style checker (runs before every build)
-tools/make_icon.py       Renders installer/wbshterm.ico from code (Pillow)
-docs/                    Doxygen config + generated API reference
-installer/
-  wbsh.iss               Inno Setup script (per-user, PATH, context menu)
-  wbsh-here.cmd          Wrapper used by the "Open wbsh here" verb
-  build.ps1              Builds Release, stages payload, runs ISCC
+wbsh/        The shell: wbsh.vcxproj, src/, tests/ (golden suite, run-all.sh)
+wbshterm/    The terminal: Win32 window, renderer, VT parser, panes; vendored ConPTY
+sdk/         The util SDK: wbshsdk.dll, include/wbshsdk.h, samples/, tests/
+installer/   Inno Setup script and build.ps1
+tools/       check_style.py (runs before every build), make_icon.py
+docs/        Doxygen config; regenerate with `doxygen docs/Doxyfile`
 ```
+
+[CONTRIBUTING.md](./CONTRIBUTING.md) has the file-by-file architecture tour.
 
 ---
 
 ## Testing
 
 ```sh
-# After building wbsh.exe, from the wbsh/tests/ directory:
-../../x64/Release/wbsh.exe -r run-all.sh                  # assert every script exits 0
+# From wbsh/tests/, after building:
+../../x64/Release/wbsh.exe -r run-all.sh                  # every script exits 0
 WBSH_GOLDEN=1 ../../x64/Release/wbsh.exe -r run-all.sh    # also diff against expected/
 ```
 
-The suite is 44 hand-written `wbsh/tests/*.sh` scripts, each exercising one
-slice of behavior (pipelines, redirection, expansion, control flow,
-individual builtins). Golden mode additionally diffs combined
-stdout+stderr against `wbsh/tests/expected/<name>.out`. The scripts run
-*inside wbsh itself*, so the suite is an end-to-end check of the whole
-lexer → parser → expander → executor pipeline.
-
-The SDK has its own end-to-end checks, which need the sample utils built
-into `x64/Release/plugins`:
-
-```powershell
-powershell -File sdk	ests\sdk.ps1
-```
-
-They drive the real wbsh.exe with the samples installed: that they are
-listed, that a util's command pipes and sets `$?` like any other, that a
-DLL which is not a util is skipped without taking the good ones with it,
-and that the `pick` and `procs` samples take keys and draw inside a
-pseudoconsole.
-
-There is currently **no CI**; contributions to add one are welcome. See
-[CONTRIBUTING.md](./CONTRIBUTING.md) for the golden / record workflow.
-
----
-
-## Documentation
-
-API reference is generated with [Doxygen](https://www.doxygen.nl/) from the
-source comments. The config lives at [`docs/Doxyfile`](./docs/Doxyfile);
-a checked-in build sits at [`docs/html/index.html`](./docs/html/index.html).
-The README you are reading is also rendered as the docs main page.
-
-To regenerate after editing the source:
-
-```powershell
-doxygen docs/Doxyfile      # writes docs/html/
-```
+Each `wbsh/tests/*.sh` script exercises one slice of behavior and runs inside
+wbsh itself, so the suite is an end-to-end check of the whole pipeline. The SDK
+has its own checks in `sdk\tests\sdk.ps1`, which need the samples built into
+`x64/Release/plugins`.
 
 ---
 
@@ -471,42 +267,33 @@ doxygen docs/Doxyfile      # writes docs/html/
 | Coreutils bundled        | **yes**      | yes (MSYS)    | yes (pacman)   | yes          | yes              |
 | Modern console (VT mode) | **yes**      | MinTTY        | MinTTY         | MinTTY       | n/a              |
 | `fork()` emulation       | spawn-only   | full (slow)   | full (slow)    | full (slow)  | n/a              |
-| Path translation         | yes          | yes           | yes            | yes          | yes              |
 | Real Linux syscalls      | no           | no            | no             | no           | yes              |
 
-wbsh trades full POSIX behavior for being small, fast to start, and clean
-to integrate. If you need a real Linux environment, use WSL.
+wbsh trades full POSIX behavior for being small, fast to start, and clean to
+integrate. If you need a real Linux environment, use WSL.
 
 ---
 
 ## Roadmap
 
-Major bets that are in progress or planned:
-
-- True ConPTY for child processes (real PTY semantics, not just inherited console).
-- Real job control — `Ctrl-Z` suspend and stopped jobs (`fg` / `bg` exist
-  but there is no stop/continue on Windows yet).
-- Output process substitution `>(...)` — input-side `<(...)` already works.
-- CI: build Release + run the golden suite on every push.
-- winget / scoop publication.
-- Code-signed releases.
+- True ConPTY for child processes.
+- Real job control: `Ctrl-Z` and stopped jobs.
+- Output process substitution `>(...)`; input-side `<(...)` already works.
+- CI running the golden suite on every push.
+- winget / scoop publication and code-signed releases.
 
 ---
 
 ## Contributing
 
-Pull requests welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full
-architecture tour, the coding conventions, the test harness, and the PR
-checklist. The short version:
+Pull requests welcome; see [CONTRIBUTING.md](./CONTRIBUTING.md) for the
+architecture tour, conventions, test harness and PR checklist. In short: match
+the existing style, one change per PR, add a test when changing executor
+behavior, and have a clean Release build, `python tools/check_style.py` and the
+golden suite green before opening it.
 
-1. Match the existing style (tabs for indentation in every `src/`, 4-column tabs).
-2. Keep changes focused — one feature or fix per PR.
-3. Add or update a `wbsh/tests/*.sh` script when changing executor behavior.
-4. Before opening the PR: clean Release build, `python tools/check_style.py`,
-   and `WBSH_GOLDEN=1 wbsh/tests/run-all.sh` all green.
-
-Bug reports should include the wbsh version (`wbsh --help`'s banner line),
-Windows build, and the smallest script that reproduces the issue.
+Bug reports should include the wbsh version, Windows build, and the smallest
+reproducing script.
 
 ---
 
