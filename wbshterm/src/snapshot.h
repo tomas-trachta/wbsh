@@ -9,6 +9,7 @@
 #include "screen.h"
 
 #include <string>
+#include <vector>
 
 namespace wbshterm {
 
@@ -16,10 +17,11 @@ namespace wbshterm {
 		std::wstring command_line;
 		std::wstring output_path;
 		std::wstring record_path;
-		std::string  feed;
+		std::vector<std::string> feeds;
 		int          columns    = 100;
 		int          rows       = 30;
 		unsigned int delay_ms   = 400;
+		unsigned int gap_ms     = 400;
 		unsigned int settle_ms  = 600;
 		unsigned int timeout_ms = 15000;
 
@@ -38,9 +40,11 @@ namespace wbshterm {
 	};
 
 	/**
-	 * @brief Runs the shell, types @p feed, then paints the grid to a PNG.
+	 * @brief Runs the shell, types each of @p feeds, then paints the grid to a PNG.
 	 *
-	 * Waits for output to go quiet for settle_ms before painting, so the
+	 * The first feed goes in after delay_ms and each later one gap_ms after
+	 * the previous, so a program sees them as separate keystrokes. Waits for
+	 * output to go quiet for settle_ms before painting, so the
 	 * image shows a finished screen rather than a half-drawn one.
 	 */
 	bool renderSnapshot(const SnapshotRequest& request, std::string& out_error);

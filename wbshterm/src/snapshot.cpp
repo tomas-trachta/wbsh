@@ -78,12 +78,20 @@ namespace wbshterm {
 		Picker picker;
 	};
 
+	static void typeFeeds(Session& session, const SnapshotRequest& request) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(request.delay_ms));
+
+		for (std::size_t i = 0; i < request.feeds.size(); ++i) {
+			if (i > 0) std::this_thread::sleep_for(std::chrono::milliseconds(request.gap_ms));
+			session.writeInput(request.feeds[i].data(), request.feeds[i].size());
+		}
+	}
+
 	static void runUntilQuiet(Session& session, const SnapshotRequest& request) {
+		typeFeeds(session, request);
+
 		const auto started = std::chrono::steady_clock::now();
 		auto last_change = started;
-
-		std::this_thread::sleep_for(std::chrono::milliseconds(request.delay_ms));
-		if (!request.feed.empty()) session.writeInput(request.feed.data(), request.feed.size());
 
 		for (;;) {
 			const auto now = std::chrono::steady_clock::now();

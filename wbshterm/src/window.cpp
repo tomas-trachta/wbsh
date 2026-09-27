@@ -192,6 +192,7 @@ namespace wbshterm {
 
 		pane.screen().setTmuxHandler(this);
 		pane.session().wakeWith(window_, kMessagePtyData);
+		if (!record_path_.empty()) pane.session().recordTo(record_path_);
 		if (!pane.start(shell, out_error)) return false;
 
 		pane.screen().setScrollbackLimit(config_.scrollback_lines);

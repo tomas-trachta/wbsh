@@ -101,6 +101,13 @@ namespace wbshterm {
 			report.check("EL clears from the cursor", firstLine(grid) == "abc", firstLine(grid));
 		}
 
+		static void checkShiftInTakesACell(Report& report) {
+			Screen screen(10, 2);
+			const std::string grid = feedToScreen(screen, "\x1b[1;3H\x0f\x08s");
+			report.check("SI takes a cell the way conhost's buffer does",
+				firstLine(grid) == "  s", firstLine(grid));
+		}
+
 		static void checkWrapAndScroll(Report& report) {
 			Screen screen(4, 2);
 			const std::string grid = feedToScreen(screen, "aaaabbbbcccc");
@@ -2705,6 +2712,7 @@ namespace wbshterm {
 		test::checkPlainText(report);
 		test::checkCursorMotion(report);
 		test::checkEraseInLine(report);
+		test::checkShiftInTakesACell(report);
 		test::checkWrapAndScroll(report);
 		test::checkSgrColors(report);
 		test::checkTruecolorAndOsc(report);

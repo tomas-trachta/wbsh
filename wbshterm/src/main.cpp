@@ -37,10 +37,11 @@ namespace wbshterm {
 		std::wstring record_path;
 		std::wstring replay_path;
 		std::wstring dump_path;
-		std::string  feed;
+		std::vector<std::string> feeds;
 		int          columns    = 100;
 		int          rows       = 30;
 		unsigned int delay_ms   = 400;
+		unsigned int gap_ms     = 400;
 		unsigned int settle_ms  = 600;
 		int          scroll_lines = 0;
 		std::wstring selection;
@@ -139,12 +140,16 @@ namespace wbshterm {
 				|| arg == L"--snapshot" || arg == L"--selftest" || arg == L"--size"
 				|| arg == L"--record" || arg == L"--replay" || arg == L"--dump"
 				|| arg == L"--scroll" || arg == L"--select" || arg == L"--config"
-				|| arg == L"--delay" || arg == L"--settle";
+				|| arg == L"--delay" || arg == L"--gap" || arg == L"--settle";
 			if (needs_value && i + 1 >= argc) return false;
 
 			if (arg == L"--shell")    { options.shell_path = argv[++i]; continue; }
 			if (arg == L"--args")     { options.shell_args = argv[++i]; continue; }
-			if (arg == L"--feed")     { options.feed = unescape(narrow(argv[++i])); continue; }
+			if (arg == L"--feed") {
+				options.feeds.push_back(unescape(narrow(argv[++i])));
+				continue;
+			}
+
 			if (arg == L"--record")   { options.record_path = argv[++i]; continue; }
 			if (arg == L"--dump")     { options.dump_path = argv[++i]; continue; }
 			if (arg == L"--scroll")   { options.scroll_lines = std::stoi(argv[++i]); continue; }
@@ -158,6 +163,7 @@ namespace wbshterm {
 			}
 
 			if (arg == L"--delay")    { options.delay_ms = std::stoul(argv[++i]); continue; }
+			if (arg == L"--gap")      { options.gap_ms = std::stoul(argv[++i]); continue; }
 			if (arg == L"--settle")   { options.settle_ms = std::stoul(argv[++i]); continue; }
 			if (arg == L"--snapshot") {
 				options.mode = Mode::Snapshot;
@@ -238,10 +244,11 @@ namespace wbshterm {
 		request.command_line = shellCommandLine(options);
 		request.output_path  = options.output_path;
 		request.record_path  = options.record_path;
-		request.feed         = options.feed;
+		request.feeds        = options.feeds;
 		request.columns      = options.columns;
 		request.rows         = options.rows;
 		request.delay_ms     = options.delay_ms;
+		request.gap_ms       = options.gap_ms;
 		request.settle_ms    = options.settle_ms;
 		request.scroll_lines = options.scroll_lines;
 		request.config       = loadSnapshotConfig(options);
@@ -324,6 +331,8 @@ namespace wbshterm {
 		if (config.startup_fetch) announceStartupCommand();
 
 		TerminalWindow window;
+		if (!options.record_path.empty()) window.recordTo(options.record_path);
+
 		std::string error;
 		if (!window.create(shellCommandLine(options), config, config_path, error)) {
 			reportFailure(error);
@@ -347,8 +356,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 	if (argv != nullptr) ::LocalFree(argv);
 
 	if (!parsed) {
-		wbshterm::reportFailure("usage: wbshterm [--shell <path>] [--args <text>]\n"
-			"       wbshterm --snapshot <png> [--feed <text>] [--size <cols>x<rows>]\n"
+		wbshterm::reportFailure(
+			"usage: wbshterm [--shell <path>] [--args <text>] [--record <file>]\n"
+			"       wbshterm --snapshot <png> [--feed <text>]... [--size <cols>x<rows>]\n"
 			"       wbshterm --selftest <report.txt>");
 		return 2;
 	}

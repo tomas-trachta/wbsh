@@ -617,6 +617,22 @@ namespace wbshterm {
 		++cursor_.column;
 	}
 
+	// The in-box conhost has no handling for the other C0 bytes: it stores
+	// each as the OEM glyph for that code, which takes a cell and moves its
+	// cursor, then passes the raw byte on. Taking the cell too keeps the
+	// cursor where conhost believes it is, or the relative move it sends
+	// next lands one column short.
+	static char32_t consoleGlyphFor(unsigned char control) {
+		static const char32_t kGlyphs[32] = {
+			0,      0x263A, 0x263B, 0x2665, 0x2666, 0x2663, 0x2660, 0,
+			0,      0,      0,      0,      0,      0,      0x266B, 0x263C,
+			0x25BA, 0x25C4, 0x2195, 0x203C, 0x00B6, 0x00A7, 0x25AC, 0x21A8,
+			0,      0x2193, 0,      0,      0x221F, 0x2194, 0x25B2, 0x25BC,
+		};
+
+		return control < 32 ? kGlyphs[control] : 0;
+	}
+
 	void Screen::vtExecute(unsigned char control) {
 		switch (control) {
 		case 0x07: break;
@@ -626,8 +642,13 @@ namespace wbshterm {
 		case 0x0B:
 		case 0x0C: lineFeed(); break;
 		case 0x0D: carriageReturn(); break;
-		default:   break;
+		default:   printControlGlyph(control); break;
 		}
+	}
+
+	void Screen::printControlGlyph(unsigned char control) {
+		const char32_t glyph = consoleGlyphFor(control);
+		if (glyph != 0) writeChar(glyph);
 	}
 
 	void Screen::carriageReturn() {

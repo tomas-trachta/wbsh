@@ -34,6 +34,8 @@ namespace wbshterm {
 			const std::wstring& config_path, std::string& out_error);
 		int runMessageLoop();
 
+		void recordTo(const std::wstring& path) { record_path_ = path; }
+
 		void tmuxAttach() override;
 
 	private:
@@ -152,6 +154,7 @@ namespace wbshterm {
 		Renderer     renderer_;
 		PaneTree     panes_;
 		std::wstring command_line_;
+		std::wstring record_path_;
 		std::wstring shown_title_;
 		Config       config_;
 		std::wstring config_path_;

@@ -196,6 +196,7 @@ namespace wbshterm {
 		void carriageReturn();
 		void backspace();
 		void tab();
+		void printControlGlyph(unsigned char control);
 
 		void scrollUp(int count);
 		void pushToScrollback(int row);
