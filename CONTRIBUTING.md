@@ -13,7 +13,7 @@ open an issue or a PR against this file.
 ## Ground rules
 
 - One feature or fix per PR. Bundle test updates with the change they cover.
-- Match the existing style. Tabs (4-column) in `src/`. `camelCase` functions,
+- Match the existing style. Tabs (4-column) in every `src/`. `camelCase` functions,
   `PascalCase` types, everything under `namespace wbsh`.
 - Don't introduce anonymous namespaces or bare `{ ... }` scope blocks. Use
   `static` for file-local free functions, or a named sub-namespace (e.g.
@@ -39,21 +39,21 @@ get the shape of the codebase:
 
 | Stage | File(s) | What it does |
 |---|---|---|
-| Lex | `src/lexer.cpp/h` | POSIX shell tokenizer. Handles quoting, here-docs, `$(...)`, balanced-paren scanning. Outputs `Token` + structured `WordSegment` lists. |
-| Parse | `src/parser.cpp/h`, `src/ast.h`, `src/arena.h` | Recursive-descent parser. Produces a `Node` AST with `Kind`-tagged variants (pipeline, if, for, function, simple command, …). Nodes are bump-allocated from the parser's `Arena` and linked with raw borrow pointers; whoever needs the AST to outlive the parser takes the arena (`Parser::takeArena`, `Executor::adoptArena`). |
-| Expand | `src/expander.cpp/h` | Parameter / arithmetic / command / glob / brace / tilde expansion. Calls back into the executor via `CommandSubstitutor` for `$(...)`. |
-| Execute | `src/executor.cpp/h` | Walks the AST. Owns the runtime registries (builtins, functions, aliases, jobs, traps, dirstack, completion specs). Spawns external processes via Win32 `CreateProcess`. Control flow (`break`, `continue`, `return`, `exit`) propagates as a value: a pending `FlowSignal` on the Executor that every frame checks after running a child and the owning frame consumes. |
-| Env | `src/environment.cpp/h` | Variables, exports, scopes, array and assoc-array storage. |
-| Paths | `src/pathconv.cpp/h` | `/c/Users/...` ↔ `C:\Users\...` translation; applied at the spawn boundary when invoking native Windows `.exe`. |
-| Builtins | `src/builtins.cpp` | Shell builtins (`cd`, `export`, `declare`, `read`, `trap`, `getopts`, `complete`, …). |
-| Coreutils | `src/coreutils.cpp` + `coreutils_*.cpp` | Bundled `ls`/`grep`/`sed`/`awk`/`tar`/… Split per family; see "The coreutils split pattern" below. |
-| Awk | `src/awk.cpp/h` | Self-contained awk implementation invoked by the `awk` coreutil. |
-| Inflate | `src/inflate.cpp/h` | DEFLATE decoder used by `gunzip`, `zcat`, `unzip`. |
-| CLI | `src/main.cpp`, `src/script.cpp` | Entry point: UTF-8 argv decoding, flag dispatch, the non-interactive run / dump driver. |
-| REPL | `src/repl.cpp`, `src/lineedit.cpp` | Interactive loop: console / VT mode setup, prompt expansion, raw-mode line editor (history, completion, `Ctrl-R`, inline predictions). |
-| Setup | `src/setup.cpp` | Startup environment seeding: registry PATH merge, git / docker install discovery, `WBSH_*` state inheritance from a parent wbsh. |
-| Debug | `src/printer.cpp` | Token / AST pretty-printer for the `-t` and default (no-`-r`) dump modes. |
-| Support | `src/fnmatch.h`, `src/numparse.h`, `src/regexutil.h`, `src/source.h` | Leaf headers: glob matcher, error-as-value numeric parsing, error-as-value regex adapters, source locations. |
+| Lex | `wbsh/src/lexer.cpp/h` | POSIX shell tokenizer. Handles quoting, here-docs, `$(...)`, balanced-paren scanning. Outputs `Token` + structured `WordSegment` lists. |
+| Parse | `wbsh/src/parser.cpp/h`, `wbsh/src/ast.h`, `wbsh/src/arena.h` | Recursive-descent parser. Produces a `Node` AST with `Kind`-tagged variants (pipeline, if, for, function, simple command, …). Nodes are bump-allocated from the parser's `Arena` and linked with raw borrow pointers; whoever needs the AST to outlive the parser takes the arena (`Parser::takeArena`, `Executor::adoptArena`). |
+| Expand | `wbsh/src/expander.cpp/h` | Parameter / arithmetic / command / glob / brace / tilde expansion. Calls back into the executor via `CommandSubstitutor` for `$(...)`. |
+| Execute | `wbsh/src/executor.cpp/h` | Walks the AST. Owns the runtime registries (builtins, functions, aliases, jobs, traps, dirstack, completion specs). Spawns external processes via Win32 `CreateProcess`. Control flow (`break`, `continue`, `return`, `exit`) propagates as a value: a pending `FlowSignal` on the Executor that every frame checks after running a child and the owning frame consumes. |
+| Env | `wbsh/src/environment.cpp/h` | Variables, exports, scopes, array and assoc-array storage. |
+| Paths | `wbsh/src/pathconv.cpp/h` | `/c/Users/...` ↔ `C:\Users\...` translation; applied at the spawn boundary when invoking native Windows `.exe`. |
+| Builtins | `wbsh/src/builtins.cpp` | Shell builtins (`cd`, `export`, `declare`, `read`, `trap`, `getopts`, `complete`, …). |
+| Coreutils | `wbsh/src/coreutils.cpp` + `coreutils_*.cpp` | Bundled `ls`/`grep`/`sed`/`awk`/`tar`/… Split per family; see "The coreutils split pattern" below. |
+| Awk | `wbsh/src/awk.cpp/h` | Self-contained awk implementation invoked by the `awk` coreutil. |
+| Inflate | `wbsh/src/inflate.cpp/h` | DEFLATE decoder used by `gunzip`, `zcat`, `unzip`. |
+| CLI | `wbsh/src/main.cpp`, `wbsh/src/script.cpp` | Entry point: UTF-8 argv decoding, flag dispatch, the non-interactive run / dump driver. |
+| REPL | `wbsh/src/repl.cpp`, `wbsh/src/lineedit.cpp` | Interactive loop: console / VT mode setup, prompt expansion, raw-mode line editor (history, completion, `Ctrl-R`, inline predictions). |
+| Setup | `wbsh/src/setup.cpp` | Startup environment seeding: registry PATH merge, git / docker install discovery, `WBSH_*` state inheritance from a parent wbsh. |
+| Debug | `wbsh/src/printer.cpp` | Token / AST pretty-printer for the `-t` and default (no-`-r`) dump modes. |
+| Support | `wbsh/src/fnmatch.h`, `wbsh/src/numparse.h`, `wbsh/src/regexutil.h`, `wbsh/src/source.h` | Leaf headers: glob matcher, error-as-value numeric parsing, error-as-value regex adapters, source locations. |
 
 Two cross-cutting interfaces are worth knowing about up-front:
 
@@ -76,16 +76,16 @@ system utilities plus the shared helpers), `coreutils_text.cpp`,
 `coreutils_curl.cpp`, `coreutils_hash.cpp`. Follow the same pattern when
 adding a new group:
 
-1. New file `src/coreutils_<group>.cpp`. Put its file-local helpers in a
+1. New file `wbsh/src/coreutils_<group>.cpp`. Put its file-local helpers in a
    named sub-namespace: `namespace wbsh::<group>_detail { ... }`. No
    anonymous namespaces.
 2. Add one public entry point: `void register<Group>Builtin(Executor&);`
    (or plural if it wires multiple names). Declare it in
-   `src/coreutils_internal.h` so `registerCoreutils()` can call it.
+   `wbsh/src/coreutils_internal.h` so `registerCoreutils()` can call it.
 3. Call your `register…` function from `registerCoreutils()` in
    `coreutils.cpp` and delete the moved code from there.
-4. Add the new file to `wbsh.vcxproj` (`<ClCompile ... />`) and
-   `wbsh.vcxproj.filters`.
+4. Add the new file to `wbsh/wbsh.vcxproj` (`<ClCompile ... />`) and
+   `wbsh/wbsh.vcxproj.filters`.
 5. Run the full test suite in golden mode before opening the PR.
 
 The same pattern is the plan for `executor.cpp` if it grows further — the
@@ -98,7 +98,7 @@ natural split is `executor_redirection.cpp` (fd plumbing) and
 
 ```powershell
 & "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
-    .\wbsh.vcxproj -p:Configuration=Release -p:Platform=x64
+    .\wbsh\wbsh.vcxproj -p:Configuration=Release -p:Platform=x64
 ```
 
 `Debug` works the same way but produces a non-redistributable binary against
@@ -120,25 +120,25 @@ MSBuild call is enough.
 
 ## Tests
 
-The test harness is `tests/run-all.sh`. Each `tests/*.sh` script is a
+The test harness is `wbsh/tests/run-all.sh`. Each `wbsh/tests/*.sh` script is a
 hand-written smoke check exercising one slice of behavior — pipelines,
 redirection, expansion, control flow, a specific builtin, a specific
 coreutil. They run *inside wbsh itself*; if your change breaks the lexer or
 the executor badly enough that the harness can't bootstrap, you'll see it.
 
-Three modes:
+Three modes, all run from the `wbsh/tests/` directory:
 
 ```sh
 # Exit-status mode — assert each script exits 0.
-../x64/Release/wbsh.exe -r run-all.sh
+../../x64/Release/wbsh.exe -r run-all.sh
 
 # Golden mode — additionally diff combined stdout+stderr against
-# tests/expected/<name>.out. This is the bar a PR has to clear.
-WBSH_GOLDEN=1 ../x64/Release/wbsh.exe -r run-all.sh
+# wbsh/tests/expected/<name>.out. This is the bar a PR has to clear.
+WBSH_GOLDEN=1 ../../x64/Release/wbsh.exe -r run-all.sh
 
 # Record mode — (re)write the expected/ goldens from current output.
 # Only run this when you trust the new output and have inspected the diff.
-WBSH_RECORD=1 ../x64/Release/wbsh.exe -r run-all.sh
+WBSH_RECORD=1 ../../x64/Release/wbsh.exe -r run-all.sh
 ```
 
 Some tests are non-deterministic by nature (dates, hostnames, mounted-disk
@@ -147,7 +147,7 @@ at the top of `run-all.sh`. Add to that list rather than fighting flakes.
 
 **When to add a test:**
 
-- New builtin or coreutil → at least one `tests/<name>.sh` covering the
+- New builtin or coreutil → at least one `wbsh/tests/<name>.sh` covering the
   golden path and one or two edge cases.
 - New expansion form / lexer construct → a script that exercises it both
   quoted and unquoted, with at least one whitespace edge case.
@@ -200,7 +200,7 @@ The points you'll bump into most often:
 - **Memory.** Prefer RAII / `std::unique_ptr` / `std::vector` over manual
   `new`/`delete`. The codebase has effectively no raw owning pointers
   outside Win32 handle wrappers. Node-heavy trees (the shell AST, awk's
-  Expr/Stmt trees) are bump-allocated from an `Arena` (`src/arena.h`):
+  Expr/Stmt trees) are bump-allocated from an `Arena` (`wbsh/src/arena.h`):
   nodes hold raw borrow pointers to each other and the arena owns them
   all — keep the arena alive, not the individual nodes. Don't
   heap-allocate AST nodes individually.
@@ -226,8 +226,8 @@ warning at >100), `#pragma once` in headers, no anonymous namespaces,
 function bodies ≤60 lines.
 
 ```sh
-python tools/check_style.py                  # check src/
-python tools/check_style.py src/foo.cpp      # check a specific file
+python tools/check_style.py                    # check every project's src/
+python tools/check_style.py wbsh/src/foo.cpp   # check a specific file
 python tools/check_style.py --warnings-as-errors
 ```
 
@@ -249,8 +249,8 @@ Before opening the PR:
 
 - [ ] Builds clean as `Release|x64`. No new warnings.
 - [ ] `python tools/check_style.py` reports no errors on touched files.
-- [ ] `tests/run-all.sh` passes.
-- [ ] `WBSH_GOLDEN=1 tests/run-all.sh` passes (or expected files updated
+- [ ] `wbsh/tests/run-all.sh` passes.
+- [ ] `WBSH_GOLDEN=1 wbsh/tests/run-all.sh` passes (or expected files updated
       with a one-line note in the PR description about what changed).
 - [ ] New behavior has at least one test script.
 - [ ] No anonymous namespaces, no `{ ... }` scope blocks, no commented-out

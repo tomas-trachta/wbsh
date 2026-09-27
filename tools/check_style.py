@@ -13,7 +13,7 @@ checked without parsing C++ properly:
   - Every header has `#pragma once`.
   - Function bodies are at most 60 lines (heuristic; see below).
   - No exceptions: `try` / `catch` / `throw` are forbidden everywhere
-    except src/regexutil.h, the designated std::regex exception
+    except wbsh/src/regexutil.h, the designated std::regex exception
     boundary. wbsh reports errors as values (see CONTRIBUTING.md).
 
 The function-length check is a heuristic. It strips comments and string
@@ -25,7 +25,7 @@ as functions too, which is fine — a 60-line lambda is also too long.
 
 Usage:
     python tools/check_style.py
-    python tools/check_style.py src/foo.cpp src/bar.h
+    python tools/check_style.py wbsh/src/foo.cpp wbsh/src/bar.h
     python tools/check_style.py --warnings-as-errors
 
 Exit code: 0 if clean (warnings allowed), 1 if any errors, 2 on bad usage.
@@ -47,7 +47,7 @@ MAX_LINE_LEN_SOFT = 100
 TAB_WIDTH = 4
 
 SRC_EXTENSIONS = {".cpp", ".cc", ".cxx", ".h", ".hpp"}
-DEFAULT_SCAN_ROOTS = ["src"]
+DEFAULT_SCAN_ROOTS = ["wbsh/src", "wbshterm/src", "sdk/src", "sdk/include"]
 
 CONTROL_KEYWORDS = frozenset({
     "if", "while", "for", "switch", "catch",
@@ -356,7 +356,7 @@ def collect_paths(args_paths: list[str], repo_root: Path) -> list[Path]:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Mechanical style checker for wbsh.")
     ap.add_argument("paths", nargs="*",
-                    help="files or directories to check (default: src/)")
+                    help="files or directories to check (default: every project's src/)")
     ap.add_argument("--warnings-as-errors", action="store_true",
                     help="treat warnings as failures")
     ns = ap.parse_args(argv)

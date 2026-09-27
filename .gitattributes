@@ -1,5 +1,5 @@
 # Pin C/C++ sources and build/installer scripts to LF so autocrlf does not
-# re-introduce CRLF on checkout. Matches tests/.gitattributes for *.sh and
+# re-introduce CRLF on checkout. Matches wbsh/tests/.gitattributes for *.sh and
 # *.out fixtures. The style checker enforces LF at PR time, so this file
 # keeps the working tree consistent with that.
 

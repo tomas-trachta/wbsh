@@ -2,13 +2,13 @@
 # Aggregating runner for the test suite.
 #
 # Usage:
-#     ../x64/Release/wbsh.exe -r run-all.sh           # exit-status mode
-#     WBSH_GOLDEN=1 ../x64/Release/wbsh.exe -r run-all.sh   # also diff vs expected/
-#     WBSH_RECORD=1 ../x64/Release/wbsh.exe -r run-all.sh   # capture expected/
+#     ../../x64/Release/wbsh.exe -r run-all.sh           # exit-status mode
+#     WBSH_GOLDEN=1 ../../x64/Release/wbsh.exe -r run-all.sh   # also diff vs expected/
+#     WBSH_RECORD=1 ../../x64/Release/wbsh.exe -r run-all.sh   # capture expected/
 #
 # In exit-status mode the runner asserts that each .sh script exits with the
 # expected status (default 0). In golden mode it additionally diffs combined
-# stdout+stderr against tests/expected/<name>.out, if that file exists. In
+# stdout+stderr against wbsh/tests/expected/<name>.out, if that file exists. In
 # record mode it (re)writes those expected files instead of diffing -- only
 # run that when you trust the current output.
 
@@ -30,12 +30,12 @@ if [ "${WBSH_RECORD:-0}" = "1" ]; then
     mkdir -p $GOLDEN_DIR
 fi
 
-# Discover wbsh.exe relative to the tests/ dir so the script works
+# Discover wbsh.exe relative to the wbsh/tests/ dir so the script works
 # regardless of cwd. Prefer Release, fall back to Debug.
-if [ -x ../x64/Release/wbsh.exe ]; then
-    WBSH=../x64/Release/wbsh.exe
-elif [ -x ../x64/Debug/wbsh.exe ]; then
-    WBSH=../x64/Debug/wbsh.exe
+if [ -x ../../x64/Release/wbsh.exe ]; then
+    WBSH=../../x64/Release/wbsh.exe
+elif [ -x ../../x64/Debug/wbsh.exe ]; then
+    WBSH=../../x64/Debug/wbsh.exe
 else
     WBSH=wbsh
 fi

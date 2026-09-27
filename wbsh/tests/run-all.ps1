@@ -1,9 +1,9 @@
-# Wrapper around tests/run-all.sh for PowerShell users.
+# Wrapper around wbsh/tests/run-all.sh for PowerShell users.
 #
 # Usage:
-#     .\tests\run-all.ps1
-#     .\tests\run-all.ps1 -Golden        # also diff vs expected/
-#     .\tests\run-all.ps1 -Record        # capture expected/
+#     .\wbsh\tests\run-all.ps1
+#     .\wbsh\tests\run-all.ps1 -Golden        # also diff vs expected/
+#     .\wbsh\tests\run-all.ps1 -Record        # capture expected/
 [CmdletBinding()]
 param(
     [switch]$Golden,
@@ -11,7 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $exe = Join-Path $root 'x64\Release\wbsh.exe'
 if (-not (Test-Path $exe)) {
     $exe = Join-Path $root 'x64\Debug\wbsh.exe'

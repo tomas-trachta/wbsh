@@ -278,7 +278,7 @@ PATH and auto-discovers `git` from the standard install locations
 ```powershell
 # From the repo root.
 & "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
-    .\wbsh.vcxproj -p:Configuration=Release -p:Platform=x64
+    .\wbsh\wbsh.vcxproj -p:Configuration=Release -p:Platform=x64
 ```
 
 The binary lands at `x64\Release\wbsh.exe`.
@@ -289,7 +289,7 @@ Debug VC++ runtime (`/MDd`) and is not redistributable.
 ### Build the installer + portable ZIP
 
 ```powershell
-.\installer\build.ps1                        # reads WbshVersion from wbsh.vcxproj
+.\installer\build.ps1                        # reads the version from version.props
 .\installer\build.ps1 -Version 1.0.8         # one-off override
 ```
 
@@ -344,42 +344,54 @@ working project to copy.
 
 ## Project layout
 
-```
-src/
-  main.cpp               Entry point: UTF-8 argv decoding, CLI dispatch
-  repl.cpp/h             Interactive REPL: console setup, prompt, signals
-  lineedit.cpp/h         Raw-mode line editor: history, completion,
-                         reverse search, inline predictions
-  script.cpp/h           Non-interactive runner (-c / file / stdin)
-  setup.cpp/h            Startup env seeding: PATH repair, git/docker discovery
-  lexer.cpp/h            POSIX shell tokenizer
-  parser.cpp/h           Recursive-descent parser → AST
-  ast.h                  AST node definitions
-  arena.h                Bump allocator that owns the AST nodes
-  printer.cpp/h          Token / AST dump pretty-printer
-  expander.cpp/h         Parameter / arithmetic / command / glob / brace expansion
-  executor.cpp/h         Pipelines, redirection, process spawn, control flow
-  environment.cpp/h      Variables, exports, arrays, shell options
-  builtins.cpp           Shell builtins (cd, export, declare, trap, jobs, …)
-  coreutils.cpp          File / system coreutils + shared helpers
-  coreutils_text.cpp     sort, uniq, grep, sed, find, xargs, …
-  coreutils_archive.cpp  tar, gzip, gunzip, zcat, zip, unzip
-  coreutils_encoding.cpp base64, xxd, od
-  coreutils_bc.cpp       bc calculator
-  coreutils_curl.cpp     curl (WinHTTP)
-  coreutils_hash.cpp     md5sum / sha1sum / sha256sum / sha512sum (BCrypt)
-  awk.cpp/h              Embedded awk implementation
-  inflate.cpp/h          DEFLATE decoder used by gunzip / zcat / unzip
-  pathconv.cpp/h         POSIX ↔ Windows path translation
-  fnmatch.h              Glob pattern matcher (expansion, case, ${var#pat})
-  numparse.h             Error-as-value numeric parsing
-  regexutil.h            Error-as-value std::regex adapters
-  source.h               Source locations shared by lexer / parser
-  termreq.h/.cpp         OSC requests to a terminal that hosts panes
-  tmux.cpp               `tmux`: asks the terminal to start pane mode
-  utils.cpp/h            Loading third-party utils through the SDK
+Three products, one directory each, every one with its own `src/`:
 
-sdk/
+```
+wbsh/                    The shell
+  wbsh.vcxproj           MSBuild project (outputs to <repo>/x64/<Config>)
+  tests/                 Shell-script suite + golden files (run-all.sh)
+  src/
+    main.cpp               Entry point: UTF-8 argv decoding, CLI dispatch
+    repl.cpp/h             Interactive REPL: console setup, prompt, signals
+    lineedit.cpp/h         Raw-mode line editor: history, completion,
+                           reverse search, inline predictions
+    script.cpp/h           Non-interactive runner (-c / file / stdin)
+    setup.cpp/h            Startup env seeding: PATH repair, git/docker discovery
+    lexer.cpp/h            POSIX shell tokenizer
+    parser.cpp/h           Recursive-descent parser → AST
+    ast.h                  AST node definitions
+    arena.h                Bump allocator that owns the AST nodes
+    printer.cpp/h          Token / AST dump pretty-printer
+    expander.cpp/h         Parameter / arithmetic / command / glob / brace expansion
+    executor.cpp/h         Pipelines, redirection, process spawn, control flow
+    environment.cpp/h      Variables, exports, arrays, shell options
+    builtins.cpp           Shell builtins (cd, export, declare, trap, jobs, …)
+    coreutils.cpp          File / system coreutils + shared helpers
+    coreutils_text.cpp     sort, uniq, grep, sed, find, xargs, …
+    coreutils_archive.cpp  tar, gzip, gunzip, zcat, zip, unzip
+    coreutils_encoding.cpp base64, xxd, od
+    coreutils_bc.cpp       bc calculator
+    coreutils_curl.cpp     curl (WinHTTP)
+    coreutils_hash.cpp     md5sum / sha1sum / sha256sum / sha512sum (BCrypt)
+    awk.cpp/h              Embedded awk implementation
+    inflate.cpp/h          DEFLATE decoder used by gunzip / zcat / unzip
+    pathconv.cpp/h         POSIX ↔ Windows path translation
+    fnmatch.h              Glob pattern matcher (expansion, case, ${var#pat})
+    numparse.h             Error-as-value numeric parsing
+    regexutil.h            Error-as-value std::regex adapters
+    source.h               Source locations shared by lexer / parser
+    termreq.h/.cpp         OSC requests to a terminal that hosts panes
+    tmux.cpp               `tmux`: asks the terminal to start pane mode
+    utils.cpp/h            Loading third-party utils through the SDK
+
+wbshterm/                The terminal (see wbshterm/README.md)
+  wbshterm.vcxproj       MSBuild project (outputs next to wbsh.exe)
+  conpty/                Microsoft's current ConPTY, vendored (fetch.ps1)
+  tests/smoke.ps1        Drives the built binary: self-test, snapshot, replay
+  src/                   Win32 window, renderer, VT parser, panes, picker
+
+sdk/                     The util SDK
+  wbshsdk.vcxproj        MSBuild project for wbshsdk.dll
   include/wbshsdk.h      The C contract a third-party util is written against
   src/wbshsdk.cpp        wbshsdk.dll: host binding, util loading, ABI checks
   src/wbshsdk_terminal.cpp  Terminal helpers: raw keys in, escape sequences out
@@ -389,7 +401,8 @@ sdk/
   tests/sdk.ps1          Integration checks with the sample installed
   README.md              How to write and install a util
 
-tests/                   Shell-script suite + golden files (run-all.sh)
+version.props            Single source of truth for the version
+wbsh.sln                 Solution tying the three projects + samples together
 tools/check_style.py     Mechanical style checker (runs before every build)
 tools/make_icon.py       Renders installer/wbshterm.ico from code (Pillow)
 docs/                    Doxygen config + generated API reference
@@ -404,15 +417,15 @@ installer/
 ## Testing
 
 ```sh
-# After building wbsh.exe, from the tests/ directory:
-../x64/Release/wbsh.exe -r run-all.sh                  # assert every script exits 0
-WBSH_GOLDEN=1 ../x64/Release/wbsh.exe -r run-all.sh    # also diff against expected/
+# After building wbsh.exe, from the wbsh/tests/ directory:
+../../x64/Release/wbsh.exe -r run-all.sh                  # assert every script exits 0
+WBSH_GOLDEN=1 ../../x64/Release/wbsh.exe -r run-all.sh    # also diff against expected/
 ```
 
-The suite is 44 hand-written `tests/*.sh` scripts, each exercising one
+The suite is 44 hand-written `wbsh/tests/*.sh` scripts, each exercising one
 slice of behavior (pipelines, redirection, expansion, control flow,
 individual builtins). Golden mode additionally diffs combined
-stdout+stderr against `tests/expected/<name>.out`. The scripts run
+stdout+stderr against `wbsh/tests/expected/<name>.out`. The scripts run
 *inside wbsh itself*, so the suite is an end-to-end check of the whole
 lexer → parser → expander → executor pipeline.
 
@@ -486,11 +499,11 @@ Pull requests welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full
 architecture tour, the coding conventions, the test harness, and the PR
 checklist. The short version:
 
-1. Match the existing style (tabs for indentation in `src/`, 4-column tabs).
+1. Match the existing style (tabs for indentation in every `src/`, 4-column tabs).
 2. Keep changes focused — one feature or fix per PR.
-3. Add or update a `tests/*.sh` script when changing executor behavior.
+3. Add or update a `wbsh/tests/*.sh` script when changing executor behavior.
 4. Before opening the PR: clean Release build, `python tools/check_style.py`,
-   and `WBSH_GOLDEN=1 tests/run-all.sh` all green.
+   and `WBSH_GOLDEN=1 wbsh/tests/run-all.sh` all green.
 
 Bug reports should include the wbsh version (`wbsh --help`'s banner line),
 Windows build, and the smallest script that reproduces the issue.

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Single source of truth for the version of everything in this repo.
-     wbsh.vcxproj and wbshterm\wbshterm.vcxproj both import this, the two
+     wbsh\wbsh.vcxproj, wbshterm\wbshterm.vcxproj and the SDK projects all
+     import this, the two
      installers read it, and the release workflow bumps it here. Editing
      the three numbers below is the whole job. -->
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">

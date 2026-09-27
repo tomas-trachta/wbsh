@@ -23,8 +23,8 @@ jobs:
         id: bump
         shell: pwsh
         run: |
-          # version.props is the one place the version lives: wbsh.vcxproj
-          # and wbshterm.vcxproj both import it, and installer\build.ps1
+          # version.props is the one place the version lives: wbsh\wbsh.vcxproj
+          # and wbshterm\wbshterm.vcxproj both import it, and installer\build.ps1
           # reads it. The two .iss files carry their own copy for standalone
           # ISCC runs, so they are kept in step here.
           $propsPath = 'version.props'

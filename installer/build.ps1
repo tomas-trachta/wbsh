@@ -2,7 +2,7 @@
 #
 # Steps:
 #   1. Locate MSBuild via vswhere.
-#   2. Build wbsh.vcxproj in Release|x64.
+#   2. Build wbsh\wbsh.vcxproj in Release|x64.
 #   3. Build wbshterm\wbshterm.vcxproj in the same configuration.
 #   4. Stage each payload: wbsh on its own, and wbshterm with wbsh beside it.
 #   5. Compile both .iss files, emitting wbsh-setup-x64.exe and
@@ -13,7 +13,7 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [string]$Platform      = 'x64',
-    # Defaults to the WbshVersion property in wbsh.vcxproj (the single
+    # Defaults to the WbshVersion property in version.props (the single
     # source of truth). Pass -Version X.Y.Z to override for a one-off
     # build without editing the project file.
     [string]$Version       = ''
@@ -23,7 +23,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..')
 
-# Read the version from wbsh.vcxproj if the caller didn't override.
+# Read the version from version.props if the caller didn't override.
 # We read the three leaf properties rather than the composite
 # WbshVersion: the composite is stored in XML as the literal string
 # "$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)" — those
@@ -100,7 +100,7 @@ if ($LASTEXITCODE -ne 0) { throw "MSBuild failed for wbshsdk (exit $LASTEXITCODE
 $sdkPath = Join-Path $RepoRoot "$Platform\$Configuration\wbshsdk.dll"
 if (-not (Test-Path $sdkPath)) { throw "Build did not produce $sdkPath." }
 
-& $msbuild (Join-Path $RepoRoot 'wbsh.vcxproj') `
+& $msbuild (Join-Path $RepoRoot 'wbsh\wbsh.vcxproj') `
     -nologo "-p:Configuration=$Configuration" "-p:Platform=$Platform" `
     "-p:WbshVersion=$Version" `
     "-p:WbshVersionMajor=$VerMajor" `

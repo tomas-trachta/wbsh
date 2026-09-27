@@ -5,7 +5,7 @@ VisualStudioVersion = 17.14.36212.18 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "wbshsdk", "sdk\wbshsdk.vcxproj", "{A1B2C3D4-5E6F-4A7B-8C9D-0E1F2A3B4C5D}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "wbsh", "wbsh.vcxproj", "{97C9F413-93A2-4265-8F81-CEB1FBFA733A}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "wbsh", "wbsh\wbsh.vcxproj", "{97C9F413-93A2-4265-8F81-CEB1FBFA733A}"
 	ProjectSection(ProjectDependencies) = postProject
 		{A1B2C3D4-5E6F-4A7B-8C9D-0E1F2A3B4C5D} = {A1B2C3D4-5E6F-4A7B-8C9D-0E1F2A3B4C5D}
 	EndProjectSection
