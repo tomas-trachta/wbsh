@@ -35,6 +35,7 @@ namespace wbshterm {
 	static const int      kSystemRefreshFloorMs = 250;
 	static const int     kWheelLines = 3;
 	static const float   kDividerSlop = 3.0f;
+	static const std::string kImagePasteKey = "\x1bv";
 
 	static std::string encodeUtf8(wchar_t character) {
 		char bytes[8] = {};
@@ -1223,6 +1224,7 @@ namespace wbshterm {
 		}
 
 		applyFrameAppearance();
+		::DragAcceptFiles(window_, TRUE);
 		return true;
 	}
 
@@ -1330,6 +1332,7 @@ namespace wbshterm {
 			break;
 		case WM_CAPTURECHANGED: onCaptureLost(); return 0;
 		case WM_CONTEXTMENU: onContextMenu(lparam); return 0;
+		case WM_DROPFILES:   onDropFiles(wparam); return 0;
 		case WM_ERASEBKGND:  return 1;
 		case WM_TIMER:       onTimer(wparam); return 0;
 		case WM_HOTKEY:      openAnotherWindow(); return 0;
@@ -1966,11 +1969,51 @@ namespace wbshterm {
 		return true;
 	}
 
+	static bool clipboardHoldsImage() {
+		return ::IsClipboardFormatAvailable(CF_DIB) != 0;
+	}
+
+	// A picture is the program's to fetch, not the terminal's to type.
+	// Claude Code on Windows reads the clipboard itself when it sees Alt+V,
+	// Windows Terminal having kept Ctrl+V for its own paste; so with no
+	// text to paste and a picture waiting, a paste is spelled as that key.
 	void TerminalWindow::pasteFromClipboard() {
 		const std::string text = clipboardText();
-		if (text.empty()) return;
+		if (text.empty()) {
+			if (clipboardHoldsImage()) sendBytes(kImagePasteKey.data(), kImagePasteKey.size());
+			return;
+		}
 
 		const std::string bytes = encodePaste(text, currentModes());
+		sendBytes(bytes.data(), bytes.size());
+	}
+
+	static std::vector<std::string> droppedPaths(HDROP drop) {
+		std::vector<std::string> paths;
+		const UINT count = ::DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+
+		for (UINT i = 0; i < count; ++i) {
+			const UINT length = ::DragQueryFileW(drop, i, nullptr, 0);
+			std::wstring path(static_cast<std::size_t>(length) + 1, L'\0');
+			::DragQueryFileW(drop, i, path.data(), length + 1);
+			path.resize(length);
+			paths.push_back(encodeUtf8(path));
+		}
+
+		return paths;
+	}
+
+	void TerminalWindow::onDropFiles(WPARAM wparam) {
+		auto* drop = reinterpret_cast<HDROP>(wparam);
+		POINT where{};
+		::DragQueryPoint(drop, &where);
+		const std::vector<std::string> paths = droppedPaths(drop);
+		::DragFinish(drop);
+
+		PaneNode* leaf = leafFromMouse(MAKELPARAM(where.x, where.y));
+		if (leaf != nullptr) panes_.focusOn(leaf);
+
+		const std::string bytes = encodePaste(joinDroppedPaths(paths), currentModes());
 		sendBytes(bytes.data(), bytes.size());
 	}
 

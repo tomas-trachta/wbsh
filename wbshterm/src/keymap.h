@@ -6,6 +6,7 @@
  */
 
 #include <string>
+#include <vector>
 
 namespace wbshterm {
 
@@ -39,6 +40,15 @@ namespace wbshterm {
 	 * off the brackets are omitted rather than pasted as literal text.
 	 */
 	std::string encodePaste(const std::string& text, const KeyModes& modes);
+
+	/**
+	 * @brief Spells dropped files the way a shell reads them back.
+	 *
+	 * Paths are joined with single spaces and a path holding a space is
+	 * double-quoted, which is what Windows Terminal does and what programs
+	 * that pick file names out of pasted text expect.
+	 */
+	std::string joinDroppedPaths(const std::vector<std::string>& paths);
 
 	/**
 	 * @brief Reads a binding as a config file spells it: "ctrl+a".

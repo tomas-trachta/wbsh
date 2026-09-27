@@ -123,6 +123,8 @@ every combination is unit-tested rather than tried by hand.
 | Shift+Tab | `CSI Z` |
 | Alt+*key* | the key's bytes, ESC-prefixed |
 | Ctrl+V, Shift+Insert | paste, wrapped in `CSI 200~`/`CSI 201~` when the shell asked for bracketed paste |
+| Ctrl+V with a picture on the clipboard | `ESC v`, the Alt+V that Claude Code on Windows reads the clipboard on |
+| Files dropped on the window | their paths, space-separated and double-quoted where a path has a space, sent as a paste |
 
 Plain typing is deliberately *not* encoded here: a press that carries no
 meaning of its own falls through to the character message Windows already
@@ -542,6 +544,8 @@ on no matter what arrives afterwards.
 | Search the session | Ctrl+Shift+F, then Enter for older, Shift+Enter for newer, Esc to close |
 | Select | Drag; double click for a word, triple for the line |
 | Copy | Ctrl+Shift+C, Ctrl+Insert |
+| Paste | Ctrl+V, Shift+Insert; a picture goes out as Alt+V for the program to fetch |
+| Drop files | Their paths are pasted into the pane they land on |
 | Customise | Right-click, or Shift+F10 |
 | Font size | Ctrl+=, Ctrl+-, Ctrl+0 |
 | Return to the bottom | Type anything |

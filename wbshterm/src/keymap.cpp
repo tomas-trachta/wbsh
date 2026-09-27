@@ -169,6 +169,21 @@ namespace wbshterm {
 		return bytes;
 	}
 
+	static std::string quotedIfSpaced(const std::string& path) {
+		if (path.find(' ') == std::string::npos) return path;
+		return "\"" + path + "\"";
+	}
+
+	std::string joinDroppedPaths(const std::vector<std::string>& paths) {
+		std::string joined;
+		for (const std::string& path : paths) {
+			if (!joined.empty()) joined += ' ';
+			joined += quotedIfSpaced(path);
+		}
+
+		return joined;
+	}
+
 	static bool virtualKeyNamed(const std::string& name, unsigned int& out_key) {
 		if (name.size() == 1) {
 			const char letter = name[0];

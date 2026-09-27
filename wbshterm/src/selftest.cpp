@@ -1813,6 +1813,13 @@ namespace wbshterm {
 				bracketed == "\x1b[200~hi\x1b[201~", bracketed);
 		}
 
+		static void checkDroppedPathJoining(Report& report) {
+			const std::string joined = joinDroppedPaths({ "C:\\a.png", "C:\\my pics\\b.png" });
+			report.check("dropped paths are space-joined and quoted only when spaced",
+				joined == "C:\\a.png \"C:\\my pics\\b.png\"", joined);
+			report.check("no dropped paths join to nothing", joinDroppedPaths({}).empty(), "");
+		}
+
 		static bool waitForText(Session& session, const std::string& needle, int timeout_ms) {
 			const auto deadline = std::chrono::steady_clock::now()
 				+ std::chrono::milliseconds(timeout_ms);
@@ -2816,6 +2823,7 @@ namespace wbshterm {
 		test::checkEraseKeys(report);
 		test::checkTextKeysFallThrough(report);
 		test::checkPasteEncoding(report);
+		test::checkDroppedPathJoining(report);
 		test::checkKeyBindingParsing(report);
 	}
 

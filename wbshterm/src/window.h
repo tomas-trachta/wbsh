@@ -113,6 +113,7 @@ namespace wbshterm {
 		void settleHistory(Pane& pane);
 		void answerPick(const std::string& choice);
 		void pasteFromClipboard();
+		void onDropFiles(WPARAM wparam);
 		KeyModes currentModes() const;
 		void onDpiChanged(WPARAM wparam, LPARAM lparam);
 		void onMouseWheel(WPARAM wparam, LPARAM lparam);
