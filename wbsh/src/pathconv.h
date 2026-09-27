@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 namespace wbsh {
@@ -39,6 +40,12 @@ namespace wbsh {
 
 	/// `fopen` on a UTF-8 path (`_wfopen` on Windows).
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode);
+
+	/// `stat` on a Win32-form path that also sees Windows App Execution
+	/// Aliases (0-byte APPEXECLINK reparse points such as winget.exe):
+	/// `::stat` and `std::filesystem::status` try to open those and
+	/// fail, so the fallback synthesises the entry from file attributes.
+	bool statPath(const std::string& win32_path, struct stat& info);
 
 	/**
 	 * @brief Bidirectional POSIX ↔ Win32 path translation.

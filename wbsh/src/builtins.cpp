@@ -906,7 +906,7 @@ namespace wbsh {
 	static int evalUnaryFileTest(char op, const std::string& raw_path, const PathConv& pc) {
 		const std::string path = pc.toWin32(raw_path);
 		struct stat info {};
-		const bool exists = ::stat(path.c_str(), &info) == 0;
+		const bool exists = statPath(path, info);
 		switch (op) {
 		case 'e': return exists ? 0 : 1;
 		case 'f': return (exists && (info.st_mode & S_IFMT) == S_IFREG) ? 0 : 1;

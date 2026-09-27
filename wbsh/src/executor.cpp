@@ -1581,8 +1581,8 @@ namespace wbsh {
 	}
 
 	static bool isExistingFile(const std::filesystem::path& path) {
-		std::error_code ec;
-		return std::filesystem::exists(path, ec) && !std::filesystem::is_directory(path, ec);
+		struct stat info {};
+		return statPath(pathToUtf8(path), info) && (info.st_mode & S_IFMT) != S_IFDIR;
 	}
 
 	static std::string tryExecutableWithExtensions(const std::filesystem::path& base) {
@@ -2363,7 +2363,7 @@ namespace wbsh {
 
 		const std::string path = ctx.path_conv.toWin32(lhs);
 		struct stat info {};
-		const bool exists = ::stat(path.c_str(), &info) == 0;
+		const bool exists = statPath(path, info);
 		switch (op) {
 		case 'e': return exists;
 		case 'f': return exists && (info.st_mode & S_IFMT) == S_IFREG;
@@ -2443,8 +2443,8 @@ namespace wbsh {
 		const std::string rhs_path = path_conv.toWin32(rhs);
 		struct stat lhs_info{};
 		struct stat rhs_info{};
-		const bool lhs_exists = ::stat(lhs_path.c_str(), &lhs_info) == 0;
-		const bool rhs_exists = ::stat(rhs_path.c_str(), &rhs_info) == 0;
+		const bool lhs_exists = statPath(lhs_path, lhs_info);
+		const bool rhs_exists = statPath(rhs_path, rhs_info);
 
 		if (op == "-nt") {
 			return lhs_exists && (!rhs_exists || lhs_info.st_mtime > rhs_info.st_mtime);

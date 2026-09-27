@@ -69,6 +69,31 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
+#ifdef _WIN32
+	static bool statFromAttributes(const std::string& win32_path, struct stat& info) {
+		const DWORD attributes = ::GetFileAttributesW(utf8ToWide(win32_path).c_str());
+		if (attributes == INVALID_FILE_ATTRIBUTES) return false;
+
+		const bool is_dir = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		const bool read_only = (attributes & FILE_ATTRIBUTE_READONLY) != 0;
+		const unsigned short kind = is_dir ? S_IFDIR : S_IFREG;
+		const unsigned short perms = read_only ? 0555 : 0777;
+		info = {};
+		info.st_mode = static_cast<unsigned short>(kind | perms);
+		info.st_nlink = 1;
+		return true;
+	}
+#endif /* _WIN32 */
+
+	bool statPath(const std::string& win32_path, struct stat& info) {
+		if (::stat(win32_path.c_str(), &info) == 0) return true;
+#ifdef _WIN32
+		return statFromAttributes(win32_path, info);
+#else
+		return false;
+#endif /* _WIN32 */
+	}
+
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode) {
 #ifdef _WIN32
 		const std::wstring wide_path = utf8ToWide(utf8_path);
