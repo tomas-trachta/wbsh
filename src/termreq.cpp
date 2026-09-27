@@ -59,20 +59,20 @@ namespace wbsh {
 	// the old mode back straight after the write loses it on the way out.
 	// Only a run under wbshterm gets here, where VT output is wanted anyway.
 	void writeTerminalRequest(const std::string& request) {
-		const HANDLE out = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+		const HANDLE out = ::CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
 			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
 		if (out == INVALID_HANDLE_VALUE) return;
 
 		DWORD mode = 0;
-		GetConsoleMode(out, &mode);
-		SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT);
+		::GetConsoleMode(out, &mode);
+		::SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT);
 
 		const std::string bytes = request + kPassThroughNudge;
 
 		DWORD wrote = 0;
-		WriteFile(out, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr);
+		::WriteFile(out, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr);
 
-		CloseHandle(out);
+		::CloseHandle(out);
 	}
 
 #else /* _WIN32 */

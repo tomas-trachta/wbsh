@@ -155,7 +155,10 @@ namespace wbsh {
 	// which matters more than usual when the answer came out of a folder
 	// rather than out of this binary.
 	static int builtin_utils(Executor&, const std::vector<std::string>& args) {
-		if (!args.empty()) { perr("utils", "takes no arguments"); return 2; }
+		if (!args.empty()) {
+			perr("utils", "takes no arguments");
+			return 2;
+		}
 
 		const std::vector<UtilInfo>& loaded = loadedUtils();
 		if (loaded.empty()) {

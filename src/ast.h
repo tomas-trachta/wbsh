@@ -28,17 +28,12 @@
 
 namespace wbsh {
 
-	/**
-	 * @brief A shell WORD: a sequence of segments with location info.
-	 *
-	 * `raw` is the original spelling, kept for diagnostics. The
-	 * actual semantics live in `segments`; the expander walks those
-	 * to produce the final string(s).
-	 */
+	// `raw` is the original spelling, kept for diagnostics; the
+	// semantics live in `segments`, which the expander walks.
 	struct Word {
-		std::vector<WordSegment> segments;  ///< Structured segments produced by the lexer.
-		std::string raw;                    ///< Original spelling (diagnostics / debug).
-		SourceLoc loc;                      ///< Position in the source.
+		std::vector<WordSegment> segments;
+		std::string raw;
+		SourceLoc loc;
 	};
 
 	enum class RedirOp {
@@ -58,62 +53,42 @@ namespace wbsh {
 
 	const char* redirOpName(RedirOp o);
 
-	/**
-	 * @brief One redirection attached to a command or compound command.
-	 *
-	 * For heredocs the `target` word is the delimiter; the actual
-	 * body is captured by the lexer into `heredoc_body`, with
-	 * `heredoc_quoted` recording whether expansion should run at
-	 * execution time.
-	 */
+	// For heredocs the `target` word is the delimiter; the body is
+	// captured by the lexer, with `heredoc_quoted` recording whether
+	// expansion should run at execution time.
 	struct Redirection {
-		RedirOp op = RedirOp::Less;     ///< Operator.
+		RedirOp op = RedirOp::Less;
 		int fd = -1;                    ///< fd before the operator; -1 for default.
-		Word target;                    ///< Operand word (delimiter for heredocs).
-		std::string heredoc_body;       ///< Filled by the lexer for `<<` / `<<-`.
-		bool heredoc_quoted = false;    ///< Delimiter was quoted -> body kept verbatim.
+		Word target;
+		std::string heredoc_body;
+		bool heredoc_quoted = false;
 	};
 
-	/**
-	 * @brief A `name=value` assignment in a SimpleCommand prefix.
-	 *
-	 * Supports scalar, indexed-element (`foo[2]=val`), and array
-	 * literal (`foo=(a b c)` or `foo=([2]=x)`) forms.
-	 */
+	// A `name=value` prefix assignment: scalar, indexed element
+	// (`foo[2]=val`), or array literal (`foo=(a b c)` / `foo=([2]=x)`).
 	struct Assignment {
-		std::string name;               ///< Variable name.
+		std::string name;
 		Word value;                     ///< Scalar value; may be empty (`foo=`).
 		bool append = false;
 		bool has_subscript = false;     ///< True when written as `name[expr]=value`.
 		Word subscript;                 ///< Subscript text; expanded at exec time.
 		bool is_array = false;          ///< True for `name=(...)` form.
 		std::vector<Word> array_items;  ///< Unkeyed array items.
-		/**
-		 * @brief Keyed array literal item.
-		 *
-		 * Captures optional `[key]=` prefixes from the literal,
-		 * preserving order and letting the executor decide whether
-		 * they're indexed arithmetic subscripts or assoc-array
-		 * string keys.
-		 */
+		// An array-literal item with its optional `[key]=` prefix, in
+		// source order; the executor decides whether a key is an
+		// indexed arithmetic subscript or an assoc-array string key.
 		struct Keyed {
-			bool has_key = false;       ///< True iff `[key]=` was present.
+			bool has_key = false;
 			Word key;                   ///< Key text; expanded at exec time.
-			Word value;                 ///< RHS value.
+			Word value;
 		};
-		std::vector<Keyed> keyed_items; ///< Keyed array items in source order.
-		SourceLoc loc;                  ///< Position of the assignment.
+		std::vector<Keyed> keyed_items;
+		SourceLoc loc;
 	};
 
-	/**
-	 * @brief Base class for every AST node.
-	 *
-	 * Carries the discriminating `kind`, source location, byte-range
-	 * span into the original source, and a borrowed pointer to that
-	 * source string. The executor downcasts on `kind`; there is no
-	 * virtual dispatch at all — concrete destructors are invoked by
-	 * the owning Arena, so no vtable pointer is paid per node.
-	 */
+	// The executor downcasts on `kind`; there is no virtual dispatch
+	// at all — concrete destructors are invoked by the owning Arena,
+	// so no vtable pointer is paid per node.
 	struct Node {
 		enum class Kind {
 			SimpleCommand,  ///< `simple_command` — words + assignments + redirs.
@@ -130,18 +105,14 @@ namespace wbsh {
 			DBracket,       ///< `[[ … ]]` conditional.
 			ArithCommand,   ///< `(( … ))` arithmetic command.
 		};
-		Kind kind;                  ///< Concrete subclass tag.
-		SourceLoc loc;              ///< Position in the source.
+		Kind kind;
+		SourceLoc loc;
 		std::size_t src_start = 0;  ///< Inclusive byte offset in source.
 		std::size_t src_end   = 0;  ///< Exclusive byte offset in source.
-		/**
-		 * @brief Source string this node was parsed from.
-		 *
-		 * Multiple ASTs can coexist (main script, inherited functions,
-		 * sourced files); each node carries its own source so slice
-		 * extraction always uses the right text. Borrowed: the string
-		 * is interned in the same Arena that owns the node.
-		 */
+		// Multiple ASTs can coexist (main script, inherited functions,
+		// sourced files); each node carries its own source so slice
+		// extraction always uses the right text. Borrowed: the string
+		// is interned in the same Arena that owns the node.
 		const std::string* source_text = nullptr;
 		explicit Node(Kind k) : kind(k) {}
 	};
@@ -155,29 +126,25 @@ namespace wbsh {
 		SimpleCommand() : Node(Kind::SimpleCommand) {}
 		std::vector<Assignment> assignments;    ///< Pre-command assignments.
 		std::vector<Word> words;                ///< argv[0..N], pre-expansion.
-		std::vector<Redirection> redirs;        ///< Attached redirections.
+		std::vector<Redirection> redirs;
 	};
 
 	struct Pipeline : Node {
 		Pipeline() : Node(Kind::Pipeline) {}
 		bool bang = false;                  ///< `!`-prefixed: invert exit status.
 		bool timed = false;
-		std::vector<NodePtr> commands;      ///< N pipeline elements.
-		/**
-		 * @brief Per-pipe stderr-merge flag.
-		 *
-		 * `stderr_to_stdout[i]` applies to the pipe between
-		 * `commands[i]` and `commands[i+1]` (true for `|&`).
-		 */
+		std::vector<NodePtr> commands;
+		// `stderr_to_stdout[i]` applies to the pipe between
+		// `commands[i]` and `commands[i+1]` (true for `|&`).
 		std::vector<bool> stderr_to_stdout;
 	};
 
 	struct AndOr : Node {
 		enum class Op { AndIf, OrIf };
 		AndOr() : Node(Kind::AndOr) {}
-		NodePtr left = nullptr;     ///< Left operand.
-		NodePtr right = nullptr;    ///< Right operand.
-		Op op = Op::AndIf;          ///< `&&` (default) or `||`.
+		NodePtr left = nullptr;
+		NodePtr right = nullptr;
+		Op op = Op::AndIf;
 	};
 
 	struct ListItem {
@@ -187,19 +154,19 @@ namespace wbsh {
 
 	struct List : Node {
 		List() : Node(Kind::List) {}
-		std::vector<ListItem> items;    ///< Items in source order.
+		std::vector<ListItem> items;
 	};
 
 	struct BraceGroup : Node {
 		BraceGroup() : Node(Kind::BraceGroup) {}
 		NodePtr body = nullptr;             ///< Inner List.
-		std::vector<Redirection> redirs;    ///< Redirections applied to the group.
+		std::vector<Redirection> redirs;
 	};
 
 	struct Subshell : Node {
 		Subshell() : Node(Kind::Subshell) {}
 		NodePtr body = nullptr;             ///< Inner List.
-		std::vector<Redirection> redirs;    ///< Redirections applied to the subshell.
+		std::vector<Redirection> redirs;
 	};
 
 	struct IfClause : Node {
@@ -209,25 +176,25 @@ namespace wbsh {
 			NodePtr body = nullptr;
 		};
 		std::vector<Branch> branches;       ///< `[0]` = if, `[1..]` = elif.
-		NodePtr else_body = nullptr;        ///< Optional `else` body.
-		std::vector<Redirection> redirs;    ///< Redirections on the whole clause.
+		NodePtr else_body = nullptr;
+		std::vector<Redirection> redirs;
 	};
 
 	struct WhileClause : Node {
 		WhileClause() : Node(Kind::WhileClause) {}
-		bool until = false;                 ///< True iff this is `until`, not `while`.
-		NodePtr cond = nullptr;             ///< Loop guard.
-		NodePtr body = nullptr;             ///< Loop body.
-		std::vector<Redirection> redirs;    ///< Redirections on the loop.
+		bool until = false;
+		NodePtr cond = nullptr;
+		NodePtr body = nullptr;
+		std::vector<Redirection> redirs;
 	};
 
 	struct ForClause : Node {
 		ForClause() : Node(Kind::ForClause) {}
-		std::string var;                    ///< Loop variable.
+		std::string var;
 		bool has_in = false;                ///< False => iterates `"$@"`.
 		std::vector<Word> items;            ///< Word list after `in`.
-		NodePtr body = nullptr;             ///< Loop body.
-		std::vector<Redirection> redirs;    ///< Redirections on the loop.
+		NodePtr body = nullptr;
+		std::vector<Redirection> redirs;
 
 		bool is_arith = false;              ///< True for `for (( init; cond; update ))`.
 		std::string arith_init;             ///< Raw arithmetic text; empty => omitted.
@@ -240,7 +207,7 @@ namespace wbsh {
 	struct ArithCommand : Node {
 		ArithCommand() : Node(Kind::ArithCommand) {}
 		std::string expr;                   ///< Raw `(( … ))` body text.
-		std::vector<Redirection> redirs;    ///< Redirections on the command.
+		std::vector<Redirection> redirs;
 	};
 
 	struct CaseClause : Node {
@@ -250,53 +217,45 @@ namespace wbsh {
 			DSemiAmp,   ///< `;;&` (re-evaluate from next pattern)
 		};
 		CaseClause() : Node(Kind::CaseClause) {}
-		Word subject;                       ///< Word being matched against.
+		Word subject;
 		struct Item {
 			std::vector<Word> patterns;     ///< Pipe-separated pattern alternatives.
 			NodePtr body = nullptr;         ///< List, or null for an empty body.
-			Term term = Term::DSemi;        ///< Terminator after this arm.
+			Term term = Term::DSemi;
 		};
-		std::vector<Item> items;            ///< Pattern arms in source order.
-		std::vector<Redirection> redirs;    ///< Redirections on the whole `case`.
+		std::vector<Item> items;
+		std::vector<Redirection> redirs;
 	};
 
 	struct DBracketCond : Node {
 		DBracketCond() : Node(Kind::DBracket) {}
 		struct Expr {
 			enum class K { And, Or, Not, Prim };
-			K k = K::Prim;                  ///< Node kind.
+			K k = K::Prim;
 			Expr* a = nullptr;              ///< And/Or: left; Not: only operand.
 			Expr* b = nullptr;              ///< And/Or: right (else null).
-			/**
-			 * @brief Operator name for `Prim` nodes.
-			 *
-			 * - `""`: truthiness of `lhs` (non-empty string is true).
-			 * - `"-f"`, `"-d"`, `"-z"`, …: unary tests.
-			 * - `"=="`, `"!="`, `"="`, `"<"`, `">"`, `"=~"`,
-			 *   `"-eq"`, …: binary tests.
-			 */
+			// Operator name for `Prim` nodes:
+			// - `""`: truthiness of `lhs` (non-empty string is true).
+			// - `"-f"`, `"-d"`, `"-z"`, …: unary tests.
+			// - `"=="`, `"!="`, `"="`, `"<"`, `">"`, `"=~"`, `"-eq"`, …:
+			//   binary tests.
 			std::string op;
 			Word lhs;                       ///< Left / only operand.
 			Word rhs;                       ///< Right operand (binary ops only).
 		};
-		Expr* root = nullptr;               ///< Expression tree root.
-		std::vector<Redirection> redirs;    ///< Redirections (rare; legal in bash).
+		Expr* root = nullptr;
+		std::vector<Redirection> redirs;    ///< Rare, but legal in bash.
 	};
 
 	struct FunctionDef : Node {
 		FunctionDef() : Node(Kind::FunctionDef) {}
-		std::string name;                   ///< Function name.
+		std::string name;
 		NodePtr body = nullptr;             ///< Typically a BraceGroup or Subshell.
-		/**
-		 * @brief Pre-sliced source text for the body.
-		 *
-		 * Captured at parse time so the executor can serialise
-		 * functions for self-spawned subshells (and so things keep
-		 * working even if the original source buffer is later
-		 * moved or freed).
-		 */
+		// Sliced at parse time so the executor can serialise functions
+		// for self-spawned subshells even after the original source
+		// buffer is moved or freed.
 		std::string body_text;
-		std::vector<Redirection> redirs;    ///< Redirections on the function.
+		std::vector<Redirection> redirs;
 	};
 
 }  // namespace wbsh

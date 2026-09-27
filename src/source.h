@@ -28,8 +28,8 @@ namespace wbsh {
 		std::size_t offset = 0;     ///< 0-based byte offset into the source.
 	};
 
-	inline std::string toString(const SourceLoc& l) {
-		return std::to_string(l.line) + ":" + std::to_string(l.column);
+	inline std::string toString(const SourceLoc& loc) {
+		return std::to_string(loc.line) + ":" + std::to_string(loc.column);
 	}
 
 	/**
@@ -41,12 +41,13 @@ namespace wbsh {
 	 * bytes that came from disk or a pipe, not to interactive input.
 	 */
 	inline void normalizeCrlf(std::string& s) {
-		std::size_t w = 0;
-		for (std::size_t r = 0; r < s.size(); ++r) {
-			if (s[r] == '\r' && r + 1 < s.size() && s[r + 1] == '\n') continue;
-			s[w++] = s[r];
+		std::size_t write = 0;
+		for (std::size_t read = 0; read < s.size(); ++read) {
+			if (s[read] == '\r' && read + 1 < s.size() && s[read + 1] == '\n') continue;
+			s[write++] = s[read];
 		}
-		s.resize(w);
+
+		s.resize(write);
 	}
 
 }  // namespace wbsh

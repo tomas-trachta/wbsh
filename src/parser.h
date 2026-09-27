@@ -25,8 +25,8 @@
 namespace wbsh {
 
 	struct ParseError {
-		SourceLoc loc;          ///< Where in the source the problem was detected.
-		std::string message;    ///< Human-readable description.
+		SourceLoc loc;
+		std::string message;
 	};
 
 	/**
@@ -44,7 +44,6 @@ namespace wbsh {
 		/// Parse with an owned source-text copy (interned in the arena).
 		Parser(std::vector<Token> tokens, std::string source_text);
 
-		/// Parse a complete program; returns the top-level List node.
 		/// The node tree is owned by this parser's Arena — see takeArena().
 		NodePtr parseProgram();
 
@@ -79,23 +78,27 @@ namespace wbsh {
 
 		void skipNewlines();
 		bool atRedirOp() const;
-		bool atListSeparator() const;        // ; & or newline
+		bool atListSeparator() const;
 		bool atCommandStart() const;
+		bool atFunctionNameParens() const;
 		Word tokenToWord(const Token& t) const;
 		bool tokenIsReservedTerminator(const Token& t) const;
 
-		// Byte offset just before the next-to-be-consumed token. Used to
-		// stamp src_start at the entry of a parse production.
+		// Byte offset just before the next-to-be-consumed token; stamps
+		// src_start at the entry of a parse production.
 		std::size_t srcOffsetHere() const;
 		// Byte offset just past the last consumed token.
 		std::size_t srcOffsetEnd() const;
-		// Stamp `node` with the span [start_offset, current_end_offset()).
+		// Stamps `node` with the span [start_offset, srcOffsetEnd()).
 		void stampSpan(Node& node, std::size_t start_offset);
 
 		NodePtr parseList(bool top_level);
+		bool matchListSeparator(ListItem& item);
 		NodePtr parseAndOr();
 		NodePtr parsePipeline();
+		bool matchTimePrefix();
 		NodePtr parseCommand();
+		NodePtr parseFunctionKeyword();
 		NodePtr parseSimpleCommand();
 		NodePtr parseBraceGroup();
 		NodePtr parseSubshell();
@@ -105,10 +108,16 @@ namespace wbsh {
 		NodePtr parseFor();
 		NodePtr parseForArith(std::size_t start, SourceLoc loc);
 		NodePtr parseSelect();
+		NodePtr parseWordListLoop(std::size_t start, SourceLoc loc,
+		                          const char* keyword, bool is_select);
 		bool parseInWordListHeader(std::string& var, bool& has_in,
 		                          std::vector<Word>& items, const char* keyword);
+		void parseInWordList(std::vector<Word>& items);
 		NodePtr parseCase();
+		void parseCaseItem(CaseClause::Item& item);
+		CaseClause::Term matchCaseTerminator();
 		NodePtr parseFunctionRest(std::string name, SourceLoc loc);
+		void captureFunctionBodyText(FunctionDef& function) const;
 		NodePtr parseDoGroup();
 		NodePtr parseDBracket();
 		DBracketCond::Expr* parseDBracketExpr();
@@ -116,11 +125,13 @@ namespace wbsh {
 		DBracketCond::Expr* parseDBracketUnary();
 		DBracketCond::Expr* parseDBracketPrimary();
 		bool tryParseDBracketUnary(DBracketCond::Expr& e);
+		bool atDBracketUnaryTest() const;
 		bool atDBracketEnd() const;
 		NodePtr parseCompoundListUntilReserved(std::initializer_list<const char*> stops);
 
 		// Redirections are syntactically interleaved through compound commands.
 		bool tryParseRedirection(Redirection& out);
+		void parseTrailingRedirections(std::vector<Redirection>& redirs);
 
 		bool tryExtractAssignment(const Token& t, Assignment& out) const;
 		bool tryConsumeLeadingAssignment(SimpleCommand& cmd);

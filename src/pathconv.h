@@ -29,30 +29,15 @@ namespace wbsh {
 	std::wstring utf8ToWide(const std::string& s);
 	std::string  wideToUtf8(const std::wstring& w);
 
-	/**
-	 * @brief Build a `std::filesystem::path` from a UTF-8 string.
-	 *
-	 * On Windows, converts UTF-8 → wide first and constructs the path
-	 * from the wide string, avoiding the active-codepage
-	 * interpretation that `path(string)` would otherwise apply.
-	 */
+	/// Builds the path from the wide form, bypassing the CP_ACP
+	/// interpretation that `path(std::string)` applies on MSVC.
 	std::filesystem::path utf8ToPath(const std::string& s);
 
-	/**
-	 * @brief Encode a `std::filesystem::path` as UTF-8.
-	 *
-	 * On Windows reads the path's native (wide) representation and
-	 * converts to UTF-8, avoiding the codepage downgrade that
-	 * `path::string()` does on MSVC.
-	 */
+	/// Reads the native (wide) form, bypassing the CP_ACP downgrade
+	/// that `path::string()` applies on MSVC.
 	std::string pathToUtf8(const std::filesystem::path& p);
 
-	/**
-	 * @brief `fopen` wrapper that takes a UTF-8 path.
-	 *
-	 * On Windows uses `_wfopen` on the wide form so non-ASCII
-	 * filenames don't get downgraded through the active codepage.
-	 */
+	/// `fopen` on a UTF-8 path (`_wfopen` on Windows).
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode);
 
 	/**
@@ -73,15 +58,11 @@ namespace wbsh {
 	public:
 		PathConv();
 
-		/**
-		 * @brief Translate a POSIX-style path to a Windows path.
-		 *
-		 * Idempotent: already-Windows paths (drive letter, UNC, or
-		 * backslashes) are returned unchanged.
-		 */
+		/// Idempotent: already-Windows paths (drive letter, UNC, or
+		/// backslashes) are returned unchanged.
 		std::string toWin32(const std::string& p) const;
 
-		/// Translate a Windows path to POSIX form. Idempotent.
+		/// Idempotent.
 		std::string toPosix(const std::string& p) const;
 
 		/**
@@ -108,23 +89,14 @@ namespace wbsh {
 		std::string pathListWin32ToPosix(const std::string& list) const;
 		std::string pathListPosixToWin32(const std::string& list) const;
 
-		/**
-		 * @brief Heuristic: should @p arg be translated for a native callee?
-		 *
-		 * Yes when it looks like a POSIX absolute path (starts with
-		 * `/`), is not a flag (`-...`), is not a URL (no `://`),
-		 * and is not a single-char arg like `/`.
-		 */
+		/// Heuristic for native callees: true when the argument looks
+		/// like a POSIX absolute path and not a flag, a URL, or a
+		/// single-char arg like `/`.
 		bool argLooksTranslatable(const std::string& arg) const;
 
-		/**
-		 * @brief Translate a single argument for a native Win32 callee.
-		 *
-		 * Returns the Win32 form when the argument looks
-		 * translatable, otherwise the input unchanged. Arguments of
-		 * the form `--opt=PATH` or `-X=PATH` get only their value
-		 * side translated.
-		 */
+		/// Returns the Win32 form when the argument looks translatable,
+		/// otherwise the input unchanged. `--opt=PATH` / `-X=PATH` get
+		/// only their value side translated.
 		std::string translateArg(const std::string& arg) const;
 
 	private:
@@ -134,7 +106,7 @@ namespace wbsh {
 			bool exact;             ///< True for exact match, false for prefix match.
 		};
 
-		/// Try @p p against every mount; on success fills @p out, returns true.
+		const Mount* findMount(const std::string& p) const;
 		bool applyMount(const std::string& p, std::string& out) const;
 
 		std::vector<Mount> mounts_;

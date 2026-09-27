@@ -31,17 +31,19 @@ namespace wbsh {
 		}
 
 		bool consume(const char* lit) {
-			const std::size_t n = std::strlen(lit);
-			if (end - pos < n || src.compare(pos, n, lit) != 0) return false;
-			pos += n;
+			const std::size_t length = std::strlen(lit);
+			if (end - pos < length || src.compare(pos, length, lit) != 0) return false;
+
+			pos += length;
 			return true;
 		}
 
 		bool skipPast(const char* token) {
-			const std::size_t n = std::strlen(token);
+			const std::size_t length = std::strlen(token);
 			const std::size_t at = src.find(token, pos);
-			if (at == std::string::npos || at + n > end) return false;
-			pos = at + n;
+			if (at == std::string::npos || at + length > end) return false;
+
+			pos = at + length;
 			return true;
 		}
 
@@ -49,6 +51,7 @@ namespace wbsh {
 		bool stopAt(char c) {
 			const std::size_t at = src.find(c, pos);
 			if (at == std::string::npos || at >= end) return false;
+
 			end = at;
 			return true;
 		}
@@ -56,17 +59,19 @@ namespace wbsh {
 		bool readUpTo(char c, std::string& out) {
 			const std::size_t at = src.find(c, pos);
 			if (at == std::string::npos || at >= end) return false;
+
 			out.assign(src, pos, at - pos);
 			pos = at + 1;
 			return true;
 		}
 
 		bool readUpTo(const char* token, std::string& out) {
-			const std::size_t n = std::strlen(token);
+			const std::size_t length = std::strlen(token);
 			const std::size_t at = src.find(token, pos);
-			if (at == std::string::npos || at + n > end) return false;
+			if (at == std::string::npos || at + length > end) return false;
+
 			out.assign(src, pos, at - pos);
-			pos = at + n;
+			pos = at + length;
 			return true;
 		}
 
@@ -74,8 +79,10 @@ namespace wbsh {
 		bool readQuoted(std::string& out) {
 			const std::size_t open = src.find('"', pos);
 			if (open == std::string::npos || open >= end) return false;
+
 			const std::size_t close = src.find('"', open + 1);
 			if (close == std::string::npos || close >= end) return false;
+
 			out.assign(src, open + 1, close - open - 1);
 			pos = close + 1;
 			return true;

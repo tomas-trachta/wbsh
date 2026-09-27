@@ -176,6 +176,10 @@ namespace wbsh {
 		void         setCurrentLineno(int n) { current_lineno_ = n; }
 
 	private:
+		bool rejectIfReadonly(const std::string& name) const;
+		long long elapsedSeconds() const;
+		void importProcessVariable(std::string name, std::string value);
+
 		std::unordered_map<std::string, std::string> vars_;
 		std::unordered_map<std::string, IndexedArray> indexed_;
 		std::unordered_map<std::string, AssocArray> assoc_;

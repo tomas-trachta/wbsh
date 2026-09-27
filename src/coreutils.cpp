@@ -28,6 +28,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "awk.h"
@@ -41,6 +42,18 @@
 namespace wbsh {
 
 	namespace fs = std::filesystem;
+
+	static const int         kFallbackConsoleColumns = 80;
+	static const int         kFallbackConsoleRows    = 24;
+	static const std::size_t kStreamChunk            = 4096;
+	static const std::size_t kTimeTextCapacity       = 256;
+	static const long        kDefaultLineCount       = 10;
+	static const int         kDefaultUserId          = 1000;
+	static const int         kDefaultGroupId         = 1000;
+	static const double      kSeqEpsilon             = 1e-12;
+	static const int         kMktempAttempts         = 200;
+	static const std::size_t kMktempMinPlaceholders  = 3;
+	static const int         kSignalTerm             = 15;
 
 	void perr(const std::string& cmd, const std::string& path, const std::error_code& ec) {
 		std::fprintf(stderr, "wbsh: %s: %s: %s\n",
@@ -59,17 +72,86 @@ namespace wbsh {
 		return openUtf8(exec.pathConv().toWin32(p), mode);
 	}
 
-	struct LsOpts {
-		bool all = false;
-		bool long_fmt = false;
-		bool one = false;
-		bool human = false;
-		bool reverse = false;
-		bool sort_mtime = false;
-		bool sort_size = false;
-		bool classify = false;
-		enum { Auto, Always, Never } color = Auto;
-	};
+	static bool startsWithDash(const std::string& arg) {
+		return !arg.empty() && arg[0] == '-';
+	}
+
+	static bool isOptionNotStdin(const std::string& arg) {
+		return startsWithDash(arg) && arg != "-";
+	}
+
+	static bool isShortFlagCluster(const std::string& arg) {
+		return arg.size() > 1 && arg[0] == '-' && arg[1] != '-';
+	}
+
+	static bool hasShortFlag(const std::string& cluster, char flag) {
+		return cluster.find(flag, 1) != std::string::npos;
+	}
+
+	static bool isDigitChar(char c) {
+		return std::isdigit(static_cast<unsigned char>(c)) != 0;
+	}
+
+	static std::string withErrno(const std::string& path) {
+		return path + ": " + std::strerror(errno);
+	}
+
+	static std::FILE* openInputOrStdin(Executor& exec, const std::string& name) {
+		if (name == "-") return stdin;
+		return fopenNative(exec, name, "rb");
+	}
+
+	static void closeUnlessStdin(std::FILE* stream) {
+		if (stream != stdin) std::fclose(stream);
+	}
+
+	static void takeRemainingOperands(const std::vector<std::string>& args, std::size_t from,
+	                                  std::vector<std::string>& operands) {
+		for (std::size_t i = from; i < args.size(); ++i) operands.push_back(args[i]);
+	}
+
+	static std::string joinWords(const std::vector<std::string>& words) {
+		std::string joined;
+		for (std::size_t i = 0; i < words.size(); ++i) {
+			if (i != 0) joined.push_back(' ');
+			joined += words[i];
+		}
+
+		return joined;
+	}
+
+	static std::string currentUserName(Executor& exec) {
+		std::string user = exec.env().get("USER");
+		if (user.empty()) user = exec.env().get("USERNAME");
+		if (user.empty()) user = "user";
+		return user;
+	}
+
+	static std::tm brokenDownTime(std::time_t epoch, bool utc) {
+		std::tm result{};
+#ifdef _WIN32
+		if (utc) {
+			gmtime_s(&result, &epoch);
+			return result;
+		}
+
+		localtime_s(&result, &epoch);
+#else
+		if (utc) {
+			gmtime_r(&epoch, &result);
+			return result;
+		}
+
+		localtime_r(&epoch, &result);
+#endif
+		return result;
+	}
+
+	static std::string formatTime(const std::tm& time, const char* format) {
+		char text[kTimeTextCapacity];
+		std::strftime(text, sizeof(text), format, &time);
+		return text;
+	}
 
 	static bool stdoutIsTty() {
 #ifdef _WIN32
@@ -79,17 +161,43 @@ namespace wbsh {
 #endif
 	}
 
-	static int consoleWidth() {
+	static bool queryConsoleSize(int& columns, int& rows) {
 #ifdef _WIN32
-		HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+		const HANDLE handle = ::GetStdHandle(STD_OUTPUT_HANDLE);
+		if (handle == INVALID_HANDLE_VALUE) return false;
+
 		CONSOLE_SCREEN_BUFFER_INFO info{};
-		if (h != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(h, &info)) {
-			int w = info.srWindow.Right - info.srWindow.Left + 1;
-			if (w > 0) return w;
-		}
+		if (::GetConsoleScreenBufferInfo(handle, &info) == 0) return false;
+
+		columns = info.srWindow.Right - info.srWindow.Left + 1;
+		rows    = info.srWindow.Bottom - info.srWindow.Top + 1;
+		return true;
+#else
+		(void)columns;
+		(void)rows;
+		return false;
 #endif
-		return 80;
 	}
+
+	static int consoleWidth() {
+		int columns = 0;
+		int rows = 0;
+		if (queryConsoleSize(columns, rows) && columns > 0) return columns;
+		return kFallbackConsoleColumns;
+	}
+
+	struct LsOpts {
+		bool all = false;
+		bool long_fmt = false;
+		bool one = false;
+		bool human = false;
+		bool reverse = false;
+		bool sort_mtime = false;
+		bool sort_size = false;
+		bool classify = false;
+		bool use_color = false;
+		enum { Auto, Always, Never } color = Auto;
+	};
 
 	struct LsEntry {
 		std::string name;
@@ -104,128 +212,137 @@ namespace wbsh {
 		bool valid = false;
 	};
 
-	static bool windowsHidden(const fs::path& p) {
+	static bool windowsHidden(const fs::path& path) {
 #ifdef _WIN32
-		DWORD attr = GetFileAttributesW(p.wstring().c_str());
-		if (attr == INVALID_FILE_ATTRIBUTES) return false;
-		return (attr & FILE_ATTRIBUTE_HIDDEN) != 0;
+		const DWORD attributes = ::GetFileAttributesW(path.wstring().c_str());
+		if (attributes == INVALID_FILE_ATTRIBUTES) return false;
+		return (attributes & FILE_ATTRIBUTE_HIDDEN) != 0;
 #else
-		(void)p;
+		(void)path;
 		return false;
 #endif
 	}
 
-	LsEntry collect(const fs::path& parent, const std::string& name) {
-		LsEntry e;
-		e.name = name;
-		fs::path npath = utf8ToPath(name);
-		e.full = parent.empty() ? npath : (parent / npath);
-		std::error_code ec;
-		e.status = fs::symlink_status(e.full, ec);
-		e.is_symlink = !ec && fs::is_symlink(e.status);
-		fs::file_status real = e.is_symlink
-			? fs::status(e.full, ec)
-			: e.status;
-		e.is_dir = !ec && fs::is_directory(real);
-		if (!ec && fs::is_regular_file(e.status)) {
-			e.size = fs::file_size(e.full, ec);
-			if (ec) e.size = 0;
-		}
+	static bool windowsReadOnly(const fs::path& path) {
+#ifdef _WIN32
+		const DWORD attributes = ::GetFileAttributesW(path.wstring().c_str());
+		if (attributes == INVALID_FILE_ATTRIBUTES) return false;
+		return (attributes & FILE_ATTRIBUTE_READONLY) != 0;
+#else
+		(void)path;
+		return false;
+#endif
+	}
 
-		std::error_code ec2;
-		e.mtime = fs::last_write_time(e.full, ec2);
-		if (!name.empty() && name[0] == '.') e.is_hidden = true;
-		if (windowsHidden(e.full)) e.is_hidden = true;
-		std::string ext = pathToUtf8(e.full.extension());
+	static bool hasExecutableExtension(const fs::path& full) {
+		std::string ext = pathToUtf8(full.extension());
 		std::transform(ext.begin(), ext.end(), ext.begin(),
-			[](char c) { return static_cast<char>(std::tolower((unsigned char)c)); });
-		if (ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".com" || ext == ".ps1") {
-			e.is_executable = true;
+			[](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+		return ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".com" || ext == ".ps1";
+	}
+
+	static LsEntry collectEntry(const fs::path& parent, const std::string& name) {
+		LsEntry entry;
+		entry.name = name;
+		const fs::path native = utf8ToPath(name);
+		entry.full = parent.empty() ? native : (parent / native);
+
+		std::error_code ec;
+		entry.status = fs::symlink_status(entry.full, ec);
+		entry.is_symlink = !ec && fs::is_symlink(entry.status);
+		const fs::file_status real = entry.is_symlink ? fs::status(entry.full, ec) : entry.status;
+		entry.is_dir = !ec && fs::is_directory(real);
+		if (!ec && fs::is_regular_file(entry.status)) {
+			entry.size = fs::file_size(entry.full, ec);
+			if (ec) entry.size = 0;
 		}
 
-		e.valid = true;
-		return e;
+		std::error_code mtime_ec;
+		entry.mtime = fs::last_write_time(entry.full, mtime_ec);
+		entry.is_hidden = (!name.empty() && name[0] == '.') || windowsHidden(entry.full);
+		entry.is_executable = hasExecutableExtension(entry.full);
+		entry.valid = true;
+		return entry;
 	}
 
-	static std::string colorize(const LsEntry& e, bool use_color) {
-		if (!use_color) return e.name;
-		const char* code = nullptr;
-		if (e.is_symlink) code = "\x1b[36;1m";
-		else if (e.is_dir) code = "\x1b[34;1m";
-		else if (e.is_executable) code = "\x1b[32;1m";
-		if (!code) return e.name;
-		return std::string(code) + e.name + "\x1b[0m";
+	static const char* lsColorCode(const LsEntry& entry) {
+		if (entry.is_symlink) return "\x1b[36;1m";
+		if (entry.is_dir) return "\x1b[34;1m";
+		if (entry.is_executable) return "\x1b[32;1m";
+		return nullptr;
 	}
 
-	static std::string classifySuffix(const LsEntry& e) {
-		if (e.is_dir) return "/";
-		if (e.is_symlink) return "@";
-		if (e.is_executable) return "*";
+	static std::string colorize(const LsEntry& entry, bool use_color) {
+		if (!use_color) return entry.name;
+
+		const char* code = lsColorCode(entry);
+		if (code == nullptr) return entry.name;
+		return std::string(code) + entry.name + "\x1b[0m";
+	}
+
+	static std::string classifySuffix(const LsEntry& entry) {
+		if (entry.is_dir) return "/";
+		if (entry.is_symlink) return "@";
+		if (entry.is_executable) return "*";
 		return "";
 	}
 
-	static std::string humanSize(std::uintmax_t n) {
-		static const char* units[] = { "", "K", "M", "G", "T", "P" };
-		double v = static_cast<double>(n);
-		int u = 0;
-		while (v >= 1024.0 && u + 1 < static_cast<int>(sizeof(units) / sizeof(units[0]))) {
-			v /= 1024.0;
-			++u;
+	static std::string humanSize(std::uintmax_t bytes) {
+		static const char* const kUnits[] = { "", "K", "M", "G", "T", "P" };
+		static const int kUnitCount = static_cast<int>(sizeof(kUnits) / sizeof(kUnits[0]));
+
+		double value = static_cast<double>(bytes);
+		int unit = 0;
+		while (value >= 1024.0 && unit + 1 < kUnitCount) {
+			value /= 1024.0;
+			++unit;
 		}
 
-		char buf[32];
-		if (u == 0) {
-			std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(n));
-		}
-		else if (v >= 10.0) {
-			std::snprintf(buf, sizeof(buf), "%.0f%s", v, units[u]);
-		}
-		else {
-			std::snprintf(buf, sizeof(buf), "%.1f%s", v, units[u]);
+		char text[32];
+		if (unit == 0) {
+			std::snprintf(text, sizeof(text), "%llu", static_cast<unsigned long long>(bytes));
+		} else if (value >= 10.0) {
+			std::snprintf(text, sizeof(text), "%.0f%s", value, kUnits[unit]);
+		} else {
+			std::snprintf(text, sizeof(text), "%.1f%s", value, kUnits[unit]);
 		}
 
-		return buf;
+		return text;
 	}
 
-	static std::string formatMtime(const fs::file_time_type& t) {
+	static std::string formatMtime(const fs::file_time_type& mtime) {
 		using namespace std::chrono;
-		auto sctp = time_point_cast<system_clock::duration>(
-			t - fs::file_time_type::clock::now() + system_clock::now());
-		std::time_t tt = system_clock::to_time_t(sctp);
-		std::tm tm{};
-#ifdef _WIN32
-		localtime_s(&tm, &tt);
-#else
-		localtime_r(&tt, &tm);
-#endif
-		char buf[32];
-		std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm);
-		return buf;
+		const auto system_time = time_point_cast<system_clock::duration>(
+			mtime - fs::file_time_type::clock::now() + system_clock::now());
+		const std::time_t epoch = system_clock::to_time_t(system_time);
+		return formatTime(brokenDownTime(epoch, false), "%Y-%m-%d %H:%M");
 	}
 
-	static std::string permString(const LsEntry& e) {
-		std::string s;
-		s += e.is_symlink ? 'l' : (e.is_dir ? 'd' : '-');
-		bool readonly = false;
-#ifdef _WIN32
-		DWORD attr = GetFileAttributesW(e.full.wstring().c_str());
-		if (attr != INVALID_FILE_ATTRIBUTES) {
-			readonly = (attr & FILE_ATTRIBUTE_READONLY) != 0;
-		}
-#endif
-		s += "r";
-		s += (readonly ? "-" : "w");
-		s += (e.is_executable || e.is_dir) ? "x" : "-";
-		s += "r-";
-		s += (e.is_executable || e.is_dir) ? "x" : "-";
-		s += "r-";
-		s += (e.is_executable || e.is_dir) ? "x" : "-";
-		return s;
+	static char permTypeChar(const LsEntry& entry) {
+		if (entry.is_symlink) return 'l';
+		if (entry.is_dir) return 'd';
+		return '-';
+	}
+
+	static std::string permString(const LsEntry& entry) {
+		const char* execute = (entry.is_executable || entry.is_dir) ? "x" : "-";
+		const char* write = windowsReadOnly(entry.full) ? "-" : "w";
+
+		std::string perms;
+		perms += permTypeChar(entry);
+		perms += "r";
+		perms += write;
+		perms += execute;
+		perms += "r-";
+		perms += execute;
+		perms += "r-";
+		perms += execute;
+		return perms;
 	}
 
 	static bool lsNameLess(const LsEntry& a, const LsEntry& b) {
-		const std::size_t n = a.name.size() < b.name.size() ? a.name.size() : b.name.size();
-		for (std::size_t i = 0; i < n; ++i) {
+		const std::size_t common = std::min(a.name.size(), b.name.size());
+		for (std::size_t i = 0; i < common; ++i) {
 			const int ca = std::tolower(static_cast<unsigned char>(a.name[i]));
 			const int cb = std::tolower(static_cast<unsigned char>(b.name[i]));
 			if (ca != cb) return ca < cb;
@@ -235,135 +352,165 @@ namespace wbsh {
 		return a.name < b.name;
 	}
 
-	static void sortEntries(std::vector<LsEntry>& items, const LsOpts& opts) {
-		if (opts.sort_mtime) {
-			std::sort(items.begin(), items.end(),
-				[](const LsEntry& a, const LsEntry& b) {
-					if (a.mtime != b.mtime) return a.mtime > b.mtime;
-					return lsNameLess(a, b);
-				});
-		}
-		else if (opts.sort_size) {
-			std::sort(items.begin(), items.end(),
-				[](const LsEntry& a, const LsEntry& b) {
-					if (a.size != b.size) return a.size > b.size;
-					return lsNameLess(a, b);
-				});
-		}
-		else {
-			std::sort(items.begin(), items.end(), lsNameLess);
-		}
+	static bool lsMtimeLess(const LsEntry& a, const LsEntry& b) {
+		if (a.mtime != b.mtime) return a.mtime > b.mtime;
+		return lsNameLess(a, b);
+	}
 
+	static bool lsSizeLess(const LsEntry& a, const LsEntry& b) {
+		if (a.size != b.size) return a.size > b.size;
+		return lsNameLess(a, b);
+	}
+
+	using LsLess = bool (*)(const LsEntry&, const LsEntry&);
+
+	static LsLess lsComparator(const LsOpts& opts) {
+		if (opts.sort_mtime) return lsMtimeLess;
+		if (opts.sort_size) return lsSizeLess;
+		return lsNameLess;
+	}
+
+	static void sortEntries(std::vector<LsEntry>& items, const LsOpts& opts) {
+		std::sort(items.begin(), items.end(), lsComparator(opts));
 		if (opts.reverse) std::reverse(items.begin(), items.end());
 	}
 
-	static void printColumns(const std::vector<LsEntry>& items, const LsOpts& opts,
-	                         bool use_color) {
-		if (items.empty()) return;
+	static std::vector<std::string> lsLabels(const std::vector<LsEntry>& items) {
 		std::vector<std::string> labels;
 		labels.reserve(items.size());
-		std::size_t maxlen = 0;
-		for (const auto& e : items) {
-			std::string label = e.name + classifySuffix(e);
-			if (label.size() > maxlen) maxlen = label.size();
-			labels.push_back(std::move(label));
+		for (const auto& entry : items) labels.push_back(entry.name + classifySuffix(entry));
+		return labels;
+	}
+
+	static std::size_t longestLabel(const std::vector<std::string>& labels) {
+		std::size_t longest = 0;
+		for (const auto& label : labels) longest = std::max(longest, label.size());
+		return longest;
+	}
+
+	static void printOnePerLine(const std::vector<LsEntry>& items, bool use_color) {
+		for (const auto& entry : items) {
+			std::fputs(colorize(entry, use_color).c_str(), stdout);
+			std::fputs(classifySuffix(entry).c_str(), stdout);
+			std::fputc('\n', stdout);
 		}
+	}
 
-		if (opts.one || !stdoutIsTty()) {
-			for (std::size_t i = 0; i < items.size(); ++i) {
-				if (use_color) std::fputs(colorize(items[i], true).c_str(), stdout);
-				else           std::fputs(items[i].name.c_str(), stdout);
-				std::fputs(classifySuffix(items[i]).c_str(), stdout);
-				std::fputc('\n', stdout);
-			}
+	static void printPadding(std::size_t from, std::size_t to) {
+		for (std::size_t k = from; k < to; ++k) std::fputc(' ', stdout);
+	}
 
-			return;
-		}
+	static void printGrid(const std::vector<LsEntry>& items, const std::vector<std::string>& labels,
+	                      bool use_color) {
+		const std::size_t pad  = longestLabel(labels) + 2;
+		const std::size_t cols = std::max<std::size_t>(1, consoleWidth() / pad);
+		const std::size_t rows = (items.size() + cols - 1) / cols;
 
-		int width = consoleWidth();
-		std::size_t pad = maxlen + 2;
-		std::size_t cols = std::max<std::size_t>(1, width / pad);
-		std::size_t rows = (items.size() + cols - 1) / cols;
-		for (std::size_t r = 0; r < rows; ++r) {
-			for (std::size_t c = 0; c < cols; ++c) {
-				std::size_t idx = c * rows + r;
-				if (idx >= items.size()) break;
-				std::string disp = use_color ? colorize(items[idx], true) : items[idx].name;
-				disp += classifySuffix(items[idx]);
-				std::fputs(disp.c_str(), stdout);
-				if (c + 1 < cols && (c + 1) * rows + r < items.size()) {
-					std::size_t visible = labels[idx].size();
-					for (std::size_t k = visible; k < pad; ++k) std::fputc(' ', stdout);
-				}
+		for (std::size_t row = 0; row < rows; ++row) {
+			for (std::size_t col = 0; col < cols; ++col) {
+				const std::size_t index = col * rows + row;
+				if (index >= items.size()) break;
+
+				const std::string shown = colorize(items[index], use_color)
+					+ classifySuffix(items[index]);
+				std::fputs(shown.c_str(), stdout);
+
+				const bool more_in_row = col + 1 < cols && (col + 1) * rows + row < items.size();
+				if (more_in_row) printPadding(labels[index].size(), pad);
 			}
 
 			std::fputc('\n', stdout);
 		}
 	}
 
-	static void printLong(const std::vector<LsEntry>& items, const LsOpts& opts,
-	                      bool use_color, Executor& exec) {
-		std::string user = exec.env().get("USER");
-		if (user.empty()) user = exec.env().get("USERNAME");
-		if (user.empty()) user = "user";
-		std::size_t size_w = 1;
-		for (const auto& e : items) {
-			std::string s = opts.human ? humanSize(e.size) : std::to_string(e.size);
-			if (s.size() > size_w) size_w = s.size();
+	static void printColumns(const std::vector<LsEntry>& items, const LsOpts& opts) {
+		if (items.empty()) return;
+		if (opts.one || !stdoutIsTty()) {
+			printOnePerLine(items, opts.use_color);
+			return;
 		}
 
-		for (const auto& e : items) {
-			std::string p = permString(e);
-			std::string s = opts.human ? humanSize(e.size) : std::to_string(e.size);
-			std::string mt = formatMtime(e.mtime);
-			std::string label = use_color ? colorize(e, true) : e.name;
-			label += classifySuffix(e);
-			std::string spad(size_w - s.size(), ' ');
+		printGrid(items, lsLabels(items), opts.use_color);
+	}
+
+	static std::string lsSizeText(const LsEntry& entry, const LsOpts& opts) {
+		if (opts.human) return humanSize(entry.size);
+		return std::to_string(entry.size);
+	}
+
+	static std::size_t widestSizeText(const std::vector<LsEntry>& items, const LsOpts& opts) {
+		std::size_t widest = 1;
+		for (const auto& entry : items) widest = std::max(widest, lsSizeText(entry, opts).size());
+		return widest;
+	}
+
+	static void printLong(const std::vector<LsEntry>& items, const LsOpts& opts, Executor& exec) {
+		const std::string user = currentUserName(exec);
+		const std::size_t size_width = widestSizeText(items, opts);
+
+		for (const auto& entry : items) {
+			const std::string size = lsSizeText(entry, opts);
+			const std::string padding(size_width - size.size(), ' ');
+			const std::string label = colorize(entry, opts.use_color) + classifySuffix(entry);
 			std::fprintf(stdout, "%s 1 %s %s %s%s %s %s\n",
-				p.c_str(), user.c_str(), user.c_str(),
-				spad.c_str(), s.c_str(), mt.c_str(), label.c_str());
+				permString(entry).c_str(), user.c_str(), user.c_str(),
+				padding.c_str(), size.c_str(), formatMtime(entry.mtime).c_str(), label.c_str());
 		}
+	}
+
+	static bool applyLsLongOption(const std::string& arg, LsOpts& opts) {
+		if      (arg == "--color" || arg == "--color=auto")       opts.color = LsOpts::Auto;
+		else if (arg == "--color=always" || arg == "--color=yes") opts.color = LsOpts::Always;
+		else if (arg == "--color=never"  || arg == "--color=no")  opts.color = LsOpts::Never;
+		else if (arg == "--all")                                  opts.all = true;
+		else if (arg == "--human-readable")                       opts.human = true;
+		else if (arg == "--reverse")                              opts.reverse = true;
+		else if (arg == "--classify")                             opts.classify = true;
+		else return false;
+		return true;
+	}
+
+	static bool applyLsShortFlags(const std::string& cluster, LsOpts& opts) {
+		for (std::size_t k = 1; k < cluster.size(); ++k) {
+			switch (cluster[k]) {
+			case 'a': case 'A': opts.all = true; break;
+			case 'l': opts.long_fmt = true; break;
+			case '1': opts.one = true; break;
+			case 'h': opts.human = true; break;
+			case 'r': opts.reverse = true; break;
+			case 't': opts.sort_mtime = true; break;
+			case 'S': opts.sort_size = true; break;
+			case 'F': opts.classify = true; break;
+			default:
+				std::fprintf(stderr, "wbsh: ls: unknown option -%c\n", cluster[k]);
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	static int parseLsArgs(const std::vector<std::string>& args,
 	                       LsOpts& opts, std::vector<std::string>& paths) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "--") {
-				for (++i; i < args.size(); ++i) paths.push_back(args[i]);
+			const std::string& arg = args[i];
+			if (arg == "--") {
+				takeRemainingOperands(args, i + 1, paths);
 				break;
 			}
 
-			if      (a == "--color" || a == "--color=auto")  opts.color = LsOpts::Auto;
-			else if (a == "--color=always" || a == "--color=yes") opts.color = LsOpts::Always;
-			else if (a == "--color=never"  || a == "--color=no")  opts.color = LsOpts::Never;
-			else if (a == "--all")            opts.all = true;
-			else if (a == "--human-readable") opts.human = true;
-			else if (a == "--reverse")        opts.reverse = true;
-			else if (a == "--classify")       opts.classify = true;
-			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					switch (a[k]) {
-					case 'a': case 'A': opts.all = true; break;
-					case 'l': opts.long_fmt = true; break;
-					case '1': opts.one = true; break;
-					case 'h': opts.human = true; break;
-					case 'r': opts.reverse = true; break;
-					case 't': opts.sort_mtime = true; break;
-					case 'S': opts.sort_size = true; break;
-					case 'F': opts.classify = true; break;
-					default:
-						std::fprintf(stderr, "wbsh: ls: unknown option -%c\n", a[k]);
-						return 2;
-					}
-				}
+			if (applyLsLongOption(arg, opts)) continue;
+			if (isShortFlagCluster(arg)) {
+				if (!applyLsShortFlags(arg, opts)) return 2;
+				continue;
 			}
-			else {
-				paths.push_back(a);
-			}
+
+			paths.push_back(arg);
 		}
 
 		if (paths.empty()) paths.push_back(".");
+		opts.use_color = opts.color == LsOpts::Always
+			|| (opts.color == LsOpts::Auto && stdoutIsTty());
 		return 0;
 	}
 
@@ -377,67 +524,73 @@ namespace wbsh {
 			return false;
 		}
 
-		for (const auto& de : it) {
-			std::string name = pathToUtf8(de.path().filename());
-			LsEntry e = collect(target, name);
-			if (!opts.all && e.is_hidden) continue;
-			items.push_back(std::move(e));
+		for (const auto& dir_entry : it) {
+			LsEntry entry = collectEntry(target, pathToUtf8(dir_entry.path().filename()));
+			if (!opts.all && entry.is_hidden) continue;
+			items.push_back(std::move(entry));
 		}
 
 		return true;
 	}
 
-	static void emitLsItems(const std::vector<LsEntry>& items, const LsOpts& opts,
-	                        bool use_color, Executor& exec) {
-		if (opts.long_fmt) printLong(items, opts, use_color, exec);
-		else               printColumns(items, opts, use_color);
+	static void emitLsItems(const std::vector<LsEntry>& items, const LsOpts& opts, Executor& exec) {
+		if (opts.long_fmt) printLong(items, opts, exec);
+		else               printColumns(items, opts);
+	}
+
+	enum class LsHeader { None, First, Subsequent };
+
+	static void printLsHeader(const std::string& path, LsHeader header) {
+		if (header == LsHeader::None) return;
+		if (header == LsHeader::Subsequent) std::fputc('\n', stdout);
+		std::fprintf(stdout, "%s:\n", path.c_str());
+	}
+
+	static int listOnePath(Executor& exec, const LsOpts& opts, const std::string& path,
+	                       LsHeader header) {
+		const fs::path target = toNative(exec, path);
+		std::error_code ec;
+		const fs::file_status status = fs::symlink_status(target, ec);
+		if (ec) {
+			perr("ls", path, ec);
+			return 1;
+		}
+
+		std::vector<LsEntry> items;
+		if (fs::is_directory(status)) {
+			printLsHeader(path, header);
+			if (!collectLsDirectoryEntries(target, opts, path, items)) return 1;
+		} else {
+			LsEntry entry = collectEntry(fs::path(), path);
+			entry.name = path;
+			items.push_back(std::move(entry));
+		}
+
+		sortEntries(items, opts);
+		emitLsItems(items, opts, exec);
+		return 0;
+	}
+
+	static LsHeader lsHeaderFor(std::size_t index, std::size_t path_count) {
+		if (path_count <= 1) return LsHeader::None;
+		if (index == 0) return LsHeader::First;
+		return LsHeader::Subsequent;
 	}
 
 	static int builtin_ls(Executor& exec, const std::vector<std::string>& args) {
 		LsOpts opts;
 		std::vector<std::string> paths;
-		const int parse_rc = parseLsArgs(args, opts, paths);
-		if (parse_rc != 0) return parse_rc;
+		const int parse_status = parseLsArgs(args, opts, paths);
+		if (parse_status != 0) return parse_status;
 
-		const bool use_color = (opts.color == LsOpts::Always)
-			|| (opts.color == LsOpts::Auto && stdoutIsTty());
-
-		int rc = 0;
-		const bool show_headers = paths.size() > 1;
-		for (std::size_t pi = 0; pi < paths.size(); ++pi) {
-			const std::string& p = paths[pi];
-			fs::path target = toNative(exec, p);
-			std::error_code ec;
-			fs::file_status st = fs::symlink_status(target, ec);
-			if (ec) {
-				perr("ls", p, ec);
-				rc = 1;
-				continue;
-			}
-
-			std::vector<LsEntry> items;
-			if (fs::is_directory(st)) {
-				if (show_headers) {
-					if (pi) std::fputc('\n', stdout);
-					std::fprintf(stdout, "%s:\n", p.c_str());
-				}
-
-				if (!collectLsDirectoryEntries(target, opts, p, items)) {
-					rc = 1;
-					continue;
-				}
-			} else {
-				LsEntry e = collect(fs::path(), p);
-				e.name = p;
-				items.push_back(std::move(e));
-			}
-
-			sortEntries(items, opts);
-			emitLsItems(items, opts, use_color, exec);
+		int status = 0;
+		for (std::size_t i = 0; i < paths.size(); ++i) {
+			const LsHeader header = lsHeaderFor(i, paths.size());
+			if (listOnePath(exec, opts, paths[i], header) != 0) status = 1;
 		}
 
 		std::fflush(stdout);
-		return rc;
+		return status;
 	}
 
 	struct CatOptions {
@@ -451,98 +604,110 @@ namespace wbsh {
 		std::size_t lineno = 0;
 	};
 
-	static CatOptions parseCatArgs(const std::vector<std::string>& args) {
-		CatOptions o;
-		std::size_t i = 0;
-		while (i < args.size()) {
-			const std::string& a = args[i];
-			if (a == "--") { ++i; while (i < args.size()) o.files.push_back(args[i++]); break; }
-			if (a == "-n" || a == "--number") { o.number = true; ++i; continue; }
-			if (a == "-b" || a == "--number-nonblank") { o.number_nonblank = true; ++i; continue; }
-			if (a == "-") { o.files.push_back("-"); ++i; continue; }
-			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				bool ok = true;
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					if (a[k] == 'n') o.number = true;
-					else if (a[k] == 'b') o.number_nonblank = true;
-					else { ok = false; break; }
-				}
-
-				if (ok) { ++i; continue; }
-			}
-
-			o.files.push_back(a);
-			++i;
+	// Flags seen before an unknown letter stay applied; the whole cluster
+	// is then treated as a file name, as it always was.
+	static bool applyCatShortFlags(const std::string& cluster, CatOptions& opts) {
+		for (std::size_t k = 1; k < cluster.size(); ++k) {
+			if (cluster[k] == 'n') opts.number = true;
+			else if (cluster[k] == 'b') opts.number_nonblank = true;
+			else return false;
 		}
 
-		if (o.files.empty()) o.files.push_back("-");
-		return o;
+		return true;
 	}
 
-	static void catEmitChunk(const char* data, std::size_t n,
-	                         const CatOptions& opts, CatEmitState& st) {
+	static CatOptions parseCatArgs(const std::vector<std::string>& args) {
+		CatOptions opts;
+		for (std::size_t i = 0; i < args.size(); ++i) {
+			const std::string& arg = args[i];
+			if (arg == "--") {
+				takeRemainingOperands(args, i + 1, opts.files);
+				break;
+			}
+
+			if (arg == "-n" || arg == "--number") {
+				opts.number = true;
+				continue;
+			}
+
+			if (arg == "-b" || arg == "--number-nonblank") {
+				opts.number_nonblank = true;
+				continue;
+			}
+
+			if (isShortFlagCluster(arg) && applyCatShortFlags(arg, opts)) continue;
+			opts.files.push_back(arg);
+		}
+
+		if (opts.files.empty()) opts.files.push_back("-");
+		return opts;
+	}
+
+	static void catEmitChunk(const char* data, std::size_t length,
+	                         const CatOptions& opts, CatEmitState& state) {
 		if (!opts.number && !opts.number_nonblank) {
-			std::fwrite(data, 1, n, stdout);
+			std::fwrite(data, 1, length, stdout);
 			return;
 		}
 
-		for (std::size_t p = 0; p < n; ++p) {
-			if (st.at_line_start) {
-				bool blank_line = (data[p] == '\n');
+		for (std::size_t i = 0; i < length; ++i) {
+			if (state.at_line_start) {
+				const bool blank_line = data[i] == '\n';
 				if (!opts.number_nonblank || !blank_line) {
-					++st.lineno;
-					std::fprintf(stdout, "%6zu\t", st.lineno);
+					++state.lineno;
+					std::fprintf(stdout, "%6zu\t", state.lineno);
 				}
 
-				st.at_line_start = false;
+				state.at_line_start = false;
 			}
 
-			std::fputc(data[p], stdout);
-			if (data[p] == '\n') st.at_line_start = true;
+			std::fputc(data[i], stdout);
+			if (data[i] == '\n') state.at_line_start = true;
+		}
+	}
+
+	static void catStdin(const CatOptions& opts, CatEmitState& state) {
+		char chunk[kStreamChunk];
+		for (;;) {
+			const std::size_t got = std::fread(chunk, 1, sizeof(chunk), stdin);
+			if (got == 0) break;
+			catEmitChunk(chunk, got, opts, state);
 		}
 	}
 
 	static int catStreamFile(Executor& exec, const std::string& name,
-	                         const CatOptions& opts, CatEmitState& st) {
+	                         const CatOptions& opts, CatEmitState& state) {
 		if (name == "-") {
-			char buf[4096];
-			while (true) {
-				std::size_t got = std::fread(buf, 1, sizeof(buf), stdin);
-				if (got == 0) break;
-				catEmitChunk(buf, got, opts, st);
-			}
-
+			catStdin(opts, state);
 			return 0;
 		}
 
-		fs::path native = toNative(exec, name);
-		std::ifstream in(native, std::ios::binary);
+		std::ifstream in(toNative(exec, name), std::ios::binary);
 		if (!in) {
-			std::fprintf(stderr, "wbsh: cat: %s: %s\n",
-				name.c_str(), std::strerror(errno));
+			perr("cat", withErrno(name));
 			return 1;
 		}
 
-		char buf[4096];
+		char chunk[kStreamChunk];
 		while (in) {
-			in.read(buf, sizeof(buf));
-			std::streamsize got = in.gcount();
-			if (got > 0) catEmitChunk(buf, static_cast<std::size_t>(got), opts, st);
+			in.read(chunk, sizeof(chunk));
+			const std::streamsize got = in.gcount();
+			if (got > 0) catEmitChunk(chunk, static_cast<std::size_t>(got), opts, state);
 		}
 
 		return 0;
 	}
 
 	static int builtin_cat(Executor& exec, const std::vector<std::string>& args) {
-		CatOptions opts = parseCatArgs(args);
-		CatEmitState st;
-		int rc = 0;
-		for (const auto& f : opts.files) {
-			if (catStreamFile(exec, f, opts, st) != 0) rc = 1;
+		const CatOptions opts = parseCatArgs(args);
+		CatEmitState state;
+		int status = 0;
+		for (const auto& file : opts.files) {
+			if (catStreamFile(exec, file, opts, state) != 0) status = 1;
 		}
 
 		std::fflush(stdout);
-		return rc;
+		return status;
 	}
 
 	static int builtin_clear(Executor&, const std::vector<std::string>&) {
@@ -552,8 +717,58 @@ namespace wbsh {
 		return 0;
 	}
 
+	// A lone drive letter before ':' belongs to a Win32 entry, not to a
+	// POSIX-style separator.
+	static std::vector<std::string> splitSearchPath(const std::string& path) {
+		std::vector<std::string> dirs;
+		std::string current;
+		for (char c : path) {
+			const bool drive_colon = c == ':' && current.size() == 1
+				&& std::isalpha(static_cast<unsigned char>(current[0])) != 0;
+			if (c == ';' || (c == ':' && !drive_colon)) {
+				dirs.push_back(current);
+				current.clear();
+				continue;
+			}
+
+			current.push_back(c);
+		}
+
+		if (!current.empty()) dirs.push_back(current);
+		return dirs;
+	}
+
+	static bool findExecutableInDir(Executor& exec, const std::string& dir,
+	                                const std::string& name, std::string& found) {
+#ifdef _WIN32
+		static const char* const kExtensions[] = { "", ".exe", ".cmd", ".bat", nullptr };
+#else
+		static const char* const kExtensions[] = { "", nullptr };
+#endif
+		const fs::path base = utf8ToPath(exec.pathConv().toWin32(dir));
+		for (int e = 0; kExtensions[e] != nullptr; ++e) {
+			const fs::path candidate = base / utf8ToPath(name + kExtensions[e]);
+			std::error_code ec;
+			if (fs::exists(candidate, ec) && !fs::is_directory(candidate, ec)) {
+				found = exec.pathConv().toPosix(pathToUtf8(candidate));
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	static bool findOnSearchPath(Executor& exec, const std::string& name, std::string& found) {
+		for (const auto& dir : splitSearchPath(exec.env().get("PATH"))) {
+			if (dir.empty()) continue;
+			if (findExecutableInDir(exec, dir, name, found)) return true;
+		}
+
+		return false;
+	}
+
 	static int builtin_which(Executor& exec, const std::vector<std::string>& args) {
-		int rc = 0;
+		int status = 0;
 		for (const auto& name : args) {
 			if (exec.isFunction(name)) {
 				std::printf("%s: shell function\n", name.c_str());
@@ -565,436 +780,552 @@ namespace wbsh {
 				continue;
 			}
 
-			std::string path = exec.env().get("PATH");
-			bool found = false;
-			std::vector<std::string> dirs;
-			std::string cur;
-			for (std::size_t k = 0; k < path.size(); ++k) {
-				char c = path[k];
-				if (c == ';') { dirs.push_back(cur); cur.clear(); }
-				else if (c == ':') {
-					if (cur.size() == 1 && std::isalpha((unsigned char)cur[0])) cur.push_back(c);
-					else { dirs.push_back(cur); cur.clear(); }
-				}
-				else cur.push_back(c);
+			std::string found;
+			if (findOnSearchPath(exec, name, found)) {
+				std::printf("%s\n", found.c_str());
+				continue;
 			}
 
-			if (!cur.empty()) dirs.push_back(cur);
-			for (const auto& d : dirs) {
-				if (d.empty()) continue;
-				fs::path base = utf8ToPath(exec.pathConv().toWin32(d));
-#ifdef _WIN32
-				static const char* exts[] = { "", ".exe", ".cmd", ".bat", nullptr };
-#else
-				static const char* exts[] = { "", nullptr };
-#endif
-				for (int e = 0; exts[e]; ++e) {
-					fs::path q = base / utf8ToPath(name + exts[e]);
-					std::error_code ec;
-					if (fs::exists(q, ec) && !fs::is_directory(q, ec)) {
-						std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(q)).c_str());
-						found = true;
-						break;
-					}
-				}
-
-				if (found) break;
-			}
-
-			if (!found) {
-				std::fprintf(stderr, "wbsh: which: %s: not found\n", name.c_str());
-				rc = 1;
-			}
+			std::fprintf(stderr, "wbsh: which: %s: not found\n", name.c_str());
+			status = 1;
 		}
 
-		return rc;
+		return status;
+	}
+
+	static bool makeDirectory(Executor& exec, const std::string& path, bool parents) {
+		std::error_code ec;
+		const fs::path native = toNative(exec, path);
+		const bool created = parents
+			? fs::create_directories(native, ec)
+			: fs::create_directory(native, ec);
+		if (ec) {
+			perr("mkdir", path, ec);
+			return false;
+		}
+
+		if (!created && !parents) {
+			perr("mkdir", path + ": already exists");
+			return false;
+		}
+
+		return true;
 	}
 
 	static int builtin_mkdir(Executor& exec, const std::vector<std::string>& args) {
 		bool parents = false;
 		std::vector<std::string> paths;
-		for (const auto& a : args) {
-			if (a == "-p" || a == "--parents") parents = true;
-			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) if (a[k] == 'p') parents = true;
-			}
-			else paths.push_back(a);
-		}
-
-		if (paths.empty()) { perr("mkdir", "missing operand"); return 1; }
-		int rc = 0;
-		for (const auto& p : paths) {
-			std::error_code ec;
-			fs::path nat(toNative(exec, p));
-			bool ok = parents ? fs::create_directories(nat, ec)
-				: fs::create_directory(nat, ec);
-			if (ec) { perr("mkdir", p, ec); rc = 1; }
-			else if (!ok && !parents) { perr("mkdir", p + ": already exists"); rc = 1; }
-		}
-
-		return rc;
-	}
-
-	static int builtin_rmdir(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) { perr("rmdir", "missing operand"); return 1; }
-		int rc = 0;
-		for (const auto& p : args) {
-			std::error_code ec;
-			fs::path nat(toNative(exec, p));
-			if (!fs::remove(nat, ec)) {
-				if (ec) perr("rmdir", p, ec);
-				else perr("rmdir", p + ": failed");
-				rc = 1;
-			}
-		}
-
-		return rc;
-	}
-
-	static int builtin_rm(Executor& exec, const std::vector<std::string>& args) {
-		bool recursive = false, force = false;
-		std::vector<std::string> paths;
-		for (const auto& a : args) {
-			if (a == "-r" || a == "-R" || a == "--recursive") recursive = true;
-			else if (a == "-f" || a == "--force") force = true;
-			else if (a == "-rf" || a == "-fr" || a == "-Rf" || a == "-fR") {
-				recursive = true; force = true;
-			}
-			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					if (a[k] == 'r' || a[k] == 'R') recursive = true;
-					else if (a[k] == 'f') force = true;
-				}
-			}
-			else paths.push_back(a);
+		for (const auto& arg : args) {
+			if (arg == "--parents") parents = true;
+			else if (isShortFlagCluster(arg)) parents = parents || hasShortFlag(arg, 'p');
+			else paths.push_back(arg);
 		}
 
 		if (paths.empty()) {
-			if (!force) { perr("rm", "missing operand"); return 1; }
-			return 0;
+			perr("mkdir", "missing operand");
+			return 1;
 		}
 
-		int rc = 0;
-		for (const auto& p : paths) {
-			std::error_code ec;
-			fs::path nat(toNative(exec, p));
-			if (!fs::exists(nat, ec)) {
-				if (!force) { perr("rm", p + ": no such file or directory"); rc = 1; }
+		int status = 0;
+		for (const auto& path : paths) {
+			if (!makeDirectory(exec, path, parents)) status = 1;
+		}
+
+		return status;
+	}
+
+	static bool removeDirectory(Executor& exec, const std::string& path) {
+		std::error_code ec;
+		if (fs::remove(toNative(exec, path), ec)) return true;
+
+		if (ec) perr("rmdir", path, ec);
+		else    perr("rmdir", path + ": failed");
+		return false;
+	}
+
+	static int builtin_rmdir(Executor& exec, const std::vector<std::string>& args) {
+		if (args.empty()) {
+			perr("rmdir", "missing operand");
+			return 1;
+		}
+
+		int status = 0;
+		for (const auto& path : args) {
+			if (!removeDirectory(exec, path)) status = 1;
+		}
+
+		return status;
+	}
+
+	struct RmOptions {
+		bool recursive = false;
+		bool force = false;
+		std::vector<std::string> paths;
+	};
+
+	static RmOptions parseRmArgs(const std::vector<std::string>& args) {
+		RmOptions opts;
+		for (const auto& arg : args) {
+			if (arg == "--recursive") {
+				opts.recursive = true;
 				continue;
 			}
 
-			if (recursive) {
-				std::uintmax_t n = fs::remove_all(nat, ec);
-				if (ec && !force) { perr("rm", p, ec); rc = 1; }
-				(void)n;
+			if (arg == "--force") {
+				opts.force = true;
+				continue;
 			}
-			else {
-				if (fs::is_directory(nat, ec)) {
-					perr("rm", p + ": is a directory");
-					rc = 1;
-					continue;
-				}
 
-				if (!fs::remove(nat, ec)) {
-					if (!force) { perr("rm", p, ec); rc = 1; }
-				}
+			if (isShortFlagCluster(arg)) {
+				if (hasShortFlag(arg, 'r') || hasShortFlag(arg, 'R')) opts.recursive = true;
+				if (hasShortFlag(arg, 'f')) opts.force = true;
+				continue;
 			}
+
+			opts.paths.push_back(arg);
 		}
 
-		return rc;
+		return opts;
+	}
+
+	static bool removePath(Executor& exec, const std::string& path, const RmOptions& opts) {
+		std::error_code ec;
+		const fs::path native = toNative(exec, path);
+		if (!fs::exists(native, ec)) {
+			if (opts.force) return true;
+			perr("rm", path + ": no such file or directory");
+			return false;
+		}
+
+		if (opts.recursive) {
+			fs::remove_all(native, ec);
+			if (!ec || opts.force) return true;
+			perr("rm", path, ec);
+			return false;
+		}
+
+		if (fs::is_directory(native, ec)) {
+			perr("rm", path + ": is a directory");
+			return false;
+		}
+
+		if (fs::remove(native, ec) || opts.force) return true;
+		perr("rm", path, ec);
+		return false;
+	}
+
+	static int builtin_rm(Executor& exec, const std::vector<std::string>& args) {
+		const RmOptions opts = parseRmArgs(args);
+		if (opts.paths.empty()) {
+			if (opts.force) return 0;
+			perr("rm", "missing operand");
+			return 1;
+		}
+
+		int status = 0;
+		for (const auto& path : opts.paths) {
+			if (!removePath(exec, path, opts)) status = 1;
+		}
+
+		return status;
+	}
+
+	static fs::path destinationFor(const fs::path& src, const fs::path& dst, bool dst_is_dir) {
+		if (dst_is_dir) return dst / src.filename();
+		return dst;
+	}
+
+	static bool copyPath(Executor& exec, const std::string& source, const fs::path& target,
+	                     bool recursive) {
+		fs::copy_options options = fs::copy_options::overwrite_existing;
+		if (recursive) options |= fs::copy_options::recursive | fs::copy_options::copy_symlinks;
+
+		std::error_code ec;
+		fs::copy(toNative(exec, source), target, options, ec);
+		if (!ec) return true;
+
+		perr("cp", source, ec);
+		return false;
 	}
 
 	static int builtin_cp(Executor& exec, const std::vector<std::string>& args) {
 		bool recursive = false;
 		std::vector<std::string> paths;
-		for (const auto& a : args) {
-			if (a == "-r" || a == "-R" || a == "--recursive") recursive = true;
-			else if (a == "-a") recursive = true;
-			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					if (a[k] == 'r' || a[k] == 'R') recursive = true;
-				}
+		for (const auto& arg : args) {
+			if (arg == "--recursive" || arg == "-a") {
+				recursive = true;
+				continue;
 			}
-			else paths.push_back(a);
+
+			if (isShortFlagCluster(arg)) {
+				if (hasShortFlag(arg, 'r') || hasShortFlag(arg, 'R')) recursive = true;
+				continue;
+			}
+
+			paths.push_back(arg);
 		}
 
-		if (paths.size() < 2) { perr("cp", "missing source/destination"); return 1; }
-		fs::path dst(toNative(exec, paths.back()));
+		if (paths.size() < 2) {
+			perr("cp", "missing source/destination");
+			return 1;
+		}
+
+		const fs::path dst = toNative(exec, paths.back());
 		std::error_code ec;
-		bool dst_is_dir = fs::is_directory(dst, ec);
-		int rc = 0;
+		const bool dst_is_dir = fs::is_directory(dst, ec);
+
+		int status = 0;
 		for (std::size_t i = 0; i + 1 < paths.size(); ++i) {
-			fs::path src(toNative(exec, paths[i]));
-			fs::path target = dst_is_dir ? (dst / src.filename()) : dst;
-			std::error_code copy_ec;
-			auto opts = fs::copy_options::overwrite_existing;
-			if (recursive) opts = opts | fs::copy_options::recursive
-				| fs::copy_options::copy_symlinks;
-			fs::copy(src, target, opts, copy_ec);
-			if (copy_ec) { perr("cp", paths[i], copy_ec); rc = 1; }
+			const fs::path target = destinationFor(toNative(exec, paths[i]), dst, dst_is_dir);
+			if (!copyPath(exec, paths[i], target, recursive)) status = 1;
 		}
 
-		return rc;
+		return status;
+	}
+
+	// A rename that fails (typically across volumes) falls back to a
+	// copy followed by removal of the source.
+	static bool movePath(const std::string& source, const fs::path& src, const fs::path& target) {
+		std::error_code rename_ec;
+		fs::rename(src, target, rename_ec);
+		if (!rename_ec) return true;
+
+		std::error_code copy_ec;
+		fs::copy(src, target, fs::copy_options::overwrite_existing
+			| fs::copy_options::recursive | fs::copy_options::copy_symlinks, copy_ec);
+		if (copy_ec) {
+			perr("mv", source, copy_ec);
+			return false;
+		}
+
+		std::error_code remove_ec;
+		fs::remove_all(src, remove_ec);
+		if (!remove_ec) return true;
+
+		perr("mv", source, remove_ec);
+		return false;
 	}
 
 	static int builtin_mv(Executor& exec, const std::vector<std::string>& args) {
 		std::vector<std::string> paths;
-		for (const auto& a : args) {
-			if (a == "--") continue;
-			if (a.size() > 1 && a[0] == '-' && a[1] != '-' && a != "-") continue;
-			paths.push_back(a);
+		for (const auto& arg : args) {
+			if (arg == "--" || isShortFlagCluster(arg)) continue;
+			paths.push_back(arg);
 		}
 
-		if (paths.size() < 2) { perr("mv", "missing source/destination"); return 1; }
-		fs::path dst(toNative(exec, paths.back()));
+		if (paths.size() < 2) {
+			perr("mv", "missing source/destination");
+			return 1;
+		}
+
+		const fs::path dst = toNative(exec, paths.back());
 		std::error_code ec;
-		bool dst_is_dir = fs::is_directory(dst, ec);
-		int rc = 0;
+		const bool dst_is_dir = fs::is_directory(dst, ec);
+
+		int status = 0;
 		for (std::size_t i = 0; i + 1 < paths.size(); ++i) {
-			fs::path src(toNative(exec, paths[i]));
-			fs::path target = dst_is_dir ? (dst / src.filename()) : dst;
-			std::error_code mv_ec;
-			fs::rename(src, target, mv_ec);
-			if (mv_ec) {
-				std::error_code cp_ec;
-				fs::copy(src, target, fs::copy_options::overwrite_existing
-					| fs::copy_options::recursive | fs::copy_options::copy_symlinks, cp_ec);
-				if (cp_ec) { perr("mv", paths[i], cp_ec); rc = 1; continue; }
-				std::error_code rm_ec;
-				fs::remove_all(src, rm_ec);
-				if (rm_ec) { perr("mv", paths[i], rm_ec); rc = 1; }
-			}
+			const fs::path src = toNative(exec, paths[i]);
+			if (!movePath(paths[i], src, destinationFor(src, dst, dst_is_dir))) status = 1;
 		}
 
-		return rc;
+		return status;
+	}
+
+	static bool touchPath(Executor& exec, const std::string& path) {
+		const fs::path native = toNative(exec, path);
+		std::error_code ec;
+		if (!fs::exists(native, ec)) {
+			std::ofstream created(native, std::ios::binary | std::ios::app);
+			if (created) return true;
+			perr("touch", path + ": cannot create");
+			return false;
+		}
+
+		fs::last_write_time(native, fs::file_time_type::clock::now(), ec);
+		if (!ec) return true;
+
+		perr("touch", path, ec);
+		return false;
 	}
 
 	static int builtin_touch(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) { perr("touch", "missing operand"); return 1; }
-		int rc = 0;
-		for (const auto& p : args) {
-			if (!p.empty() && p[0] == '-' && p != "-") continue;
-			fs::path nat = toNative(exec, p);
-			std::error_code ec;
-			if (!fs::exists(nat, ec)) {
-				std::ofstream f(nat, std::ios::binary | std::ios::app);
-				if (!f) { perr("touch", p + ": cannot create"); rc = 1; continue; }
-			}
-			else {
-				auto now = fs::file_time_type::clock::now();
-				fs::last_write_time(nat, now, ec);
-				if (ec) { perr("touch", p, ec); rc = 1; }
-			}
+		if (args.empty()) {
+			perr("touch", "missing operand");
+			return 1;
 		}
 
-		return rc;
+		int status = 0;
+		for (const auto& path : args) {
+			if (isOptionNotStdin(path)) continue;
+			if (!touchPath(exec, path)) status = 1;
+		}
+
+		return status;
 	}
 
+	// Returns 0 when a value was consumed (`i` advanced past it), 1 when
+	// args[i] is not this flag at all, -1 when the value is malformed.
 	static int parseNumFlag(const std::vector<std::string>& args, const char* short_flag,
-		std::size_t& i, long& out) {
-		const std::string& a = args[i];
-		if (a.size() > 2 && a[0] == '-' && a[1] == short_flag[0]
-		    && std::isdigit((unsigned char)a[2])) {
-			int v = 0;
-			if (!parseInt(a.substr(2), v)) return -1;
-			out = v; ++i; return 0;
+	                        std::size_t& i, long& value) {
+		const std::string& arg = args[i];
+		const bool attached = arg.size() > 2 && arg[0] == '-' && arg[1] == short_flag[0]
+			&& isDigitChar(arg[2]);
+		if (attached) {
+			int parsed = 0;
+			if (!parseInt(arg.substr(2), parsed)) return -1;
+			value = parsed;
+			++i;
+			return 0;
 		}
 
-		if (a == short_flag || a == std::string("-") + short_flag) {
+		if (arg == short_flag || arg == std::string("-") + short_flag) {
 			if (i + 1 >= args.size()) return -1;
-			int v = 0;
-			if (!parseInt(args[i + 1], v)) return -1;
-			out = v; i += 2; return 0;
+			int parsed = 0;
+			if (!parseInt(args[i + 1], parsed)) return -1;
+			value = parsed;
+			i += 2;
+			return 0;
 		}
 
 		return 1;
 	}
 
-	static int builtin_head(Executor& exec, const std::vector<std::string>& args) {
-		long n = 10;
-		std::vector<std::string> files;
+	static bool parseLegacyLineCount(const char* cmd, const std::string& arg, long& count) {
+		int parsed = 0;
+		if (!parseInt(arg.substr(1), parsed)) {
+			perr(cmd, "bad N");
+			return false;
+		}
+
+		count = parsed;
+		return true;
+	}
+
+	static int parseLineCountArgs(const char* cmd, const std::vector<std::string>& args,
+	                              long& count, std::vector<std::string>& files) {
 		for (std::size_t i = 0; i < args.size(); ) {
-			const std::string& a = args[i];
-			if (a == "-n" || a.rfind("-n", 0) == 0) {
-				std::size_t j = i;
-				int r = parseNumFlag(args, "n", j, n);
-				if (r == 0) { i = j; continue; }
-				if (r == -1) { perr("head", "bad -n value"); return 1; }
+			const std::string& arg = args[i];
+			if (arg.rfind("-n", 0) == 0) {
+				std::size_t next = i;
+				const int parsed = parseNumFlag(args, "n", next, count);
+				if (parsed == 0) {
+					i = next;
+					continue;
+				}
+
+				if (parsed == -1) {
+					perr(cmd, "bad -n value");
+					return 1;
+				}
 			}
 
-			if (a == "--") { for (++i; i < args.size(); ++i) files.push_back(args[i]); break; }
-			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
-				int v = 0;
-				if (!parseInt(a.substr(1), v)) { perr("head", "bad N"); return 1; }
-				n = v;
-				++i; continue;
+			if (arg == "--") {
+				takeRemainingOperands(args, i + 1, files);
+				break;
 			}
 
-			files.push_back(a);
+			if (arg.size() > 1 && arg[0] == '-' && isDigitChar(arg[1])) {
+				if (!parseLegacyLineCount(cmd, arg, count)) return 1;
+				++i;
+				continue;
+			}
+
+			files.push_back(arg);
 			++i;
 		}
 
 		if (files.empty()) files.push_back("-");
-		int rc = 0;
-		for (const auto& f : files) {
-			FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
-			if (!fp) { perr("head", f + ": " + std::strerror(errno)); rc = 1; continue; }
-			long printed = 0;
-			int c;
-			while (printed < n && (c = std::fgetc(fp)) != EOF) {
-				std::fputc(c, stdout);
-				if (c == '\n') ++printed;
+		return 0;
+	}
+
+	static void printFirstLines(std::FILE* stream, long count) {
+		long printed = 0;
+		int c = EOF;
+		while (printed < count && (c = std::fgetc(stream)) != EOF) {
+			std::fputc(c, stdout);
+			if (c == '\n') ++printed;
+		}
+	}
+
+	static int builtin_head(Executor& exec, const std::vector<std::string>& args) {
+		long count = kDefaultLineCount;
+		std::vector<std::string> files;
+		if (parseLineCountArgs("head", args, count, files) != 0) return 1;
+
+		int status = 0;
+		for (const auto& file : files) {
+			std::FILE* stream = openInputOrStdin(exec, file);
+			if (stream == nullptr) {
+				perr("head", withErrno(file));
+				status = 1;
+				continue;
 			}
 
-			if (fp != stdin) std::fclose(fp);
+			printFirstLines(stream, count);
+			closeUnlessStdin(stream);
 		}
 
 		std::fflush(stdout);
-		return rc;
+		return status;
+	}
+
+	static void printLastLines(const std::vector<std::string>& lines, long count) {
+		const std::size_t wanted = static_cast<std::size_t>(count);
+		const std::size_t start = lines.size() > wanted ? lines.size() - wanted : 0;
+		for (std::size_t k = start; k < lines.size(); ++k) {
+			std::fputs(lines[k].c_str(), stdout);
+			std::fputc('\n', stdout);
+		}
 	}
 
 	static int builtin_tail(Executor& exec, const std::vector<std::string>& args) {
-		long n = 10;
+		long count = kDefaultLineCount;
 		std::vector<std::string> files;
-		for (std::size_t i = 0; i < args.size(); ) {
-			const std::string& a = args[i];
-			if (a == "-n" || a.rfind("-n", 0) == 0) {
-				std::size_t j = i;
-				int r = parseNumFlag(args, "n", j, n);
-				if (r == 0) { i = j; continue; }
-				if (r == -1) { perr("tail", "bad -n value"); return 1; }
-			}
+		if (parseLineCountArgs("tail", args, count, files) != 0) return 1;
 
-			if (a == "--") { for (++i; i < args.size(); ++i) files.push_back(args[i]); break; }
-			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
-				int v = 0;
-				if (!parseInt(a.substr(1), v)) { perr("tail", "bad N"); return 1; }
-				n = v;
-				++i; continue;
-			}
-
-			files.push_back(a);
-			++i;
-		}
-
-		if (files.empty()) files.push_back("-");
-		int rc = 0;
-		for (const auto& f : files) {
+		int status = 0;
+		for (const auto& file : files) {
 			std::vector<std::string> lines;
-			FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
-			if (!fp) { perr("tail", f + ": " + std::strerror(errno)); rc = 1; continue; }
-			std::string cur;
-			int c;
-			while ((c = std::fgetc(fp)) != EOF) {
-				if (c == '\n') {
-					lines.push_back(std::move(cur));
-					cur.clear();
-				}
-				else cur.push_back(static_cast<char>(c));
+			if (!readAllLines(exec, file, lines)) {
+				perr("tail", withErrno(file));
+				status = 1;
+				continue;
 			}
 
-			if (!cur.empty()) lines.push_back(std::move(cur));
-			if (fp != stdin) std::fclose(fp);
-			std::size_t start = (lines.size() > static_cast<std::size_t>(n))
-				? lines.size() - static_cast<std::size_t>(n) : 0;
-			for (std::size_t k = start; k < lines.size(); ++k) {
-				std::fputs(lines[k].c_str(), stdout);
-				std::fputc('\n', stdout);
-			}
+			printLastLines(lines, count);
 		}
 
 		std::fflush(stdout);
-		return rc;
+		return status;
 	}
 
-	static void appendWcCount(std::string& out, std::uintmax_t v) {
+	static void appendWcCount(std::string& out, std::uintmax_t value) {
 		if (!out.empty()) out += " ";
-		char buf[64];
-		std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
-		out += buf;
+		char text[64];
+		std::snprintf(text, sizeof(text), "%llu", static_cast<unsigned long long>(value));
+		out += text;
 	}
 
 	struct WcOptions {
-		bool want_l = false, want_w = false, want_c = false, want_m = false;
+		bool want_lines = false;
+		bool want_words = false;
+		bool want_bytes = false;
+		bool want_chars = false;
 		std::vector<std::string> files;
 	};
 
 	struct WcCounts {
-		std::uintmax_t l = 0, w = 0, c = 0, m = 0;
+		std::uintmax_t lines = 0;
+		std::uintmax_t words = 0;
+		std::uintmax_t bytes = 0;
+		std::uintmax_t chars = 0;
 	};
 
+	static bool applyWcFlag(char flag, WcOptions& opts) {
+		switch (flag) {
+		case 'l': opts.want_lines = true; return true;
+		case 'w': opts.want_words = true; return true;
+		case 'c': opts.want_bytes = true; return true;
+		case 'm': opts.want_chars = true; return true;
+		default:  return false;
+		}
+	}
+
+	static bool applyWcLongOption(const std::string& arg, WcOptions& opts) {
+		if (arg == "--lines") return applyWcFlag('l', opts);
+		if (arg == "--words") return applyWcFlag('w', opts);
+		if (arg == "--bytes") return applyWcFlag('c', opts);
+		if (arg == "--chars") return applyWcFlag('m', opts);
+		return false;
+	}
+
 	static WcOptions parseWcArgs(const std::vector<std::string>& args) {
-		WcOptions o;
-		for (const auto& a : args) {
-			if (a == "--") continue;
-			if (a == "-l" || a == "--lines") { o.want_l = true; continue; }
-			if (a == "-w" || a == "--words") { o.want_w = true; continue; }
-			if (a == "-c" || a == "--bytes") { o.want_c = true; continue; }
-			if (a == "-m" || a == "--chars") { o.want_m = true; continue; }
-			if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					if (a[k] == 'l') o.want_l = true;
-					else if (a[k] == 'w') o.want_w = true;
-					else if (a[k] == 'c') o.want_c = true;
-					else if (a[k] == 'm') o.want_m = true;
-				}
+		WcOptions opts;
+		for (const auto& arg : args) {
+			if (arg == "--") continue;
+			if (applyWcLongOption(arg, opts)) continue;
+			if (isShortFlagCluster(arg)) {
+				for (std::size_t k = 1; k < arg.size(); ++k) applyWcFlag(arg[k], opts);
 				continue;
 			}
 
-			o.files.push_back(a);
+			opts.files.push_back(arg);
 		}
 
-		if (!(o.want_l || o.want_w || o.want_c || o.want_m)) {
-			o.want_l = o.want_w = o.want_c = true;
+		if (!(opts.want_lines || opts.want_words || opts.want_bytes || opts.want_chars)) {
+			opts.want_lines = true;
+			opts.want_words = true;
+			opts.want_bytes = true;
 		}
 
-		if (o.files.empty()) o.files.push_back("-");
-		return o;
+		if (opts.files.empty()) opts.files.push_back("-");
+		return opts;
 	}
 
-	static WcCounts wcCountStream(FILE* fp) {
-		WcCounts r;
+	static bool isUtf8LeadByte(int ch) {
+		const unsigned char byte = static_cast<unsigned char>(ch);
+		return byte < 0x80 || (byte & 0xC0) != 0x80;
+	}
+
+	static WcCounts wcCountStream(std::FILE* stream) {
+		WcCounts counts;
 		bool in_word = false;
-		int ch;
-		while ((ch = std::fgetc(fp)) != EOF) {
-			++r.c;
-			if (static_cast<unsigned char>(ch) < 0x80
-				|| (static_cast<unsigned char>(ch) & 0xC0) != 0x80) ++r.m;
-			if (ch == '\n') ++r.l;
-			if (std::isspace(static_cast<unsigned char>(ch))) {
+		int ch = EOF;
+		while ((ch = std::fgetc(stream)) != EOF) {
+			++counts.bytes;
+			if (isUtf8LeadByte(ch)) ++counts.chars;
+			if (ch == '\n') ++counts.lines;
+
+			if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
 				in_word = false;
 			} else if (!in_word) {
 				in_word = true;
-				++r.w;
+				++counts.words;
 			}
 		}
 
-		return r;
+		return counts;
 	}
 
-	static std::string formatWcLine(const WcOptions& opts, const WcCounts& cnt,
+	static void addWcCounts(WcCounts& totals, const WcCounts& counts) {
+		totals.lines += counts.lines;
+		totals.words += counts.words;
+		totals.bytes += counts.bytes;
+		totals.chars += counts.chars;
+	}
+
+	static std::string formatWcLine(const WcOptions& opts, const WcCounts& counts,
 	                                const std::string& label) {
 		std::string out;
-		if (opts.want_l) appendWcCount(out, cnt.l);
-		if (opts.want_w) appendWcCount(out, cnt.w);
-		if (opts.want_m && !opts.want_c) appendWcCount(out, cnt.m);
-		if (opts.want_c) appendWcCount(out, cnt.c);
-		if (!label.empty()) { out += " "; out += label; }
+		if (opts.want_lines) appendWcCount(out, counts.lines);
+		if (opts.want_words) appendWcCount(out, counts.words);
+		if (opts.want_chars && !opts.want_bytes) appendWcCount(out, counts.chars);
+		if (opts.want_bytes) appendWcCount(out, counts.bytes);
+		if (!label.empty()) {
+			out += " ";
+			out += label;
+		}
+
 		out.push_back('\n');
 		return out;
 	}
 
 	static int builtin_wc(Executor& exec, const std::vector<std::string>& args) {
-		WcOptions opts = parseWcArgs(args);
+		const WcOptions opts = parseWcArgs(args);
 		WcCounts totals;
-		int rc = 0;
-		for (const auto& f : opts.files) {
-			FILE* fp = (f == "-") ? stdin : fopenNative(exec, f, "rb");
-			if (!fp) { perr("wc", f + ": " + std::strerror(errno)); rc = 1; continue; }
-			WcCounts cnt = wcCountStream(fp);
-			if (fp != stdin) std::fclose(fp);
-			std::fputs(formatWcLine(opts, cnt, f == "-" ? "" : f).c_str(), stdout);
-			totals.l += cnt.l; totals.w += cnt.w; totals.c += cnt.c; totals.m += cnt.m;
+		int status = 0;
+		for (const auto& file : opts.files) {
+			std::FILE* stream = openInputOrStdin(exec, file);
+			if (stream == nullptr) {
+				perr("wc", withErrno(file));
+				status = 1;
+				continue;
+			}
+
+			const WcCounts counts = wcCountStream(stream);
+			closeUnlessStdin(stream);
+			std::fputs(formatWcLine(opts, counts, file == "-" ? "" : file).c_str(), stdout);
+			addWcCounts(totals, counts);
 		}
 
 		if (opts.files.size() > 1) {
@@ -1002,134 +1333,177 @@ namespace wbsh {
 		}
 
 		std::fflush(stdout);
-		return rc;
+		return status;
 	}
 
 	static int builtin_whoami(Executor& exec, const std::vector<std::string>&) {
-		std::string u = exec.env().get("USER");
-		if (u.empty()) u = exec.env().get("USERNAME");
-		if (u.empty()) u = "user";
-		std::printf("%s\n", u.c_str());
+		std::printf("%s\n", currentUserName(exec).c_str());
 		return 0;
+	}
+
+	static std::string windowsComputerName() {
+#ifdef _WIN32
+		char name[256];
+		DWORD length = sizeof(name);
+		if (::GetComputerNameA(name, &length) != 0) return std::string(name, length);
+#endif
+		return {};
 	}
 
 	static int builtin_hostname(Executor& exec, const std::vector<std::string>&) {
-		std::string h = exec.env().get("HOSTNAME");
-		if (h.empty()) h = exec.env().get("COMPUTERNAME");
-#ifdef _WIN32
-		if (h.empty()) {
-			char buf[256];
-			DWORD n = sizeof(buf);
-			if (GetComputerNameA(buf, &n)) h.assign(buf, n);
-		}
-#endif
-		std::printf("%s\n", h.c_str());
+		std::string host = exec.env().get("HOSTNAME");
+		if (host.empty()) host = exec.env().get("COMPUTERNAME");
+		if (host.empty()) host = windowsComputerName();
+		std::printf("%s\n", host.c_str());
 		return 0;
 	}
 
+	using EnvPair = std::pair<std::string, std::string>;
+
+	static bool isEnvAssignment(const std::string& arg) {
+		if (arg.find('=') == std::string::npos) return false;
+		return std::isalpha(static_cast<unsigned char>(arg[0])) != 0 || arg[0] == '_';
+	}
+
+	static void applyEnvOverride(std::vector<EnvPair>& all, const EnvPair& assignment) {
+		for (auto& entry : all) {
+			if (entry.first != assignment.first) continue;
+			entry.second = assignment.second;
+			return;
+		}
+
+		all.push_back(assignment);
+	}
+
 	static int builtin_env(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::pair<std::string, std::string>> sets;
-		std::vector<std::string> cmd;
-		for (const auto& a : args) {
-			if (cmd.empty() && a.find('=') != std::string::npos
-				&& (std::isalpha((unsigned char)a[0]) || a[0] == '_')) {
-				auto eq = a.find('=');
-				sets.emplace_back(a.substr(0, eq), a.substr(eq + 1));
-			}
-			else {
-				cmd.push_back(a);
+		std::vector<EnvPair> overrides;
+		std::vector<std::string> command;
+		for (const auto& arg : args) {
+			if (command.empty() && isEnvAssignment(arg)) {
+				const std::size_t eq = arg.find('=');
+				overrides.emplace_back(arg.substr(0, eq), arg.substr(eq + 1));
+			} else {
+				command.push_back(arg);
 			}
 		}
 
-		if (!cmd.empty()) {
+		if (!command.empty()) {
 			std::fprintf(stderr, "wbsh: env: running with overrides not yet implemented; "
 				"set then call directly\n");
 			return 1;
 		}
 
-		std::vector<std::pair<std::string, std::string>> all(
-			exec.env().vars().begin(), exec.env().vars().end());
-		for (const auto& s : sets) {
-			bool found = false;
-			for (auto& kv : all) {
-				if (kv.first == s.first) {
-					kv.second = s.second; found = true; break;
-				}
-			}
-
-			if (!found) all.push_back(s);
-		}
-
+		std::vector<EnvPair> all(exec.env().vars().begin(), exec.env().vars().end());
+		for (const auto& assignment : overrides) applyEnvOverride(all, assignment);
 		std::sort(all.begin(), all.end());
-		for (const auto& kv : all) {
-			if (!exec.env().isExported(kv.first)) continue;
-			std::printf("%s=%s\n", kv.first.c_str(), kv.second.c_str());
+
+		for (const auto& entry : all) {
+			if (!exec.env().isExported(entry.first)) continue;
+			std::printf("%s=%s\n", entry.first.c_str(), entry.second.c_str());
 		}
 
 		return 0;
 	}
 
+	static bool parseSleepSeconds(const std::string& arg, double& seconds) {
+		const char suffix = arg.empty() ? '\0' : arg.back();
+		const bool has_unit = suffix == 's' || suffix == 'm' || suffix == 'h';
+		const std::string number = has_unit ? arg.substr(0, arg.size() - 1) : arg;
+		if (!parseDouble(number, seconds)) return false;
+
+		if (suffix == 'm') seconds *= 60.0;
+		else if (suffix == 'h') seconds *= 3600.0;
+		return true;
+	}
+
 	static int builtin_sleep(Executor&, const std::vector<std::string>& args) {
-		if (args.empty()) { perr("sleep", "missing operand"); return 1; }
-		double secs = 0.0;
-		const std::string& a = args[0];
-		char suffix = (!a.empty()) ? a.back() : '\0';
-		std::string num = (suffix == 's' || suffix == 'm' || suffix == 'h')
-			? a.substr(0, a.size() - 1) : a;
-		if (!parseDouble(num, secs)) {
+		if (args.empty()) {
+			perr("sleep", "missing operand");
+			return 1;
+		}
+
+		double seconds = 0.0;
+		if (!parseSleepSeconds(args[0], seconds)) {
 			perr("sleep", args[0] + ": invalid time interval");
 			return 1;
 		}
 
-		if (suffix == 'm') secs *= 60.0;
-		else if (suffix == 'h') secs *= 3600.0;
 		std::this_thread::sleep_for(std::chrono::milliseconds(
-			static_cast<long long>(secs * 1000.0)));
+			static_cast<long long>(seconds * 1000.0)));
 		return 0;
 	}
 
+	static std::string stripTrailingSlashes(std::string path) {
+		while (path.size() > 1 && (path.back() == '/' || path.back() == '\\')) path.pop_back();
+		return path;
+	}
+
+	static void stripSuffix(std::string& name, const std::string& suffix) {
+		if (name.size() <= suffix.size()) return;
+		if (name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) return;
+		name.resize(name.size() - suffix.size());
+	}
+
 	static int builtin_basename(Executor&, const std::vector<std::string>& args) {
-		if (args.empty()) { perr("basename", "missing operand"); return 1; }
-		std::string s = args[0];
-		while (s.size() > 1 && (s.back() == '/' || s.back() == '\\')) s.pop_back();
-		auto pos = s.find_last_of("/\\");
-		std::string name = (pos == std::string::npos) ? s : s.substr(pos + 1);
-		if (args.size() > 1) {
-			const std::string& suf = args[1];
-			if (name.size() > suf.size()
-				&& name.compare(name.size() - suf.size(), suf.size(), suf) == 0) {
-				name.resize(name.size() - suf.size());
-			}
+		if (args.empty()) {
+			perr("basename", "missing operand");
+			return 1;
 		}
+
+		const std::string path = stripTrailingSlashes(args[0]);
+		const std::size_t slash = path.find_last_of("/\\");
+		std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+		if (args.size() > 1) stripSuffix(name, args[1]);
 
 		std::printf("%s\n", name.c_str());
 		return 0;
 	}
 
 	static int builtin_dirname(Executor&, const std::vector<std::string>& args) {
-		if (args.empty()) { perr("dirname", "missing operand"); return 1; }
-		std::string s = args[0];
-		while (s.size() > 1 && (s.back() == '/' || s.back() == '\\')) s.pop_back();
-		auto pos = s.find_last_of("/\\");
-		if (pos == std::string::npos) { std::printf(".\n"); return 0; }
-		if (pos == 0) { std::printf("/\n"); return 0; }
-		std::printf("%s\n", s.substr(0, pos).c_str());
+		if (args.empty()) {
+			perr("dirname", "missing operand");
+			return 1;
+		}
+
+		const std::string path = stripTrailingSlashes(args[0]);
+		const std::size_t slash = path.find_last_of("/\\");
+		if (slash == std::string::npos) {
+			std::printf(".\n");
+			return 0;
+		}
+
+		if (slash == 0) {
+			std::printf("/\n");
+			return 0;
+		}
+
+		std::printf("%s\n", path.substr(0, slash).c_str());
 		return 0;
 	}
 
-	bool readAllLines(Executor& exec, const std::string& path,
-		std::vector<std::string>& out) {
-		FILE* fp = (path == "-") ? stdin : fopenNative(exec, path, "rb");
-		if (!fp) return false;
-		std::string cur;
-		int c;
-		while ((c = std::fgetc(fp)) != EOF) {
-			if (c == '\n') { out.push_back(std::move(cur)); cur.clear(); }
-			else cur.push_back(static_cast<char>(c));
+	static void appendLinesFromStream(std::FILE* stream, std::vector<std::string>& out) {
+		std::string current;
+		int c = EOF;
+		while ((c = std::fgetc(stream)) != EOF) {
+			if (c != '\n') {
+				current.push_back(static_cast<char>(c));
+				continue;
+			}
+
+			out.push_back(std::move(current));
+			current.clear();
 		}
 
-		if (!cur.empty()) out.push_back(std::move(cur));
-		if (fp != stdin) std::fclose(fp);
+		if (!current.empty()) out.push_back(std::move(current));
+	}
+
+	bool readAllLines(Executor& exec, const std::string& path,
+	                  std::vector<std::string>& out) {
+		std::FILE* stream = openInputOrStdin(exec, path);
+		if (stream == nullptr) return false;
+
+		appendLinesFromStream(stream, out);
+		closeUnlessStdin(stream);
 		return true;
 	}
 
@@ -1137,11 +1511,11 @@ namespace wbsh {
 	// extension: on Windows it hands the format to the CRT's invalid-
 	// parameter handler, which aborts the whole process. Substitute it
 	// ourselves before the real strftime call ever sees it.
-	static std::string substituteDateEpochSpecifier(const std::string& fmt, std::time_t t) {
+	static std::string substituteDateEpochSpecifier(const std::string& fmt, std::time_t epoch) {
 		std::string out;
 		for (std::size_t i = 0; i < fmt.size(); ++i) {
 			if (fmt[i] == '%' && i + 1 < fmt.size() && fmt[i + 1] == 's') {
-				out += std::to_string(static_cast<long long>(t));
+				out += std::to_string(static_cast<long long>(epoch));
 				++i;
 				continue;
 			}
@@ -1155,341 +1529,463 @@ namespace wbsh {
 	static int builtin_date(Executor&, const std::vector<std::string>& args) {
 		std::string fmt = "%a %b %e %H:%M:%S %Y";
 		bool utc = false;
-		for (const auto& a : args) {
-			if (a == "-u" || a == "--utc") utc = true;
-			else if (!a.empty() && a[0] == '+') fmt = a.substr(1);
+		for (const auto& arg : args) {
+			if (arg == "-u" || arg == "--utc") utc = true;
+			else if (!arg.empty() && arg[0] == '+') fmt = arg.substr(1);
 		}
 
-		std::time_t t = std::time(nullptr);
-		std::tm tm{};
-#ifdef _WIN32
-		if (utc) gmtime_s(&tm, &t); else localtime_s(&tm, &t);
-#else
-		if (utc) gmtime_r(&t, &tm); else localtime_r(&t, &tm);
-#endif
-		fmt = substituteDateEpochSpecifier(fmt, t);
-		char buf[256];
-		std::strftime(buf, sizeof(buf), fmt.c_str(), &tm);
-		std::printf("%s\n", buf);
+		const std::time_t now = std::time(nullptr);
+		fmt = substituteDateEpochSpecifier(fmt, now);
+		std::printf("%s\n", formatTime(brokenDownTime(now, utc), fmt.c_str()).c_str());
 		return 0;
 	}
 
+	struct SeqRange {
+		double first = 1.0;
+		double inc = 1.0;
+		double last = 1.0;
+	};
+
+	static bool parseSeqNumbers(const std::vector<std::string>& nums, SeqRange& range) {
+		if (nums.size() == 1) return parseDouble(nums[0], range.last);
+		if (nums.size() == 2) {
+			return parseDouble(nums[0], range.first) && parseDouble(nums[1], range.last);
+		}
+
+		return parseDouble(nums[0], range.first) && parseDouble(nums[1], range.inc)
+			&& parseDouble(nums[2], range.last);
+	}
+
+	static bool seqContinues(double value, const SeqRange& range) {
+		if (range.inc > 0) return value <= range.last + kSeqEpsilon;
+		return value >= range.last - kSeqEpsilon;
+	}
+
+	static bool seqIsIntegral(const SeqRange& range) {
+		return std::floor(range.first) == range.first && std::floor(range.inc) == range.inc
+			&& std::floor(range.last) == range.last;
+	}
+
+	static void printSeq(const SeqRange& range, const std::string& sep) {
+		const bool integral = seqIsIntegral(range);
+		bool first_out = true;
+		for (double value = range.first; seqContinues(value, range); value += range.inc) {
+			if (!first_out) std::fputs(sep.c_str(), stdout);
+			if (integral) std::fprintf(stdout, "%lld", static_cast<long long>(value));
+			else          std::fprintf(stdout, "%g", value);
+			first_out = false;
+		}
+	}
+
 	static int builtin_seq(Executor&, const std::vector<std::string>& args) {
-		double first = 1.0, inc = 1.0, last = 1.0;
 		std::string sep = "\n";
 		std::vector<std::string> nums;
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-s" && i + 1 < args.size()) sep = args[++i];
-			else if (a.size() > 2 && a.compare(0, 2, "-s") == 0) sep = a.substr(2);
-			else if (a == "--") {
-				for (++i; i < args.size(); ++i) nums.push_back(args[i]);
+			const std::string& arg = args[i];
+			if (arg == "--") {
+				takeRemainingOperands(args, i + 1, nums);
+				break;
 			}
-			else nums.push_back(a);
+
+			if (arg == "-s" && i + 1 < args.size()) sep = args[++i];
+			else if (arg.size() > 2 && arg.compare(0, 2, "-s") == 0) sep = arg.substr(2);
+			else nums.push_back(arg);
 		}
 
-		bool num_ok = true;
-		if (nums.size() == 1) { num_ok = parseDouble(nums[0], last); }
-		else if (nums.size() == 2) {
-			num_ok = parseDouble(nums[0], first) && parseDouble(nums[1], last);
-		}
-		else if (nums.size() == 3) {
-			num_ok = parseDouble(nums[0], first) && parseDouble(nums[1], inc)
-			    && parseDouble(nums[2], last);
-		}
-		else { perr("seq", "usage: seq [LAST | FIRST LAST | FIRST INC LAST]"); return 1; }
-		if (!num_ok) { perr("seq", "invalid number"); return 1; }
-		if (inc == 0) { perr("seq", "increment must be non-zero"); return 1; }
-		bool integer = std::floor(first) == first && std::floor(inc) == inc
-		    && std::floor(last) == last;
-		bool first_out = true;
-		auto emit = [&](double v) {
-			if (!first_out) std::fputs(sep.c_str(), stdout);
-			if (integer) std::fprintf(stdout, "%lld", static_cast<long long>(v));
-			else         std::fprintf(stdout, "%g", v);
-			first_out = false;
-			};
-		if (inc > 0) {
-			for (double v = first; v <= last + 1e-12; v += inc) emit(v);
-		}
-		else {
-			for (double v = first; v >= last - 1e-12; v += inc) emit(v);
+		if (nums.empty() || nums.size() > 3) {
+			perr("seq", "usage: seq [LAST | FIRST LAST | FIRST INC LAST]");
+			return 1;
 		}
 
+		SeqRange range;
+		if (!parseSeqNumbers(nums, range)) {
+			perr("seq", "invalid number");
+			return 1;
+		}
+
+		if (range.inc == 0) {
+			perr("seq", "increment must be non-zero");
+			return 1;
+		}
+
+		printSeq(range, sep);
 		std::fputc('\n', stdout);
 		std::fflush(stdout);
 		return 0;
 	}
 
-	static int builtin_uname(Executor& exec, const std::vector<std::string>& args) {
-		bool s = false, n = false, r = false, v = false, m = false, o = false, all = false;
-		for (const auto& a : args) {
-			if (a == "-a" || a == "--all") all = true;
-			else if (a == "-s" || a == "--kernel-name") s = true;
-			else if (a == "-n" || a == "--nodename")    n = true;
-			else if (a == "-r" || a == "--kernel-release") r = true;
-			else if (a == "-v" || a == "--kernel-version") v = true;
-			else if (a == "-m" || a == "--machine")     m = true;
-			else if (a == "-o" || a == "--operating-system") o = true;
-			else if (a.size() > 1 && a[0] == '-' && a[1] != '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					switch (a[k]) {
-					case 'a': all = true; break;
-					case 's': s = true; break;
-					case 'n': n = true; break;
-					case 'r': r = true; break;
-					case 'v': v = true; break;
-					case 'm': m = true; break;
-					case 'o': o = true; break;
-					}
-				}
-			}
+	struct UnameOptions {
+		bool all = false;
+		bool kernel = false;
+		bool node = false;
+		bool release = false;
+		bool version = false;
+		bool machine = false;
+		bool opsys = false;
+	};
+
+	struct UnameInfo {
+		std::string node;
+		std::string arch;
+		std::string release;
+		std::string version;
+	};
+
+	static void applyUnameFlag(char flag, UnameOptions& opts) {
+		switch (flag) {
+		case 'a': opts.all = true; break;
+		case 's': opts.kernel = true; break;
+		case 'n': opts.node = true; break;
+		case 'r': opts.release = true; break;
+		case 'v': opts.version = true; break;
+		case 'm': opts.machine = true; break;
+		case 'o': opts.opsys = true; break;
+		}
+	}
+
+	static bool applyUnameLongOption(const std::string& arg, UnameOptions& opts) {
+		if      (arg == "--all")              applyUnameFlag('a', opts);
+		else if (arg == "--kernel-name")      applyUnameFlag('s', opts);
+		else if (arg == "--nodename")         applyUnameFlag('n', opts);
+		else if (arg == "--kernel-release")   applyUnameFlag('r', opts);
+		else if (arg == "--kernel-version")   applyUnameFlag('v', opts);
+		else if (arg == "--machine")          applyUnameFlag('m', opts);
+		else if (arg == "--operating-system") applyUnameFlag('o', opts);
+		else return false;
+		return true;
+	}
+
+	static UnameOptions parseUnameArgs(const std::vector<std::string>& args) {
+		UnameOptions opts;
+		for (const auto& arg : args) {
+			if (applyUnameLongOption(arg, opts)) continue;
+			if (!isShortFlagCluster(arg)) continue;
+			for (std::size_t k = 1; k < arg.size(); ++k) applyUnameFlag(arg[k], opts);
 		}
 
-		if (!all && !s && !n && !r && !v && !m && !o) s = true;
-		if (all) s = n = r = v = m = o = true;
+		const bool any = opts.all || opts.kernel || opts.node || opts.release
+			|| opts.version || opts.machine || opts.opsys;
+		if (!any) opts.kernel = true;
+		if (opts.all) {
+			opts.kernel = true;
+			opts.node = true;
+			opts.release = true;
+			opts.version = true;
+			opts.machine = true;
+			opts.opsys = true;
+		}
 
-		std::string node = exec.env().get("COMPUTERNAME");
-		if (node.empty()) node = exec.env().get("HOSTNAME");
+		return opts;
+	}
+
+	static UnameInfo collectUnameInfo(Executor& exec) {
+		UnameInfo info;
+		info.node = exec.env().get("COMPUTERNAME");
+		if (info.node.empty()) info.node = exec.env().get("HOSTNAME");
 #ifdef _WIN32
-		std::string arch = exec.env().get("PROCESSOR_ARCHITECTURE");
-		if (arch.empty()) arch = "x86_64";
-		OSVERSIONINFOA vi{};
-		vi.dwOSVersionInfoSize = sizeof(vi);
+		info.arch = exec.env().get("PROCESSOR_ARCHITECTURE");
+		if (info.arch.empty()) info.arch = "x86_64";
+
+		OSVERSIONINFOA os{};
+		os.dwOSVersionInfoSize = sizeof(os);
 #  pragma warning(push)
 #  pragma warning(disable : 4996)
-		GetVersionExA(&vi);
+		::GetVersionExA(&os);
 #  pragma warning(pop)
-		std::string release = std::to_string(vi.dwMajorVersion) + "."
-			+ std::to_string(vi.dwMinorVersion);
-		std::string version = std::to_string(vi.dwBuildNumber);
+		info.release = std::to_string(os.dwMajorVersion) + "." + std::to_string(os.dwMinorVersion);
+		info.version = std::to_string(os.dwBuildNumber);
 #else
-		std::string arch = "x86_64", release = "0", version = "0";
+		info.arch = "x86_64";
+		info.release = "0";
+		info.version = "0";
 #endif
-		std::string kernel = "wbsh";
-		std::string opsys = "Windows";
+		return info;
+	}
+
+	static void appendWord(std::string& out, const std::string& word) {
+		if (!out.empty()) out += " ";
+		out += word;
+	}
+
+	static int builtin_uname(Executor& exec, const std::vector<std::string>& args) {
+		const UnameOptions opts = parseUnameArgs(args);
+		const UnameInfo info = collectUnameInfo(exec);
 
 		std::string out;
-		auto add = [&](const std::string& x) { if (!out.empty()) out += " "; out += x; };
-		if (s) add(kernel);
-		if (n) add(node);
-		if (r) add(release);
-		if (v) add(version);
-		if (m) add(arch);
-		if (o) add(opsys);
+		if (opts.kernel)  appendWord(out, "wbsh");
+		if (opts.node)    appendWord(out, info.node);
+		if (opts.release) appendWord(out, info.release);
+		if (opts.version) appendWord(out, info.version);
+		if (opts.machine) appendWord(out, info.arch);
+		if (opts.opsys)   appendWord(out, "Windows");
 		std::printf("%s\n", out.c_str());
 		return 0;
 	}
 
+	static void printIdField(bool as_name, const std::string& user, int id) {
+		if (as_name) std::printf("%s\n", user.c_str());
+		else         std::printf("%d\n", id);
+	}
+
 	static int builtin_id(Executor& exec, const std::vector<std::string>& args) {
-		bool name_only = false, user_only = false, group_only = false;
-		for (const auto& a : args) {
-			if (a == "-n") name_only = true;
-			else if (a == "-u") user_only = true;
-			else if (a == "-g") group_only = true;
+		bool name_only = false;
+		bool user_only = false;
+		bool group_only = false;
+		for (const auto& arg : args) {
+			if (arg == "-n") name_only = true;
+			else if (arg == "-u") user_only = true;
+			else if (arg == "-g") group_only = true;
 		}
 
-		std::string user = exec.env().get("USER");
-		if (user.empty()) user = exec.env().get("USERNAME");
-		if (user.empty()) user = "user";
-		int uid = 1000, gid = 1000;
+		const std::string user = currentUserName(exec);
 		if (user_only) {
-			if (name_only) std::printf("%s\n", user.c_str());
-			else           std::printf("%d\n", uid);
-		}
-		else if (group_only) {
-			if (name_only) std::printf("%s\n", user.c_str());
-			else           std::printf("%d\n", gid);
-		}
-		else {
-			std::printf("uid=%d(%s) gid=%d(%s) groups=%d(%s)\n",
-				uid, user.c_str(), gid, user.c_str(), gid, user.c_str());
+			printIdField(name_only, user, kDefaultUserId);
+			return 0;
 		}
 
+		if (group_only) {
+			printIdField(name_only, user, kDefaultGroupId);
+			return 0;
+		}
+
+		std::printf("uid=%d(%s) gid=%d(%s) groups=%d(%s)\n",
+			kDefaultUserId, user.c_str(), kDefaultGroupId, user.c_str(),
+			kDefaultGroupId, user.c_str());
 		return 0;
 	}
 
 	static int builtin_realpath(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) { perr("realpath", "missing operand"); return 1; }
-		int rc = 0;
-		for (const auto& p : args) {
-			if (!p.empty() && p[0] == '-') continue;
-			std::error_code ec;
-			fs::path nat = fs::weakly_canonical(toNative(exec, p), ec);
-			if (ec) { perr("realpath", p, ec); rc = 1; continue; }
-			std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(nat)).c_str());
+		if (args.empty()) {
+			perr("realpath", "missing operand");
+			return 1;
 		}
 
-		return rc;
+		int status = 0;
+		for (const auto& path : args) {
+			if (startsWithDash(path)) continue;
+
+			std::error_code ec;
+			const fs::path resolved = fs::weakly_canonical(toNative(exec, path), ec);
+			if (ec) {
+				perr("realpath", path, ec);
+				status = 1;
+				continue;
+			}
+
+			std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(resolved)).c_str());
+		}
+
+		return status;
+	}
+
+	static bool readLinkTarget(Executor& exec, const std::string& path, bool canonical,
+	                           std::string& target) {
+		std::error_code ec;
+		const fs::path native = toNative(exec, path);
+		const fs::path resolved = canonical
+			? fs::weakly_canonical(native, ec)
+			: fs::read_symlink(native, ec);
+		if (ec) return false;
+
+		target = exec.pathConv().toPosix(pathToUtf8(resolved));
+		return true;
 	}
 
 	static int builtin_readlink(Executor& exec, const std::vector<std::string>& args) {
 		bool canonical = false;
 		std::vector<std::string> paths;
-		for (const auto& a : args) {
-			if (a == "-f" || a == "-e" || a == "-m" || a == "--canonicalize") canonical = true;
-			else if (!a.empty() && a[0] != '-') paths.push_back(a);
-		}
-
-		if (paths.empty()) { perr("readlink", "missing operand"); return 1; }
-		int rc = 0;
-		for (const auto& p : paths) {
-			std::error_code ec;
-			if (canonical) {
-				fs::path q = fs::weakly_canonical(toNative(exec, p), ec);
-				if (ec) { rc = 1; continue; }
-				std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(q)).c_str());
-			}
-			else {
-				fs::path q = fs::read_symlink(toNative(exec, p), ec);
-				if (ec) { rc = 1; continue; }
-				std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(q)).c_str());
+		for (const auto& arg : args) {
+			if (arg == "-f" || arg == "-e" || arg == "-m" || arg == "--canonicalize") {
+				canonical = true;
+			} else if (!arg.empty() && arg[0] != '-') {
+				paths.push_back(arg);
 			}
 		}
 
-		return rc;
+		if (paths.empty()) {
+			perr("readlink", "missing operand");
+			return 1;
+		}
+
+		int status = 0;
+		for (const auto& path : paths) {
+			std::string target;
+			if (!readLinkTarget(exec, path, canonical, target)) {
+				status = 1;
+				continue;
+			}
+
+			std::printf("%s\n", target.c_str());
+		}
+
+		return status;
 	}
 
-	static int exprBinaryIntOp(long long li, long long ri, const std::string& op) {
-		if (op == "+") { std::printf("%lld\n", li + ri); return 0; }
-		if (op == "-") { std::printf("%lld\n", li - ri); return 0; }
-		if (op == "*") { std::printf("%lld\n", li * ri); return 0; }
+	static int exprPrintNumber(long long value) {
+		std::printf("%lld\n", value);
+		return 0;
+	}
+
+	static int exprPrintTruth(bool truth) {
+		std::printf("%d\n", truth ? 1 : 0);
+		return truth ? 0 : 1;
+	}
+
+	static int exprBinaryIntOp(long long left, long long right, const std::string& op) {
+		if (op == "+") return exprPrintNumber(left + right);
+		if (op == "-") return exprPrintNumber(left - right);
+		if (op == "*") return exprPrintNumber(left * right);
 		if (op == "/") {
-			if (ri == 0) return 2;
-			std::printf("%lld\n", li / ri); return 0;
+			if (right == 0) return 2;
+			return exprPrintNumber(left / right);
 		}
 
 		if (op == "%") {
-			if (ri == 0) return 2;
-			std::printf("%lld\n", li % ri); return 0;
+			if (right == 0) return 2;
+			return exprPrintNumber(left % right);
 		}
 
-		if (op == "<")  { std::printf("%d\n", li <  ri); return (li <  ri) ? 0 : 1; }
-		if (op == "<=") { std::printf("%d\n", li <= ri); return (li <= ri) ? 0 : 1; }
-		if (op == ">")  { std::printf("%d\n", li >  ri); return (li >  ri) ? 0 : 1; }
-		if (op == ">=") { std::printf("%d\n", li >= ri); return (li >= ri) ? 0 : 1; }
-		if (op == "=" || op == "==") {
-			std::printf("%d\n", li == ri); return (li == ri) ? 0 : 1;
-		}
-
-		if (op == "!=") {
-			std::printf("%d\n", li != ri); return (li != ri) ? 0 : 1;
-		}
-
+		if (op == "<")  return exprPrintTruth(left <  right);
+		if (op == "<=") return exprPrintTruth(left <= right);
+		if (op == ">")  return exprPrintTruth(left >  right);
+		if (op == ">=") return exprPrintTruth(left >= right);
+		if (op == "=" || op == "==") return exprPrintTruth(left == right);
+		if (op == "!=") return exprPrintTruth(left != right);
 		return -1;
 	}
 
-	static int exprBinaryStringOp(const std::string& l, const std::string& r,
+	static int exprBinaryStringOp(const std::string& left, const std::string& right,
 	                              const std::string& op) {
-		if (op == "=" || op == "==") {
-			std::printf("%d\n", l == r); return (l == r) ? 0 : 1;
-		}
-
-		if (op == "!=") {
-			std::printf("%d\n", l != r); return (l != r) ? 0 : 1;
-		}
-
+		if (op == "=" || op == "==") return exprPrintTruth(left == right);
+		if (op == "!=") return exprPrintTruth(left != right);
 		return -1;
+	}
+
+	static int exprSubstr(const std::vector<std::string>& args) {
+		int position = 0;
+		int length = 0;
+		if (!parseInt(args[2], position) || !parseInt(args[3], length)) return 2;
+		if (position < 1) position = 1;
+
+		const std::size_t start = static_cast<std::size_t>(position - 1);
+		if (start >= args[1].size()) {
+			std::printf("\n");
+			return 1;
+		}
+
+		std::printf("%s\n", args[1].substr(start, length).c_str());
+		return 0;
+	}
+
+	// Returns -1 when the operator is not one expr knows, so the caller
+	// falls back to echoing the operands.
+	static int exprBinary(const std::vector<std::string>& args) {
+		const std::string& left  = args[0];
+		const std::string& op    = args[1];
+		const std::string& right = args[2];
+
+		long long left_int = 0;
+		long long right_int = 0;
+		if (parseLL(left, left_int) && parseLL(right, right_int)) {
+			return exprBinaryIntOp(left_int, right_int, op);
+		}
+
+		return exprBinaryStringOp(left, right, op);
 	}
 
 	static int builtin_expr(Executor&, const std::vector<std::string>& args) {
-		if (args.empty()) { perr("expr", "missing operand"); return 2; }
+		if (args.empty()) {
+			perr("expr", "missing operand");
+			return 2;
+		}
+
 		if (args.size() == 2 && args[0] == "length") {
 			std::printf("%zu\n", args[1].size());
 			return 0;
 		}
 
-		if (args.size() == 4 && args[0] == "substr") {
-			int p = 0, n = 0;
-			if (!parseInt(args[2], p) || !parseInt(args[3], n)) return 2;
-			if (p < 1) p = 1;
-			std::size_t start = static_cast<std::size_t>(p - 1);
-			if (start >= args[1].size()) { std::printf("\n"); return 1; }
-			std::printf("%s\n", args[1].substr(start, n).c_str());
-			return 0;
-		}
-
+		if (args.size() == 4 && args[0] == "substr") return exprSubstr(args);
 		if (args.size() == 3) {
-			const std::string& l  = args[0];
-			const std::string& op = args[1];
-			const std::string& r  = args[2];
-			long long li = 0, ri = 0;
-			if (parseLL(l, li) && parseLL(r, ri)) {
-				int rc = exprBinaryIntOp(li, ri, op);
-				if (rc >= 0) return rc;
-			}
-			else {
-				int rc = exprBinaryStringOp(l, r, op);
-				if (rc >= 0) return rc;
-			}
+			const int status = exprBinary(args);
+			if (status >= 0) return status;
 		}
 
-		std::string out;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			if (i) out.push_back(' ');
-			out += args[i];
-		}
-
-		std::printf("%s\n", out.c_str());
+		std::printf("%s\n", joinWords(args).c_str());
 		return 0;
 	}
 
-	static int builtin_cmp(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> files;
+	struct CmpOptions {
 		bool quiet = false;
-		for (const auto& a : args) {
-			if (a == "-s" || a == "--silent" || a == "--quiet") { quiet = true; continue; }
-			if (!a.empty() && a[0] == '-') continue;
-			files.push_back(a);
+		std::vector<std::string> files;
+	};
+
+	static CmpOptions parseCmpArgs(const std::vector<std::string>& args) {
+		CmpOptions opts;
+		for (const auto& arg : args) {
+			if (arg == "-s" || arg == "--silent" || arg == "--quiet") {
+				opts.quiet = true;
+				continue;
+			}
+
+			if (startsWithDash(arg)) continue;
+			opts.files.push_back(arg);
 		}
 
-		if (files.size() < 2) {
-			perr("cmp", "usage: cmp [-s] FILE1 FILE2");
-			return 2;
-		}
+		return opts;
+	}
 
-		FILE* f1 = fopenNative(exec, files[0], "rb");
-		if (!f1) { if (!quiet) perr("cmp", files[0] + ": " + std::strerror(errno)); return 2; }
-		FILE* f2 = fopenNative(exec, files[1], "rb");
-		if (!f2) {
-			std::fclose(f1);
-			if (!quiet) perr("cmp", files[1] + ": " + std::strerror(errno));
-			return 2;
-		}
+	static int compareStreams(std::FILE* first, std::FILE* second, const CmpOptions& opts) {
+		long long byte = 0;
+		long long line = 1;
+		for (;;) {
+			const int a = std::fgetc(first);
+			const int b = std::fgetc(second);
+			if (a == EOF && b == EOF) return 0;
 
-		long long byte = 0, line = 1;
-		int rc = 0;
-		while (true) {
-			int a = std::fgetc(f1);
-			int b = std::fgetc(f2);
-			if (a == EOF && b == EOF) break;
 			++byte;
 			if (a == EOF || b == EOF) {
-				if (!quiet) {
-					std::fprintf(stderr, "cmp: EOF on %s\n",
-						(a == EOF ? files[0].c_str() : files[1].c_str()));
-				}
-
-				rc = 1;
-				break;
+				const std::string& ended = a == EOF ? opts.files[0] : opts.files[1];
+				if (!opts.quiet) std::fprintf(stderr, "cmp: EOF on %s\n", ended.c_str());
+				return 1;
 			}
 
 			if (a != b) {
-				if (!quiet) {
+				if (!opts.quiet) {
 					std::printf("%s %s differ: byte %lld, line %lld\n",
-						files[0].c_str(), files[1].c_str(), byte, line);
+						opts.files[0].c_str(), opts.files[1].c_str(), byte, line);
 				}
 
-				rc = 1;
-				break;
+				return 1;
 			}
 
 			if (a == '\n') ++line;
 		}
+	}
 
-		std::fclose(f1);
-		std::fclose(f2);
-		return rc;
+	static int builtin_cmp(Executor& exec, const std::vector<std::string>& args) {
+		const CmpOptions opts = parseCmpArgs(args);
+		if (opts.files.size() < 2) {
+			perr("cmp", "usage: cmp [-s] FILE1 FILE2");
+			return 2;
+		}
+
+		std::FILE* first = fopenNative(exec, opts.files[0], "rb");
+		if (first == nullptr) {
+			if (!opts.quiet) perr("cmp", withErrno(opts.files[0]));
+			return 2;
+		}
+
+		std::FILE* second = fopenNative(exec, opts.files[1], "rb");
+		if (second == nullptr) {
+			std::fclose(first);
+			if (!opts.quiet) perr("cmp", withErrno(opts.files[1]));
+			return 2;
+		}
+
+		const int status = compareStreams(first, second, opts);
+		std::fclose(first);
+		std::fclose(second);
+		return status;
 	}
 
 	static void diffEmitRange(int a, int b) {
@@ -1507,73 +2003,90 @@ namespace wbsh {
 
 		struct UnifiedItem {
 			char kind;
-			int a, b;
+			int a_line;
+			int b_line;
 			std::string text;
 		};
 
 		struct NormalHunk {
-			int a1, a2;
-			int b1, b2;
+			int a1;
+			int a2;
+			int b1;
+			int b2;
 			char kind;
 		};
+
+		using Lines = std::vector<std::string>;
+		using LcsTable = std::vector<std::vector<int>>;
 	}  // namespace diff_internal
 
 	static diff_internal::DiffOptions parseDiffArgs(const std::vector<std::string>& args) {
-		diff_internal::DiffOptions o;
+		diff_internal::DiffOptions opts;
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-q" || a == "--brief")   { o.brief = true; continue; }
-			if (a == "-u" || a == "--unified") { o.unified = true; continue; }
-			if (a.size() > 2 && a.compare(0, 2, "-U") == 0) {
-				o.unified = true;
-				parseInt(a.substr(2), o.context);
+			const std::string& arg = args[i];
+			if (arg == "-q" || arg == "--brief") {
+				opts.brief = true;
 				continue;
 			}
 
-			if (a == "-U" && i + 1 < args.size()) {
-				o.unified = true;
-				parseInt(args[++i], o.context);
+			if (arg == "-u" || arg == "--unified") {
+				opts.unified = true;
 				continue;
 			}
 
-			if (!a.empty() && a[0] == '-') continue;
-			o.files.push_back(a);
+			if (arg.size() > 2 && arg.compare(0, 2, "-U") == 0) {
+				opts.unified = true;
+				parseInt(arg.substr(2), opts.context);
+				continue;
+			}
+
+			if (arg == "-U" && i + 1 < args.size()) {
+				opts.unified = true;
+				parseInt(args[++i], opts.context);
+				continue;
+			}
+
+			if (startsWithDash(arg)) continue;
+			opts.files.push_back(arg);
 		}
 
-		return o;
+		return opts;
 	}
 
-	static std::vector<std::vector<int>>
-	buildLcsTable(const std::vector<std::string>& A, const std::vector<std::string>& B) {
-		const std::size_t m = A.size();
-		const std::size_t n = B.size();
-		std::vector<std::vector<int>> L(m + 1, std::vector<int>(n + 1, 0));
+	static diff_internal::LcsTable
+	buildLcsTable(const diff_internal::Lines& left, const diff_internal::Lines& right) {
+		const std::size_t m = left.size();
+		const std::size_t n = right.size();
+		diff_internal::LcsTable table(m + 1, std::vector<int>(n + 1, 0));
 		for (std::size_t i = 1; i <= m; ++i) {
 			for (std::size_t j = 1; j <= n; ++j) {
-				if (A[i - 1] == B[j - 1]) L[i][j] = L[i - 1][j - 1] + 1;
-				else                      L[i][j] = (std::max)(L[i - 1][j], L[i][j - 1]);
+				if (left[i - 1] == right[j - 1]) {
+					table[i][j] = table[i - 1][j - 1] + 1;
+				} else {
+					table[i][j] = (std::max)(table[i - 1][j], table[i][j - 1]);
+				}
 			}
 		}
 
-		return L;
+		return table;
 	}
 
 	static std::vector<diff_internal::UnifiedItem>
-	walkLcsToUnifiedItems(const std::vector<std::string>& A,
-	                      const std::vector<std::string>& B,
-	                      const std::vector<std::vector<int>>& L) {
+	walkLcsToUnifiedItems(const diff_internal::Lines& left, const diff_internal::Lines& right,
+	                      const diff_internal::LcsTable& table) {
 		std::vector<diff_internal::UnifiedItem> items;
-		int ai = static_cast<int>(A.size());
-		int bj = static_cast<int>(B.size());
+		int ai = static_cast<int>(left.size());
+		int bj = static_cast<int>(right.size());
 		while (ai > 0 || bj > 0) {
-			if (ai > 0 && bj > 0 && A[ai - 1] == B[bj - 1]) {
-				items.push_back({ ' ', ai, bj, A[ai - 1] });
-				--ai; --bj;
-			} else if (bj > 0 && (ai == 0 || L[ai][bj - 1] >= L[ai - 1][bj])) {
-				items.push_back({ '+', 0, bj, B[bj - 1] });
+			if (ai > 0 && bj > 0 && left[ai - 1] == right[bj - 1]) {
+				items.push_back({ ' ', ai, bj, left[ai - 1] });
+				--ai;
+				--bj;
+			} else if (bj > 0 && (ai == 0 || table[ai][bj - 1] >= table[ai - 1][bj])) {
+				items.push_back({ '+', 0, bj, right[bj - 1] });
 				--bj;
 			} else {
-				items.push_back({ '-', ai, 0, A[ai - 1] });
+				items.push_back({ '-', ai, 0, left[ai - 1] });
 				--ai;
 			}
 		}
@@ -1582,12 +2095,13 @@ namespace wbsh {
 		return items;
 	}
 
+	// Two changes closer than twice the context belong to one hunk.
 	static int findHunkLastChange(const std::vector<diff_internal::UnifiedItem>& items,
 	                              int i, int context) {
-		const int N = static_cast<int>(items.size());
+		const int count = static_cast<int>(items.size());
 		int last_change = i;
 		int j = i + 1;
-		while (j < N) {
+		while (j < count) {
 			if (items[j].kind != ' ') {
 				last_change = j;
 				++j;
@@ -1596,32 +2110,32 @@ namespace wbsh {
 
 			int run = 0;
 			int k = j;
-			while (k < N && items[k].kind == ' ' && run < 2 * context) {
+			while (k < count && items[k].kind == ' ' && run < 2 * context) {
 				++run;
 				++k;
 			}
 
-			if (k < N && items[k].kind != ' ') {
-				j = k;
-				continue;
-			}
-			break;
+			if (k >= count || items[k].kind == ' ') break;
+			j = k;
 		}
 
 		return last_change;
 	}
 
 	static void emitUnifiedHunk(const std::vector<diff_internal::UnifiedItem>& items,
-	                            int hstart, int hend) {
-		int a_start = 0, a_count = 0, b_start = 0, b_count = 0;
-		for (int k = hstart; k <= hend; ++k) {
+	                            int hunk_start, int hunk_end) {
+		int a_start = 0;
+		int a_count = 0;
+		int b_start = 0;
+		int b_count = 0;
+		for (int k = hunk_start; k <= hunk_end; ++k) {
 			if (items[k].kind != '+') {
-				if (a_count == 0) a_start = items[k].a;
+				if (a_count == 0) a_start = items[k].a_line;
 				++a_count;
 			}
 
 			if (items[k].kind != '-') {
-				if (b_count == 0) b_start = items[k].b;
+				if (b_count == 0) b_start = items[k].b_line;
 				++b_count;
 			}
 		}
@@ -1629,67 +2143,70 @@ namespace wbsh {
 		std::printf("@@ -%d,%d +%d,%d @@\n",
 			a_count == 0 ? 0 : a_start, a_count,
 			b_count == 0 ? 0 : b_start, b_count);
-		for (int k = hstart; k <= hend; ++k) {
+		for (int k = hunk_start; k <= hunk_end; ++k) {
 			std::putchar(items[k].kind);
 			std::printf("%s\n", items[k].text.c_str());
 		}
 	}
 
-	static int emitUnifiedDiff(const std::vector<std::string>& A,
-	                           const std::vector<std::string>& B,
-	                           const std::vector<std::vector<int>>& L,
-	                           const std::string& fa, const std::string& fb,
-	                           int context) {
-		const auto items = walkLcsToUnifiedItems(A, B, L);
-		std::printf("--- %s\n+++ %s\n", fa.c_str(), fb.c_str());
+	static int emitUnifiedDiff(const diff_internal::Lines& left, const diff_internal::Lines& right,
+	                           const diff_internal::LcsTable& table,
+	                           const diff_internal::DiffOptions& opts) {
+		const auto items = walkLcsToUnifiedItems(left, right, table);
+		std::printf("--- %s\n+++ %s\n", opts.files[0].c_str(), opts.files[1].c_str());
 
-		const int N = static_cast<int>(items.size());
+		const int count = static_cast<int>(items.size());
 		int i = 0;
-		while (i < N) {
-			while (i < N && items[i].kind == ' ') ++i;
-			if (i >= N) break;
-			const int change_start = i;
-			const int last_change = findHunkLastChange(items, i, context);
-			const int hstart = (std::max)(0, change_start - context);
-			const int hend = (std::min)(N - 1, last_change + context);
-			emitUnifiedHunk(items, hstart, hend);
-			i = hend + 1;
+		while (i < count) {
+			while (i < count && items[i].kind == ' ') ++i;
+			if (i >= count) break;
+
+			const int last_change = findHunkLastChange(items, i, opts.context);
+			const int hunk_start = (std::max)(0, i - opts.context);
+			const int hunk_end = (std::min)(count - 1, last_change + opts.context);
+			emitUnifiedHunk(items, hunk_start, hunk_end);
+			i = hunk_end + 1;
 		}
 
 		return 1;
 	}
 
 	static std::vector<diff_internal::NormalHunk>
-	buildNormalHunks(const std::vector<std::string>& A,
-	                 const std::vector<std::string>& B,
-	                 const std::vector<std::vector<int>>& L) {
+	buildNormalHunks(const diff_internal::Lines& left, const diff_internal::Lines& right,
+	                 const diff_internal::LcsTable& table) {
 		std::vector<diff_internal::NormalHunk> hunks;
-		std::size_t i = A.size();
-		std::size_t j = B.size();
+		std::size_t i = left.size();
+		std::size_t j = right.size();
 		while (i > 0 || j > 0) {
-			if (i > 0 && j > 0 && A[i - 1] == B[j - 1]) {
-				--i; --j;
+			if (i > 0 && j > 0 && left[i - 1] == right[j - 1]) {
+				--i;
+				--j;
 				continue;
 			}
 
-			const std::size_t ei = i;
-			const std::size_t ej = j;
-			while (i > 0 && j > 0 && A[i - 1] != B[j - 1]) {
-				if (L[i - 1][j] >= L[i][j - 1]) --i;
-				else                            --j;
+			const std::size_t end_i = i;
+			const std::size_t end_j = j;
+			while (i > 0 && j > 0 && left[i - 1] != right[j - 1]) {
+				if (table[i - 1][j] >= table[i][j - 1]) --i;
+				else                                    --j;
 			}
 
-			while (i > 0 && (j == 0 || L[i - 1][j] >= L[i][j])) --i;
-			while (j > 0 && (i == 0 || L[i][j - 1] >  L[i][j])) --j;
+			while (i > 0 && (j == 0 || table[i - 1][j] >= table[i][j])) --i;
+			while (j > 0 && (i == 0 || table[i][j - 1] >  table[i][j])) --j;
 
 			int a1 = static_cast<int>(i + 1);
-			const int a2 = static_cast<int>(ei);
+			const int a2 = static_cast<int>(end_i);
 			int b1 = static_cast<int>(j + 1);
-			const int b2 = static_cast<int>(ej);
-			char kind;
-			if      (a1 > a2 && b1 <= b2) { kind = 'a'; --a1; }
-			else if (b1 > b2 && a1 <= a2) { kind = 'd'; --b1; }
-			else                          { kind = 'c'; }
+			const int b2 = static_cast<int>(end_j);
+			char kind = 'c';
+			if (a1 > a2 && b1 <= b2) {
+				kind = 'a';
+				--a1;
+			} else if (b1 > b2 && a1 <= a2) {
+				kind = 'd';
+				--b1;
+			}
+
 			hunks.push_back({ a1, a2, b1, b2, kind });
 		}
 
@@ -1697,254 +2214,303 @@ namespace wbsh {
 		return hunks;
 	}
 
-	static int emitNormalDiff(const std::vector<std::string>& A,
-	                          const std::vector<std::string>& B,
-	                          const std::vector<std::vector<int>>& L) {
-		const auto hunks = buildNormalHunks(A, B, L);
-		for (const auto& h : hunks) {
-			diffEmitRange(h.a1, h.a2);
-			std::putchar(h.kind);
-			diffEmitRange(h.b1, h.b2);
-			std::putchar('\n');
-			if (h.kind == 'd' || h.kind == 'c') {
-				for (int k = h.a1; k <= h.a2; ++k) {
-					if (k - 1 < static_cast<int>(A.size()))
-						std::printf("< %s\n", A[k - 1].c_str());
-				}
-			}
+	static void printHunkLines(const diff_internal::Lines& lines, int from, int to,
+	                           const char* prefix) {
+		for (int k = from; k <= to; ++k) {
+			if (k - 1 >= static_cast<int>(lines.size())) continue;
+			std::printf("%s%s\n", prefix, lines[k - 1].c_str());
+		}
+	}
 
-			if (h.kind == 'c') std::puts("---");
-			if (h.kind == 'a' || h.kind == 'c') {
-				for (int k = h.b1; k <= h.b2; ++k) {
-					if (k - 1 < static_cast<int>(B.size()))
-						std::printf("> %s\n", B[k - 1].c_str());
-				}
-			}
+	static int emitNormalDiff(const diff_internal::Lines& left, const diff_internal::Lines& right,
+	                          const diff_internal::LcsTable& table) {
+		for (const auto& hunk : buildNormalHunks(left, right, table)) {
+			diffEmitRange(hunk.a1, hunk.a2);
+			std::putchar(hunk.kind);
+			diffEmitRange(hunk.b1, hunk.b2);
+			std::putchar('\n');
+
+			if (hunk.kind == 'd' || hunk.kind == 'c') printHunkLines(left, hunk.a1, hunk.a2, "< ");
+			if (hunk.kind == 'c') std::puts("---");
+			if (hunk.kind == 'a' || hunk.kind == 'c') printHunkLines(right, hunk.b1, hunk.b2, "> ");
 		}
 
 		return 1;
 	}
 
 	static int builtin_diff(Executor& exec, const std::vector<std::string>& args) {
-		diff_internal::DiffOptions o = parseDiffArgs(args);
-		if (o.files.size() < 2) {
+		const diff_internal::DiffOptions opts = parseDiffArgs(args);
+		if (opts.files.size() < 2) {
 			perr("diff", "usage: diff [-q] FILE1 FILE2");
 			return 2;
 		}
 
-		std::vector<std::string> A;
-		std::vector<std::string> B;
-		if (!readAllLines(exec, o.files[0], A) || !readAllLines(exec, o.files[1], B))
-			return 2;
-		if (A == B) return 0;
+		diff_internal::Lines left;
+		diff_internal::Lines right;
+		if (!readAllLines(exec, opts.files[0], left)) return 2;
+		if (!readAllLines(exec, opts.files[1], right)) return 2;
+		if (left == right) return 0;
 
-		if (o.brief) {
-			std::printf("Files %s and %s differ\n",
-				o.files[0].c_str(), o.files[1].c_str());
+		if (opts.brief) {
+			std::printf("Files %s and %s differ\n", opts.files[0].c_str(), opts.files[1].c_str());
 			return 1;
 		}
 
-		const auto L = buildLcsTable(A, B);
-		if (o.unified) {
-			return emitUnifiedDiff(A, B, L, o.files[0], o.files[1], o.context);
-		}
-
-		return emitNormalDiff(A, B, L);
+		const diff_internal::LcsTable table = buildLcsTable(left, right);
+		if (opts.unified) return emitUnifiedDiff(left, right, table, opts);
+		return emitNormalDiff(left, right, table);
 	}
 
-	std::uintmax_t walkSize(const fs::path& p, std::error_code& ec) {
-		std::uintmax_t total = 0;
-		if (fs::is_regular_file(p, ec)) {
-			return fs::file_size(p, ec);
-		}
+	static std::uintmax_t treeSize(const fs::path& path, std::error_code& ec) {
+		if (fs::is_regular_file(path, ec)) return fs::file_size(path, ec);
+		if (!fs::is_directory(path, ec)) return 0;
 
-		if (!fs::is_directory(p, ec)) return 0;
-		fs::recursive_directory_iterator it(p,
+		fs::recursive_directory_iterator it(path,
 			fs::directory_options::skip_permission_denied, ec);
 		if (ec) return 0;
+
+		std::uintmax_t total = 0;
 		for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
 			if (ec) break;
-			std::error_code fec;
-			if (cur->is_regular_file(fec)) {
-				std::uintmax_t s = cur->file_size(fec);
-				if (!fec) total += s;
-			}
+
+			std::error_code file_ec;
+			if (!cur->is_regular_file(file_ec)) continue;
+
+			const std::uintmax_t size = cur->file_size(file_ec);
+			if (!file_ec) total += size;
 		}
 
 		return total;
 	}
+
+	struct DuOptions {
+		bool summary = false;
+		bool human = false;
+		bool all = false;
+		std::vector<std::string> paths;
+	};
 
 	static std::string duFormatSize(std::uintmax_t bytes, bool human) {
 		if (human) return humanSize(bytes);
 		return std::to_string((bytes + 1023) / 1024);
 	}
 
-	static int duEmitDirectory(const fs::path& nat, const std::string& label,
-	                           bool human, bool all) {
+	static void printDuLine(std::uintmax_t bytes, const std::string& label, bool human) {
+		std::printf("%s\t%s\n", duFormatSize(bytes, human).c_str(), label.c_str());
+	}
+
+	static int duEmitDirectory(const fs::path& native, const std::string& label,
+	                           const DuOptions& opts) {
 		std::error_code ec;
-		fs::recursive_directory_iterator it(nat,
+		fs::recursive_directory_iterator it(native,
 			fs::directory_options::skip_permission_denied, ec);
 		if (ec) {
-			std::fprintf(stderr, "wbsh: du: %s\n", ec.message().c_str());
+			perr("du", ec.message());
 			return 1;
 		}
 
 		std::uintmax_t grand = 0;
 		for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
 			if (ec) break;
-			std::error_code fec;
-			if (cur->is_regular_file(fec)) {
-				std::uintmax_t s = cur->file_size(fec);
-				if (!fec) grand += s;
-				if (all) {
-					std::printf("%s\t%s\n",
-						duFormatSize(s, human).c_str(), pathToUtf8(cur->path()).c_str());
-				}
-			}
+
+			std::error_code file_ec;
+			if (!cur->is_regular_file(file_ec)) continue;
+
+			const std::uintmax_t size = cur->file_size(file_ec);
+			if (!file_ec) grand += size;
+			if (opts.all) printDuLine(size, pathToUtf8(cur->path()), opts.human);
 		}
 
-		std::printf("%s\t%s\n", duFormatSize(grand, human).c_str(), label.c_str());
+		printDuLine(grand, label, opts.human);
 		return 0;
 	}
 
+	static DuOptions parseDuArgs(const std::vector<std::string>& args) {
+		DuOptions opts;
+		for (const auto& arg : args) {
+			if (arg == "-s" || arg == "--summarize") opts.summary = true;
+			else if (arg == "-h" || arg == "--human-readable") opts.human = true;
+			else if (arg == "-a" || arg == "--all") opts.all = true;
+			else if (startsWithDash(arg)) continue;
+			else opts.paths.push_back(arg);
+		}
+
+		if (opts.paths.empty()) opts.paths.push_back(".");
+		return opts;
+	}
+
+	static int duOnePath(Executor& exec, const std::string& path, const DuOptions& opts) {
+		const fs::path native = toNative(exec, path);
+		std::error_code ec;
+		if (!fs::exists(native, ec)) {
+			perr("du", path, ec);
+			return 1;
+		}
+
+		if (opts.summary) {
+			printDuLine(treeSize(native, ec), path, opts.human);
+			return 0;
+		}
+
+		if (fs::is_regular_file(native, ec)) {
+			printDuLine(fs::file_size(native, ec), path, opts.human);
+			return 0;
+		}
+
+		return duEmitDirectory(native, path, opts);
+	}
+
 	static int builtin_du(Executor& exec, const std::vector<std::string>& args) {
-		bool summary = false, human = false, all = false;
-		std::vector<std::string> paths;
-		for (const auto& a : args) {
-			if (a == "-s" || a == "--summarize") summary = true;
-			else if (a == "-h" || a == "--human-readable") human = true;
-			else if (a == "-a" || a == "--all") all = true;
-			else if (!a.empty() && a[0] == '-') continue;
-			else paths.push_back(a);
+		const DuOptions opts = parseDuArgs(args);
+		int status = 0;
+		for (const auto& path : opts.paths) status |= duOnePath(exec, path, opts);
+		return status;
+	}
+
+	static std::vector<std::string> logicalDriveRoots() {
+		std::vector<std::string> drives;
+#ifdef _WIN32
+		const DWORD mask = ::GetLogicalDrives();
+		for (int i = 0; i < 26; ++i) {
+			if ((mask & (1u << i)) == 0) continue;
+			const char root[4] = { static_cast<char>('A' + i), ':', '\\', 0 };
+			drives.push_back(root);
 		}
+#endif
+		return drives;
+	}
 
-		if (paths.empty()) paths.push_back(".");
+	static std::string dfFormatSize(std::uintmax_t bytes, bool human) {
+		if (human) return humanSize(bytes);
+		return std::to_string(bytes / 1024);
+	}
 
-		int rc = 0;
-		for (const auto& p : paths) {
-			fs::path nat = toNative(exec, p);
-			std::error_code ec;
-			if (!fs::exists(nat, ec)) {
-				std::fprintf(stderr, "wbsh: du: %s: %s\n",
-					p.c_str(), ec.message().c_str());
-				rc = 1;
-				continue;
-			}
+	static bool printDfRow(const std::string& drive, bool human) {
+#ifdef _WIN32
+		std::string root = drive;
+		if (!root.empty() && root.back() != '\\' && root.back() != '/') root.push_back('\\');
 
-			if (summary) {
-				std::uintmax_t total = walkSize(nat, ec);
-				std::printf("%s\t%s\n", duFormatSize(total, human).c_str(), p.c_str());
-				continue;
-			}
+		ULARGE_INTEGER avail{};
+		ULARGE_INTEGER total{};
+		ULARGE_INTEGER free_bytes{};
+		if (::GetDiskFreeSpaceExA(root.c_str(), &avail, &total, &free_bytes) == 0) return false;
 
-			if (fs::is_regular_file(nat, ec)) {
-				std::printf("%s\t%s\n",
-					duFormatSize(fs::file_size(nat, ec), human).c_str(), p.c_str());
-				continue;
-			}
-
-			rc |= duEmitDirectory(nat, p, human, all);
-		}
-
-		return rc;
+		const std::uintmax_t total_bytes = total.QuadPart;
+		const std::uintmax_t avail_bytes = avail.QuadPart;
+		const std::uintmax_t used_bytes = total_bytes > avail_bytes ? total_bytes - avail_bytes : 0;
+		const int percent = total_bytes == 0
+			? 0
+			: static_cast<int>((used_bytes * 100) / total_bytes);
+		std::printf("%-20s %12s %12s %12s %4d%% %s\n",
+			root.c_str(), dfFormatSize(total_bytes, human).c_str(),
+			dfFormatSize(used_bytes, human).c_str(), dfFormatSize(avail_bytes, human).c_str(),
+			percent, root.c_str());
+#else
+		(void)drive;
+		(void)human;
+#endif
+		return true;
 	}
 
 	static int builtin_df(Executor& exec, const std::vector<std::string>& args) {
 		bool human = false;
 		std::vector<std::string> paths;
-		for (const auto& a : args) {
-			if (a == "-h" || a == "--human-readable") human = true;
-			else if (!a.empty() && a[0] == '-') continue;
-			else paths.push_back(a);
+		for (const auto& arg : args) {
+			if (arg == "-h" || arg == "--human-readable") human = true;
+			else if (startsWithDash(arg)) continue;
+			else paths.push_back(arg);
 		}
 
 		std::vector<std::string> drives;
-		if (paths.empty()) {
-#ifdef _WIN32
-			DWORD mask = GetLogicalDrives();
-			for (int i = 0; i < 26; ++i) {
-				if (mask & (1u << i)) {
-					char d[4] = { static_cast<char>('A' + i), ':', '\\', 0 };
-					drives.push_back(d);
-				}
-			}
-#endif
-		}
-		else {
-			for (const auto& p : paths) drives.push_back(pathToUtf8(toNative(exec, p)));
-		}
+		if (paths.empty()) drives = logicalDriveRoots();
+		for (const auto& path : paths) drives.push_back(pathToUtf8(toNative(exec, path)));
 
-		auto fmt = [&](std::uintmax_t b) -> std::string {
-			if (human) return humanSize(b);
-			return std::to_string(b / 1024);
-			};
 		std::printf("%-20s %12s %12s %12s %5s %s\n",
 			"Filesystem", "1K-blocks", "Used", "Available", "Use%", "Mounted on");
-		int rc = 0;
-		for (const auto& d : drives) {
-#ifdef _WIN32
-			ULARGE_INTEGER avail{}, total{}, free_{};
-			std::string root = d;
-			if (!root.empty() && root.back() != '\\' && root.back() != '/') root.push_back('\\');
-			if (!GetDiskFreeSpaceExA(root.c_str(), &avail, &total, &free_)) {
-				rc = 1;
-				continue;
-			}
-
-			std::uintmax_t t = total.QuadPart;
-			std::uintmax_t a = avail.QuadPart;
-			std::uintmax_t u = (t > a) ? (t - a) : 0;
-			int pct = (t == 0) ? 0 : static_cast<int>((u * 100) / t);
-			std::printf("%-20s %12s %12s %12s %4d%% %s\n",
-				root.c_str(), fmt(t).c_str(), fmt(u).c_str(),
-				fmt(a).c_str(), pct, root.c_str());
-#else
-			(void)d;
-#endif
+		int status = 0;
+		for (const auto& drive : drives) {
+			if (!printDfRow(drive, human)) status = 1;
 		}
 
-		return rc;
+		return status;
+	}
+
+	static const char* statTypeName(const struct stat& info) {
+#ifdef S_ISDIR
+		if (S_ISDIR(info.st_mode)) return "directory";
+		if (S_ISREG(info.st_mode)) return "regular file";
+#else
+		if ((info.st_mode & S_IFMT) == S_IFDIR) return "directory";
+		if ((info.st_mode & S_IFMT) == S_IFREG) return "regular file";
+#endif
+		return "special file";
+	}
+
+	static bool statOnePath(Executor& exec, const std::string& path) {
+		const std::string native = exec.pathConv().toWin32(path);
+		struct stat info {};
+		if (::stat(native.c_str(), &info) != 0) {
+			perr("stat", withErrno(path));
+			return false;
+		}
+
+		const std::string modified = formatTime(brokenDownTime(info.st_mtime, false),
+			"%Y-%m-%d %H:%M:%S");
+		std::printf("  File: %s\n", path.c_str());
+		std::printf("  Size: %lld\tType: %s\n",
+			static_cast<long long>(info.st_size), statTypeName(info));
+		std::printf("Access: (%04o)\n", static_cast<unsigned int>(info.st_mode & 0777));
+		std::printf("Modify: %s\n", modified.c_str());
+		return true;
 	}
 
 	static int builtin_stat(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) { perr("stat", "missing operand"); return 1; }
-		int rc = 0;
-		for (const auto& p : args) {
-			if (!p.empty() && p[0] == '-') continue;
-			std::string nat = exec.pathConv().toWin32(p);
-			struct stat st {};
-			if (::stat(nat.c_str(), &st) != 0) {
-				std::fprintf(stderr, "wbsh: stat: %s: %s\n",
-					p.c_str(), std::strerror(errno));
-				rc = 1;
-				continue;
-			}
-
-			const char* type =
-#ifdef S_ISDIR
-			(S_ISDIR(st.st_mode) ? "directory" :
-				S_ISREG(st.st_mode) ? "regular file" : "special file");
-#else
-				((st.st_mode & S_IFMT) == S_IFDIR ? "directory" :
-					(st.st_mode & S_IFMT) == S_IFREG ? "regular file" : "special file");
-#endif
-			char tbuf[64];
-			std::tm tm{};
-#ifdef _WIN32
-			localtime_s(&tm, &st.st_mtime);
-#else
-			localtime_r(&st.st_mtime, &tm);
-#endif
-			std::strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", &tm);
-			std::printf("  File: %s\n", p.c_str());
-			std::printf("  Size: %lld\tType: %s\n",
-				static_cast<long long>(st.st_size), type);
-			std::printf("Access: (%04o)\n",
-				static_cast<unsigned int>(st.st_mode & 0777));
-			std::printf("Modify: %s\n", tbuf);
+		if (args.empty()) {
+			perr("stat", "missing operand");
+			return 1;
 		}
 
-		return rc;
+		int status = 0;
+		for (const auto& path : args) {
+			if (startsWithDash(path)) continue;
+			if (!statOnePath(exec, path)) status = 1;
+		}
+
+		return status;
+	}
+
+	// Only the owner write bit is honoured: it maps onto the read-only
+	// attribute, the one permission Windows files actually carry.
+	static bool chmodWantsWritable(const std::string& mode) {
+		if (mode == "-w" || mode == "u-w" || mode == "a-w" || mode == "go-w") return false;
+		if (mode == "+w" || mode == "u+w" || mode == "a+w" || mode == "go+w") return true;
+
+		const bool octal = mode.size() == 3
+			&& isDigitChar(mode[0]) && isDigitChar(mode[1]) && isDigitChar(mode[2]);
+		if (octal) return ((mode[0] - '0') & 2) != 0;
+		return true;
+	}
+
+	static bool chmodOnePath(Executor& exec, const std::string& path, bool writable) {
+		const std::string native = exec.pathConv().toWin32(path);
+#ifdef _WIN32
+		DWORD attributes = ::GetFileAttributesA(native.c_str());
+		if (attributes == INVALID_FILE_ATTRIBUTES) {
+			perr("chmod", path + ": not found");
+			return false;
+		}
+
+		if (writable) attributes &= ~FILE_ATTRIBUTE_READONLY;
+		else          attributes |= FILE_ATTRIBUTE_READONLY;
+		if (::SetFileAttributesA(native.c_str(), attributes) != 0) return true;
+
+		perr("chmod", path + ": cannot change");
+		return false;
+#else
+		(void)native;
+		(void)writable;
+		return true;
+#endif
 	}
 
 	static int builtin_chmod(Executor& exec, const std::vector<std::string>& args) {
@@ -1953,90 +2519,73 @@ namespace wbsh {
 			return 1;
 		}
 
-		const std::string& mode = args[0];
-		int rc = 0;
-		bool writable = true;
-		if (mode == "-w" || mode == "u-w" || mode == "a-w" || mode == "go-w") {
-			writable = false;
-		}
-		else if (mode == "+w" || mode == "u+w" || mode == "a+w" || mode == "go+w") {
-			writable = true;
-		}
-		else if (mode.size() == 3
-			&& std::isdigit((unsigned char)mode[0])
-			&& std::isdigit((unsigned char)mode[1])
-			&& std::isdigit((unsigned char)mode[2])) {
-			writable = ((mode[0] - '0') & 2) != 0;
-		}
-
+		const bool writable = chmodWantsWritable(args[0]);
+		int status = 0;
 		for (std::size_t i = 1; i < args.size(); ++i) {
-			std::string nat = exec.pathConv().toWin32(args[i]);
-#ifdef _WIN32
-			DWORD attr = GetFileAttributesA(nat.c_str());
-			if (attr == INVALID_FILE_ATTRIBUTES) {
-				std::fprintf(stderr, "wbsh: chmod: %s: not found\n", args[i].c_str());
-				rc = 1;
-				continue;
-			}
-
-			if (writable) attr &= ~FILE_ATTRIBUTE_READONLY;
-			else          attr |= FILE_ATTRIBUTE_READONLY;
-			if (!SetFileAttributesA(nat.c_str(), attr)) {
-				std::fprintf(stderr, "wbsh: chmod: %s: cannot change\n", args[i].c_str());
-				rc = 1;
-			}
-#else
-			(void)nat;
-#endif
+			if (!chmodOnePath(exec, args[i], writable)) status = 1;
 		}
 
-		return rc;
+		return status;
 	}
 
-	static int builtin_ln(Executor& exec, const std::vector<std::string>& args) {
+	struct LnOptions {
 		bool symbolic = false;
 		bool force = false;
-		std::vector<std::string> rest;
-		for (const auto& a : args) {
-			if (a == "-s" || a == "--symbolic") symbolic = true;
-			else if (a == "-f" || a == "--force") force = true;
-			else if (a == "-sf" || a == "-fs") { symbolic = true; force = true; }
-			else if (!a.empty() && a[0] == '-') continue;
-			else rest.push_back(a);
+		std::vector<std::string> operands;
+	};
+
+	static LnOptions parseLnArgs(const std::vector<std::string>& args) {
+		LnOptions opts;
+		for (const auto& arg : args) {
+			if (arg == "-s" || arg == "--symbolic") {
+				opts.symbolic = true;
+			} else if (arg == "-f" || arg == "--force") {
+				opts.force = true;
+			} else if (arg == "-sf" || arg == "-fs") {
+				opts.symbolic = true;
+				opts.force = true;
+			} else if (!startsWithDash(arg)) {
+				opts.operands.push_back(arg);
+			}
 		}
 
-		if (rest.size() < 2) {
+		return opts;
+	}
+
+#ifdef _WIN32
+	static bool createWindowsLink(const std::string& native_target, const std::string& native_link,
+	                              bool symbolic) {
+		if (!symbolic) {
+			return ::CreateHardLinkA(native_link.c_str(), native_target.c_str(), nullptr) != 0;
+		}
+
+		DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+		std::error_code ec;
+		if (fs::is_directory(native_target, ec)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+		return ::CreateSymbolicLinkA(native_link.c_str(), native_target.c_str(), flags) != 0;
+	}
+#endif
+
+	static int builtin_ln(Executor& exec, const std::vector<std::string>& args) {
+		const LnOptions opts = parseLnArgs(args);
+		if (opts.operands.size() < 2) {
 			perr("ln", "usage: ln [-s] [-f] TARGET LINK");
 			return 1;
 		}
 
-		std::string target = rest[0];
-		std::string link = rest[1];
-		std::string nat_target = exec.pathConv().toWin32(target);
-		std::string nat_link = exec.pathConv().toWin32(link);
 #ifdef _WIN32
-		if (force) DeleteFileA(nat_link.c_str());
-		BOOL ok = FALSE;
-		if (symbolic) {
-			DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
-			std::error_code ec;
-			if (fs::is_directory(nat_target, ec)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
-			ok = CreateSymbolicLinkA(nat_link.c_str(), nat_target.c_str(), flags);
-		}
-		else {
-			ok = CreateHardLinkA(nat_link.c_str(), nat_target.c_str(), nullptr);
-		}
+		const std::string& target = opts.operands[0];
+		const std::string& link = opts.operands[1];
+		const std::string native_target = exec.pathConv().toWin32(target);
+		const std::string native_link = exec.pathConv().toWin32(link);
+		if (opts.force) ::DeleteFileA(native_link.c_str());
+		if (createWindowsLink(native_target, native_link, opts.symbolic)) return 0;
 
-		if (!ok) {
-			DWORD err = GetLastError();
-			std::fprintf(stderr, "wbsh: ln: %s -> %s failed (err=%lu)\n",
-				link.c_str(), target.c_str(), err);
-			return 1;
-		}
-
-		return 0;
+		std::fprintf(stderr, "wbsh: ln: %s -> %s failed (err=%lu)\n",
+			link.c_str(), target.c_str(), ::GetLastError());
+		return 1;
 #else
-		(void)nat_target; (void)nat_link;
+		(void)exec;
 		perr("ln", "not supported");
 		return 1;
 #endif
@@ -2044,37 +2593,46 @@ namespace wbsh {
 
 	static std::string currentCwdPosix(Executor& exec) {
 		std::error_code ec;
-		auto cwd = fs::current_path(ec);
+		const fs::path cwd = fs::current_path(ec);
 		if (ec) return exec.env().get("PWD");
 		return exec.pathConv().toPosix(pathToUtf8(cwd));
 	}
 
 	static void printDirStack(Executor& exec, bool numbered) {
-		const auto& s = exec.dirStack();
-		if (s.empty()) {
+		const auto& stack = exec.dirStack();
+		if (stack.empty()) {
 			std::printf("%s\n", currentCwdPosix(exec).c_str());
 			return;
 		}
 
 		if (numbered) {
-			for (std::size_t i = 0; i < s.size(); ++i) {
-				std::printf("%2zu  %s\n", i, s[i].c_str());
-			}
-		}
-		else {
-			for (std::size_t i = 0; i < s.size(); ++i) {
-				if (i) std::fputc(' ', stdout);
-				std::fputs(s[i].c_str(), stdout);
+			for (std::size_t i = 0; i < stack.size(); ++i) {
+				std::printf("%2zu  %s\n", i, stack[i].c_str());
 			}
 
-			std::fputc('\n', stdout);
+			return;
 		}
+
+		std::printf("%s\n", joinWords(stack).c_str());
+	}
+
+	static bool pushdEnter(Executor& exec, const std::string& target,
+	                       std::vector<std::string>& stack) {
+		std::error_code ec;
+		fs::current_path(toNative(exec, target), ec);
+		if (ec) {
+			perr("pushd", target, ec);
+			return false;
+		}
+
+		stack.insert(stack.begin(), exec.pathConv().toPosix(pathToUtf8(fs::current_path(ec))));
+		return true;
 	}
 
 	static int builtin_pushd(Executor& exec, const std::vector<std::string>& args) {
 		auto& stack = exec.dirStack();
-		std::string cur = currentCwdPosix(exec);
-		if (stack.empty()) stack.push_back(cur);
+		const std::string previous = currentCwdPosix(exec);
+		if (stack.empty()) stack.push_back(previous);
 
 		if (args.empty()) {
 			if (stack.size() < 2) {
@@ -2083,21 +2641,14 @@ namespace wbsh {
 			}
 
 			std::swap(stack[0], stack[1]);
-		}
-		else {
-			const std::string& target = args[0];
-			fs::path nat = toNative(exec, target);
-			std::error_code ec;
-			fs::current_path(nat, ec);
-			if (ec) { perr("pushd", target, ec); return 1; }
-			stack.insert(stack.begin(), exec.pathConv().toPosix(
-				pathToUtf8(fs::current_path(ec))));
+		} else if (!pushdEnter(exec, args[0], stack)) {
+			return 1;
 		}
 
 		std::error_code ec;
 		fs::current_path(toNative(exec, stack[0]), ec);
 		if (!ec) {
-			exec.env().set("OLDPWD", cur);
+			exec.env().set("OLDPWD", previous);
 			exec.env().set("PWD", stack[0]);
 		}
 
@@ -2112,12 +2663,17 @@ namespace wbsh {
 			return 1;
 		}
 
-		std::string old = stack.front();
+		const std::string previous = stack.front();
 		stack.erase(stack.begin());
+
 		std::error_code ec;
 		fs::current_path(exec.pathConv().toWin32(stack[0]), ec);
-		if (ec) { perr("popd", stack[0], ec); return 1; }
-		exec.env().set("OLDPWD", old);
+		if (ec) {
+			perr("popd", stack[0], ec);
+			return 1;
+		}
+
+		exec.env().set("OLDPWD", previous);
 		exec.env().set("PWD", stack[0]);
 		printDirStack(exec, false);
 		return 0;
@@ -2126,11 +2682,11 @@ namespace wbsh {
 	static int builtin_dirs(Executor& exec, const std::vector<std::string>& args) {
 		bool numbered = false;
 		bool clear = false;
-		for (const auto& a : args) {
-			if (a == "-v") numbered = true;
-			else if (a == "-c") clear = true;
-			else if (a == "-l") {}    // long form — not implemented
-			else if (a == "-p") numbered = false;
+		for (const auto& arg : args) {
+			if (arg == "-l") continue;   // long form: accepted, not implemented
+			if (arg == "-v") numbered = true;
+			else if (arg == "-c") clear = true;
+			else if (arg == "-p") numbered = false;
 		}
 
 		if (clear) {
@@ -2138,56 +2694,37 @@ namespace wbsh {
 			return 0;
 		}
 
-		if (exec.dirStack().empty()) {
-			exec.dirStack().push_back(currentCwdPosix(exec));
-		}
-
+		if (exec.dirStack().empty()) exec.dirStack().push_back(currentCwdPosix(exec));
 		printDirStack(exec, numbered);
 		return 0;
 	}
 
 	static int builtin_yes(Executor&, const std::vector<std::string>& args) {
-		std::string line;
-		if (args.empty()) line = "y";
-		else {
-			for (std::size_t i = 0; i < args.size(); ++i) {
-				if (i) line.push_back(' ');
-				line += args[i];
-			}
-		}
-
+		std::string line = args.empty() ? "y" : joinWords(args);
 		line.push_back('\n');
-		while (true) {
+		for (;;) {
 			if (std::fwrite(line.data(), 1, line.size(), stdout) != line.size()) {
 				return 1;   // pipe closed (downstream done) — exit cleanly
 			}
 		}
 	}
 
-	static int builtin_nproc(Executor&, const std::vector<std::string>& args) {
-		(void)args;   // ignore --all / --ignore=N for this minimal impl
-		unsigned n = std::thread::hardware_concurrency();
-		if (n == 0) n = 1;
-		std::printf("%u\n", n);
+	// --all / --ignore=N are accepted and ignored.
+	static int builtin_nproc(Executor&, const std::vector<std::string>&) {
+		unsigned count = std::thread::hardware_concurrency();
+		if (count == 0) count = 1;
+		std::printf("%u\n", count);
 		return 0;
 	}
 
-	static void tputConsoleSize(int& cols, int& lines) {
-#ifdef _WIN32
-		HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-		CONSOLE_SCREEN_BUFFER_INFO info{};
-		if (h != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(h, &info)) {
-			cols = info.srWindow.Right - info.srWindow.Left + 1;
-			lines = info.srWindow.Bottom - info.srWindow.Top + 1;
-			return;
-		}
-#endif
-		cols = 80;
-		lines = 24;
+	static void tputConsoleSize(int& columns, int& rows) {
+		if (queryConsoleSize(columns, rows)) return;
+		columns = kFallbackConsoleColumns;
+		rows = kFallbackConsoleRows;
 	}
 
 	static const char* tputStaticEscape(const std::string& cap) {
-		static const std::unordered_map<std::string, std::string> table = {
+		static const std::unordered_map<std::string, std::string> kEscapes = {
 			{ "clear", "\x1b[2J\x1b[H" },
 			{ "reset", "\033c"          },
 			{ "bold",  "\x1b[1m"        },
@@ -2204,59 +2741,56 @@ namespace wbsh {
 			{ "ed",    "\x1b[J"         },
 			{ "home",  "\x1b[H"         },
 		};
-		auto it = table.find(cap);
-		return (it == table.end()) ? nullptr : it->second.c_str();
+		const auto it = kEscapes.find(cap);
+		return (it == kEscapes.end()) ? nullptr : it->second.c_str();
+	}
+
+	static int tputCursorPosition(const std::vector<std::string>& args) {
+		int row = 0;
+		int column = 0;
+		if (!parseInt(args[1], row) || !parseInt(args[2], column)) return 1;
+		std::printf("\x1b[%d;%dH", row + 1, column + 1);
+		return 0;
+	}
+
+	static int tputColor(const std::string& value, int base, int reset) {
+		int color = 0;
+		if (!parseInt(value, color)) return 1;
+		if (color >= 0 && color < 8) std::printf("\x1b[%dm", base + color);
+		else                         std::printf("\x1b[%dm", reset);
+		return 0;
 	}
 
 	static int tputParameterizedCap(const std::string& cap, const std::vector<std::string>& args) {
-		if (cap == "cup" && args.size() >= 3) {
-			int row = 0, col = 0;
-			if (!parseInt(args[1], row) || !parseInt(args[2], col)) return 1;
-			std::printf("\x1b[%d;%dH", row + 1, col + 1);
-			return 0;
-		}
-
-		if ((cap == "setaf" || cap == "setf") && args.size() >= 2) {
-			int n = 0;
-			if (!parseInt(args[1], n)) return 1;
-			if (n >= 0 && n < 8) std::printf("\x1b[%dm", 30 + n);
-			else                 std::printf("\x1b[39m");
-			return 0;
-		}
-
-		if ((cap == "setab" || cap == "setb") && args.size() >= 2) {
-			int n = 0;
-			if (!parseInt(args[1], n)) return 1;
-			if (n >= 0 && n < 8) std::printf("\x1b[%dm", 40 + n);
-			else                 std::printf("\x1b[49m");
-			return 0;
-		}
-
+		const bool foreground = cap == "setaf" || cap == "setf";
+		const bool background = cap == "setab" || cap == "setb";
+		if (cap == "cup" && args.size() >= 3) return tputCursorPosition(args);
+		if (foreground && args.size() >= 2) return tputColor(args[1], 30, 39);
+		if (background && args.size() >= 2) return tputColor(args[1], 40, 49);
 		return -1;
 	}
 
 	static int builtin_tput(Executor&, const std::vector<std::string>& args) {
 		if (args.empty()) return 0;
+
 		const std::string& cap = args[0];
-		if (cap == "cols" || cap == "columns") {
-			int c, l; tputConsoleSize(c, l);
-			std::printf("%d\n", c);
+		if (cap == "cols" || cap == "columns" || cap == "lines") {
+			int columns = 0;
+			int rows = 0;
+			tputConsoleSize(columns, rows);
+			std::printf("%d\n", cap == "lines" ? rows : columns);
 			return 0;
 		}
 
-		if (cap == "lines") {
-			int c, l; tputConsoleSize(c, l);
-			std::printf("%d\n", l);
+		const char* escape = tputStaticEscape(cap);
+		if (escape != nullptr) {
+			std::fputs(escape, stdout);
 			return 0;
 		}
 
-		if (const char* esc = tputStaticEscape(cap); esc) {
-			std::fputs(esc, stdout);
-			return 0;
-		}
+		const int status = tputParameterizedCap(cap, args);
+		if (status >= 0) return status;
 
-		int rc = tputParameterizedCap(cap, args);
-		if (rc >= 0) return rc;
 		std::fprintf(stderr, "wbsh: tput: unknown capability: %s\n", cap.c_str());
 		return 1;
 	}
@@ -2272,29 +2806,26 @@ namespace wbsh {
 	}  // namespace mktemp_internal
 
 	static int parseMktempArgs(const std::vector<std::string>& args,
-	                           mktemp_internal::MktempOptions& o) {
+	                           mktemp_internal::MktempOptions& opts) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if      (a == "-d" || a == "--directory") o.make_dir = true;
-			else if (a == "-u" || a == "--dry-run")   o.dry_run = true;
-			else if (a == "-q" || a == "--quiet")     o.quiet = true;
-			else if (a == "-t") { /* legacy: use TMPDIR — already default */ }
-			else if (a == "-p" || a == "--tmpdir") {
-				if (i + 1 < args.size()) o.tmpdir_override = args[++i];
-			}
-			else if (a.size() > 9 && a.compare(0, 9, "--tmpdir=") == 0) {
-				o.tmpdir_override = a.substr(9);
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-") {
-				std::fprintf(stderr, "wbsh: mktemp: unknown option: %s\n", a.c_str());
+			const std::string& arg = args[i];
+			if (arg == "-t") continue;   // legacy: use TMPDIR, which is already the default
+			if      (arg == "-d" || arg == "--directory") opts.make_dir = true;
+			else if (arg == "-u" || arg == "--dry-run")   opts.dry_run = true;
+			else if (arg == "-q" || arg == "--quiet")     opts.quiet = true;
+			else if (arg == "-p" || arg == "--tmpdir") {
+				if (i + 1 < args.size()) opts.tmpdir_override = args[++i];
+			} else if (arg.size() > 9 && arg.compare(0, 9, "--tmpdir=") == 0) {
+				opts.tmpdir_override = arg.substr(9);
+			} else if (isOptionNotStdin(arg)) {
+				std::fprintf(stderr, "wbsh: mktemp: unknown option: %s\n", arg.c_str());
 				return 1;
-			}
-			else if (o.template_arg.empty()) {
-				o.template_arg = a;
+			} else if (opts.template_arg.empty()) {
+				opts.template_arg = arg;
 			}
 		}
 
-		if (o.template_arg.empty()) o.template_arg = "tmp.XXXXXXXXXX";
+		if (opts.template_arg.empty()) opts.template_arg = "tmp.XXXXXXXXXX";
 		return 0;
 	}
 
@@ -2319,16 +2850,18 @@ namespace wbsh {
 	}
 
 	static std::string randomMktempSuffix(std::size_t xcount, int attempt) {
-		static const char* alpha =
+		static const char* const kAlphabet =
 			"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-		constexpr std::size_t alpha_n = 62;
-		const auto t = std::chrono::steady_clock::now().time_since_epoch().count();
-		unsigned long long mix = static_cast<unsigned long long>(t)
-			^ (static_cast<unsigned long long>(GetCurrentProcessId()) << 32)
+		constexpr std::size_t kAlphabetSize = 62;
+
+		const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+		unsigned long long mix = static_cast<unsigned long long>(ticks)
+			^ (static_cast<unsigned long long>(::GetCurrentProcessId()) << 32)
 			^ static_cast<unsigned long long>(attempt) * 0x9E3779B97F4A7C15ULL;
+
 		std::string suffix(xcount, 'X');
 		for (std::size_t k = 0; k < xcount; ++k) {
-			suffix[k] = alpha[mix % alpha_n];
+			suffix[k] = kAlphabet[mix % kAlphabetSize];
 			mix = mix * 6364136223846793005ULL + 1442695040888963407ULL;
 		}
 
@@ -2337,55 +2870,60 @@ namespace wbsh {
 
 	static bool tryClaimMktempCandidate(const std::string& candidate, bool make_dir) {
 		std::error_code ec;
-		if (make_dir) {
-			return fs::create_directory(candidate, ec) && !ec;
-		}
+		if (make_dir) return fs::create_directory(candidate, ec) && !ec;
 
-		HANDLE h = CreateFileA(candidate.c_str(),
+		const HANDLE handle = ::CreateFileA(candidate.c_str(),
 			GENERIC_WRITE, 0, nullptr,
 			CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (h == INVALID_HANDLE_VALUE) return false;
-		CloseHandle(h);
+		if (handle == INVALID_HANDLE_VALUE) return false;
+
+		::CloseHandle(handle);
 		return true;
 	}
 
+	static std::size_t countTrailingPlaceholders(const std::string& text) {
+		std::size_t count = 0;
+		while (count < text.size() && text[text.size() - 1 - count] == 'X') ++count;
+		return count;
+	}
+
+	static bool claimMktempPath(Executor& exec, const std::string& prefix, std::size_t xcount,
+	                            const mktemp_internal::MktempOptions& opts) {
+		for (int attempt = 0; attempt < kMktempAttempts; ++attempt) {
+			const std::string candidate = prefix + randomMktempSuffix(xcount, attempt);
+			if (!opts.dry_run && !tryClaimMktempCandidate(candidate, opts.make_dir)) continue;
+
+			std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
+			return true;
+		}
+
+		return false;
+	}
+
 	static int builtin_mktemp(Executor& exec, const std::vector<std::string>& args) {
-		mktemp_internal::MktempOptions o;
-		const int parse_rc = parseMktempArgs(args, o);
-		if (parse_rc != 0) return parse_rc;
+		mktemp_internal::MktempOptions opts;
+		const int parse_status = parseMktempArgs(args, opts);
+		if (parse_status != 0) return parse_status;
 
-		const std::string base = resolveMktempBaseDir(exec, o.tmpdir_override);
-		const fs::path full = resolveMktempFullPath(exec, o.template_arg, base);
+		const std::string base = resolveMktempBaseDir(exec, opts.tmpdir_override);
+		const std::string full = pathToUtf8(resolveMktempFullPath(exec, opts.template_arg, base));
+		const std::size_t xcount = countTrailingPlaceholders(full);
+		if (xcount < kMktempMinPlaceholders) {
+			if (!opts.quiet) {
+				std::fprintf(stderr, "wbsh: mktemp: too few X's in template '%s'\n",
+					opts.template_arg.c_str());
+			}
 
-		std::string s = pathToUtf8(full);
-		std::size_t end = s.size();
-		std::size_t start = end;
-		while (start > 0 && s[start - 1] == 'X') --start;
-		const std::size_t xcount = end - start;
-		if (xcount < 3) {
-			if (!o.quiet) std::fprintf(stderr,
-				"wbsh: mktemp: too few X's in template '%s'\n",
-				o.template_arg.c_str());
 			return 1;
 		}
 
-		for (int attempt = 0; attempt < 200; ++attempt) {
-			const std::string candidate =
-				s.substr(0, start) + randomMktempSuffix(xcount, attempt);
-			if (o.dry_run) {
-				std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
-				return 0;
-			}
+		if (claimMktempPath(exec, full.substr(0, full.size() - xcount), xcount, opts)) return 0;
 
-			if (tryClaimMktempCandidate(candidate, o.make_dir)) {
-				std::printf("%s\n", exec.pathConv().toPosix(candidate).c_str());
-				return 0;
-			}
+		if (!opts.quiet) {
+			std::fprintf(stderr, "wbsh: mktemp: failed to create unique file from '%s'\n",
+				opts.template_arg.c_str());
 		}
 
-		if (!o.quiet) std::fprintf(stderr,
-			"wbsh: mktemp: failed to create unique file from '%s'\n",
-			o.template_arg.c_str());
 		return 1;
 	}
 
@@ -2396,57 +2934,67 @@ namespace wbsh {
 			"13) PIPE 14) ALRM 15) TERM\n");
 	}
 
-	static int killTerminate(const std::vector<int>& pids, int signum) {
-		int rc = 0;
+	static bool killOneProcess(int pid, int signum) {
 #ifdef _WIN32
-		for (int pid : pids) {
-			HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
-			if (!h) {
-				std::fprintf(stderr, "wbsh: kill: %d: no such process\n", pid);
-				rc = 1;
-				continue;
-			}
-
-			if (!TerminateProcess(h, static_cast<UINT>(128 + signum))) {
-				std::fprintf(stderr, "wbsh: kill: %d: cannot terminate\n", pid);
-				rc = 1;
-			}
-
-			CloseHandle(h);
+		const HANDLE process = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+		if (process == nullptr) {
+			std::fprintf(stderr, "wbsh: kill: %d: no such process\n", pid);
+			return false;
 		}
+
+		const bool terminated = ::TerminateProcess(process, static_cast<UINT>(128 + signum)) != 0;
+		if (!terminated) std::fprintf(stderr, "wbsh: kill: %d: cannot terminate\n", pid);
+		::CloseHandle(process);
+		return terminated;
 #else
-		(void)pids; (void)signum;
+		(void)pid;
+		(void)signum;
+		return true;
 #endif
-		return rc;
+	}
+
+	static int killTerminate(const std::vector<int>& pids, int signum) {
+		int status = 0;
+		for (int pid : pids) {
+			if (!killOneProcess(pid, signum)) status = 1;
+		}
+
+		return status;
+	}
+
+	static bool killSignalByName(const std::string& arg, int& signum) {
+		if (arg == "-KILL") { signum = 9;  return true; }
+		if (arg == "-TERM") { signum = 15; return true; }
+		if (arg == "-INT")  { signum = 2;  return true; }
+		if (arg == "-HUP")  { signum = 1;  return true; }
+		return false;
 	}
 
 	static int builtin_kill(Executor&, const std::vector<std::string>& args) {
-		int signum = 15;
+		int signum = kSignalTerm;
 		std::vector<int> pids;
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-l") {
+			const std::string& arg = args[i];
+			if (arg == "-l") {
 				killPrintSignalList();
 				return 0;
 			}
 
-			if (a == "-s" && i + 1 < args.size()) {
+			if (arg == "-s" && i + 1 < args.size()) {
 				parseInt(args[++i], signum);
 				continue;
 			}
 
-			if (a.size() > 1 && a[0] == '-' && std::isdigit((unsigned char)a[1])) {
-				parseInt(a.substr(1), signum);
+			if (arg.size() > 1 && arg[0] == '-' && isDigitChar(arg[1])) {
+				parseInt(arg.substr(1), signum);
 				continue;
 			}
 
-			if (a == "-9" || a == "-KILL") { signum = 9;  continue; }
-			if (a == "-15" || a == "-TERM") { signum = 15; continue; }
-			if (a == "-2" || a == "-INT") { signum = 2;  continue; }
-			if (a == "-1" || a == "-HUP") { signum = 1;  continue; }
+			if (killSignalByName(arg, signum)) continue;
+
 			int pid = 0;
-			if (!parseInt(a, pid)) {
-				std::fprintf(stderr, "wbsh: kill: %s: arguments must be PIDs\n", a.c_str());
+			if (!parseInt(arg, pid)) {
+				std::fprintf(stderr, "wbsh: kill: %s: arguments must be PIDs\n", arg.c_str());
 				return 1;
 			}
 

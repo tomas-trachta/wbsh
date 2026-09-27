@@ -31,127 +31,139 @@ namespace wbsh {
 
 	namespace hash_detail {
 
-#ifdef _WIN32
-		static bool computeHashHex(LPCWSTR algId, FILE* fp, std::string& hex_out) {
-			BCRYPT_ALG_HANDLE hAlg = nullptr;
-			if (BCryptOpenAlgorithmProvider(&hAlg, algId, nullptr, 0) != 0)
-				return false;
-			DWORD hashLen = 0;
-			DWORD dummy = 0;
-			BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH,
-				reinterpret_cast<PUCHAR>(&hashLen), sizeof(hashLen), &dummy, 0);
-
-			BCRYPT_HASH_HANDLE hHash = nullptr;
-			if (BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0) != 0) {
-				BCryptCloseAlgorithmProvider(hAlg, 0);
-				return false;
-			}
-
-			unsigned char buf[8192];
-			while (true) {
-				const std::size_t n = std::fread(buf, 1, sizeof(buf), fp);
-				if (n == 0) break;
-				BCryptHashData(hHash, buf, static_cast<ULONG>(n), 0);
-			}
-
-			std::vector<unsigned char> bytes(hashLen);
-			BCryptFinishHash(hHash, bytes.data(), hashLen, 0);
-			BCryptDestroyHash(hHash);
-			BCryptCloseAlgorithmProvider(hAlg, 0);
-
-			char hex[3];
-			hex_out.reserve(hashLen * 2);
-			for (DWORD i = 0; i < hashLen; ++i) {
-				std::snprintf(hex, sizeof(hex), "%02x", bytes[i]);
-				hex_out += hex;
-			}
-
-			return true;
-		}
-#endif  // _WIN32
+		static const std::size_t kHashChunk = 8192;
 
 #ifdef _WIN32
 		using HashAlgId = LPCWSTR;
+
+		static const HashAlgId kMd5Algorithm    = BCRYPT_MD5_ALGORITHM;
+		static const HashAlgId kSha1Algorithm   = BCRYPT_SHA1_ALGORITHM;
+		static const HashAlgId kSha256Algorithm = BCRYPT_SHA256_ALGORITHM;
+		static const HashAlgId kSha512Algorithm = BCRYPT_SHA512_ALGORITHM;
+
+		static DWORD hashLength(BCRYPT_ALG_HANDLE algorithm) {
+			DWORD length = 0;
+			DWORD written = 0;
+			::BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH,
+				reinterpret_cast<PUCHAR>(&length), sizeof(length), &written, 0);
+			return length;
+		}
+
+		static void hashStream(BCRYPT_HASH_HANDLE hash, std::FILE* stream) {
+			unsigned char chunk[kHashChunk];
+			for (;;) {
+				const std::size_t got = std::fread(chunk, 1, sizeof(chunk), stream);
+				if (got == 0) break;
+				::BCryptHashData(hash, chunk, static_cast<ULONG>(got), 0);
+			}
+		}
+
+		static std::string toHex(const std::vector<unsigned char>& bytes) {
+			std::string hex;
+			hex.reserve(bytes.size() * 2);
+			char pair[3];
+			for (const unsigned char byte : bytes) {
+				std::snprintf(pair, sizeof(pair), "%02x", byte);
+				hex += pair;
+			}
+
+			return hex;
+		}
+
+		static bool computeHashHex(HashAlgId algorithm_id, std::FILE* stream,
+		                           std::string& hex_out) {
+			BCRYPT_ALG_HANDLE algorithm = nullptr;
+			if (::BCryptOpenAlgorithmProvider(&algorithm, algorithm_id, nullptr, 0) != 0) {
+				return false;
+			}
+
+			const DWORD length = hashLength(algorithm);
+			BCRYPT_HASH_HANDLE hash = nullptr;
+			if (::BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) != 0) {
+				::BCryptCloseAlgorithmProvider(algorithm, 0);
+				return false;
+			}
+
+			hashStream(hash, stream);
+
+			std::vector<unsigned char> digest(length);
+			::BCryptFinishHash(hash, digest.data(), length, 0);
+			::BCryptDestroyHash(hash);
+			::BCryptCloseAlgorithmProvider(algorithm, 0);
+
+			hex_out = toHex(digest);
+			return true;
+		}
 #else
 		using HashAlgId = const wchar_t*;
+
+		static const HashAlgId kMd5Algorithm    = nullptr;
+		static const HashAlgId kSha1Algorithm   = nullptr;
+		static const HashAlgId kSha256Algorithm = nullptr;
+		static const HashAlgId kSha512Algorithm = nullptr;
+
+		static bool computeHashHex(HashAlgId, std::FILE*, std::string&) {
+			return false;
+		}
 #endif
 
-		static int hashImpl(Executor& exec, const std::vector<std::string>& args,
-		                    HashAlgId algId, const char* cmd)
-		{
+		static std::vector<std::string> hashOperands(const std::vector<std::string>& args) {
 			std::vector<std::string> files;
-			for (const auto& a : args) {
-				if (!a.empty() && a[0] == '-' && a != "-") continue;
-				files.push_back(a);
+			for (const auto& arg : args) {
+				if (!arg.empty() && arg[0] == '-' && arg != "-") continue;
+				files.push_back(arg);
 			}
 
 			if (files.empty()) files.push_back("-");
+			return files;
+		}
 
-			int rc = 0;
-			for (const auto& f : files) {
-				FILE* fp = (f == "-") ? stdin
-					: openUtf8(exec.pathConv().toWin32(f), "rb");
-				if (!fp) {
-					std::fprintf(stderr, "wbsh: %s: %s: %s\n",
-						cmd, f.c_str(), std::strerror(errno));
-					rc = 1;
-					continue;
-				}
+		static bool hashOneFile(Executor& exec, const std::string& file, HashAlgId algorithm_id,
+		                        const char* cmd) {
+			std::FILE* stream = (file == "-") ? stdin : fopenNative(exec, file, "rb");
+			if (stream == nullptr) {
+				perr(cmd, file + ": " + std::strerror(errno));
+				return false;
+			}
 
-				std::string hex;
-#ifdef _WIN32
-				const bool ok = computeHashHex(algId, fp, hex);
-#else
-				const bool ok = false;
-				(void)algId;
-#endif
-				if (fp != stdin) std::fclose(fp);
-				if (!ok) {
-					std::fprintf(stderr, "wbsh: %s: hash failed\n", cmd);
-					rc = 1;
-					continue;
-				}
+			std::string hex;
+			const bool ok = computeHashHex(algorithm_id, stream, hex);
+			if (stream != stdin) std::fclose(stream);
+			if (!ok) {
+				perr(cmd, "hash failed");
+				return false;
+			}
 
-				std::printf("%s  %s\n", hex.c_str(), f.c_str());
+			std::printf("%s  %s\n", hex.c_str(), file.c_str());
+			return true;
+		}
+
+		static int hashImpl(Executor& exec, const std::vector<std::string>& args,
+		                    HashAlgId algorithm_id, const char* cmd) {
+			int status = 0;
+			for (const auto& file : hashOperands(args)) {
+				if (!hashOneFile(exec, file, algorithm_id, cmd)) status = 1;
 			}
 
 			std::fflush(stdout);
-			return rc;
+			return status;
 		}
 
-#ifdef _WIN32
-		static int builtin_md5sum(Executor& e, const std::vector<std::string>& a) {
-			return hashImpl(e, a, BCRYPT_MD5_ALGORITHM, "md5sum");
+		static int builtin_md5sum(Executor& exec, const std::vector<std::string>& args) {
+			return hashImpl(exec, args, kMd5Algorithm, "md5sum");
 		}
 
-		static int builtin_sha1sum(Executor& e, const std::vector<std::string>& a) {
-			return hashImpl(e, a, BCRYPT_SHA1_ALGORITHM, "sha1sum");
+		static int builtin_sha1sum(Executor& exec, const std::vector<std::string>& args) {
+			return hashImpl(exec, args, kSha1Algorithm, "sha1sum");
 		}
 
-		static int builtin_sha256sum(Executor& e, const std::vector<std::string>& a) {
-			return hashImpl(e, a, BCRYPT_SHA256_ALGORITHM, "sha256sum");
+		static int builtin_sha256sum(Executor& exec, const std::vector<std::string>& args) {
+			return hashImpl(exec, args, kSha256Algorithm, "sha256sum");
 		}
 
-		static int builtin_sha512sum(Executor& e, const std::vector<std::string>& a) {
-			return hashImpl(e, a, BCRYPT_SHA512_ALGORITHM, "sha512sum");
+		static int builtin_sha512sum(Executor& exec, const std::vector<std::string>& args) {
+			return hashImpl(exec, args, kSha512Algorithm, "sha512sum");
 		}
-#else
-		static int builtin_md5sum(Executor& e, const std::vector<std::string>& a) {
-			return hashImpl(e, a, nullptr, "md5sum");
-		}
-
-		static int builtin_sha1sum(Executor& e, const std::vector<std::string>& a) {
-			return hashImpl(e, a, nullptr, "sha1sum");
-		}
-
-		static int builtin_sha256sum(Executor& e, const std::vector<std::string>& a) {
-			return hashImpl(e, a, nullptr, "sha256sum");
-		}
-
-		static int builtin_sha512sum(Executor& e, const std::vector<std::string>& a) {
-			return hashImpl(e, a, nullptr, "sha512sum");
-		}
-#endif
 
 	}  // namespace hash_detail
 

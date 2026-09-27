@@ -361,6 +361,9 @@ namespace wbsh {
 		// .exe/.cmd/.bat resolution. Used by `type`, `command -v`, etc.
 		std::string findExecutable(const std::string& name);
 
+		// The PATH walk behind findExecutable(); a hit is memoized.
+		std::string lookupInPathDirs(const std::string& name, const std::string& path);
+
 		// Drop the PATH-lookup memoization built up by findExecutable().
 		// Used by `hash -r` to force re-resolution after PATH-visible
 		// executables change on disk (installs, PATHEXT edits, etc.).
@@ -428,6 +431,17 @@ namespace wbsh {
 		// the current loop and report what the loop should do next.
 		LoopFlowAction dispatchLoopFlow();
 
+		// Run a construct's body and keep its status unless a flow signal
+		// is now pending; a missing body counts as status 0.
+		void runBody(const Node* body, int& status);
+		int  runIfBranches(const IfClause& clause);
+		int  runWhileLoop(const WhileClause& clause);
+		int  runArithLoop(const ForClause& clause);
+		int  runForLoop(const ForClause& clause);
+		int  runSelectLoop(const ForClause& clause);
+		bool caseItemMatches(const CaseClause::Item& item, const std::string& subject);
+		int  runCaseItems(const CaseClause& clause, const std::string& subject);
+
 		struct RedirState {
 			// Saved fds: target_fd -> dup'd backup fd
 			std::vector<std::pair<int, int>> saved;
@@ -436,6 +450,9 @@ namespace wbsh {
 		};
 		bool applyRedirections(const std::vector<Redirection>& rs, RedirState& out);
 		void undoRedirections(RedirState& s);
+		// applyRedirections, but a failure also undoes whatever was
+		// installed so the caller can return at once.
+		bool applyRedirectionsOrUndo(const std::vector<Redirection>& rs, RedirState& out);
 
 		// Helpers for applyRedirections — one per redirection-op family. Each
 		// either installs the redirection (saving the prior fd into `s`) and

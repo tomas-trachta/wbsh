@@ -35,13 +35,13 @@ namespace wbsh {
 		// chunks_ before trusting the bump offset.
 		Arena(Arena&&) = default;
 		Arena& operator=(Arena&& other) {
-			if (this != &other) {
-				destroyAll();
-				chunks_ = std::move(other.chunks_);
-				dtors_ = std::move(other.dtors_);
-				used_ = other.used_;
-				cap_ = other.cap_;
-			}
+			if (this == &other) return *this;
+
+			destroyAll();
+			chunks_ = std::move(other.chunks_);
+			dtors_ = std::move(other.dtors_);
+			used_ = other.used_;
+			cap_ = other.cap_;
 			return *this;
 		}
 		~Arena() { destroyAll(); }
@@ -53,14 +53,13 @@ namespace wbsh {
 			// alignment; over-aligned types would need aligned chunks.
 			static_assert(alignof(T) <= alignof(std::max_align_t),
 			              "Arena does not support over-aligned types");
-			void* mem = allocate(sizeof(T), alignof(T));
-			T* obj = new (mem) T(std::forward<Args>(args)...);
+			void* memory = allocate(sizeof(T), alignof(T));
+			T* object = new (memory) T(std::forward<Args>(args)...);
 			if constexpr (!std::is_trivially_destructible_v<T>) {
-				dtors_.push_back({ obj, [](void* p) {
-					static_cast<T*>(p)->~T();
-				} });
+				dtors_.push_back({ object, &Arena::destroyAs<T> });
 			}
-			return obj;
+
+			return object;
 		}
 
 	private:
@@ -71,18 +70,24 @@ namespace wbsh {
 
 		static constexpr std::size_t kChunkSize = 16 * 1024;
 
+		template <typename T>
+		static void destroyAs(void* object) {
+			static_cast<T*>(object)->~T();
+		}
+
 		void* allocate(std::size_t size, std::size_t align) {
-			std::size_t off = (used_ + align - 1) & ~(align - 1);
-			if (chunks_.empty() || off + size > cap_) {
+			std::size_t offset = (used_ + align - 1) & ~(align - 1);
+			if (chunks_.empty() || offset + size > cap_) {
 				const std::size_t need = size + align;
 				cap_ = need > kChunkSize ? need : kChunkSize;
 				chunks_.push_back(std::make_unique<unsigned char[]>(cap_));
-				const auto base = reinterpret_cast<std::uintptr_t>(
-					chunks_.back().get());
-				off = ((base + align - 1) & ~(align - 1)) - base;
+
+				const auto base = reinterpret_cast<std::uintptr_t>(chunks_.back().get());
+				offset = ((base + align - 1) & ~(align - 1)) - base;
 			}
-			used_ = off + size;
-			return chunks_.back().get() + off;
+
+			used_ = offset + size;
+			return chunks_.back().get() + offset;
 		}
 
 		// Reverse order so later objects (which may reference earlier
@@ -91,6 +96,7 @@ namespace wbsh {
 			for (auto it = dtors_.rbegin(); it != dtors_.rend(); ++it) {
 				it->fn(it->obj);
 			}
+
 			dtors_.clear();
 			chunks_.clear();
 			used_ = 0;

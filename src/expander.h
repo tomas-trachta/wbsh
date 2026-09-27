@@ -117,9 +117,9 @@ namespace wbsh {
 		bool failed() const { return !pending_error_.empty(); }
 
 		std::string takeError() {
-			std::string m = std::move(pending_error_);
+			std::string message = std::move(pending_error_);
 			pending_error_.clear();
-			return m;
+			return message;
 		}
 
 		/**
@@ -133,12 +133,14 @@ namespace wbsh {
 		 */
 		bool tryEvalArith(const std::string& body, long long& out) {
 			if (failed()) return false;
-			const long long v = evalArith(body);
+
+			const long long value = evalArith(body);
 			if (failed()) {
 				takeError();
 				return false;
 			}
-			out = v;
+
+			out = value;
 			return true;
 		}
 
@@ -156,11 +158,10 @@ namespace wbsh {
 		/// Drain temp files produced after @p watermark; caller now owns them.
 		std::vector<std::string> drainTempFilesSince(std::size_t watermark) {
 			std::vector<std::string> out;
-			if (watermark < pending_temp_files_.size()) {
-				out.assign(pending_temp_files_.begin() + watermark,
-					pending_temp_files_.end());
-				pending_temp_files_.resize(watermark);
-			}
+			if (watermark >= pending_temp_files_.size()) return out;
+
+			out.assign(pending_temp_files_.begin() + watermark, pending_temp_files_.end());
+			pending_temp_files_.resize(watermark);
 			return out;
 		}
 
@@ -198,7 +199,7 @@ namespace wbsh {
 		// True when expansion should stop early: an error is pending or
 		// a command substitution raised shell control flow.
 		bool aborting() const {
-			return failed() || (sub_ && sub_->interrupted());
+			return failed() || (sub_ != nullptr && sub_->interrupted());
 		}
 
 		Environment& env_;
@@ -216,6 +217,7 @@ namespace wbsh {
 		void   renderDollarAt(Tagged& out, bool inside_dq);
 
 		std::string lookupParam(const std::string& name, bool suppress_nounset = false);
+		std::string lookupPositional(std::size_t index) const;
 		bool tryExpandIndirectParam(const std::string& body, std::string& out);
 		std::string joinPositionals(char form) const;
 		bool        lookupSpecialChar(char c, std::string& out);
@@ -228,6 +230,8 @@ namespace wbsh {
 		                              const std::string& subscript,
 		                              bool star_join_ifs);
 		std::string starSeparator(bool star_join_ifs) const;
+		std::string resolveSubscript(const std::string& subscript);
+		std::string joinWholeArray(const std::string& name, const std::string& sep);
 		std::size_t arrayLength(const std::string& name) const;
 		std::vector<std::string> arrayKeys(const std::string& name) const;
 		std::vector<std::string> arrayValues(const std::string& name) const;
@@ -257,6 +261,8 @@ namespace wbsh {
 		// Helpers for expandHeredoc — one per `$X` / backquote shape.
 		// Each takes the body, the cursor `i` (advanced through the
 		// matched span), and the output buffer.
+		void expandHeredocDollar     (const std::string& body, std::size_t& i,
+		                              std::string& out);
 		void expandHeredocParamBraces(const std::string& body, std::size_t& i,
 		                              std::string& out);
 		void expandHeredocCmdSubst   (const std::string& body, std::size_t& i,

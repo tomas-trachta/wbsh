@@ -39,7 +39,7 @@ namespace wbsh {
 	inline bool searchRegex(const std::string& s, const std::regex& re,
 	                        std::smatch* m = nullptr) {
 		try {
-			if (m) return std::regex_search(s, *m, re);
+			if (m != nullptr) return std::regex_search(s, *m, re);
 			return std::regex_search(s, re);
 		} catch (const std::regex_error&) {
 			return false;

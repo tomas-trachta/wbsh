@@ -1,3 +1,8 @@
+/**
+ * @file parser.cpp
+ * @brief Recursive-descent parser from tokens to AST.
+ */
+
 #include "parser.h"
 
 #include <cctype>
@@ -7,6 +12,27 @@
 #include "numparse.h"
 
 namespace wbsh {
+
+	static const char* const kReservedTerminators[] = {
+		"then", "elif", "else", "fi", "do", "done", "esac", "in", "}"
+	};
+
+	static const char kDBracketUnaryOps[] = "abcdefghknoprstuvwxzGLNOSU";
+
+	namespace parser_detail {
+
+		// Where a `name[subscript]=value` token's subscript starts and
+		// ends, as (segment index, offset within that segment) pairs.
+		struct SubscriptSpan {
+			std::size_t open_seg = 0;
+			std::size_t open_pos = 0;
+			std::size_t close_seg = 0;
+			std::size_t close_pos = 0;
+		};
+
+	}  // namespace parser_detail
+
+	using parser_detail::SubscriptSpan;
 
 	const char* redirOpName(RedirOp o) {
 		switch (o) {
@@ -47,6 +73,39 @@ namespace wbsh {
 		return "?";
 	}
 
+	static RedirOp redirOpForToken(TokKind kind) {
+		switch (kind) {
+		case TokKind::Less:       return RedirOp::Less;
+		case TokKind::Great:      return RedirOp::Great;
+		case TokKind::DGreat:     return RedirOp::DGreat;
+		case TokKind::LessAnd:    return RedirOp::LessAnd;
+		case TokKind::GreatAnd:   return RedirOp::GreatAnd;
+		case TokKind::LessGreat:  return RedirOp::LessGreat;
+		case TokKind::Clobber:    return RedirOp::Clobber;
+		case TokKind::AmpGreat:   return RedirOp::AmpGreat;
+		case TokKind::AmpDGreat:  return RedirOp::AmpDGreat;
+		case TokKind::DLess:      return RedirOp::DLess;
+		case TokKind::DLessDash:  return RedirOp::DLessDash;
+		case TokKind::TLess:      return RedirOp::TLess;
+		default:                  return RedirOp::Less;
+		}
+	}
+
+	static bool isLiteralOnlyWord(const Token& token) {
+		return token.kind == TokKind::Word
+			&& token.segments.size() == 1
+			&& token.segments[0].kind == WordSegment::Kind::Literal;
+	}
+
+	static void appendLiteralSegment(Word& word, std::string text) {
+		if (text.empty()) return;
+
+		WordSegment segment;
+		segment.kind = WordSegment::Kind::Literal;
+		segment.text = std::move(text);
+		word.segments.push_back(std::move(segment));
+	}
+
 	Parser::Parser(std::vector<Token> tokens) : toks_(std::move(tokens)) {}
 
 	Parser::Parser(std::vector<Token> tokens, std::string source_text)
@@ -59,29 +118,29 @@ namespace wbsh {
 	}
 
 	const Token& Parser::advance() {
-		const Token& t = toks_[pos_];
+		const Token& token = toks_[pos_];
 		if (pos_ + 1 < toks_.size()) ++pos_;
-		return t;
+		return token;
 	}
 
 	bool Parser::atEnd() const {
 		return peek().kind == TokKind::EndOfInput;
 	}
 
-	bool Parser::check(TokKind k) const { return peek().kind == k; }
+	bool Parser::check(TokKind k) const {
+		return peek().kind == k;
+	}
 
 	bool Parser::match(TokKind k) {
 		if (!check(k)) return false;
+
 		advance();
 		return true;
 	}
 
 	bool Parser::isReserved(const Token& t, const char* word) const {
-		if (t.kind != TokKind::Word) return false;
-		if (t.segments.size() != 1) return false;
-		const auto& s = t.segments[0];
-		if (s.kind != WordSegment::Kind::Literal) return false;
-		return s.text == word;
+		if (!isLiteralOnlyWord(t)) return false;
+		return t.segments[0].text == word;
 	}
 
 	bool Parser::checkReserved(const char* word) const {
@@ -90,20 +149,24 @@ namespace wbsh {
 
 	bool Parser::matchReserved(const char* word) {
 		if (!checkReserved(word)) return false;
+
 		advance();
 		return true;
 	}
 
 	bool Parser::checkAnyReserved(std::initializer_list<const char*> words) const {
-		for (auto w : words) if (checkReserved(w)) return true;
+		for (const char* word : words) {
+			if (checkReserved(word)) return true;
+		}
+
 		return false;
 	}
 
 	bool Parser::tokenIsReservedTerminator(const Token& t) const {
-		static const char* terms[] = {
-			"then","elif","else","fi","do","done","esac","in","}"
-		};
-		for (auto w : terms) if (isReserved(t, w)) return true;
+		for (const char* word : kReservedTerminators) {
+			if (isReserved(t, word)) return true;
+		}
+
 		return false;
 	}
 
@@ -145,8 +208,9 @@ namespace wbsh {
 
 	std::size_t Parser::srcOffsetEnd() const {
 		if (pos_ == 0) return peek().loc.offset;
-		const Token& prev = toks_[pos_ - 1];
-		return prev.loc.offset + prev.text.size();
+
+		const Token& previous = toks_[pos_ - 1];
+		return previous.loc.offset + previous.text.size();
 	}
 
 	void Parser::stampSpan(Node& node, std::size_t start_offset) {
@@ -159,42 +223,63 @@ namespace wbsh {
 	bool Parser::atCommandStart() const {
 		if (atEnd()) return false;
 		if (tokenIsReservedTerminator(peek())) return false;
-		if (peek().kind == TokKind::Newline) return false;
-		if (peek().kind == TokKind::Semi || peek().kind == TokKind::Amp) return false;
-		if (peek().kind == TokKind::DSemi || peek().kind == TokKind::SemiAmp ||
-			peek().kind == TokKind::DSemiAmp) return false;
-		if (peek().kind == TokKind::RParen) return false;
-		return true;
+
+		switch (peek().kind) {
+		case TokKind::Newline:
+		case TokKind::Semi:
+		case TokKind::Amp:
+		case TokKind::DSemi:
+		case TokKind::SemiAmp:
+		case TokKind::DSemiAmp:
+		case TokKind::RParen:
+			return false;
+		default:
+			return true;
+		}
+	}
+
+	bool Parser::atFunctionNameParens() const {
+		if (peek().kind != TokKind::Word) return false;
+		if (peek(1).kind != TokKind::LParen) return false;
+		if (peek(2).kind != TokKind::RParen) return false;
+
+		Assignment probe;
+		return !tryExtractAssignment(peek(), probe);
 	}
 
 	Word Parser::tokenToWord(const Token& t) const {
-		Word w;
-		w.segments = t.segments;
-		w.raw = t.text;
-		w.loc = t.loc;
-		return w;
+		Word word;
+		word.segments = t.segments;
+		word.raw = t.text;
+		word.loc = t.loc;
+		return word;
+	}
+
+	void Parser::parseTrailingRedirections(std::vector<Redirection>& redirs) {
+		Redirection redir;
+		while (tryParseRedirection(redir)) redirs.push_back(std::move(redir));
 	}
 
 	NodePtr Parser::parseProgram() {
-		return parseList(/*top_level=*/true);
+		return parseList(true);
 	}
 
 	NodePtr Parser::parseList(bool /*top_level*/) {
-		std::size_t start = srcOffsetHere();
+		const std::size_t start = srcOffsetHere();
 		auto list = arena_.make<List>();
 		list->loc = peek().loc;
 		skipNewlines();
+
 		while (!atEnd()) {
 			auto andor = parseAndOr();
-			if (!andor) break;
-			ListItem it;
-			it.command = andor;
-			bool had_sep = false;
-			if (match(TokKind::Amp)) { it.background = true; had_sep = true; }
-			else if (match(TokKind::Semi)) { had_sep = true; }
-			else if (match(TokKind::Newline)) { had_sep = true; }
-			list->items.push_back(std::move(it));
-			if (!had_sep) break;
+			if (andor == nullptr) break;
+
+			ListItem item;
+			item.command = andor;
+			const bool had_separator = matchListSeparator(item);
+			list->items.push_back(std::move(item));
+			if (!had_separator) break;
+
 			skipNewlines();
 		}
 
@@ -202,52 +287,65 @@ namespace wbsh {
 		return list;
 	}
 
+	bool Parser::matchListSeparator(ListItem& item) {
+		if (match(TokKind::Amp)) {
+			item.background = true;
+			return true;
+		}
+
+		return match(TokKind::Semi) || match(TokKind::Newline);
+	}
+
 	NodePtr Parser::parseAndOr() {
-		std::size_t start = srcOffsetHere();
+		const std::size_t start = srcOffsetHere();
 		NodePtr left = parsePipeline();
-		if (!left) return nullptr;
+		if (left == nullptr) return nullptr;
+
 		while (check(TokKind::AndIf) || check(TokKind::OrIf)) {
-			auto op = check(TokKind::AndIf) ? AndOr::Op::AndIf : AndOr::Op::OrIf;
+			const auto op = check(TokKind::AndIf) ? AndOr::Op::AndIf : AndOr::Op::OrIf;
 			advance();
 			skipNewlines();
+
 			auto right = parsePipeline();
-			if (!right) {
+			if (right == nullptr) {
 				error(peek(), "expected pipeline after && / ||");
 				break;
 			}
 
-			auto ao = arena_.make<AndOr>();
-			ao->op = op;
-			ao->loc = left->loc;
-			ao->left = left;
-			ao->right = right;
-			ao->src_start = start;
-			ao->src_end = srcOffsetEnd();
-			left = ao;
+			auto andor = arena_.make<AndOr>();
+			andor->op = op;
+			andor->loc = left->loc;
+			andor->left = left;
+			andor->right = right;
+			andor->src_start = start;
+			andor->src_end = srcOffsetEnd();
+			left = andor;
 		}
 
-		if (left && left->src_end == 0) left->src_end = srcOffsetEnd();
+		if (left != nullptr && left->src_end == 0) left->src_end = srcOffsetEnd();
 		return left;
 	}
 
-	NodePtr Parser::parsePipeline() {
-		std::size_t start = srcOffsetHere();
-		// `time` is the keyword only when a command follows; `time` alone
-		// (or before a redirection / `;`) is an ordinary argv[0].
-		bool timed = false;
-		if (checkReserved("time")) {
-			std::size_t saved = pos_;
-			advance();
-			if (atCommandStart() || checkReserved("!")) {
-				timed = true;
-			} else {
-				pos_ = saved;
-			}
-		}
+	// `time` is the keyword only when a command follows; `time` alone
+	// (or before a redirection / `;`) is an ordinary argv[0].
+	bool Parser::matchTimePrefix() {
+		if (!checkReserved("time")) return false;
 
-		bool bang = matchReserved("!");
+		const std::size_t saved = pos_;
+		advance();
+		if (atCommandStart() || checkReserved("!")) return true;
+
+		pos_ = saved;
+		return false;
+	}
+
+	NodePtr Parser::parsePipeline() {
+		const std::size_t start = srcOffsetHere();
+		const bool timed = matchTimePrefix();
+		const bool bang = matchReserved("!");
+
 		auto first = parseCommand();
-		if (!first) {
+		if (first == nullptr) {
 			if (bang) error(peek(), "expected command after `!`");
 			if (timed) error(peek(), "expected command after `time`");
 			return nullptr;
@@ -262,17 +360,19 @@ namespace wbsh {
 		pipe->timed = timed;
 		pipe->loc = first->loc;
 		pipe->commands.push_back(first);
+
 		while (check(TokKind::Pipe) || check(TokKind::PipeAmp)) {
-			bool amp = check(TokKind::PipeAmp);
+			const bool merge_stderr = check(TokKind::PipeAmp);
 			advance();
 			skipNewlines();
+
 			auto next = parseCommand();
-			if (!next) {
+			if (next == nullptr) {
 				error(peek(), "expected command after pipe");
 				break;
 			}
 
-			pipe->stderr_to_stdout.push_back(amp);
+			pipe->stderr_to_stdout.push_back(merge_stderr);
 			pipe->commands.push_back(next);
 		}
 
@@ -283,99 +383,96 @@ namespace wbsh {
 	NodePtr Parser::parseCommand() {
 		if (!atCommandStart()) return nullptr;
 
-		if (checkReserved("{"))     return parseBraceGroup();
-		if (checkReserved("if"))    return parseIf();
-		if (checkReserved("while")) return parseWhileUntil(false);
-		if (checkReserved("until")) return parseWhileUntil(true);
-		if (checkReserved("for"))   return parseFor();
-		if (checkReserved("select")) return parseSelect();
-		if (checkReserved("case"))  return parseCase();
-		if (checkReserved("[["))    return parseDBracket();
+		if (checkReserved("{"))        return parseBraceGroup();
+		if (checkReserved("if"))       return parseIf();
+		if (checkReserved("while"))    return parseWhileUntil(false);
+		if (checkReserved("until"))    return parseWhileUntil(true);
+		if (checkReserved("for"))      return parseFor();
+		if (checkReserved("select"))   return parseSelect();
+		if (checkReserved("case"))     return parseCase();
+		if (checkReserved("[["))       return parseDBracket();
 		if (check(TokKind::DArithCmd)) return parseArithCommand();
+		if (checkReserved("function")) return parseFunctionKeyword();
+		if (check(TokKind::LParen))    return parseSubshell();
 
-		if (checkReserved("function")) {
-			SourceLoc loc = peek().loc;
-			advance();
-			if (peek().kind != TokKind::Word) {
-				error(peek(), "expected function name after `function`");
-				return nullptr;
-			}
-
+		if (atFunctionNameParens()) {
 			std::string name = peek().text;
+			const SourceLoc loc = peek().loc;
 			advance();
-			if (match(TokKind::LParen)) {
-				if (!match(TokKind::RParen)) error(peek(), "expected `)`");
-			}
-
+			advance();
+			advance();
 			return parseFunctionRest(std::move(name), loc);
-		}
-
-		if (check(TokKind::LParen)) return parseSubshell();
-
-		{
-			Assignment probe;
-			if (peek().kind == TokKind::Word
-				&& peek(1).kind == TokKind::LParen
-				&& peek(2).kind == TokKind::RParen
-				&& !tryExtractAssignment(peek(), probe))
-			{
-				std::string name = peek().text;
-				SourceLoc loc = peek().loc;
-				advance(); advance(); advance();
-				return parseFunctionRest(std::move(name), loc);
-			}
 		}
 
 		return parseSimpleCommand();
 	}
 
-	NodePtr Parser::parseBraceGroup() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
+	NodePtr Parser::parseFunctionKeyword() {
+		const SourceLoc loc = peek().loc;
 		advance();
+		if (peek().kind != TokKind::Word) {
+			error(peek(), "expected function name after `function`");
+			return nullptr;
+		}
+
+		std::string name = peek().text;
+		advance();
+		if (match(TokKind::LParen)) {
+			if (!match(TokKind::RParen)) error(peek(), "expected `)`");
+		}
+
+		return parseFunctionRest(std::move(name), loc);
+	}
+
+	NodePtr Parser::parseBraceGroup() {
+		const std::size_t start = srcOffsetHere();
+		const SourceLoc loc = peek().loc;
+		advance();
+
 		auto body = parseList(false);
 		expectReserved("}", "expected `}`");
-		auto bg = arena_.make<BraceGroup>();
-		bg->loc = loc;
-		bg->body = body;
-		Redirection r;
-		while (tryParseRedirection(r)) bg->redirs.push_back(std::move(r));
-		stampSpan(*bg, start);
-		return bg;
+
+		auto group = arena_.make<BraceGroup>();
+		group->loc = loc;
+		group->body = body;
+		parseTrailingRedirections(group->redirs);
+		stampSpan(*group, start);
+		return group;
 	}
 
 	NodePtr Parser::parseSubshell() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
+		const std::size_t start = srcOffsetHere();
+		const SourceLoc loc = peek().loc;
 		advance();
+
 		auto body = parseList(false);
 		expect(TokKind::RParen, "expected `)`");
-		auto ss = arena_.make<Subshell>();
-		ss->loc = loc;
-		ss->body = body;
-		Redirection r;
-		while (tryParseRedirection(r)) ss->redirs.push_back(std::move(r));
-		stampSpan(*ss, start);
-		return ss;
+
+		auto subshell = arena_.make<Subshell>();
+		subshell->loc = loc;
+		subshell->body = body;
+		parseTrailingRedirections(subshell->redirs);
+		stampSpan(*subshell, start);
+		return subshell;
 	}
 
 	NodePtr Parser::parseArithCommand() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
+		const std::size_t start = srcOffsetHere();
 		auto node = arena_.make<ArithCommand>();
-		node->loc = loc;
+		node->loc = peek().loc;
 		node->expr = peek().text;
 		advance();
-		Redirection r;
-		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+
+		parseTrailingRedirections(node->redirs);
 		stampSpan(*node, start);
 		return node;
 	}
 
 	NodePtr Parser::parseIf() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
+		const std::size_t start = srcOffsetHere();
+		const SourceLoc loc = peek().loc;
 		advance();
+
 		auto cond = parseList(false);
 		expectReserved("then", "expected `then`");
 		auto then_body = parseList(false);
@@ -385,19 +482,16 @@ namespace wbsh {
 		node->branches.push_back({ cond, then_body });
 
 		while (matchReserved("elif")) {
-			auto c = parseList(false);
+			auto elif_cond = parseList(false);
 			expectReserved("then", "expected `then` after elif condition");
-			auto b = parseList(false);
-			node->branches.push_back({ c, b });
+			auto elif_body = parseList(false);
+			node->branches.push_back({ elif_cond, elif_body });
 		}
 
-		if (matchReserved("else")) {
-			node->else_body = parseList(false);
-		}
+		if (matchReserved("else")) node->else_body = parseList(false);
 
 		expectReserved("fi", "expected `fi`");
-		Redirection r;
-		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		parseTrailingRedirections(node->redirs);
 		stampSpan(*node, start);
 		return node;
 	}
@@ -414,18 +508,19 @@ namespace wbsh {
 	}
 
 	NodePtr Parser::parseWhileUntil(bool until) {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
+		const std::size_t start = srcOffsetHere();
+		const SourceLoc loc = peek().loc;
 		advance();
+
 		auto cond = parseList(false);
 		auto body = parseDoGroup();
+
 		auto node = arena_.make<WhileClause>();
 		node->loc = loc;
 		node->until = until;
 		node->cond = cond;
 		node->body = body;
-		Redirection r;
-		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		parseTrailingRedirections(node->redirs);
 		stampSpan(*node, start);
 		return node;
 	}
@@ -435,33 +530,36 @@ namespace wbsh {
 	// substitutions or subexpressions containing `;` aren't split.
 	static std::vector<std::string> splitArithForHeader(const std::string& body) {
 		std::vector<std::string> parts;
-		std::string cur;
+		std::string part;
 		int depth = 0;
+
 		for (char c : body) {
 			if (c == '(') ++depth;
 			else if (c == ')') --depth;
+
 			if (c == ';' && depth == 0) {
-				parts.push_back(std::move(cur));
-				cur.clear();
+				parts.push_back(std::move(part));
+				part.clear();
 				continue;
 			}
 
-			cur.push_back(c);
+			part.push_back(c);
 		}
 
-		parts.push_back(std::move(cur));
+		parts.push_back(std::move(part));
 		return parts;
 	}
 
-	static std::string trimArith(const std::string& s) {
-		std::size_t b = s.find_first_not_of(" \t");
-		if (b == std::string::npos) return "";
-		std::size_t e = s.find_last_not_of(" \t");
-		return s.substr(b, e - b + 1);
+	static std::string trimArith(const std::string& text) {
+		const std::size_t begin = text.find_first_not_of(" \t");
+		if (begin == std::string::npos) return "";
+
+		const std::size_t end = text.find_last_not_of(" \t");
+		return text.substr(begin, end - begin + 1);
 	}
 
 	NodePtr Parser::parseForArith(std::size_t start, SourceLoc loc) {
-		std::vector<std::string> parts = splitArithForHeader(peek().text);
+		const std::vector<std::string> parts = splitArithForHeader(peek().text);
 		advance();
 		skipNewlines();
 		match(TokKind::Semi);
@@ -479,8 +577,7 @@ namespace wbsh {
 		}
 
 		node->body = parseDoGroup();
-		Redirection r;
-		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		parseTrailingRedirections(node->redirs);
 		stampSpan(*node, start);
 		return node;
 	}
@@ -501,80 +598,69 @@ namespace wbsh {
 		advance();
 		skipNewlines();
 
-		has_in = false;
-		if (matchReserved("in")) {
-			has_in = true;
-			while (peek().kind == TokKind::Word
-				&& !tokenIsReservedTerminator(peek()))
-			{
-				items.push_back(tokenToWord(advance()));
-			}
-
-			if (!match(TokKind::Semi) && !match(TokKind::Newline)) {
-				if (!checkReserved("do"))
-					error(peek(), "expected `;` or newline after word list");
-			}
-
-			skipNewlines();
-		}
-		else if (match(TokKind::Semi) || match(TokKind::Newline)) {
-			skipNewlines();
+		has_in = matchReserved("in");
+		if (has_in) {
+			parseInWordList(items);
+			return true;
 		}
 
+		if (match(TokKind::Semi) || match(TokKind::Newline)) skipNewlines();
 		return true;
 	}
 
-	NodePtr Parser::parseFor() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
-		advance();
-		if (check(TokKind::DArithCmd)) return parseForArith(start, loc);
+	void Parser::parseInWordList(std::vector<Word>& items) {
+		while (peek().kind == TokKind::Word && !tokenIsReservedTerminator(peek())) {
+			items.push_back(tokenToWord(advance()));
+		}
 
+		if (!match(TokKind::Semi) && !match(TokKind::Newline)) {
+			if (!checkReserved("do")) error(peek(), "expected `;` or newline after word list");
+		}
+
+		skipNewlines();
+	}
+
+	NodePtr Parser::parseWordListLoop(std::size_t start, SourceLoc loc,
+	                                  const char* keyword, bool is_select) {
 		std::string var;
 		bool has_in = false;
 		std::vector<Word> items;
-		if (!parseInWordListHeader(var, has_in, items, "for")) return nullptr;
+		if (!parseInWordListHeader(var, has_in, items, keyword)) return nullptr;
 
 		auto body = parseDoGroup();
+
 		auto node = arena_.make<ForClause>();
 		node->loc = loc;
 		node->var = std::move(var);
 		node->has_in = has_in;
 		node->items = std::move(items);
 		node->body = body;
-		Redirection r;
-		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		node->is_select = is_select;
+		parseTrailingRedirections(node->redirs);
 		stampSpan(*node, start);
 		return node;
+	}
+
+	NodePtr Parser::parseFor() {
+		const std::size_t start = srcOffsetHere();
+		const SourceLoc loc = peek().loc;
+		advance();
+
+		if (check(TokKind::DArithCmd)) return parseForArith(start, loc);
+		return parseWordListLoop(start, loc, "for", false);
 	}
 
 	NodePtr Parser::parseSelect() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
+		const std::size_t start = srcOffsetHere();
+		const SourceLoc loc = peek().loc;
 		advance();
 
-		std::string var;
-		bool has_in = false;
-		std::vector<Word> items;
-		if (!parseInWordListHeader(var, has_in, items, "select")) return nullptr;
-
-		auto body = parseDoGroup();
-		auto node = arena_.make<ForClause>();
-		node->loc = loc;
-		node->var = std::move(var);
-		node->has_in = has_in;
-		node->items = std::move(items);
-		node->body = body;
-		node->is_select = true;
-		Redirection r;
-		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
-		stampSpan(*node, start);
-		return node;
+		return parseWordListLoop(start, loc, "select", true);
 	}
 
 	NodePtr Parser::parseCase() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
+		const std::size_t start = srcOffsetHere();
+		const SourceLoc loc = peek().loc;
 		advance();
 		if (peek().kind != TokKind::Word) {
 			error(peek(), "expected word after `case`");
@@ -592,35 +678,41 @@ namespace wbsh {
 
 		while (!atEnd() && !checkReserved("esac")) {
 			CaseClause::Item item;
-			match(TokKind::LParen);
-			while (peek().kind == TokKind::Word) {
-				item.patterns.push_back(tokenToWord(advance()));
-				if (!match(TokKind::Pipe)) break;
-			}
-
-			expect(TokKind::RParen, "expected `)` after case pattern(s)");
-			skipNewlines();
-			if (!checkReserved("esac")
-				&& !check(TokKind::DSemi)
-				&& !check(TokKind::SemiAmp)
-				&& !check(TokKind::DSemiAmp))
-			{
-				item.body = parseList(false);
-			}
-
-			if (match(TokKind::DSemi))         item.term = CaseClause::Term::DSemi;
-			else if (match(TokKind::SemiAmp))  item.term = CaseClause::Term::SemiAmp;
-			else if (match(TokKind::DSemiAmp)) item.term = CaseClause::Term::DSemiAmp;
-			else                               item.term = CaseClause::Term::DSemi;
-			skipNewlines();
+			parseCaseItem(item);
 			node->items.push_back(std::move(item));
 		}
 
 		expectReserved("esac", "expected `esac`");
-		Redirection r;
-		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		parseTrailingRedirections(node->redirs);
 		stampSpan(*node, start);
 		return node;
+	}
+
+	void Parser::parseCaseItem(CaseClause::Item& item) {
+		match(TokKind::LParen);
+		while (peek().kind == TokKind::Word) {
+			item.patterns.push_back(tokenToWord(advance()));
+			if (!match(TokKind::Pipe)) break;
+		}
+
+		expect(TokKind::RParen, "expected `)` after case pattern(s)");
+		skipNewlines();
+
+		const bool has_body = !checkReserved("esac")
+			&& !check(TokKind::DSemi)
+			&& !check(TokKind::SemiAmp)
+			&& !check(TokKind::DSemiAmp);
+		if (has_body) item.body = parseList(false);
+
+		item.term = matchCaseTerminator();
+		skipNewlines();
+	}
+
+	CaseClause::Term Parser::matchCaseTerminator() {
+		if (match(TokKind::DSemi))    return CaseClause::Term::DSemi;
+		if (match(TokKind::SemiAmp))  return CaseClause::Term::SemiAmp;
+		if (match(TokKind::DSemiAmp)) return CaseClause::Term::DSemiAmp;
+		return CaseClause::Term::DSemi;
 	}
 
 	bool Parser::atDBracketEnd() const {
@@ -632,11 +724,12 @@ namespace wbsh {
 		while (!atDBracketEnd() && check(TokKind::OrIf)) {
 			advance();
 			auto right = parseDBracketAnd();
-			auto e = arena_.make<DBracketCond::Expr>();
-			e->k = DBracketCond::Expr::K::Or;
-			e->a = left;
-			e->b = right;
-			left = e;
+
+			auto expr = arena_.make<DBracketCond::Expr>();
+			expr->k = DBracketCond::Expr::K::Or;
+			expr->a = left;
+			expr->b = right;
+			left = expr;
 		}
 
 		return left;
@@ -647,72 +740,70 @@ namespace wbsh {
 		while (!atDBracketEnd() && check(TokKind::AndIf)) {
 			advance();
 			auto right = parseDBracketUnary();
-			auto e = arena_.make<DBracketCond::Expr>();
-			e->k = DBracketCond::Expr::K::And;
-			e->a = left;
-			e->b = right;
-			left = e;
+
+			auto expr = arena_.make<DBracketCond::Expr>();
+			expr->k = DBracketCond::Expr::K::And;
+			expr->a = left;
+			expr->b = right;
+			left = expr;
 		}
 
 		return left;
 	}
 
 	DBracketCond::Expr* Parser::parseDBracketUnary() {
-		if (matchReserved("!")) {
-			auto inner = parseDBracketUnary();
-			auto e = arena_.make<DBracketCond::Expr>();
-			e->k = DBracketCond::Expr::K::Not;
-			e->a = inner;
-			return e;
-		}
+		if (!matchReserved("!")) return parseDBracketPrimary();
 
-		return parseDBracketPrimary();
+		auto inner = parseDBracketUnary();
+		auto expr = arena_.make<DBracketCond::Expr>();
+		expr->k = DBracketCond::Expr::K::Not;
+		expr->a = inner;
+		return expr;
 	}
 
-	static bool isDBracketUnaryOp(const std::string& s) {
-		if (s.size() != 2 || s[0] != '-') return false;
-		static const char ops[] = "abcdefghknoprstuvwxzGLNOSU";
-		for (char c : ops) if (c == s[1]) return true;
+	static bool isDBracketUnaryOp(const std::string& text) {
+		if (text.size() != 2 || text[0] != '-') return false;
+
+		for (char op : kDBracketUnaryOps) {
+			if (op == text[1]) return true;
+		}
+
 		return false;
 	}
 
-	static bool isDBracketBinaryOp(const std::string& s) {
-		return s == "==" || s == "!=" || s == "=" || s == "=~"
-		    || s == "-eq" || s == "-ne" || s == "-lt" || s == "-le"
-		    || s == "-gt" || s == "-ge"
-		    || s == "-ef" || s == "-nt" || s == "-ot";
+	static bool isDBracketBinaryOp(const std::string& text) {
+		return text == "==" || text == "!=" || text == "=" || text == "=~"
+		    || text == "-eq" || text == "-ne" || text == "-lt" || text == "-le"
+		    || text == "-gt" || text == "-ge"
+		    || text == "-ef" || text == "-nt" || text == "-ot";
 	}
 
-	static std::string dBracketOpAsString(const Token& t) {
-		if (t.kind == TokKind::Less)  return "<";
-		if (t.kind == TokKind::Great) return ">";
-		if (t.kind == TokKind::Word
-		    && t.segments.size() == 1
-		    && t.segments[0].kind == WordSegment::Kind::Literal) {
-			return t.segments[0].text;
-		}
-
+	static std::string dBracketOpAsString(const Token& token) {
+		if (token.kind == TokKind::Less)  return "<";
+		if (token.kind == TokKind::Great) return ">";
+		if (isLiteralOnlyWord(token)) return token.segments[0].text;
 		return {};
 	}
 
+	bool Parser::atDBracketUnaryTest() const {
+		if (!isLiteralOnlyWord(peek())) return false;
+		if (!isDBracketUnaryOp(peek().segments[0].text)) return false;
+		if (peek(1).kind != TokKind::Word) return false;
+		return !isReserved(peek(1), "]]");
+	}
+
 	bool Parser::tryParseDBracketUnary(DBracketCond::Expr& e) {
-		if (peek().kind != TokKind::Word
-		    || peek().segments.size() != 1
-		    || peek().segments[0].kind != WordSegment::Kind::Literal
-		    || !isDBracketUnaryOp(peek().segments[0].text)
-		    || peek(1).kind != TokKind::Word
-		    || isReserved(peek(1), "]]"))
-		{
-			return false;
-		}
+		if (!atDBracketUnaryTest()) return false;
+
 		// `-f && X` — only treat as unary if the operand is followed by a
 		// connective / closer; otherwise fall back to single-operand truthiness.
 		const Token& after = peek(2);
-		bool ok = isReserved(after, "]]")
+		const bool operand_closed = isReserved(after, "]]")
 		    || after.kind == TokKind::AndIf
 		    || after.kind == TokKind::OrIf
 		    || after.kind == TokKind::RParen;
-		if (!ok) return false;
+		if (!operand_closed) return false;
+
 		e.op = peek().segments[0].text;
 		advance();
 		e.lhs = tokenToWord(advance());
@@ -723,136 +814,130 @@ namespace wbsh {
 		if (check(TokKind::LParen)) {
 			advance();
 			auto inner = parseDBracketExpr();
-			if (!match(TokKind::RParen)) {
-				error(peek(), "expected `)` inside [[ ... ]]");
-			}
-
+			if (!match(TokKind::RParen)) error(peek(), "expected `)` inside [[ ... ]]");
 			return inner;
 		}
 
-		auto e = arena_.make<DBracketCond::Expr>();
-		e->k = DBracketCond::Expr::K::Prim;
-
-		if (tryParseDBracketUnary(*e)) return e;
+		auto expr = arena_.make<DBracketCond::Expr>();
+		expr->k = DBracketCond::Expr::K::Prim;
+		if (tryParseDBracketUnary(*expr)) return expr;
 
 		if (peek().kind != TokKind::Word) {
 			error(peek(), "expected operand in [[ ... ]]");
-			return e;
+			return expr;
 		}
 
-		e->lhs = tokenToWord(advance());
+		expr->lhs = tokenToWord(advance());
 
-		const std::string opstr = dBracketOpAsString(peek());
-		if (!opstr.empty()
-		    && (opstr == "<" || opstr == ">" || isDBracketBinaryOp(opstr))
-		    && !isReserved(peek(), "]]"))
-		{
-			e->op = opstr;
-			advance();
-			if (peek().kind != TokKind::Word) {
-				error(peek(), "expected right operand in [[ ... ]]");
-				return e;
-			}
+		const std::string op_text = dBracketOpAsString(peek());
+		const bool is_binary_op = !op_text.empty()
+		    && (op_text == "<" || op_text == ">" || isDBracketBinaryOp(op_text))
+		    && !isReserved(peek(), "]]");
+		if (!is_binary_op) return expr;
 
-			e->rhs = tokenToWord(advance());
+		expr->op = op_text;
+		advance();
+		if (peek().kind != TokKind::Word) {
+			error(peek(), "expected right operand in [[ ... ]]");
+			return expr;
 		}
 
-		return e;
+		expr->rhs = tokenToWord(advance());
+		return expr;
 	}
 
 	NodePtr Parser::parseDBracket() {
-		std::size_t start = srcOffsetHere();
-		SourceLoc loc = peek().loc;
-		advance();
+		const std::size_t start = srcOffsetHere();
 		auto node = arena_.make<DBracketCond>();
-		node->loc = loc;
+		node->loc = peek().loc;
+		advance();
+
 		if (atDBracketEnd()) {
 			error(peek(), "[[: empty conditional expression");
 		} else {
 			node->root = parseDBracketExpr();
 		}
 
-		if (!matchReserved("]]")) {
-			error(peek(), "expected `]]`");
-		}
+		if (!matchReserved("]]")) error(peek(), "expected `]]`");
 
-		Redirection r;
-		while (tryParseRedirection(r)) node->redirs.push_back(std::move(r));
+		parseTrailingRedirections(node->redirs);
 		stampSpan(*node, start);
 		return node;
 	}
 
 	NodePtr Parser::parseFunctionRest(std::string name, SourceLoc loc) {
-		std::size_t start = loc.offset;
+		const std::size_t start = loc.offset;
 		skipNewlines();
+
 		auto body = parseCommand();
-		if (!body) {
+		if (body == nullptr) {
 			error(peek(), "expected function body");
 			return nullptr;
 		}
 
-		auto fn = arena_.make<FunctionDef>();
-		fn->loc = loc;
-		fn->name = std::move(name);
-		fn->body = body;
-		stampSpan(*fn, start);
-		if (fn->body && source_ && !source_->empty()
-		    && fn->body->src_end > fn->body->src_start
-		    && fn->body->src_end <= source_->size()) {
-			fn->body_text = source_->substr(fn->body->src_start,
-				fn->body->src_end - fn->body->src_start);
+		auto function = arena_.make<FunctionDef>();
+		function->loc = loc;
+		function->name = std::move(name);
+		function->body = body;
+		stampSpan(*function, start);
+		captureFunctionBodyText(*function);
+		return function;
+	}
+
+	void Parser::captureFunctionBodyText(FunctionDef& function) const {
+		if (function.body == nullptr) return;
+		if (source_ == nullptr || source_->empty()) return;
+
+		const std::size_t body_start = function.body->src_start;
+		const std::size_t body_end = function.body->src_end;
+		if (body_end <= body_start || body_end > source_->size()) return;
+
+		function.body_text = source_->substr(body_start, body_end - body_start);
+	}
+
+	static bool tryParseKeyedArrayItem(const Word& word, Assignment::Keyed& item) {
+		if (word.raw.empty() || word.raw[0] != '[') return false;
+		if (word.segments.empty()) return false;
+		if (word.segments[0].kind != WordSegment::Kind::Literal) return false;
+
+		const std::string& literal = word.segments[0].text;
+		const std::size_t close = literal.find(']');
+		if (close == std::string::npos) return false;
+		if (close + 1 >= literal.size() || literal[close + 1] != '=') return false;
+
+		WordSegment key;
+		key.kind = WordSegment::Kind::Literal;
+		key.text = literal.substr(1, close - 1);
+		item.key.segments.push_back(std::move(key));
+		item.has_key = true;
+
+		appendLiteralSegment(item.value, literal.substr(close + 2));
+		for (std::size_t k = 1; k < word.segments.size(); ++k) {
+			item.value.segments.push_back(word.segments[k]);
 		}
 
-		return fn;
+		item.value.raw = word.raw;
+		return true;
 	}
 
 	void Parser::parseArrayLiteralItem(Assignment& a) {
-		Word w = tokenToWord(advance());
-		Assignment::Keyed item;
+		Word word = tokenToWord(advance());
 
-		const bool has_key_form =
-			!w.raw.empty() && w.raw[0] == '['
-			&& !w.segments.empty()
-			&& w.segments[0].kind == WordSegment::Kind::Literal;
-		if (has_key_form) {
-			const std::string& lit = w.segments[0].text;
-			const std::size_t close = lit.find(']');
-			if (close != std::string::npos
-			    && close + 1 < lit.size()
-			    && lit[close + 1] == '=')
-			{
-				WordSegment ks;
-				ks.kind = WordSegment::Kind::Literal;
-				ks.text = lit.substr(1, close - 1);
-				item.key.segments.push_back(std::move(ks));
-				item.has_key = true;
-
-				const std::string val_text = lit.substr(close + 2);
-				if (!val_text.empty()) {
-					WordSegment vs;
-					vs.kind = WordSegment::Kind::Literal;
-					vs.text = val_text;
-					item.value.segments.push_back(std::move(vs));
-				}
-
-				for (std::size_t k = 1; k < w.segments.size(); ++k) {
-					item.value.segments.push_back(w.segments[k]);
-				}
-
-				item.value.raw = w.raw;
-				a.keyed_items.push_back(std::move(item));
-				return;
-			}
+		Assignment::Keyed keyed;
+		if (tryParseKeyedArrayItem(word, keyed)) {
+			a.keyed_items.push_back(std::move(keyed));
+			return;
 		}
 
 		Assignment::Keyed unkeyed;
-		unkeyed.value = std::move(w);
+		unkeyed.value = std::move(word);
 		a.keyed_items.push_back(std::move(unkeyed));
 	}
 
 	void Parser::parseArrayLiteralBody(Assignment& a) {
 		a.is_array = true;
 		skipNewlines();
+
 		while (!atEnd() && peek().kind != TokKind::RParen) {
 			if (peek().kind == TokKind::Newline) {
 				advance();
@@ -867,9 +952,7 @@ namespace wbsh {
 			parseArrayLiteralItem(a);
 		}
 
-		if (!match(TokKind::RParen)) {
-			error(peek(), "expected `)` to close array literal");
-		}
+		if (!match(TokKind::RParen)) error(peek(), "expected `)` to close array literal");
 	}
 
 	static bool isEmptyScalarAssignmentSlot(const Assignment& a) {
@@ -877,15 +960,16 @@ namespace wbsh {
 	}
 
 	bool Parser::tryConsumeLeadingAssignment(SimpleCommand& cmd) {
-		Assignment a;
-		if (!tryExtractAssignment(peek(), a)) return false;
+		Assignment assignment;
+		if (!tryExtractAssignment(peek(), assignment)) return false;
+
 		advance();
-		if (isEmptyScalarAssignmentSlot(a) && peek().kind == TokKind::LParen) {
+		if (isEmptyScalarAssignmentSlot(assignment) && peek().kind == TokKind::LParen) {
 			advance();
-			parseArrayLiteralBody(a);
+			parseArrayLiteralBody(assignment);
 		}
 
-		cmd.assignments.push_back(std::move(a));
+		cmd.assignments.push_back(std::move(assignment));
 		return true;
 	}
 
@@ -897,14 +981,14 @@ namespace wbsh {
 
 		while (!atEnd()) {
 			if (atRedirOp() || peek().kind == TokKind::IoNumber) {
-				Redirection r;
-				if (!tryParseRedirection(r)) break;
-				cmd->redirs.push_back(std::move(r));
+				Redirection redir;
+				if (!tryParseRedirection(redir)) break;
+
+				cmd->redirs.push_back(std::move(redir));
 				continue;
 			}
 
 			if (peek().kind != TokKind::Word) break;
-
 			if (!seen_word && tryConsumeLeadingAssignment(*cmd)) continue;
 
 			cmd->words.push_back(tokenToWord(advance()));
@@ -919,191 +1003,172 @@ namespace wbsh {
 		return cmd;
 	}
 
-	static std::size_t scanAssignmentNameLength(const std::string& s0) {
-		if (s0.empty()) return 0;
-		const unsigned char c0 = static_cast<unsigned char>(s0[0]);
-		if (!(std::isalpha(c0) || c0 == '_')) return 0;
-		std::size_t i = 1;
-		while (i < s0.size()
-		       && (std::isalnum(static_cast<unsigned char>(s0[i])) || s0[i] == '_'))
+	static std::size_t scanAssignmentNameLength(const std::string& text) {
+		if (text.empty()) return 0;
+
+		const unsigned char first = static_cast<unsigned char>(text[0]);
+		if (!(std::isalpha(first) || first == '_')) return 0;
+
+		std::size_t length = 1;
+		while (length < text.size()
+		       && (std::isalnum(static_cast<unsigned char>(text[length])) || text[length] == '_'))
 		{
-			++i;
+			++length;
 		}
 
-		return i;
+		return length;
 	}
 
-	static bool findSubscriptCloseBracket(const Token& t,
-	                                      std::size_t cur_seg, std::size_t cur_pos,
-	                                      std::size_t* out_close_seg,
-	                                      std::size_t* out_close_pos) {
-		for (std::size_t k = 0; k < t.segments.size(); ++k) {
-			const auto& seg = t.segments[k];
-			if (seg.kind != WordSegment::Kind::Literal) continue;
-			const std::size_t start = (k == cur_seg) ? cur_pos : 0;
-			const auto rb = seg.text.find(']', start);
-			if (rb == std::string::npos) continue;
-			*out_close_seg = k;
-			*out_close_pos = rb;
+	static bool findSubscriptCloseBracket(const Token& token, SubscriptSpan& span) {
+		for (std::size_t k = 0; k < token.segments.size(); ++k) {
+			const auto& segment = token.segments[k];
+			if (segment.kind != WordSegment::Kind::Literal) continue;
+
+			const std::size_t from = (k == span.open_seg) ? span.open_pos : 0;
+			const std::size_t close = segment.text.find(']', from);
+			if (close == std::string::npos) continue;
+
+			span.close_seg = k;
+			span.close_pos = close;
 			return true;
 		}
 
 		return false;
 	}
 
-	static std::size_t subscriptAssignOpLen(const Token& t,
-	                                        std::size_t close_seg,
-	                                        std::size_t close_pos) {
-		const auto& close_text = t.segments[close_seg].text;
-		if (close_pos + 1 < close_text.size()) {
-			if (close_text[close_pos + 1] == '=') return 1;
-			if (close_text[close_pos + 1] == '+'
-			    && close_pos + 2 < close_text.size()
-			    && close_text[close_pos + 2] == '=') {
-				return 2;
-			}
-
-			return 0;
-		}
-
-		if (close_seg + 1 >= t.segments.size()) return 0;
-		const auto& nxt = t.segments[close_seg + 1];
-		if (nxt.kind != WordSegment::Kind::Literal || nxt.text.empty()) return 0;
-		if (nxt.text[0] == '=') return 1;
-		if (nxt.text.size() >= 2 && nxt.text[0] == '+' && nxt.text[1] == '=') {
-			return 2;
-		}
-
+	static std::size_t assignOpLengthAt(const std::string& text, std::size_t at) {
+		if (at >= text.size()) return 0;
+		if (text[at] == '=') return 1;
+		if (text[at] == '+' && at + 1 < text.size() && text[at + 1] == '=') return 2;
 		return 0;
 	}
 
-	static void buildSubscriptWord(const Token& t,
-	                               std::size_t cur_seg, std::size_t cur_pos,
-	                               std::size_t close_seg, std::size_t close_pos,
+	static std::size_t subscriptAssignOpLen(const Token& token, const SubscriptSpan& span) {
+		const std::string& close_text = token.segments[span.close_seg].text;
+		if (span.close_pos + 1 < close_text.size()) {
+			return assignOpLengthAt(close_text, span.close_pos + 1);
+		}
+
+		if (span.close_seg + 1 >= token.segments.size()) return 0;
+
+		const auto& next = token.segments[span.close_seg + 1];
+		if (next.kind != WordSegment::Kind::Literal) return 0;
+		return assignOpLengthAt(next.text, 0);
+	}
+
+	static void buildSubscriptWord(const Token& token, const SubscriptSpan& span,
 	                               Word& out_subscript) {
-		auto push_literal = [&](std::string text) {
-			if (text.empty()) return;
-			WordSegment w;
-			w.kind = WordSegment::Kind::Literal;
-			w.text = std::move(text);
-			out_subscript.segments.push_back(std::move(w));
-		};
-		for (std::size_t k = cur_seg; k <= close_seg; ++k) {
-			const auto& seg = t.segments[k];
-			if (k == cur_seg && seg.kind == WordSegment::Kind::Literal) {
-				std::string slice = (k == close_seg)
-					? seg.text.substr(cur_pos, close_pos - cur_pos)
-					: seg.text.substr(cur_pos);
-				push_literal(std::move(slice));
-			} else if (k == close_seg && seg.kind == WordSegment::Kind::Literal) {
-				push_literal(seg.text.substr(0, close_pos));
-			} else {
-				out_subscript.segments.push_back(seg);
+		for (std::size_t k = span.open_seg; k <= span.close_seg; ++k) {
+			const auto& segment = token.segments[k];
+			const bool literal = segment.kind == WordSegment::Kind::Literal;
+
+			if (k == span.open_seg && literal) {
+				const std::size_t length = (k == span.close_seg)
+					? span.close_pos - span.open_pos
+					: std::string::npos;
+				appendLiteralSegment(out_subscript, segment.text.substr(span.open_pos, length));
+				continue;
 			}
+
+			if (k == span.close_seg && literal) {
+				appendLiteralSegment(out_subscript, segment.text.substr(0, span.close_pos));
+				continue;
+			}
+
+			out_subscript.segments.push_back(segment);
 		}
 	}
 
-	static void buildValueWordAfterSubscript(const Token& t,
-	                                         std::size_t close_seg,
-	                                         std::size_t close_pos,
-	                                         std::size_t op_len,
-	                                         Word& out_value) {
-		auto push_literal = [&](std::string text) {
-			if (text.empty()) return;
-			WordSegment w;
-			w.kind = WordSegment::Kind::Literal;
-			w.text = std::move(text);
-			out_value.segments.push_back(std::move(w));
-		};
-		const auto& close_text = t.segments[close_seg].text;
-		if (close_pos + 1 < close_text.size()) {
-			push_literal(close_text.substr(close_pos + 1 + op_len));
-			for (std::size_t k = close_seg + 1; k < t.segments.size(); ++k)
-				out_value.segments.push_back(t.segments[k]);
+	static void appendSegmentsFrom(const Token& token, std::size_t first, Word& out) {
+		for (std::size_t k = first; k < token.segments.size(); ++k) {
+			out.segments.push_back(token.segments[k]);
+		}
+	}
+
+	static void buildValueWordAfterSubscript(const Token& token, const SubscriptSpan& span,
+	                                         std::size_t op_len, Word& out_value) {
+		const std::string& close_text = token.segments[span.close_seg].text;
+		if (span.close_pos + 1 < close_text.size()) {
+			appendLiteralSegment(out_value, close_text.substr(span.close_pos + 1 + op_len));
+			appendSegmentsFrom(token, span.close_seg + 1, out_value);
 			return;
 		}
 
-		const auto& nxt = t.segments[close_seg + 1];
-		push_literal(nxt.text.substr(op_len));
-		for (std::size_t k = close_seg + 2; k < t.segments.size(); ++k)
-			out_value.segments.push_back(t.segments[k]);
+		const auto& next = token.segments[span.close_seg + 1];
+		appendLiteralSegment(out_value, next.text.substr(op_len));
+		appendSegmentsFrom(token, span.close_seg + 2, out_value);
 	}
 
-	static void buildSimpleAssignmentValue(const Token& t, std::size_t name_end,
+	static void buildSimpleAssignmentValue(const Token& token, std::size_t name_end,
 	                                       Assignment& out) {
-		const std::string& s0 = t.segments[0].text;
-		if (name_end + 1 < s0.size()) {
-			WordSegment seg;
-			seg.kind = WordSegment::Kind::Literal;
-			seg.text = s0.substr(name_end + 1);
-			out.value.segments.push_back(std::move(seg));
-		}
+		const std::string& text = token.segments[0].text;
+		if (name_end + 1 < text.size()) appendLiteralSegment(out.value, text.substr(name_end + 1));
+		appendSegmentsFrom(token, 1, out.value);
 
-		for (std::size_t k = 1; k < t.segments.size(); ++k)
-			out.value.segments.push_back(t.segments[k]);
-
-		const auto eqpos = t.text.find('=');
-		out.value.raw = (eqpos == std::string::npos)
+		const std::size_t equals = token.text.find('=');
+		out.value.raw = (equals == std::string::npos)
 			? std::string()
-			: t.text.substr(eqpos + 1);
+			: token.text.substr(equals + 1);
 	}
 
-	bool Parser::tryExtractAssignment(const Token& t, Assignment& out) const {
-		if (t.kind != TokKind::Word || t.segments.empty()) return false;
-		const auto& first = t.segments[0];
-		if (first.kind != WordSegment::Kind::Literal) return false;
+	static bool tryExtractSubscriptAssignment(const Token& token, std::size_t name_end,
+	                                          Assignment& out) {
+		SubscriptSpan span;
+		span.open_seg = 0;
+		span.open_pos = name_end + 1;
+		if (!findSubscriptCloseBracket(token, span)) return false;
 
-		const std::string& s0 = first.text;
-		const std::size_t name_end = scanAssignmentNameLength(s0);
-		if (name_end == 0) return false;
-
-		out.name = s0.substr(0, name_end);
-		out.loc = t.loc;
-		out.value.loc = t.loc;
-
-		// `name+=...` append form. Must be checked before `name=...` since
-		// `+=` is the longer operator.
-		if (name_end + 1 < s0.size()
-		    && s0[name_end] == '+' && s0[name_end + 1] == '=') {
-			out.append = true;
-			// Pretend `=` lives at name_end + 1 so the existing builder
-			// peels the value starting at name_end + 2.
-			buildSimpleAssignmentValue(t, name_end + 1, out);
-			return true;
-		}
-
-		if (name_end < s0.size() && s0[name_end] == '=') {
-			buildSimpleAssignmentValue(t, name_end, out);
-			return true;
-		}
-
-		if (name_end >= s0.size() || s0[name_end] != '[') return false;
-
-		const std::size_t cur_seg = 0;
-		const std::size_t cur_pos = name_end + 1;
-		std::size_t close_seg = 0;
-		std::size_t close_pos = 0;
-		if (!findSubscriptCloseBracket(t, cur_seg, cur_pos, &close_seg, &close_pos))
-			return false;
-		const std::size_t op_len = subscriptAssignOpLen(t, close_seg, close_pos);
+		const std::size_t op_len = subscriptAssignOpLen(token, span);
 		if (op_len == 0) return false;
 
 		out.has_subscript = true;
 		out.append = (op_len == 2);
-		out.subscript.loc = t.loc;
-		buildSubscriptWord(t, cur_seg, cur_pos, close_seg, close_pos, out.subscript);
-		buildValueWordAfterSubscript(t, close_seg, close_pos, op_len, out.value);
+		out.subscript.loc = token.loc;
+		buildSubscriptWord(token, span, out.subscript);
+		buildValueWordAfterSubscript(token, span, op_len, out.value);
 
 		const std::string marker = (op_len == 2) ? "]+=" : "]=";
-		const auto eqpos = t.text.find(marker);
-		out.value.raw = (eqpos == std::string::npos)
+		const std::size_t equals = token.text.find(marker);
+		out.value.raw = (equals == std::string::npos)
 			? std::string()
-			: t.text.substr(eqpos + marker.size());
+			: token.text.substr(equals + marker.size());
 		return true;
 	}
 
+	bool Parser::tryExtractAssignment(const Token& t, Assignment& out) const {
+		if (t.kind != TokKind::Word || t.segments.empty()) return false;
+
+		const auto& first = t.segments[0];
+		if (first.kind != WordSegment::Kind::Literal) return false;
+
+		const std::string& text = first.text;
+		const std::size_t name_end = scanAssignmentNameLength(text);
+		if (name_end == 0) return false;
+
+		out.name = text.substr(0, name_end);
+		out.loc = t.loc;
+		out.value.loc = t.loc;
+
+		// `+=` is the longer operator, so the append form is tried first.
+		if (name_end + 1 < text.size() && text[name_end] == '+' && text[name_end + 1] == '=') {
+			out.append = true;
+			// The value builder peels everything past its `=` position, so
+			// pointing it one past the `+` yields the text after `+=`.
+			buildSimpleAssignmentValue(t, name_end + 1, out);
+			return true;
+		}
+
+		if (name_end < text.size() && text[name_end] == '=') {
+			buildSimpleAssignmentValue(t, name_end, out);
+			return true;
+		}
+
+		if (name_end >= text.size() || text[name_end] != '[') return false;
+		return tryExtractSubscriptAssignment(t, name_end, out);
+	}
+
 	bool Parser::tryParseRedirection(Redirection& out) {
-		std::size_t saved = pos_;
+		const std::size_t saved = pos_;
 		int fd = -1;
 		if (peek().kind == TokKind::IoNumber) {
 			if (!parseInt(peek().text, fd)) fd = -1;
@@ -1115,25 +1180,8 @@ namespace wbsh {
 			return false;
 		}
 
-		auto kind = peek().kind;
-		auto map_op = [](TokKind k) {
-			switch (k) {
-			case TokKind::Less:       return RedirOp::Less;
-			case TokKind::Great:      return RedirOp::Great;
-			case TokKind::DGreat:     return RedirOp::DGreat;
-			case TokKind::LessAnd:    return RedirOp::LessAnd;
-			case TokKind::GreatAnd:   return RedirOp::GreatAnd;
-			case TokKind::LessGreat:  return RedirOp::LessGreat;
-			case TokKind::Clobber:    return RedirOp::Clobber;
-			case TokKind::AmpGreat:   return RedirOp::AmpGreat;
-			case TokKind::AmpDGreat:  return RedirOp::AmpDGreat;
-			case TokKind::DLess:      return RedirOp::DLess;
-			case TokKind::DLessDash:  return RedirOp::DLessDash;
-			case TokKind::TLess:      return RedirOp::TLess;
-			default:                  return RedirOp::Less;
-			}
-			};
-		out.op = map_op(kind);
+		const TokKind kind = peek().kind;
+		out.op = redirOpForToken(kind);
 		out.fd = fd;
 		advance();
 		if (peek().kind != TokKind::Word) {
@@ -1141,11 +1189,11 @@ namespace wbsh {
 			return false;
 		}
 
-		const Token& t = peek();
-		out.target = tokenToWord(t);
+		const Token& target = peek();
+		out.target = tokenToWord(target);
 		if (kind == TokKind::DLess || kind == TokKind::DLessDash) {
-			out.heredoc_body = t.heredoc_body;
-			out.heredoc_quoted = t.heredoc_quoted;
+			out.heredoc_body = target.heredoc_body;
+			out.heredoc_quoted = target.heredoc_quoted;
 		}
 
 		advance();

@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief Process entry point: argv decoding and CLI dispatch.
+ * @brief Process entry point: decode the command line, pick an action, run it.
  */
 
 #ifdef _WIN32
@@ -108,15 +108,95 @@ static void printAgentInfo() {
 		"  README.md            full docs, install, feature list\n";
 }
 
-static std::string readAll(std::istream& in) {
-	std::stringstream ss;
-	ss << in.rdbuf();
-	std::string s = ss.str();
-	normalizeCrlf(s);
-	return s;
+enum class Action {
+	RunScript,
+	RunInteractive,
+	PrintHelp,
+	PrintAgentInfo,
+	PrintVersion,
+};
+
+enum class SourceKind {
+	Unset,
+	CommandString,
+	File,
+	Stdin,
+};
+
+enum class AstDump {
+	Default,
+	Shown,
+	Hidden,
+};
+
+// A source given later on the command line replaces an earlier one; the
+// first informational flag (-h, -v, -i, ...) decides the action.
+struct Options {
+	Action      action = Action::RunScript;
+	SourceKind  source = SourceKind::Unset;
+	std::string command;
+	std::string file_path;
+	bool        show_tokens     = false;
+	bool        show_expansions = false;
+	bool        execute         = false;
+	AstDump     ast             = AstDump::Default;
+};
+
+static void setAction(Options& options, Action action) {
+	if (options.action == Action::RunScript) options.action = action;
 }
 
-static bool isInteractiveStdin() {
+static bool parseArgs(int argc, char** argv, Options& options, std::string& out_error) {
+	for (int i = 1; i < argc; ++i) {
+		const std::string arg = argv[i];
+
+		const bool help        = arg == "-h" || arg == "--help";
+		const bool version     = arg == "-v" || arg == "--version";
+		const bool interactive = arg == "-i" || arg == "--interactive";
+		if (help)                  { setAction(options, Action::PrintHelp);      continue; }
+		if (arg == "--agent-info") { setAction(options, Action::PrintAgentInfo); continue; }
+		if (version)               { setAction(options, Action::PrintVersion);   continue; }
+		if (interactive)           { setAction(options, Action::RunInteractive); continue; }
+
+		if (arg == "-t" || arg == "--tokens") { options.show_tokens     = true; continue; }
+		if (arg == "-e" || arg == "--expand") { options.show_expansions = true; continue; }
+		if (arg == "-r" || arg == "--run")    { options.execute         = true; continue; }
+		if (arg == "--ast")                   { options.ast = AstDump::Shown;   continue; }
+		if (arg == "--no-ast")                { options.ast = AstDump::Hidden;  continue; }
+
+		if (arg == "-c") {
+			if (i + 1 >= argc) {
+				out_error = "-c requires an argument";
+				return false;
+			}
+
+			options.source  = SourceKind::CommandString;
+			options.command = argv[++i];
+			continue;
+		}
+
+		if (arg == "-") {
+			options.source = SourceKind::Stdin;
+			continue;
+		}
+
+		options.source    = SourceKind::File;
+		options.file_path = arg;
+	}
+
+	return true;
+}
+
+static std::string readAll(std::istream& in) {
+	std::stringstream buffer;
+	buffer << in.rdbuf();
+
+	std::string text = buffer.str();
+	normalizeCrlf(text);
+	return text;
+}
+
+static bool stdinIsTerminal() {
 #ifdef _WIN32
 	return _isatty(_fileno(stdin)) != 0;
 #else
@@ -124,123 +204,75 @@ static bool isInteractiveStdin() {
 #endif /* _WIN32 */
 }
 
-#ifdef _WIN32
-static void rewriteArgvAsUtf8(int& argc, char**& argv,
-		std::vector<std::string>& storage, std::vector<char*>& ptrs) {
-	int wargc = 0;
-	LPWSTR* wargv = ::CommandLineToArgvW(::GetCommandLineW(), &wargc);
-	if (!wargv) return;
-	storage.reserve(static_cast<std::size_t>(wargc));
-	for (int i = 0; i < wargc; ++i) {
-		storage.push_back(wbsh::wideToUtf8(wargv[i]));
+static bool readScriptFile(const std::string& path, std::string& out_text) {
+	std::ifstream file(path, std::ios::binary);
+	if (file.fail()) {
+		std::cerr << "wbsh: cannot open file: " << path << "\n";
+		return false;
 	}
 
-	::LocalFree(wargv);
+	out_text = readAll(file);
+	return true;
+}
+
+// Without -r a script is only dumped, so the AST is shown unless said
+// otherwise; with -r it is hidden unless asked for with --ast.
+static bool astShown(const Options& options) {
+	if (options.ast == AstDump::Shown)  return true;
+	if (options.ast == AstDump::Hidden) return false;
+	return !options.execute;
+}
+
+static bool loadScriptRun(const Options& options, ScriptRun& run) {
+	run.show_tokens     = options.show_tokens;
+	run.show_ast        = astShown(options);
+	run.show_expansions = options.show_expansions;
+	run.execute         = options.execute;
+
+	switch (options.source) {
+	case SourceKind::CommandString:
+		run.source = options.command;
+		return true;
+	case SourceKind::File:
+		run.script_name = options.file_path;
+		return readScriptFile(options.file_path, run.source);
+	case SourceKind::Stdin:
+	case SourceKind::Unset:
+	default:
+		run.source = readAll(std::cin);
+		return true;
+	}
+}
+
+static int runScriptAction(const Options& options) {
+	ScriptRun run;
+	if (!loadScriptRun(options, run)) return 2;
+
+	return runScript(run);
+}
+
+#ifdef _WIN32
+
+static void rewriteArgvAsUtf8(int& argc, char**& argv,
+		std::vector<std::string>& storage, std::vector<char*>& ptrs) {
+	int wide_argc = 0;
+	LPWSTR* wide_argv = ::CommandLineToArgvW(::GetCommandLineW(), &wide_argc);
+	if (wide_argv == nullptr) return;
+
+	storage.reserve(static_cast<std::size_t>(wide_argc));
+	for (int i = 0; i < wide_argc; ++i) {
+		storage.push_back(wbsh::wideToUtf8(wide_argv[i]));
+	}
+
+	::LocalFree(wide_argv);
+
 	ptrs.reserve(storage.size() + 1);
-	for (auto& s : storage) ptrs.push_back(s.data());
+	for (auto& arg : storage) ptrs.push_back(arg.data());
 	ptrs.push_back(nullptr);
 	argc = static_cast<int>(storage.size());
 	argv = ptrs.data();
 }
-#endif /* _WIN32 */
 
-struct CliOptions {
-	bool show_tokens  = false;
-	bool show_ast     = true;
-	bool do_expand    = false;
-	bool do_run       = false;
-	bool ast_explicit = false;
-	bool from_stdin   = false;
-	bool have_src     = false;
-	std::string src;
-	std::string script_name;
-};
-
-struct ParseResult {
-	bool exit_now;
-	int  exit_code;
-};
-
-static ParseResult parseArgs(int argc, char** argv, CliOptions& opts) {
-	for (int i = 1; i < argc; ++i) {
-		std::string a = argv[i];
-		if (a == "-h" || a == "--help") {
-			printHelp();
-			return { true, 0 };
-		}
-
-		if (a == "--agent-info") {
-			printAgentInfo();
-			return { true, 0 };
-		}
-
-		if (a == "-v" || a == "--version") {
-			std::cout << "wbsh " WBSH_VERSION_STR "\n";
-			return { true, 0 };
-		}
-
-		if (a == "-t" || a == "--tokens")      { opts.show_tokens = true;  continue; }
-		if (a == "-e" || a == "--expand")      { opts.do_expand   = true;  continue; }
-		if (a == "-r" || a == "--run")         { opts.do_run      = true;  continue; }
-		if (a == "-i" || a == "--interactive") {
-			return { true, runInteractive() };
-		}
-
-		if (a == "--ast")    { opts.show_ast = true;  opts.ast_explicit = true; continue; }
-		if (a == "--no-ast") { opts.show_ast = false; opts.ast_explicit = true; continue; }
-		if (a == "-c") {
-			if (i + 1 >= argc) {
-				std::cerr << "wbsh: -c requires an argument\n";
-				return { true, 2 };
-			}
-
-			opts.src = argv[++i];
-			opts.have_src = true;
-			continue;
-		}
-
-		if (a == "-") {
-			opts.from_stdin = true;
-			continue;
-		}
-
-		std::ifstream f(a, std::ios::binary);
-		if (!f) {
-			std::cerr << "wbsh: cannot open file: " << a << "\n";
-			return { true, 2 };
-		}
-
-		opts.src = readAll(f);
-		opts.have_src = true;
-		opts.script_name = a;
-	}
-
-	return { false, 0 };
-}
-
-static ParseResult resolveSource(CliOptions& opts) {
-	if (opts.have_src) return { false, 0 };
-	if (opts.from_stdin) {
-		opts.src = readAll(std::cin);
-		opts.have_src = true;
-		return { false, 0 };
-	}
-
-	if (isInteractiveStdin()) {
-		return { true, runInteractive() };
-	}
-
-	if (!std::cin.eof()) {
-		opts.src = readAll(std::cin);
-		opts.have_src = true;
-		return { false, 0 };
-	}
-
-	printHelp();
-	return { true, 0 };
-}
-
-#ifdef _WIN32
 // By default the CRT's invalid-parameter handler aborts the whole
 // process on things a shell must treat as ordinary, recoverable
 // failures: `_dup`/`_dup2`/`_close` on a not-yet-open fd (routine
@@ -251,28 +283,52 @@ static ParseResult resolveSource(CliOptions& opts) {
 static void noopInvalidParameterHandler(const wchar_t*, const wchar_t*,
 	const wchar_t*, unsigned int, uintptr_t) {
 }
-#endif /* _WIN32 */
 
-int main(int argc, char** argv) {
-#ifdef _WIN32
+static void prepareCrtForShellUse() {
 	_set_invalid_parameter_handler(noopInvalidParameterHandler);
 	_CrtSetReportMode(_CRT_ASSERT, 0);
-
-	std::vector<std::string> argv_utf8_storage;
-	std::vector<char*>       argv_ptrs;
-	rewriteArgvAsUtf8(argc, argv, argv_utf8_storage, argv_ptrs);
 
 	// LF-only output: the CRT's default text mode writes `\r\n` to pipes
 	// and files, which corrupts `$(...)` captures and `read` values.
 	_setmode(_fileno(stdout), _O_BINARY);
 	_setmode(_fileno(stderr), _O_BINARY);
+}
+
 #endif /* _WIN32 */
 
-	CliOptions opts;
-	if (auto pr = parseArgs(argc, argv, opts); pr.exit_now) return pr.exit_code;
-	if (auto pr = resolveSource(opts);          pr.exit_now) return pr.exit_code;
+int main(int argc, char** argv) {
+#ifdef _WIN32
+	prepareCrtForShellUse();
 
-	if (opts.do_run && !opts.ast_explicit) opts.show_ast = false;
-	return runOnSource(opts.src, opts.show_tokens, opts.show_ast,
-	                   opts.do_expand, opts.do_run, opts.script_name);
+	std::vector<std::string> argv_utf8_storage;
+	std::vector<char*>       argv_ptrs;
+	rewriteArgvAsUtf8(argc, argv, argv_utf8_storage, argv_ptrs);
+#endif /* _WIN32 */
+
+	Options options;
+	std::string error;
+	if (!parseArgs(argc, argv, options, error)) {
+		std::cerr << "wbsh: " << error << "\n";
+		return 2;
+	}
+
+	const bool nothing_to_read = options.source == SourceKind::Unset && stdinIsTerminal();
+	if (nothing_to_read) setAction(options, Action::RunInteractive);
+
+	switch (options.action) {
+	case Action::PrintHelp:
+		printHelp();
+		return 0;
+	case Action::PrintAgentInfo:
+		printAgentInfo();
+		return 0;
+	case Action::PrintVersion:
+		std::cout << "wbsh " WBSH_VERSION_STR "\n";
+		return 0;
+	case Action::RunInteractive:
+		return runInteractive();
+	case Action::RunScript:
+	default:
+		return runScriptAction(options);
+	}
 }

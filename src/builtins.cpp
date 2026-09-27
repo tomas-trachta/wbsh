@@ -36,122 +36,204 @@
 
 namespace wbsh {
 
-	static long long toIntSafe(const std::string& s, bool& ok) {
+	static const char* const kDefaultIfs      = " \t\n";
+	static const char* const kDefaultUmask    = "0022";
+	static const char* const kHistoryFileName = "/.wbsh_history";
+	static const std::size_t kHelpColumns     = 5;
+
+	static const char* const kExecutableSuffixes[] = { ".exe", ".cmd", ".bat", ".com" };
+
+	static const char* const kShellKeywords[] = {
+		"if", "then", "else", "elif", "fi", "case", "esac", "for",
+		"while", "until", "do", "done", "function", "in", "select",
+		"time", "[[", "]]", "return", "break", "continue",
+	};
+
+	static long long toIntSafe(const std::string& text, bool& ok) {
 		ok = false;
-		if (s.empty()) return 0;
-		long long v = 0;
-		std::size_t idx = 0;
-		if (!parseLL(s, v, 10, &idx) || idx != s.size()) return 0;
+		if (text.empty()) return 0;
+
+		long long value = 0;
+		std::size_t parsed = 0;
+		if (!parseLL(text, value, 10, &parsed) || parsed != text.size()) return 0;
+
 		ok = true;
-		return v;
+		return value;
 	}
 
 	static int firstArgAsInt(const std::vector<std::string>& args, int fallback,
-	                  bool require_positive = false) {
+			bool require_positive = false) {
 		if (args.empty()) return fallback;
+
 		bool ok = false;
-		long long v = toIntSafe(args[0], ok);
+		const long long value = toIntSafe(args[0], ok);
 		if (!ok) return fallback;
-		if (require_positive && v <= 0) return fallback;
-		return static_cast<int>(v);
+		if (require_positive && value <= 0) return fallback;
+
+		return static_cast<int>(value);
 	}
 
-	static void printerr(const std::string& msg) {
-		std::fprintf(stderr, "wbsh: %s\n", msg.c_str());
+	static void printerr(const std::string& message) {
+		std::fprintf(stderr, "wbsh: %s\n", message.c_str());
 	}
 
-	static long long toIntOrZero(const std::string& s) {
+	static void writeStdout(const std::string& text) {
+		std::fwrite(text.data(), 1, text.size(), stdout);
+	}
+
+	static long long toIntOrZero(const std::string& text) {
 		bool ok = false;
-		return toIntSafe(s, ok);
+		return toIntSafe(text, ok);
 	}
 
-	static double toDoubleOrZero(const std::string& s) {
+	static double toDoubleOrZero(const std::string& text) {
 		char* end = nullptr;
-		const double v = std::strtod(s.c_str(), &end);
-		return (end == s.c_str()) ? 0.0 : v;
+		const double value = std::strtod(text.c_str(), &end);
+		return end == text.c_str() ? 0.0 : value;
+	}
+
+	static std::string joinWithSpaces(std::vector<std::string>::const_iterator first,
+			std::vector<std::string>::const_iterator last) {
+		std::string joined;
+		for (auto it = first; it != last; ++it) {
+			if (it != first) joined.push_back(' ');
+			joined += *it;
+		}
+
+		return joined;
+	}
+
+	static bool splitAssignment(const std::string& spec, std::string& out_name,
+			std::string& out_value) {
+		const std::size_t eq = spec.find('=');
+		out_name = spec.substr(0, eq);
+		if (eq == std::string::npos) {
+			out_value.clear();
+			return false;
+		}
+
+		out_value = spec.substr(eq + 1);
+		return true;
+	}
+
+	template <typename Map>
+	static std::vector<std::string> keysOf(const Map& map) {
+		std::vector<std::string> keys;
+		for (const auto& entry : map) keys.push_back(entry.first);
+		return keys;
+	}
+
+	static std::vector<std::pair<std::string, std::string>> sortedEntries(
+			const std::unordered_map<std::string, std::string>& map) {
+		std::vector<std::pair<std::string, std::string>> entries(map.begin(), map.end());
+		std::sort(entries.begin(), entries.end());
+		return entries;
 	}
 
 	static int builtin_true(Executor&, const std::vector<std::string>&) { return 0; }
 	static int builtin_false(Executor&, const std::vector<std::string>&) { return 1; }
 	static int builtin_colon(Executor&, const std::vector<std::string>&) { return 0; }
 
-	static std::string interpretEcho(const std::string& s) {
+	static void appendOctalEscape(const std::string& text, std::size_t& i, std::string& out) {
+		int value = 0;
+		int digits = 0;
+		while (digits < 3 && i + 1 < text.size() && text[i + 1] >= '0' && text[i + 1] <= '7') {
+			value = value * 8 + (text[++i] - '0');
+			++digits;
+		}
+
+		out.push_back(static_cast<char>(value));
+	}
+
+	static int hexDigitValue(char digit) {
+		if (std::isdigit(static_cast<unsigned char>(digit))) return digit - '0';
+		return std::tolower(static_cast<unsigned char>(digit)) - 'a' + 10;
+	}
+
+	static void appendHexEscape(const std::string& text, std::size_t& i, std::string& out) {
+		int value = 0;
+		int digits = 0;
+		while (digits < 2 && i + 1 < text.size()
+				&& std::isxdigit(static_cast<unsigned char>(text[i + 1]))) {
+			value = value * 16 + hexDigitValue(text[++i]);
+			++digits;
+		}
+
+		out.push_back(static_cast<char>(value));
+	}
+
+	static void appendEchoEscape(const std::string& text, std::size_t& i, std::string& out) {
+		const char next = text[++i];
+		switch (next) {
+		case 'a':  out.push_back('\a'); break;
+		case 'b':  out.push_back('\b'); break;
+		case 'e':  out.push_back('\x1b'); break;
+		case 'f':  out.push_back('\f'); break;
+		case 'n':  out.push_back('\n'); break;
+		case 'r':  out.push_back('\r'); break;
+		case 't':  out.push_back('\t'); break;
+		case 'v':  out.push_back('\v'); break;
+		case '\\': out.push_back('\\'); break;
+		case '0':  appendOctalEscape(text, i, out); break;
+		case 'x':  appendHexEscape(text, i, out); break;
+		default:
+			out.push_back('\\');
+			out.push_back(next);
+			break;
+		}
+	}
+
+	static std::string interpretEcho(const std::string& text) {
 		std::string out;
-		for (std::size_t i = 0; i < s.size(); ++i) {
-			char c = s[i];
-			if (c != '\\' || i + 1 >= s.size()) { out.push_back(c); continue; }
-			char nx = s[++i];
-			switch (nx) {
-			case 'a': out.push_back('\a'); break;
-			case 'b': out.push_back('\b'); break;
-			case 'e': out.push_back('\x1b'); break;
-			case 'f': out.push_back('\f'); break;
-			case 'n': out.push_back('\n'); break;
-			case 'r': out.push_back('\r'); break;
-			case 't': out.push_back('\t'); break;
-			case 'v': out.push_back('\v'); break;
-			case '\\': out.push_back('\\'); break;
-			case '0': {
-				int val = 0, cnt = 0;
-				while (cnt < 3 && i + 1 < s.size() && s[i + 1] >= '0' && s[i + 1] <= '7') {
-					val = val * 8 + (s[++i] - '0');
-					++cnt;
-				}
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			const char c = text[i];
+			if (c == '\\' && i + 1 < text.size()) {
+				appendEchoEscape(text, i, out);
+				continue;
+			}
 
-				out.push_back(static_cast<char>(val));
-				break;
-			}
-			case 'x': {
-				int val = 0, cnt = 0;
-				while (cnt < 2 && i + 1 < s.size()
-				    && std::isxdigit(static_cast<unsigned char>(s[i + 1]))) {
-					char h = s[++i];
-					int d = std::isdigit(static_cast<unsigned char>(h))
-					          ? h - '0'
-					          : std::tolower(static_cast<unsigned char>(h)) - 'a' + 10;
-					val = val * 16 + d;
-					++cnt;
-				}
-
-				out.push_back(static_cast<char>(val));
-				break;
-			}
-			default: out.push_back('\\'); out.push_back(nx); break;
-			}
+			out.push_back(c);
 		}
 
 		return out;
 	}
 
-	static int builtin_echo(Executor&, const std::vector<std::string>& args) {
-		bool newline = true;
-		bool interp = false;
+	static bool applyEchoFlags(const std::string& flag, bool& newline, bool& interpret) {
+		if (flag.size() < 2) return false;
+
+		for (std::size_t k = 1; k < flag.size(); ++k) {
+			switch (flag[k]) {
+			case 'n': newline = false;  break;
+			case 'e': interpret = true;  break;
+			case 'E': interpret = false; break;
+			default:  return false;
+			}
+		}
+
+		return true;
+	}
+
+	static std::size_t parseEchoFlags(const std::vector<std::string>& args, bool& newline,
+			bool& interpret) {
 		std::size_t i = 0;
 		while (i < args.size() && !args[i].empty() && args[i][0] == '-') {
-			const std::string& f = args[i];
-			if (f == "--") { ++i; break; }
-			bool ok = f.size() > 1;
-			for (std::size_t k = 1; k < f.size(); ++k) {
-				if (f[k] == 'n') newline = false;
-				else if (f[k] == 'e') interp = true;
-				else if (f[k] == 'E') interp = false;
-				else { ok = false; break; }
-			}
-
-			if (!ok) break;
+			if (args[i] == "--") return i + 1;
+			if (!applyEchoFlags(args[i], newline, interpret)) break;
 			++i;
 		}
 
-		bool first = true;
-		for (; i < args.size(); ++i) {
-			if (!first) std::fputc(' ', stdout);
-			first = false;
-			if (interp) {
-				std::string s = interpretEcho(args[i]);
-				std::fwrite(s.data(), 1, s.size(), stdout);
-			} else {
-				std::fwrite(args[i].data(), 1, args[i].size(), stdout);
-			}
+		return i;
+	}
+
+	static int builtin_echo(Executor&, const std::vector<std::string>& args) {
+		bool newline = true;
+		bool interpret = false;
+		const std::size_t first = parseEchoFlags(args, newline, interpret);
+
+		for (std::size_t i = first; i < args.size(); ++i) {
+			if (i > first) std::fputc(' ', stdout);
+			if (interpret) writeStdout(interpretEcho(args[i]));
+			else writeStdout(args[i]);
 		}
 
 		if (newline) std::fputc('\n', stdout);
@@ -159,8 +241,8 @@ namespace wbsh {
 		return 0;
 	}
 
-	static void emitBackslashEscape(char nx) {
-		switch (nx) {
+	static void emitBackslashEscape(char next) {
+		switch (next) {
 		case 'a':  std::fputc('\a', stdout); break;
 		case 'b':  std::fputc('\b', stdout); break;
 		case 'e':  std::fputc('\x1b', stdout); break;
@@ -172,67 +254,71 @@ namespace wbsh {
 		case '\\': std::fputc('\\', stdout); break;
 		default:
 			std::fputc('\\', stdout);
-			std::fputc(nx, stdout);
+			std::fputc(next, stdout);
 			break;
 		}
 	}
 
+	static void appendPrintfDigits(const std::string& fmt, std::size_t& i, std::string& out_spec) {
+		while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i]))) {
+			out_spec.push_back(fmt[i++]);
+		}
+	}
+
 	static bool parsePrintfConversionSpec(const std::string& fmt, std::size_t& i,
-	                                      std::string& out_spec) {
+			std::string& out_spec) {
 		out_spec = "%";
 		++i;
-		while (i < fmt.size() && std::strchr("-+ #0", fmt[i])) out_spec.push_back(fmt[i++]);
-		while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i])))
+		while (i < fmt.size() && std::strchr("-+ #0", fmt[i]) != nullptr) {
 			out_spec.push_back(fmt[i++]);
+		}
+
+		appendPrintfDigits(fmt, i, out_spec);
 		if (i < fmt.size() && fmt[i] == '.') {
 			out_spec.push_back(fmt[i++]);
-			while (i < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[i])))
-				out_spec.push_back(fmt[i++]);
+			appendPrintfDigits(fmt, i, out_spec);
 		}
 
 		if (i >= fmt.size()) return false;
+
 		out_spec.push_back(fmt[i]);
 		return true;
 	}
 
+	static std::string specWithConversion(const std::string& spec, const std::string& conversion) {
+		std::string result = spec;
+		result.pop_back();
+		return result + conversion;
+	}
+
 	static void emitPrintfConversion(const std::string& spec, char conv,
-	                                 const std::string& arg_text) {
+			const std::string& arg_text) {
 		switch (conv) {
 		case 's':
 			std::fprintf(stdout, spec.c_str(), arg_text.c_str());
 			break;
 		case 'd':
-		case 'i': {
-			const long long v = toIntOrZero(arg_text);
-			std::string s2 = spec; s2.pop_back(); s2 += "lld";
-			std::fprintf(stdout, s2.c_str(), v);
+		case 'i':
+			std::fprintf(stdout, specWithConversion(spec, "lld").c_str(), toIntOrZero(arg_text));
 			break;
-		}
-		case 'u': {
-			const long long v = toIntOrZero(arg_text);
-			std::string s2 = spec; s2.pop_back(); s2 += "llu";
-			std::fprintf(stdout, s2.c_str(), static_cast<unsigned long long>(v));
+		case 'u':
+			std::fprintf(stdout, specWithConversion(spec, "llu").c_str(),
+				static_cast<unsigned long long>(toIntOrZero(arg_text)));
 			break;
-		}
 		case 'x':
 		case 'X':
-		case 'o': {
-			const long long v = toIntOrZero(arg_text);
-			std::string s2 = spec; s2.pop_back(); s2 += "ll";
-			s2.push_back(conv);
-			std::fprintf(stdout, s2.c_str(), static_cast<unsigned long long>(v));
+		case 'o':
+			std::fprintf(stdout, specWithConversion(spec, std::string("ll") + conv).c_str(),
+				static_cast<unsigned long long>(toIntOrZero(arg_text)));
 			break;
-		}
 		case 'f':
 		case 'F':
 		case 'e':
 		case 'E':
 		case 'g':
-		case 'G': {
-			const double v = toDoubleOrZero(arg_text);
-			std::fprintf(stdout, spec.c_str(), v);
+		case 'G':
+			std::fprintf(stdout, spec.c_str(), toDoubleOrZero(arg_text));
 			break;
-		}
 		case 'c':
 			std::fputc(arg_text.empty() ? '\0' : arg_text[0], stdout);
 			break;
@@ -240,17 +326,18 @@ namespace wbsh {
 			std::fputc('%', stdout);
 			break;
 		default:
-			std::fwrite(spec.data(), 1, spec.size(), stdout);
+			writeStdout(spec);
 			break;
 		}
 	}
 
-	static void emitPrintfFormatOnce(const std::string& fmt,
-	                                 const std::vector<std::string>& args,
-	                                 std::size_t* ai) {
-		auto next_arg = [&]() -> std::string {
-			return (*ai < args.size()) ? args[(*ai)++] : std::string();
-		};
+	static std::string takePrintfArg(const std::vector<std::string>& args, std::size_t& next) {
+		if (next >= args.size()) return std::string();
+		return args[next++];
+	}
+
+	static void emitPrintfFormatOnce(const std::string& fmt, const std::vector<std::string>& args,
+			std::size_t& next_arg) {
 		for (std::size_t i = 0; i < fmt.size(); ++i) {
 			const char c = fmt[i];
 			if (c == '\\' && i + 1 < fmt.size()) {
@@ -270,7 +357,7 @@ namespace wbsh {
 				return;
 			}
 
-			emitPrintfConversion(spec, fmt[i], next_arg());
+			emitPrintfConversion(spec, fmt[i], takePrintfArg(args, next_arg));
 		}
 	}
 
@@ -281,52 +368,69 @@ namespace wbsh {
 		}
 
 		const std::string& fmt = args[0];
-		std::size_t ai = 1;
+		std::size_t next_arg = 1;
 
 		// Bash printf semantics: emit the format once, then keep cycling
 		// while there are unconsumed args. If a pass consumes nothing
 		// (a literal-only format), stop to avoid an infinite loop.
-		emitPrintfFormatOnce(fmt, args, &ai);
-		while (ai < args.size()) {
-			const std::size_t before = ai;
-			emitPrintfFormatOnce(fmt, args, &ai);
-			if (ai == before) break;
+		emitPrintfFormatOnce(fmt, args, next_arg);
+		while (next_arg < args.size()) {
+			const std::size_t before = next_arg;
+			emitPrintfFormatOnce(fmt, args, next_arg);
+			if (next_arg == before) break;
 		}
 
 		std::fflush(stdout);
 		return 0;
 	}
 
+	// -L and -P are accepted and make no difference.
 	static int builtin_pwd(Executor& exec, const std::vector<std::string>& args) {
-		namespace fs = std::filesystem;
-		bool win = false;
-		for (const auto& a : args) {
-			if (a == "-W") win = true;
-			else if (a == "-P" || a == "-L") { /* accept silently */ }
+		bool windows_form = false;
+		for (const std::string& arg : args) {
+			if (arg == "-W") windows_form = true;
 		}
 
 		std::error_code ec;
-		auto p = fs::current_path(ec);
-		std::string s = ec ? exec.env().get("PWD") : pathToUtf8(p);
-		if (!win) s = exec.pathConv().toPosix(s);
-		std::fwrite(s.data(), 1, s.size(), stdout);
+		const std::filesystem::path here = std::filesystem::current_path(ec);
+		std::string shown = ec ? exec.env().get("PWD") : pathToUtf8(here);
+		if (!windows_form) shown = exec.pathConv().toPosix(shown);
+
+		writeStdout(shown);
 		std::fputc('\n', stdout);
 		std::fflush(stdout);
 		return 0;
 	}
 
+	static bool resolveCdTarget(Executor& exec, const std::vector<std::string>& args,
+			std::string& out_target) {
+		if (args.empty()) {
+			out_target = exec.env().get("HOME");
+			return true;
+		}
+
+		if (args[0] != "-") {
+			out_target = args[0];
+			return true;
+		}
+
+		out_target = exec.env().get("OLDPWD");
+		if (out_target.empty()) {
+			printerr("cd: OLDPWD not set");
+			return false;
+		}
+
+		std::printf("%s\n", exec.pathConv().toPosix(out_target).c_str());
+		return true;
+	}
+
 	static int builtin_cd(Executor& exec, const std::vector<std::string>& args) {
 		std::string target;
-		if (args.empty()) target = exec.env().get("HOME");
-		else if (args[0] == "-") {
-			target = exec.env().get("OLDPWD");
-			if (target.empty()) { printerr("cd: OLDPWD not set"); return 1; }
-			std::printf("%s\n", exec.pathConv().toPosix(target).c_str());
-		} else target = args[0];
+		if (!resolveCdTarget(exec, args, target)) return 1;
 
-		std::string err;
-		if (!changeDirectory(exec, target, err)) {
-			std::fprintf(stderr, "wbsh: cd: %s: %s\n", target.c_str(), err.c_str());
+		std::string error;
+		if (!changeDirectory(exec, target, error)) {
+			std::fprintf(stderr, "wbsh: cd: %s: %s\n", target.c_str(), error.c_str());
 			return 1;
 		}
 
@@ -370,66 +474,67 @@ namespace wbsh {
 		return 0;
 	}
 
+	static void printExportedVars(const Environment& env) {
+		for (const auto& entry : env.vars()) {
+			if (!env.isExported(entry.first)) continue;
+
+			std::printf("declare -x %s=\"%s\"\n", entry.first.c_str(), entry.second.c_str());
+		}
+	}
+
 	static int builtin_export(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
-			for (const auto& kv : exec.env().vars()) {
-				if (exec.env().isExported(kv.first)) {
-					std::printf("declare -x %s=\"%s\"\n", kv.first.c_str(), kv.second.c_str());
-				}
-			}
-
+			printExportedVars(exec.env());
 			return 0;
 		}
 
-		for (const auto& a : args) {
-			auto eq = a.find('=');
-			std::string name = (eq == std::string::npos) ? a : a.substr(0, eq);
-			if (eq != std::string::npos) {
-				exec.env().set(name, a.substr(eq + 1));
-			}
-
+		for (const std::string& arg : args) {
+			std::string name;
+			std::string value;
+			if (splitAssignment(arg, name, value)) exec.env().set(name, value);
 			exec.env().exportVar(name);
 		}
 
 		return 0;
 	}
 
-	static bool unsetArrayElement(Executor& exec, const std::string& a) {
-		const std::size_t lb = a.find('[');
-		if (lb == std::string::npos || a.empty() || a.back() != ']') return false;
+	static bool unsetArrayElement(Executor& exec, const std::string& arg) {
+		const std::size_t bracket = arg.find('[');
+		if (bracket == std::string::npos || arg.empty() || arg.back() != ']') return false;
 
-		const std::string name = a.substr(0, lb);
-		const std::string sub = a.substr(lb + 1, a.size() - lb - 2);
+		const std::string name = arg.substr(0, bracket);
+		const std::string subscript = arg.substr(bracket + 1, arg.size() - bracket - 2);
 		if (!exec.env().isIndexedArray(name) && !exec.env().isAssocArray(name)) return false;
 
-		long long idx = 0;
-		if (!exec.env().isAssocArray(name)) exec.expander().tryEvalArith(sub, idx);
-		exec.env().unsetElement(name, idx, sub);
+		long long index = 0;
+		if (!exec.env().isAssocArray(name)) exec.expander().tryEvalArith(subscript, index);
+		exec.env().unsetElement(name, index, subscript);
 		return true;
 	}
 
 	static int builtin_unset(Executor& exec, const std::vector<std::string>& args) {
-		for (const auto& a : args) {
-			if (!unsetArrayElement(exec, a)) exec.env().unset(a);
+		for (const std::string& arg : args) {
+			if (!unsetArrayElement(exec, arg)) exec.env().unset(arg);
 		}
 
 		return 0;
 	}
 
 	static int builtin_shift(Executor& exec, const std::vector<std::string>& args) {
-		int n = firstArgAsInt(args, 1);
-		auto pos = exec.env().positional();
-		if (n < 0 || static_cast<std::size_t>(n) > pos.size()) return 1;
-		pos.erase(pos.begin(), pos.begin() + n);
-		exec.env().setPositional(std::move(pos));
+		const int count = firstArgAsInt(args, 1);
+		std::vector<std::string> positional = exec.env().positional();
+		if (count < 0 || static_cast<std::size_t>(count) > positional.size()) return 1;
+
+		positional.erase(positional.begin(), positional.begin() + count);
+		exec.env().setPositional(std::move(positional));
 		return 0;
 	}
 
 	static int dumpAllShellVars(Executor& exec) {
-		std::vector<std::pair<std::string, std::string>> v(
-			exec.env().vars().begin(), exec.env().vars().end());
-		std::sort(v.begin(), v.end());
-		for (const auto& kv : v) std::printf("%s=%s\n", kv.first.c_str(), kv.second.c_str());
+		for (const auto& entry : sortedEntries(exec.env().vars())) {
+			std::printf("%s=%s\n", entry.first.c_str(), entry.second.c_str());
+		}
+
 		return 0;
 	}
 
@@ -452,94 +557,138 @@ namespace wbsh {
 		return false;
 	}
 
+	static int applyLongSetArg(Executor& exec, const std::vector<std::string>& args,
+			std::size_t& i, bool on) {
+		if (i + 1 >= args.size()) {
+			++i;
+			return 0;
+		}
+
+		const std::string& name = args[i + 1];
+		if (!applyLongSetOption(exec.env(), name, on)) {
+			std::fprintf(stderr, "wbsh: set: unknown option: %s\n", name.c_str());
+			return 2;
+		}
+
+		i += 2;
+		return 0;
+	}
+
 	static int parseSetFlags(Executor& exec, const std::vector<std::string>& args,
-	                         std::size_t* out_idx, bool* out_consumed) {
+			std::size_t& out_index, bool& out_consumed) {
 		std::size_t i = 0;
 		bool consumed = false;
 		while (i < args.size()) {
-			const std::string& a = args[i];
-			if (a == "--" || a == "-") { ++i; consumed = true; break; }
-			if (a.empty() || (a[0] != '-' && a[0] != '+')) break;
+			const std::string& arg = args[i];
+			if (arg == "--" || arg == "-") {
+				++i;
+				consumed = true;
+				break;
+			}
 
-			const bool on = (a[0] == '-');
-			if (a.size() > 1 && a[1] == 'o') {
-				if (i + 1 < args.size()) {
-					if (!applyLongSetOption(exec.env(), args[i + 1], on)) {
-						std::fprintf(stderr, "wbsh: set: unknown option: %s\n",
-							args[i + 1].c_str());
-						return 2;
-					}
+			if (arg.empty() || (arg[0] != '-' && arg[0] != '+')) break;
 
-					i += 2;
-				} else {
-					++i;
-				}
+			const bool on = arg[0] == '-';
+			if (arg.size() > 1 && arg[1] == 'o') {
+				const int status = applyLongSetArg(exec, args, i, on);
+				if (status != 0) return status;
 
 				consumed = true;
 				continue;
 			}
 
-			for (std::size_t k = 1; k < a.size(); ++k) {
-				applyShortSetFlag(exec.env(), a[k], on);
-			}
-
+			for (std::size_t k = 1; k < arg.size(); ++k) applyShortSetFlag(exec.env(), arg[k], on);
 			++i;
 			consumed = true;
 		}
-		*out_idx = i;
-		*out_consumed = consumed;
+
+		out_index = i;
+		out_consumed = consumed;
 		return 0;
 	}
 
 	static int builtin_set(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) return dumpAllShellVars(exec);
 
-		std::size_t i = 0;
+		std::size_t first = 0;
 		bool consumed_flags = false;
-		const int rc = parseSetFlags(exec, args, &i, &consumed_flags);
-		if (rc != 0) return rc;
+		const int status = parseSetFlags(exec, args, first, consumed_flags);
+		if (status != 0) return status;
 
-		if (i < args.size() || !consumed_flags) {
-			std::vector<std::string> pos(args.begin() + i, args.end());
-			exec.env().setPositional(std::move(pos));
+		if (first < args.size() || !consumed_flags) {
+			std::vector<std::string> positional(args.begin() + first, args.end());
+			exec.env().setPositional(std::move(positional));
 		}
 
 		return 0;
 	}
 
-	static int builtin_exec(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) return 0;
-		std::vector<std::string> argv = args;
-		std::string cmd = argv[0];
-		argv.erase(argv.begin());
-		if (exec.isBuiltin(cmd)) return exec.callBuiltin(cmd, argv);
-		if (exec.isFunction(cmd)) return exec.callFunction(cmd, argv);
-		std::string joined;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			if (i) joined.push_back(' ');
-			joined.push_back('\'');
-			for (char c : args[i]) {
-				if (c == '\'') joined += "'\\''";
-				else joined.push_back(c);
+	static std::string quoteSingle(const std::string& word) {
+		std::string quoted = "'";
+		for (const char c : word) {
+			if (c == '\'') {
+				quoted += "'\\''";
+				continue;
 			}
 
-			joined.push_back('\'');
+			quoted.push_back(c);
 		}
 
-		int rc = exec.executeText(joined, "<exec>");
-		if (!exec.flowPending()) exec.raiseExit(rc);
-		return rc;
+		quoted.push_back('\'');
+		return quoted;
+	}
+
+	static std::string quoteDouble(const std::string& word) {
+		std::string quoted = "\"";
+		for (const char c : word) {
+			if (c == '"' || c == '\\' || c == '$' || c == '`') quoted.push_back('\\');
+			quoted.push_back(c);
+		}
+
+		quoted.push_back('"');
+		return quoted;
+	}
+
+	static std::string joinQuoted(const std::vector<std::string>& words,
+			std::string (*quote)(const std::string&)) {
+		std::string joined;
+		for (std::size_t i = 0; i < words.size(); ++i) {
+			if (i != 0) joined.push_back(' ');
+			joined += quote(words[i]);
+		}
+
+		return joined;
+	}
+
+	static int builtin_exec(Executor& exec, const std::vector<std::string>& args) {
+		if (args.empty()) return 0;
+
+		const std::string command = args[0];
+		const std::vector<std::string> rest(args.begin() + 1, args.end());
+		if (exec.isBuiltin(command)) return exec.callBuiltin(command, rest);
+		if (exec.isFunction(command)) return exec.callFunction(command, rest);
+
+		const int status = exec.executeText(joinQuoted(args, quoteSingle), "<exec>");
+		if (!exec.flowPending()) exec.raiseExit(status);
+		return status;
 	}
 
 	static int builtin_eval(Executor& exec, const std::vector<std::string>& args) {
-		std::string joined;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			if (i) joined.push_back(' ');
-			joined += args[i];
-		}
-
+		const std::string joined = joinWithSpaces(args.begin(), args.end());
 		if (joined.empty()) return 0;
+
 		return exec.executeText(joined, "eval");
+	}
+
+	static bool readScriptFile(const std::filesystem::path& path, std::string& out_body) {
+		std::ifstream file(path, std::ios::binary);
+		if (!file) return false;
+
+		std::stringstream buffer;
+		buffer << file.rdbuf();
+		out_body = buffer.str();
+		normalizeCrlf(out_body);
+		return true;
 	}
 
 	static int builtin_source(Executor& exec, const std::vector<std::string>& args) {
@@ -548,512 +697,511 @@ namespace wbsh {
 			return 2;
 		}
 
-		std::filesystem::path p = utf8ToPath(exec.pathConv().toWin32(args[0]));
-		std::ifstream f(p, std::ios::binary);
-		if (!f) {
-			std::fprintf(stderr, "wbsh: source: %s: %s\n",
-				args[0].c_str(), std::strerror(errno));
+		std::string body;
+		const std::filesystem::path path = utf8ToPath(exec.pathConv().toWin32(args[0]));
+		if (!readScriptFile(path, body)) {
+			std::fprintf(stderr, "wbsh: source: %s: %s\n", args[0].c_str(), std::strerror(errno));
 			return 1;
 		}
 
-		std::stringstream ss;
-		ss << f.rdbuf();
-		std::string body = ss.str();
-		normalizeCrlf(body);
-		auto saved = exec.env().positional();
-		if (args.size() > 1) {
-			exec.env().setPositional({ args.begin() + 1, args.end() });
+		std::vector<std::string> saved = exec.env().positional();
+		if (args.size() > 1) exec.env().setPositional({ args.begin() + 1, args.end() });
+
+		int status = exec.executeText(body, args[0]);
+		exec.consumeFlow(FlowSignal::Kind::Return, &status);
+		exec.env().setPositional(std::move(saved));
+		return status;
+	}
+
+	static bool printCommandType(Executor& exec, const std::string& name) {
+		if (exec.isFunction(name)) {
+			std::printf("%s is a function\n", name.c_str());
+			return true;
 		}
 
-		int r = exec.executeText(body, args[0]);
-		exec.consumeFlow(FlowSignal::Kind::Return, &r);
-		exec.env().setPositional(std::move(saved));
-		return r;
+		if (exec.isBuiltin(name)) {
+			std::printf("%s is a shell builtin\n", name.c_str());
+			return true;
+		}
+
+		const std::string found = exec.findExecutable(name);
+		if (found.empty()) {
+			std::fprintf(stderr, "wbsh: type: %s: not found\n", name.c_str());
+			return false;
+		}
+
+		std::printf("%s is %s\n", name.c_str(), found.c_str());
+		return true;
 	}
 
 	static int builtin_type(Executor& exec, const std::vector<std::string>& args) {
-		int rc = 0;
-		for (const auto& a : args) {
-			if (exec.isFunction(a)) {
-				std::printf("%s is a function\n", a.c_str());
-			} else if (exec.isBuiltin(a)) {
-				std::printf("%s is a shell builtin\n", a.c_str());
-			} else {
-				std::string found = exec.findExecutable(a);
-				if (!found.empty()) {
-					std::printf("%s is %s\n", a.c_str(), found.c_str());
-				} else {
-					std::fprintf(stderr, "wbsh: type: %s: not found\n", a.c_str());
-					rc = 1;
-				}
-			}
+		int status = 0;
+		for (const std::string& name : args) {
+			if (!printCommandType(exec, name)) status = 1;
 		}
 
-		return rc;
+		return status;
+	}
+
+	static std::size_t parseCommandFlags(const std::vector<std::string>& args, bool& describe) {
+		std::size_t i = 0;
+		while (i < args.size() && !args[i].empty() && args[i][0] == '-') {
+			const std::string& flag = args[i];
+			if (flag == "--") return i + 1;
+			if (flag != "-v" && flag != "-V") break;
+
+			describe = true;
+			++i;
+		}
+
+		return i;
 	}
 
 	static int builtin_command(Executor& exec, const std::vector<std::string>& args) {
-		std::size_t i = 0;
-		bool show_path = false;
-		bool show_verbose = false;
-		while (i < args.size() && !args[i].empty() && args[i][0] == '-') {
-			const std::string& f = args[i];
-			if (f == "--") { ++i; break; }
-			if (f == "-v") { show_path = true; ++i; continue; }
-			if (f == "-V") { show_verbose = true; ++i; continue; }
-			break;
-		}
+		bool describe = false;
+		const std::size_t first = parseCommandFlags(args, describe);
+		if (first >= args.size()) return 0;
 
-		if (i >= args.size()) return 0;
-		if (show_path || show_verbose) {
-			std::vector<std::string> rest(args.begin() + i, args.end());
-			return builtin_type(exec, rest);
-		}
+		const std::vector<std::string> rest(args.begin() + first, args.end());
+		if (describe) return builtin_type(exec, rest);
 
-		std::vector<std::string> rest(args.begin() + i, args.end());
 		if (exec.isBuiltin(rest[0])) {
-			std::vector<std::string> sub(rest.begin() + 1, rest.end());
+			const std::vector<std::string> sub(rest.begin() + 1, rest.end());
 			return exec.callBuiltin(rest[0], sub);
 		}
 
-		std::string joined;
-		for (std::size_t k = 0; k < rest.size(); ++k) {
-			if (k) joined.push_back(' ');
-			joined.push_back('"');
-			for (char c : rest[k]) {
-				if (c == '"' || c == '\\' || c == '$' || c == '`') joined.push_back('\\');
-				joined.push_back(c);
-			}
-
-			joined.push_back('"');
-		}
-
-		return exec.executeText(joined, "command");
+		return exec.executeText(joinQuoted(rest, quoteDouble), "command");
 	}
 
+	namespace read_detail {
+		struct ReadOptions {
+			bool raw = false;
+			std::string prompt;
+			std::string array_name;
+		};
+	}  // namespace read_detail
+
 	static std::size_t parseReadFlags(const std::vector<std::string>& args,
-	                                  bool* out_raw, std::string* out_prompt,
-	                                  std::string* out_array_name) {
-		*out_raw = false;
-		out_prompt->clear();
-		out_array_name->clear();
+			read_detail::ReadOptions& options) {
 		std::size_t i = 0;
 		while (i < args.size() && !args[i].empty() && args[i][0] == '-') {
-			const std::string& f = args[i];
-			if (f == "--") { ++i; break; }
-			if (f == "-r") { *out_raw = true; ++i; continue; }
-			if (f == "-p") {
-				if (i + 1 < args.size()) { *out_prompt = args[i + 1]; i += 2; continue; }
+			const std::string& flag = args[i];
+			if (flag == "--") return i + 1;
+			if (flag == "-r") {
+				options.raw = true;
 				++i;
 				continue;
 			}
 
-			if (f == "-a") {
-				if (i + 1 < args.size()) {
-					*out_array_name = args[i + 1];
-					i += 2;
-					continue;
-				}
+			if (flag != "-p" && flag != "-a") break;
 
-				++i;
-				continue;
-			}
-			break;
+			const bool has_value = i + 1 < args.size();
+			if (has_value && flag == "-p") options.prompt = args[i + 1];
+			if (has_value && flag == "-a") options.array_name = args[i + 1];
+			i += has_value ? 2 : 1;
 		}
 
 		return i;
 	}
 
 	static bool readOneLineFromStdin(bool raw, std::string& line) {
-		while (true) {
-			const int c = std::fgetc(stdin);
-			if (c == EOF) {
-				return !line.empty();
-			}
+		for (;;) {
+			const int ch = std::fgetc(stdin);
+			if (ch == EOF) return !line.empty();
+			if (ch == '\n') return true;
 
-			if (c == '\n') return true;
-			if (!raw && c == '\\') {
-				const int n = std::fgetc(stdin);
-				if (n == EOF) return true;
-				if (n == '\n') continue;
-				line.push_back(static_cast<char>(n));
+			if (!raw && ch == '\\') {
+				const int next = std::fgetc(stdin);
+				if (next == EOF) return true;
+				if (next == '\n') continue;
+
+				line.push_back(static_cast<char>(next));
 				continue;
 			}
 
-			line.push_back(static_cast<char>(c));
+			line.push_back(static_cast<char>(ch));
 		}
 	}
 
-	static std::vector<std::string> splitReadLine(const std::string& line,
-	                                              const std::string& ifs) {
-		auto is_ifs_ws = [&](char c) {
-			return (c == ' ' || c == '\t' || c == '\n')
-			       && ifs.find(c) != std::string::npos;
-		};
-		auto is_ifs = [&](char c) { return ifs.find(c) != std::string::npos; };
+	static bool isIfsChar(char c, const std::string& ifs) {
+		return ifs.find(c) != std::string::npos;
+	}
 
+	static bool isIfsWhitespace(char c, const std::string& ifs) {
+		return (c == ' ' || c == '\t' || c == '\n') && isIfsChar(c, ifs);
+	}
+
+	// One non-whitespace IFS character ends a field on its own; the IFS
+	// whitespace around it is swallowed with it, as in bash.
+	static void skipFieldSeparator(const std::string& line, std::size_t& pos,
+			const std::string& ifs) {
+		bool saw_nonws = false;
+		while (pos < line.size() && isIfsChar(line[pos], ifs)) {
+			if (!isIfsWhitespace(line[pos], ifs)) {
+				if (saw_nonws) break;
+				saw_nonws = true;
+			}
+
+			++pos;
+		}
+	}
+
+	static std::vector<std::string> splitReadLine(const std::string& line, const std::string& ifs) {
 		std::vector<std::string> fields;
 		std::size_t pos = 0;
-		while (pos < line.size() && is_ifs_ws(line[pos])) ++pos;
-		while (pos < line.size()) {
-			std::string cur;
-			while (pos < line.size() && !is_ifs(line[pos]))
-				cur.push_back(line[pos++]);
-			fields.push_back(std::move(cur));
-			bool saw_nonws = false;
-			while (pos < line.size() && is_ifs(line[pos])) {
-				if (!is_ifs_ws(line[pos])) {
-					if (saw_nonws) break;
-					saw_nonws = true;
-				}
+		while (pos < line.size() && isIfsWhitespace(line[pos], ifs)) ++pos;
 
-				++pos;
-			}
+		while (pos < line.size()) {
+			std::string field;
+			while (pos < line.size() && !isIfsChar(line[pos], ifs)) field.push_back(line[pos++]);
+			fields.push_back(std::move(field));
+
+			skipFieldSeparator(line, pos, ifs);
 		}
 
 		return fields;
 	}
 
-	static void assignReadFields(Environment& env,
-	                             const std::vector<std::string>& names,
-	                             const std::vector<std::string>& fields) {
+	static void assignReadFields(Environment& env, const std::vector<std::string>& names,
+			const std::vector<std::string>& fields) {
 		for (std::size_t k = 0; k < names.size(); ++k) {
-			std::string val;
-			if (k + 1 == names.size()) {
-				for (std::size_t m = k; m < fields.size(); ++m) {
-					if (m > k) val.push_back(' ');
-					val += fields[m];
-				}
-			} else if (k < fields.size()) {
-				val = fields[k];
+			const bool last_name = k + 1 == names.size();
+
+			std::string value;
+			if (k < fields.size()) {
+				value = last_name ? joinWithSpaces(fields.begin() + k, fields.end()) : fields[k];
 			}
 
-			env.set(names[k], val);
+			env.set(names[k], value);
 		}
 	}
 
 	static int builtin_read(Executor& exec, const std::vector<std::string>& args) {
-		bool raw = false;
-		std::string prompt;
-		std::string array_name;
-		const std::size_t i = parseReadFlags(args, &raw, &prompt, &array_name);
+		read_detail::ReadOptions options;
+		const std::size_t first_name = parseReadFlags(args, options);
 
-		if (!prompt.empty()) {
-			std::fwrite(prompt.data(), 1, prompt.size(), stderr);
+		if (!options.prompt.empty()) {
+			std::fwrite(options.prompt.data(), 1, options.prompt.size(), stderr);
 			std::fflush(stderr);
 		}
 
 		std::string line;
-		if (!readOneLineFromStdin(raw, line)) return 1;
+		if (!readOneLineFromStdin(options.raw, line)) return 1;
 
 		std::string ifs = exec.env().get("IFS");
-		if (ifs.empty()) ifs = " \t\n";
+		if (ifs.empty()) ifs = kDefaultIfs;
+		std::vector<std::string> fields = splitReadLine(line, ifs);
 
-		auto fields = splitReadLine(line, ifs);
-
-		if (!array_name.empty()) {
-			exec.env().setIndexedArrayFromList(array_name, std::move(fields));
+		if (!options.array_name.empty()) {
+			exec.env().setIndexedArrayFromList(options.array_name, std::move(fields));
 			return 0;
 		}
 
-		std::vector<std::string> names(args.begin() + i, args.end());
+		std::vector<std::string> names(args.begin() + first_name, args.end());
 		if (names.empty()) names.push_back("REPLY");
 		assignReadFields(exec.env(), names, fields);
 		return 0;
 	}
 
-	static bool fileStat(const std::string& path, struct stat& st) {
-		return ::stat(path.c_str(), &st) == 0;
-	}
-
 	static int evalUnaryFileTest(char op, const std::string& raw_path, const PathConv& pc) {
-		std::string path = pc.toWin32(raw_path);
-		struct stat st {};
-		bool ok = fileStat(path, st);
+		const std::string path = pc.toWin32(raw_path);
+		struct stat info {};
+		const bool exists = ::stat(path.c_str(), &info) == 0;
 		switch (op) {
-		case 'e': return ok ? 0 : 1;
-		case 'f': return (ok && (st.st_mode & S_IFMT) == S_IFREG) ? 0 : 1;
-		case 'd': return (ok && (st.st_mode & S_IFMT) == S_IFDIR) ? 0 : 1;
-		case 's': return (ok && st.st_size > 0) ? 0 : 1;
-		case 'r': return (ok && (st.st_mode & 0444)) ? 0 : 1;
-		case 'w': return (ok && (st.st_mode & 0222)) ? 0 : 1;
-		case 'x': return (ok && (st.st_mode & 0111)) ? 0 : 1;
+		case 'e': return exists ? 0 : 1;
+		case 'f': return (exists && (info.st_mode & S_IFMT) == S_IFREG) ? 0 : 1;
+		case 'd': return (exists && (info.st_mode & S_IFMT) == S_IFDIR) ? 0 : 1;
+		case 's': return (exists && info.st_size > 0) ? 0 : 1;
+		case 'r': return (exists && (info.st_mode & 0444) != 0) ? 0 : 1;
+		case 'w': return (exists && (info.st_mode & 0222) != 0) ? 0 : 1;
+		case 'x': return (exists && (info.st_mode & 0111) != 0) ? 0 : 1;
 		default:  return 2;
 		}
 	}
 
-	static int evalTest(const std::vector<std::string>& a, const PathConv& pc) {
-		if (a.empty()) return 1;
+	static int evalUnaryTest(const std::vector<std::string>& args, const PathConv& pc) {
+		if (args[0].size() != 2 || args[0][0] != '-') return 2;
 
-		if (a[0] == "!" && a.size() > 1) {
-			std::vector<std::string> rest(a.begin() + 1, a.end());
-			int r = evalTest(rest, pc);
-			if (r == 2) return 2;
-			return r == 0 ? 1 : 0;
-		}
+		const char op = args[0][1];
+		if (op == 'z') return args[1].empty() ? 0 : 1;
+		if (op == 'n') return args[1].empty() ? 1 : 0;
+		return evalUnaryFileTest(op, args[1], pc);
+	}
 
-		auto evalOne = [&](const std::string& s) {
-			return s.empty() ? 1 : 0;
-		};
-		auto strNum = [&](const std::string& s, bool& ok) -> long long {
-			return toIntSafe(s, ok);
-		};
-
-		if (a.size() == 1) return evalOne(a[0]);
-
-		if (a.size() == 2) {
-			if (a[0].size() == 2 && a[0][0] == '-') {
-				char op = a[0][1];
-				if (op == 'z') return a[1].empty() ? 0 : 1;
-				if (op == 'n') return a[1].empty() ? 1 : 0;
-				return evalUnaryFileTest(op, a[1], pc);
-			}
-
-			return 2;
-		}
-
-		if (a.size() == 3) {
-			const std::string& l = a[0]; const std::string& op = a[1]; const std::string& r = a[2];
-			if (op == "=" || op == "==") return l == r ? 0 : 1;
-			if (op == "!=")              return l != r ? 0 : 1;
-			if (op == "<")               return l < r  ? 0 : 1;
-			if (op == ">")               return l > r  ? 0 : 1;
-			bool okL, okR;
-			long long li = strNum(l, okL); long long ri = strNum(r, okR);
-			if (okL && okR) {
-				if (op == "-eq") return li == ri ? 0 : 1;
-				if (op == "-ne") return li != ri ? 0 : 1;
-				if (op == "-lt") return li <  ri ? 0 : 1;
-				if (op == "-le") return li <= ri ? 0 : 1;
-				if (op == "-gt") return li >  ri ? 0 : 1;
-				if (op == "-ge") return li >= ri ? 0 : 1;
-			}
-
-			return 2;
-		}
-
+	static int evalNumericTest(const std::string& op, long long left, long long right) {
+		if (op == "-eq") return left == right ? 0 : 1;
+		if (op == "-ne") return left != right ? 0 : 1;
+		if (op == "-lt") return left <  right ? 0 : 1;
+		if (op == "-le") return left <= right ? 0 : 1;
+		if (op == "-gt") return left >  right ? 0 : 1;
+		if (op == "-ge") return left >= right ? 0 : 1;
 		return 2;
+	}
+
+	static int evalBinaryTest(const std::vector<std::string>& args) {
+		const std::string& left  = args[0];
+		const std::string& op    = args[1];
+		const std::string& right = args[2];
+		if (op == "=" || op == "==") return left == right ? 0 : 1;
+		if (op == "!=")              return left != right ? 0 : 1;
+		if (op == "<")               return left <  right ? 0 : 1;
+		if (op == ">")               return left >  right ? 0 : 1;
+
+		bool left_ok = false;
+		bool right_ok = false;
+		const long long left_value  = toIntSafe(left, left_ok);
+		const long long right_value = toIntSafe(right, right_ok);
+		if (!left_ok || !right_ok) return 2;
+
+		return evalNumericTest(op, left_value, right_value);
+	}
+
+	static int evalTest(const std::vector<std::string>& args, const PathConv& pc) {
+		if (args.empty()) return 1;
+
+		if (args[0] == "!" && args.size() > 1) {
+			const std::vector<std::string> rest(args.begin() + 1, args.end());
+			const int result = evalTest(rest, pc);
+			if (result == 2) return 2;
+			return result == 0 ? 1 : 0;
+		}
+
+		switch (args.size()) {
+		case 1:  return args[0].empty() ? 1 : 0;
+		case 2:  return evalUnaryTest(args, pc);
+		case 3:  return evalBinaryTest(args);
+		default: return 2;
+		}
 	}
 
 	static int builtin_test(Executor& exec, const std::vector<std::string>& args) {
 		return evalTest(args, exec.pathConv());
 	}
 
-	static void printDeclareEntry(Executor& exec, const std::string& n) {
-		if (auto* ia = exec.env().getIndexedArray(n)) {
-			std::printf("declare -a %s=(", n.c_str());
-			bool first = true;
-			for (const auto& kv : *ia) {
-				if (!first) std::printf(" ");
-				std::printf("[%lld]=\"%s\"", kv.first, kv.second.c_str());
-				first = false;
-			}
-
-			std::printf(")\n");
-			return;
+	static void printIndexedArrayEntry(const std::string& name,
+			const Environment::IndexedArray& array) {
+		std::printf("declare -a %s=(", name.c_str());
+		bool first = true;
+		for (const auto& element : array) {
+			if (!first) std::printf(" ");
+			std::printf("[%lld]=\"%s\"", element.first, element.second.c_str());
+			first = false;
 		}
 
-		if (auto* aa = exec.env().getAssocArray(n)) {
-			std::printf("declare -A %s=(", n.c_str());
-			bool first = true;
-			for (const auto& kv : *aa) {
-				if (!first) std::printf(" ");
-				std::printf("[\"%s\"]=\"%s\"",
-					kv.first.c_str(), kv.second.c_str());
-				first = false;
-			}
-
-			std::printf(")\n");
-			return;
-		}
-
-		std::string attrs;
-		if (exec.env().isExported(n)) attrs += "x";
-		if (exec.env().isReadonly(n)) attrs += "r";
-		if (attrs.empty()) attrs = "-";
-		else attrs.insert(0, "-");
-		std::printf("declare %s %s=\"%s\"\n",
-			attrs.c_str(), n.c_str(), exec.env().get(n).c_str());
+		std::printf(")\n");
 	}
 
-	namespace declare_internal {
+	static void printAssocArrayEntry(const std::string& name,
+			const Environment::AssocArray& array) {
+		std::printf("declare -A %s=(", name.c_str());
+		bool first = true;
+		for (const auto& element : array) {
+			if (!first) std::printf(" ");
+			std::printf("[\"%s\"]=\"%s\"", element.first.c_str(), element.second.c_str());
+			first = false;
+		}
+
+		std::printf(")\n");
+	}
+
+	static std::string declareAttributes(const Environment& env, const std::string& name) {
+		std::string attributes = "-";
+		if (env.isExported(name)) attributes += "x";
+		if (env.isReadonly(name)) attributes += "r";
+		return attributes;
+	}
+
+	static void printDeclareEntry(Executor& exec, const std::string& name) {
+		const Environment& env = exec.env();
+		if (const auto* indexed = env.getIndexedArray(name)) {
+			printIndexedArrayEntry(name, *indexed);
+			return;
+		}
+
+		if (const auto* assoc = env.getAssocArray(name)) {
+			printAssocArrayEntry(name, *assoc);
+			return;
+		}
+
+		std::printf("declare %s %s=\"%s\"\n", declareAttributes(env, name).c_str(), name.c_str(),
+			env.get(name).c_str());
+	}
+
+	namespace declare_detail {
 		struct DeclareFlags {
-			bool x = false;
-			bool r = false;
-			bool p = false;
-			bool a = false;
-			bool A = false;
+			bool export_it     = false;
+			bool readonly      = false;
+			bool print_only    = false;
+			bool indexed_array = false;
+			bool assoc_array   = false;
 		};
-	}  // namespace declare_internal
+	}  // namespace declare_detail
+
+	static void applyDeclareFlagChars(const std::string& arg, declare_detail::DeclareFlags& flags) {
+		for (std::size_t k = 1; k < arg.size(); ++k) {
+			switch (arg[k]) {
+			case 'x': flags.export_it     = true; break;
+			case 'r': flags.readonly      = true; break;
+			case 'p': flags.print_only    = true; break;
+			case 'a': flags.indexed_array = true; break;
+			case 'A': flags.assoc_array   = true; break;
+			default: break;
+			}
+		}
+	}
 
 	static void parseDeclareFlags(const std::vector<std::string>& args,
-	                              declare_internal::DeclareFlags& f,
-	                              std::vector<std::string>& names) {
-		for (const auto& a : args) {
-			if (a == "--") continue;
-			if (!a.empty() && a[0] == '-') {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					switch (a[k]) {
-					case 'x': f.x = true; break;
-					case 'r': f.r = true; break;
-					case 'p': f.p = true; break;
-					case 'a': f.a = true; break;
-					case 'A': f.A = true; break;
-					default: break;
-					}
-				}
+			declare_detail::DeclareFlags& flags, std::vector<std::string>& names) {
+		for (const std::string& arg : args) {
+			if (arg == "--") continue;
+
+			if (!arg.empty() && arg[0] == '-') {
+				applyDeclareFlagChars(arg, flags);
 				continue;
 			}
 
-			names.push_back(a);
+			names.push_back(arg);
 		}
 	}
 
 	static int dumpAllDeclareEntries(Executor& exec) {
-		std::vector<std::pair<std::string, std::string>> v(
-			exec.env().vars().begin(), exec.env().vars().end());
-		std::sort(v.begin(), v.end());
-		for (const auto& kv : v) printDeclareEntry(exec, kv.first);
+		for (const auto& entry : sortedEntries(exec.env().vars())) {
+			printDeclareEntry(exec, entry.first);
+		}
 
-		std::vector<std::string> array_names;
-		for (const auto& kv : exec.env().indexedArrays()) array_names.push_back(kv.first);
-		for (const auto& kv : exec.env().assocArrays())   array_names.push_back(kv.first);
+		std::vector<std::string> array_names = keysOf(exec.env().indexedArrays());
+		const std::vector<std::string> assoc_names = keysOf(exec.env().assocArrays());
+		array_names.insert(array_names.end(), assoc_names.begin(), assoc_names.end());
 		std::sort(array_names.begin(), array_names.end());
-		for (const auto& n : array_names) printDeclareEntry(exec, n);
+		for (const std::string& name : array_names) printDeclareEntry(exec, name);
 		return 0;
 	}
 
-	static int printDeclareNamedEntries(Executor& exec,
-	                                    const std::vector<std::string>& names) {
-		int rc = 0;
-		for (const auto& nv : names) {
-			const auto eq = nv.find('=');
-			const std::string n = (eq == std::string::npos) ? nv : nv.substr(0, eq);
-			if (!exec.env().has(n)) {
-				std::fprintf(stderr, "wbsh: declare: %s: not found\n", n.c_str());
-				rc = 1;
+	static int printDeclareNamedEntries(Executor& exec, const std::vector<std::string>& specs) {
+		int status = 0;
+		for (const std::string& spec : specs) {
+			const std::string name = spec.substr(0, spec.find('='));
+			if (!exec.env().has(name)) {
+				std::fprintf(stderr, "wbsh: declare: %s: not found\n", name.c_str());
+				status = 1;
 				continue;
 			}
 
-			printDeclareEntry(exec, n);
+			printDeclareEntry(exec, name);
 		}
 
-		return rc;
+		return status;
 	}
 
-	static void applyDeclareToName(Executor& exec,
-	                               const declare_internal::DeclareFlags& f,
-	                               const std::string& nv) {
-		const auto eq = nv.find('=');
-		const std::string n = (eq == std::string::npos) ? nv : nv.substr(0, eq);
+	static void applyDeclareToName(Executor& exec, const declare_detail::DeclareFlags& flags,
+			const std::string& spec) {
+		std::string name;
+		std::string value;
+		const bool has_value = splitAssignment(spec, name, value);
 
-		if (f.A && eq == std::string::npos) {
-			exec.env().declareAssocArray(n);
-		} else if (f.a && eq == std::string::npos) {
-			exec.env().setIndexedArrayFromList(n, {});
-		} else if (eq != std::string::npos) {
-			exec.env().set(n, nv.substr(eq + 1));
+		if (flags.assoc_array && !has_value) {
+			exec.env().declareAssocArray(name);
+		} else if (flags.indexed_array && !has_value) {
+			exec.env().setIndexedArrayFromList(name, {});
+		} else if (has_value) {
+			exec.env().set(name, value);
 		}
 
-		if (f.x) exec.env().exportVar(n);
-		if (f.r) exec.env().markReadonly(n);
+		if (flags.export_it) exec.env().exportVar(name);
+		if (flags.readonly) exec.env().markReadonly(name);
 	}
 
 	static int builtin_declare(Executor& exec, const std::vector<std::string>& args) {
-		declare_internal::DeclareFlags f;
+		declare_detail::DeclareFlags flags;
 		std::vector<std::string> names;
-		parseDeclareFlags(args, f, names);
+		parseDeclareFlags(args, flags, names);
 
-		if (names.empty()) return dumpAllDeclareEntries(exec);
-		if (f.p)            return printDeclareNamedEntries(exec, names);
+		if (names.empty())     return dumpAllDeclareEntries(exec);
+		if (flags.print_only)  return printDeclareNamedEntries(exec, names);
 
-		for (const auto& nv : names) applyDeclareToName(exec, f, nv);
+		for (const std::string& spec : names) applyDeclareToName(exec, flags, spec);
 		return 0;
 	}
 
-	struct ShoptFlag {
-		const char* name;
-		bool (Environment::*get)() const;
-		void (Environment::*set)(bool);
-	};
-	const ShoptFlag* shoptTable() {
-		static const ShoptFlag kFlags[] = {
-			{ "nullglob",      &Environment::nullglob,      &Environment::setNullglob },
-			{ "dotglob",       &Environment::dotglob,       &Environment::setDotglob },
-			{ "extglob",       &Environment::extglob,       &Environment::setExtglob },
-			{ "nocaseglob",    &Environment::nocaseglob,    &Environment::setNocaseglob },
-			{ "nocasematch",   &Environment::nocasematch,   &Environment::setNocasematch },
-			{ "globstar",      &Environment::globstar,      &Environment::setGlobstar },
-			{ "lastpipe",      &Environment::lastpipe,      &Environment::setLastpipe },
-			{ "huponexit",     &Environment::huponexit,     &Environment::setHuponexit },
-			{ "expand_aliases",&Environment::expand_aliases,&Environment::setExpandAliases },
-			{ "autocd",        &Environment::autocd,        &Environment::setAutocd },
-			{ "checkwinsize",  &Environment::checkwinsize,  &Environment::setCheckwinsize },
-			{ nullptr, nullptr, nullptr },
+	namespace shopt_detail {
+		struct ShoptFlag {
+			const char* name;
+			bool (Environment::*get)() const;
+			void (Environment::*set)(bool);
 		};
-		return kFlags;
-	}
 
-	namespace shopt_internal {
 		enum class Mode { ListAll, Set, Unset, Query };
-	}
+	}  // namespace shopt_detail
 
-	static const ShoptFlag* findShoptFlag(const std::string& name) {
-		for (const ShoptFlag* p = shoptTable(); p->name; ++p) {
-			if (name == p->name) return p;
+	static const shopt_detail::ShoptFlag kShoptFlags[] = {
+		{ "nullglob",       &Environment::nullglob,       &Environment::setNullglob },
+		{ "dotglob",        &Environment::dotglob,        &Environment::setDotglob },
+		{ "extglob",        &Environment::extglob,        &Environment::setExtglob },
+		{ "nocaseglob",     &Environment::nocaseglob,     &Environment::setNocaseglob },
+		{ "nocasematch",    &Environment::nocasematch,    &Environment::setNocasematch },
+		{ "globstar",       &Environment::globstar,       &Environment::setGlobstar },
+		{ "lastpipe",       &Environment::lastpipe,       &Environment::setLastpipe },
+		{ "huponexit",      &Environment::huponexit,      &Environment::setHuponexit },
+		{ "expand_aliases", &Environment::expand_aliases, &Environment::setExpandAliases },
+		{ "autocd",         &Environment::autocd,         &Environment::setAutocd },
+		{ "checkwinsize",   &Environment::checkwinsize,   &Environment::setCheckwinsize },
+	};
+
+	static const shopt_detail::ShoptFlag* findShoptFlag(const std::string& name) {
+		for (const shopt_detail::ShoptFlag& flag : kShoptFlags) {
+			if (name == flag.name) return &flag;
 		}
 
 		return nullptr;
 	}
 
-	static void printShoptFlag(const Environment& env, const ShoptFlag* f) {
-		const bool on = (env.*(f->get))();
-		std::printf("%-15s %s\n", f->name, on ? "on" : "off");
+	static void printShoptFlag(const Environment& env, const shopt_detail::ShoptFlag& flag) {
+		const bool on = (env.*(flag.get))();
+		std::printf("%-15s %s\n", flag.name, on ? "on" : "off");
 	}
 
-	static bool parseShoptArgs(const std::vector<std::string>& args,
-	                           shopt_internal::Mode& mode,
-	                           std::vector<std::string>& names) {
-		using shopt_internal::Mode;
-		for (const auto& a : args) {
-			if (a == "-s") { mode = Mode::Set;   continue; }
-			if (a == "-u") { mode = Mode::Unset; continue; }
-			if (a == "-q") { mode = Mode::Query; continue; }
-			if (a == "-p") { /* printable form: same as default list */ continue; }
-			if (a == "--") continue;
-			if (!a.empty() && a[0] == '-') {
-				std::fprintf(stderr, "wbsh: shopt: unknown option: %s\n", a.c_str());
+	static bool parseShoptArgs(const std::vector<std::string>& args, shopt_detail::Mode& mode,
+			std::vector<std::string>& names) {
+		using shopt_detail::Mode;
+		for (const std::string& arg : args) {
+			if (arg == "-s") { mode = Mode::Set;   continue; }
+			if (arg == "-u") { mode = Mode::Unset; continue; }
+			if (arg == "-q") { mode = Mode::Query; continue; }
+			if (arg == "-p") continue;
+			if (arg == "--") continue;
+
+			if (!arg.empty() && arg[0] == '-') {
+				std::fprintf(stderr, "wbsh: shopt: unknown option: %s\n", arg.c_str());
 				return false;
 			}
 
-			names.push_back(a);
+			names.push_back(arg);
 		}
 
 		return true;
 	}
 
-	static int shoptSetOrUnset(Executor& exec,
-	                           const std::vector<std::string>& names, bool on) {
-		int rc = 0;
-		for (const auto& n : names) {
-			const ShoptFlag* f = findShoptFlag(n);
-			if (!f) {
-				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", n.c_str());
-				rc = 1;
+	static int shoptSetOrUnset(Executor& exec, const std::vector<std::string>& names, bool on) {
+		int status = 0;
+		for (const std::string& name : names) {
+			const shopt_detail::ShoptFlag* flag = findShoptFlag(name);
+			if (flag == nullptr) {
+				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", name.c_str());
+				status = 1;
 				continue;
 			}
 
-			(exec.env().*(f->set))(on);
+			(exec.env().*(flag->set))(on);
 		}
 
-		return rc;
+		return status;
 	}
 
 	static int shoptQuery(Executor& exec, const std::vector<std::string>& names) {
-		for (const auto& n : names) {
-			const ShoptFlag* f = findShoptFlag(n);
-			if (!f) return 1;
-			if (!(exec.env().*(f->get))()) return 1;
+		for (const std::string& name : names) {
+			const shopt_detail::ShoptFlag* flag = findShoptFlag(name);
+			if (flag == nullptr) return 1;
+			if (!(exec.env().*(flag->get))()) return 1;
 		}
 
 		return 0;
@@ -1061,130 +1209,165 @@ namespace wbsh {
 
 	static int shoptListMode(Executor& exec, const std::vector<std::string>& names) {
 		if (names.empty()) {
-			for (const ShoptFlag* p = shoptTable(); p->name; ++p) {
-				printShoptFlag(exec.env(), p);
+			for (const shopt_detail::ShoptFlag& flag : kShoptFlags) {
+				printShoptFlag(exec.env(), flag);
 			}
 
 			return 0;
 		}
 
-		int rc = 0;
-		for (const auto& n : names) {
-			const ShoptFlag* f = findShoptFlag(n);
-			if (!f) {
-				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", n.c_str());
-				rc = 1;
+		int status = 0;
+		for (const std::string& name : names) {
+			const shopt_detail::ShoptFlag* flag = findShoptFlag(name);
+			if (flag == nullptr) {
+				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", name.c_str());
+				status = 1;
 				continue;
 			}
 
-			printShoptFlag(exec.env(), f);
+			printShoptFlag(exec.env(), *flag);
 		}
 
-		return rc;
+		return status;
 	}
 
 	static int builtin_shopt(Executor& exec, const std::vector<std::string>& args) {
-		shopt_internal::Mode mode = shopt_internal::Mode::ListAll;
+		using shopt_detail::Mode;
+		Mode mode = Mode::ListAll;
 		std::vector<std::string> names;
 		if (!parseShoptArgs(args, mode, names)) return 1;
 
 		switch (mode) {
-		case shopt_internal::Mode::Set:     return shoptSetOrUnset(exec, names, true);
-		case shopt_internal::Mode::Unset:   return shoptSetOrUnset(exec, names, false);
-		case shopt_internal::Mode::Query:   return shoptQuery(exec, names);
-		case shopt_internal::Mode::ListAll: return shoptListMode(exec, names);
+		case Mode::Set:     return shoptSetOrUnset(exec, names, true);
+		case Mode::Unset:   return shoptSetOrUnset(exec, names, false);
+		case Mode::Query:   return shoptQuery(exec, names);
+		case Mode::ListAll: return shoptListMode(exec, names);
 		}
 
 		return 0;
 	}
 
-	static int builtin_mapfile(Executor& exec, const std::vector<std::string>& args) {
-		bool strip_newline = false;
-		long long max_lines = -1;
-		long long origin = 0;
-		long long skip = 0;
-		std::string array_name = "MAPFILE";
+	namespace mapfile_detail {
+		struct MapfileOptions {
+			bool strip_newline = false;
+			long long max_lines = -1;
+			long long origin = 0;
+			long long skip = 0;
+			std::string array_name = "MAPFILE";
+		};
+	}  // namespace mapfile_detail
+
+	static bool parseMapfileArgs(const std::vector<std::string>& args,
+			mapfile_detail::MapfileOptions& options) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-t") strip_newline = true;
-			else if (a == "-n" && i + 1 < args.size()) {
-				parseLL(args[++i], max_lines);
-			}
-			else if (a == "-O" && i + 1 < args.size()) {
-				parseLL(args[++i], origin);
-			}
-			else if (a == "-s" && i + 1 < args.size()) {
-				parseLL(args[++i], skip);
-			}
-			else if (a == "-u" && i + 1 < args.size()) {
+			const std::string& arg = args[i];
+			const bool has_value = i + 1 < args.size();
+			if (arg == "-t") {
+				options.strip_newline = true;
+			} else if (arg == "-n" && has_value) {
+				parseLL(args[++i], options.max_lines);
+			} else if (arg == "-O" && has_value) {
+				parseLL(args[++i], options.origin);
+			} else if (arg == "-s" && has_value) {
+				parseLL(args[++i], options.skip);
+			} else if (arg == "-u" && has_value) {
 				++i;
-			}
-			else if (!a.empty() && a[0] == '-' && a != "-" && a != "--") {
-				std::fprintf(stderr, "wbsh: mapfile: unknown option: %s\n", a.c_str());
-				return 1;
-			}
-			else array_name = a;
-		}
-
-		std::vector<std::string> lines;
-		std::string buf;
-		int c;
-		long long skipped = 0;
-		while ((c = std::fgetc(stdin)) != EOF) {
-			if (c == '\n') {
-				if (skipped < skip) { ++skipped; buf.clear(); continue; }
-				if (!strip_newline) buf.push_back('\n');
-				lines.push_back(std::move(buf));
-				buf.clear();
-				if (max_lines > 0 && (long long)lines.size() >= max_lines) break;
+			} else if (!arg.empty() && arg[0] == '-' && arg != "-" && arg != "--") {
+				std::fprintf(stderr, "wbsh: mapfile: unknown option: %s\n", arg.c_str());
+				return false;
 			} else {
-				buf.push_back((char)c);
+				options.array_name = arg;
 			}
 		}
 
-		if (!buf.empty()) {
-			if (skipped < skip) { /* skip last partial too */ }
-			else {
-				if (max_lines <= 0 || (long long)lines.size() < max_lines)
-					lines.push_back(std::move(buf));
+		return true;
+	}
+
+	static bool mapfileHasRoom(const mapfile_detail::MapfileOptions& options, std::size_t count) {
+		return options.max_lines <= 0 || static_cast<long long>(count) < options.max_lines;
+	}
+
+	// A last line with no newline still counts, unless it falls inside
+	// the skipped range.
+	static std::vector<std::string> readMapfileLines(
+			const mapfile_detail::MapfileOptions& options) {
+		std::vector<std::string> lines;
+		std::string current;
+		long long skipped = 0;
+		for (int ch = std::fgetc(stdin); ch != EOF; ch = std::fgetc(stdin)) {
+			if (ch != '\n') {
+				current.push_back(static_cast<char>(ch));
+				continue;
 			}
+
+			if (skipped < options.skip) {
+				++skipped;
+				current.clear();
+				continue;
+			}
+
+			if (!options.strip_newline) current.push_back('\n');
+			lines.push_back(std::move(current));
+			current.clear();
+			if (!mapfileHasRoom(options, lines.size())) break;
 		}
 
-		std::map<long long, std::string> elems;
+		if (!current.empty() && skipped >= options.skip && mapfileHasRoom(options, lines.size())) {
+			lines.push_back(std::move(current));
+		}
+
+		return lines;
+	}
+
+	static int builtin_mapfile(Executor& exec, const std::vector<std::string>& args) {
+		mapfile_detail::MapfileOptions options;
+		if (!parseMapfileArgs(args, options)) return 1;
+
+		std::vector<std::string> lines = readMapfileLines(options);
+		std::map<long long, std::string> elements;
 		for (std::size_t i = 0; i < lines.size(); ++i) {
-			elems[origin + (long long)i] = std::move(lines[i]);
+			elements[options.origin + static_cast<long long>(i)] = std::move(lines[i]);
 		}
 
-		exec.env().setIndexedArraySparse(array_name, std::move(elems));
+		exec.env().setIndexedArraySparse(options.array_name, std::move(elements));
 		return 0;
 	}
 
 	static int builtin_readonly(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
-			for (const auto& name : exec.env().readonlySet()) {
-				std::printf("declare -r %s=\"%s\"\n",
-					name.c_str(), exec.env().get(name).c_str());
+			for (const std::string& name : exec.env().readonlySet()) {
+				std::printf("declare -r %s=\"%s\"\n", name.c_str(), exec.env().get(name).c_str());
 			}
 
 			return 0;
 		}
 
-		for (const auto& nv : args) {
-			if (!nv.empty() && nv[0] == '-') continue;
-			auto eq = nv.find('=');
-			std::string n = (eq == std::string::npos) ? nv : nv.substr(0, eq);
-			if (eq != std::string::npos) exec.env().set(n, nv.substr(eq + 1));
-			exec.env().markReadonly(n);
+		for (const std::string& spec : args) {
+			if (!spec.empty() && spec[0] == '-') continue;
+
+			std::string name;
+			std::string value;
+			if (splitAssignment(spec, name, value)) exec.env().set(name, value);
+			exec.env().markReadonly(name);
 		}
 
 		return 0;
 	}
 
+	static std::string canonicalSignalName(std::string name) {
+		const bool prefixed = name.size() > 3
+			&& (name.compare(0, 3, "SIG") == 0 || name.compare(0, 3, "sig") == 0);
+		if (prefixed) name = name.substr(3);
+
+		for (char& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+		if (name == "0") name = "EXIT";
+		return name;
+	}
+
 	static int builtin_trap(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty() || (args.size() == 1 && args[0] == "-p")) {
-			for (const auto& kv : exec.trapHandlers()) {
-				std::printf("trap -- '%s' %s\n",
-					kv.second.c_str(), kv.first.c_str());
+			for (const auto& entry : exec.trapHandlers()) {
+				std::printf("trap -- '%s' %s\n", entry.second.c_str(), entry.first.c_str());
 			}
 
 			return 0;
@@ -1202,26 +1385,15 @@ namespace wbsh {
 
 		const std::string& action = args[0];
 		for (std::size_t i = 1; i < args.size(); ++i) {
-			std::string sig = args[i];
-			if (sig.size() > 3 && (sig.compare(0, 3, "SIG") == 0
-			    || sig.compare(0, 3, "sig") == 0)) {
-				sig = sig.substr(3);
-			}
-
-			std::transform(sig.begin(), sig.end(), sig.begin(),
-				[](char c) { return static_cast<char>(std::toupper((unsigned char)c)); });
-			if (sig == "0") sig = "EXIT";
-			if (action == "-") {
-				exec.clearTrap(sig);
-			} else {
-				exec.setTrap(sig, action);
-			}
+			const std::string signal = canonicalSignalName(args[i]);
+			if (action == "-") exec.clearTrap(signal);
+			else exec.setTrap(signal, action);
 		}
 
 		return 0;
 	}
 
-	namespace getopts_internal {
+	namespace getopts_detail {
 		struct GetoptsCtx {
 			Executor& exec;
 			std::string opts;
@@ -1231,17 +1403,15 @@ namespace wbsh {
 			int& sub;
 			int optind;
 
-			void setName(const std::string& v) const { exec.env().set(name, v); }
-			void storeOptind() const {
-				exec.env().set("OPTIND", std::to_string(optind));
-			}
+			void setName(const std::string& value) const { exec.env().set(name, value); }
+			void storeOptind() const { exec.env().set("OPTIND", std::to_string(optind)); }
 		};
 
 		static int loadOptind(Executor& exec) {
-			int v = 1;
-			const std::string s = exec.env().get("OPTIND");
-			if (!s.empty() && !parseInt(s, v)) v = 1;
-			return v < 1 ? 1 : v;
+			int value = 1;
+			const std::string text = exec.env().get("OPTIND");
+			if (!text.empty() && !parseInt(text, value)) value = 1;
+			return value < 1 ? 1 : value;
 		}
 
 		static int finishWithoutOption(GetoptsCtx& ctx) {
@@ -1260,16 +1430,15 @@ namespace wbsh {
 			return 1;
 		}
 
-		static void advanceOneOptionChar(GetoptsCtx& ctx, const std::string& cur) {
+		static void advanceOneOptionChar(GetoptsCtx& ctx, const std::string& current) {
 			++ctx.sub;
-			if (ctx.sub >= static_cast<int>(cur.size())) {
+			if (ctx.sub >= static_cast<int>(current.size())) {
 				++ctx.optind;
 				ctx.sub = 1;
 			}
 		}
 
-		static int handleIllegalOption(GetoptsCtx& ctx,
-		                               const std::string& cur, char opt) {
+		static int handleIllegalOption(GetoptsCtx& ctx, const std::string& current, char opt) {
 			if (ctx.silent) {
 				ctx.setName("?");
 				ctx.exec.env().set("OPTARG", std::string(1, opt));
@@ -1279,17 +1448,30 @@ namespace wbsh {
 				ctx.exec.env().unset("OPTARG");
 			}
 
-			advanceOneOptionChar(ctx, cur);
+			advanceOneOptionChar(ctx, current);
 			ctx.storeOptind();
 			return 0;
 		}
 
-		static int handleOptionWithArg(GetoptsCtx& ctx,
-		                               const std::string& cur, char opt) {
-			std::string optarg;
+		static int handleMissingOptionArg(GetoptsCtx& ctx, char opt) {
+			if (ctx.silent) {
+				ctx.setName(":");
+				ctx.exec.env().set("OPTARG", std::string(1, opt));
+			} else {
+				std::fprintf(stderr, "getopts: option requires an argument -- %c\n", opt);
+				ctx.setName("?");
+				ctx.exec.env().unset("OPTARG");
+			}
 
-			if (ctx.sub + 1 < static_cast<int>(cur.size())) {
-				optarg = cur.substr(ctx.sub + 1);
+			++ctx.optind;
+			ctx.sub = 1;
+			ctx.storeOptind();
+			return 0;
+		}
+
+		static int handleOptionWithArg(GetoptsCtx& ctx, const std::string& current, char opt) {
+			if (ctx.sub + 1 < static_cast<int>(current.size())) {
+				const std::string optarg = current.substr(ctx.sub + 1);
 				++ctx.optind;
 				ctx.sub = 1;
 				ctx.setName(std::string(1, opt));
@@ -1299,23 +1481,10 @@ namespace wbsh {
 			}
 
 			if (ctx.optind >= static_cast<int>(ctx.source.size())) {
-				if (ctx.silent) {
-					ctx.setName(":");
-					ctx.exec.env().set("OPTARG", std::string(1, opt));
-				} else {
-					std::fprintf(stderr,
-						"getopts: option requires an argument -- %c\n", opt);
-					ctx.setName("?");
-					ctx.exec.env().unset("OPTARG");
-				}
-
-				++ctx.optind;
-				ctx.sub = 1;
-				ctx.storeOptind();
-				return 0;
+				return handleMissingOptionArg(ctx, opt);
 			}
 
-			optarg = ctx.source[ctx.optind];
+			const std::string optarg = ctx.source[ctx.optind];
 			ctx.optind += 2;
 			ctx.sub = 1;
 			ctx.setName(std::string(1, opt));
@@ -1323,7 +1492,15 @@ namespace wbsh {
 			ctx.storeOptind();
 			return 0;
 		}
-	}  // namespace getopts_internal
+
+		static int handleFlagOption(GetoptsCtx& ctx, const std::string& current, char opt) {
+			ctx.setName(std::string(1, opt));
+			ctx.exec.env().unset("OPTARG");
+			advanceOneOptionChar(ctx, current);
+			ctx.storeOptind();
+			return 0;
+		}
+	}  // namespace getopts_detail
 
 	static int builtin_getopts(Executor& exec, const std::vector<std::string>& args) {
 		if (args.size() < 2) {
@@ -1335,59 +1512,75 @@ namespace wbsh {
 		const bool silent = !opts.empty() && opts[0] == ':';
 		if (silent) opts.erase(0, 1);
 
-		std::vector<std::string> source = (args.size() > 2)
+		std::vector<std::string> source = args.size() > 2
 			? std::vector<std::string>(args.begin() + 2, args.end())
 			: exec.env().positional();
 
 		int& sub = exec.getoptsSubindex();
 		if (sub < 1) sub = 1;
 
-		getopts_internal::GetoptsCtx ctx{
+		getopts_detail::GetoptsCtx ctx{
 			exec, std::move(opts), args[1], std::move(source),
-			silent, sub, getopts_internal::loadOptind(exec),
+			silent, sub, getopts_detail::loadOptind(exec),
 		};
 
-		while (true) {
-			if (ctx.optind > static_cast<int>(ctx.source.size()))
-				return getopts_internal::finishWithoutOption(ctx);
+		for (;;) {
+			if (ctx.optind > static_cast<int>(ctx.source.size())) {
+				return getopts_detail::finishWithoutOption(ctx);
+			}
 
-			const std::string& cur = ctx.source[ctx.optind - 1];
-			if (cur.size() < 2 || cur[0] != '-' || cur == "-")
-				return getopts_internal::finishWithoutOption(ctx);
-			if (cur == "--")
-				return getopts_internal::finishOnDoubleDash(ctx);
+			const std::string& current = ctx.source[ctx.optind - 1];
+			if (current.size() < 2 || current[0] != '-' || current == "-") {
+				return getopts_detail::finishWithoutOption(ctx);
+			}
 
-			if (ctx.sub >= static_cast<int>(cur.size())) {
+			if (current == "--") return getopts_detail::finishOnDoubleDash(ctx);
+
+			if (ctx.sub >= static_cast<int>(current.size())) {
 				++ctx.optind;
 				ctx.sub = 1;
 				continue;
 			}
 
-			const char opt = cur[ctx.sub];
-			const auto pos = ctx.opts.find(opt);
-			if (pos == std::string::npos || opt == ':')
-				return getopts_internal::handleIllegalOption(ctx, cur, opt);
-			if (pos + 1 < ctx.opts.size() && ctx.opts[pos + 1] == ':')
-				return getopts_internal::handleOptionWithArg(ctx, cur, opt);
+			const char opt = current[ctx.sub];
+			const std::size_t pos = ctx.opts.find(opt);
+			if (pos == std::string::npos || opt == ':') {
+				return getopts_detail::handleIllegalOption(ctx, current, opt);
+			}
 
-			ctx.setName(std::string(1, opt));
-			ctx.exec.env().unset("OPTARG");
-			getopts_internal::advanceOneOptionChar(ctx, cur);
-			ctx.storeOptind();
-			return 0;
+			if (pos + 1 < ctx.opts.size() && ctx.opts[pos + 1] == ':') {
+				return getopts_detail::handleOptionWithArg(ctx, current, opt);
+			}
+
+			return getopts_detail::handleFlagOption(ctx, current, opt);
 		}
 	}
 
 	static int builtin_jobs(Executor& exec, const std::vector<std::string>&) {
 		exec.reapJobs();
-		for (auto& j : exec.jobsTable()) {
-			std::printf("[%d]  %s   %s\n",
-				j.id,
-				j.running ? "Running" : "Done",
-				j.cmd_text.empty() ? "<command>" : j.cmd_text.c_str());
+		for (const Executor::Job& job : exec.jobsTable()) {
+			std::printf("[%d]  %s   %s\n", job.id, job.running ? "Running" : "Done",
+				job.cmd_text.empty() ? "<command>" : job.cmd_text.c_str());
 		}
 
 		return 0;
+	}
+
+	static bool resolveJobSpec(Executor& exec, const std::string& spec, int& out_id) {
+		out_id = -1;
+		if (!spec.empty() && spec[0] == '%') return parseInt(spec.substr(1), out_id);
+
+		long long pid = 0;
+		if (!parseLL(spec, pid)) return false;
+
+		for (const Executor::Job& job : exec.jobsTable()) {
+			if (job.pid != pid) continue;
+
+			out_id = job.id;
+			return true;
+		}
+
+		return true;
 	}
 
 	static int builtin_wait(Executor& exec, const std::vector<std::string>& args) {
@@ -1396,228 +1589,280 @@ namespace wbsh {
 			return 0;
 		}
 
-		int rc = 0;
-		for (const auto& a : args) {
+		int status = 0;
+		for (const std::string& spec : args) {
 			int id = -1;
-			if (!a.empty() && a[0] == '%') {
-				if (!parseInt(a.substr(1), id)) { rc = 1; continue; }
-			} else {
-				long long pid = 0;
-				if (!parseLL(a, pid)) { rc = 1; continue; }
-				for (auto& j : exec.jobsTable()) {
-					if (j.pid == pid) { id = j.id; break; }
-				}
+			if (!resolveJobSpec(exec, spec, id) || id < 0) {
+				status = 1;
+				continue;
 			}
 
-			if (id < 0) { rc = 1; continue; }
-			int s = exec.waitForJob(id);
-			if (s >= 0) rc = s;
+			const int job_status = exec.waitForJob(id);
+			if (job_status >= 0) status = job_status;
 		}
 
-		return rc;
+		return status;
+	}
+
+	static void removeJob(Executor& exec, int id) {
+		std::vector<Executor::Job>& jobs = exec.jobsTable();
+		jobs.erase(std::remove_if(jobs.begin(), jobs.end(),
+			[id](const Executor::Job& job) { return job.id == id; }), jobs.end());
 	}
 
 	static int builtin_disown(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) { exec.jobsTable().clear(); return 0; }
-		for (const auto& a : args) {
+		if (args.empty()) {
+			exec.jobsTable().clear();
+			return 0;
+		}
+
+		for (const std::string& spec : args) {
 			int id = -1;
-			if (!a.empty() && a[0] == '%' && !parseInt(a.substr(1), id)) continue;
-			auto& v = exec.jobsTable();
-			v.erase(std::remove_if(v.begin(), v.end(),
-				[&](const Executor::Job& j) { return j.id == id; }), v.end());
+			if (!spec.empty() && spec[0] == '%' && !parseInt(spec.substr(1), id)) continue;
+			removeJob(exec, id);
 		}
 
 		return 0;
 	}
 
-	static int builtin_fg(Executor& exec, const std::vector<std::string>& args) {
-		exec.reapJobs();
-		int id = -1;
-		if (args.empty()) {
-			for (auto it = exec.jobsTable().rbegin(); it != exec.jobsTable().rend(); ++it) {
-				if (it->running) { id = it->id; break; }
-			}
-		} else {
-			const std::string& a = args[0];
-			if (!a.empty() && a[0] == '%' && !parseInt(a.substr(1), id)) id = -1;
+	static int newestRunningJobId(Executor& exec) {
+		const std::vector<Executor::Job>& jobs = exec.jobsTable();
+		for (auto it = jobs.rbegin(); it != jobs.rend(); ++it) {
+			if (it->running) return it->id;
 		}
 
-		if (id < 0) { printerr("fg: no current job"); return 1; }
-		int s = exec.waitForJob(id);
-		return s < 0 ? 1 : s;
+		return -1;
+	}
+
+	static int jobIdFromFgArg(const std::string& spec) {
+		int id = -1;
+		if (!spec.empty() && spec[0] == '%' && !parseInt(spec.substr(1), id)) id = -1;
+		return id;
+	}
+
+	static int builtin_fg(Executor& exec, const std::vector<std::string>& args) {
+		exec.reapJobs();
+		const int id = args.empty() ? newestRunningJobId(exec) : jobIdFromFgArg(args[0]);
+		if (id < 0) {
+			printerr("fg: no current job");
+			return 1;
+		}
+
+		const int status = exec.waitForJob(id);
+		return status < 0 ? 1 : status;
 	}
 
 	static int builtin_bg(Executor& exec, const std::vector<std::string>&) {
 		return builtin_jobs(exec, {});
 	}
 
+	static void printAllAliases(Executor& exec) {
+		for (const auto& entry : sortedEntries(exec.aliases())) {
+			std::printf("alias %s='%s'\n", entry.first.c_str(), entry.second.c_str());
+		}
+	}
+
+	static bool printAlias(Executor& exec, const std::string& name) {
+		if (!exec.isAlias(name)) {
+			std::fprintf(stderr, "wbsh: alias: %s: not found\n", name.c_str());
+			return false;
+		}
+
+		std::printf("alias %s='%s'\n", name.c_str(), exec.aliasValue(name).c_str());
+		return true;
+	}
+
 	static int builtin_alias(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
-			std::vector<std::pair<std::string, std::string>> v(
-				exec.aliases().begin(), exec.aliases().end());
-			std::sort(v.begin(), v.end());
-			for (const auto& kv : v) {
-				std::printf("alias %s='%s'\n",
-					kv.first.c_str(), kv.second.c_str());
-			}
-
+			printAllAliases(exec);
 			return 0;
 		}
 
-		int rc = 0;
-		for (const auto& a : args) {
-			auto eq = a.find('=');
-			if (eq == std::string::npos) {
-				if (exec.isAlias(a)) {
-					std::printf("alias %s='%s'\n",
-						a.c_str(), exec.aliasValue(a).c_str());
-				} else {
-					std::fprintf(stderr, "wbsh: alias: %s: not found\n", a.c_str());
-					rc = 1;
-				}
-			} else {
-				std::string name = a.substr(0, eq);
-				std::string value = a.substr(eq + 1);
+		int status = 0;
+		for (const std::string& arg : args) {
+			std::string name;
+			std::string value;
+			if (splitAssignment(arg, name, value)) {
 				exec.setAlias(name, std::move(value));
+				continue;
 			}
+
+			if (!printAlias(exec, name)) status = 1;
 		}
 
-		return rc;
+		return status;
 	}
 
 	static int builtin_unalias(Executor& exec, const std::vector<std::string>& args) {
 		bool all = false;
 		std::vector<std::string> names;
-		for (const auto& a : args) {
-			if (a == "-a") all = true;
-			else if (!a.empty() && a[0] == '-') continue;
-			else names.push_back(a);
+		for (const std::string& arg : args) {
+			if (arg == "-a") all = true;
+			else if (!arg.empty() && arg[0] == '-') continue;
+			else names.push_back(arg);
 		}
 
 		if (all) {
-			std::vector<std::string> all_names;
-			for (const auto& kv : exec.aliases()) all_names.push_back(kv.first);
-			for (const auto& n : all_names) exec.unsetAlias(n);
+			for (const std::string& name : keysOf(exec.aliases())) exec.unsetAlias(name);
 			return 0;
 		}
 
-		int rc = 0;
-		for (const auto& n : names) {
-			if (!exec.isAlias(n)) {
-				std::fprintf(stderr, "wbsh: unalias: %s: not found\n", n.c_str());
-				rc = 1;
+		int status = 0;
+		for (const std::string& name : names) {
+			if (!exec.isAlias(name)) {
+				std::fprintf(stderr, "wbsh: unalias: %s: not found\n", name.c_str());
+				status = 1;
 				continue;
 			}
 
-			exec.unsetAlias(n);
+			exec.unsetAlias(name);
 		}
 
-		return rc;
+		return status;
 	}
 
-	static int builtin_history(Executor& exec, const std::vector<std::string>& args) {
-		auto histfilePath = [&]() {
-			std::string p = exec.env().get("HISTFILE");
-			if (p.empty()) {
-				std::string home = exec.env().get("HOME");
-				if (home.empty()) return std::string();
-				p = home + "/.wbsh_history";
-			}
+	static std::string historyFilePath(Executor& exec) {
+		std::string path = exec.env().get("HISTFILE");
+		if (path.empty()) {
+			const std::string home = exec.env().get("HOME");
+			if (home.empty()) return std::string();
 
-			return exec.pathConv().toWin32(p);
-		};
-		if (!args.empty()) {
-			if (args[0] == "-c") { exec.clearHistory(); return 0; }
-			if (args[0] == "-w") {
-				std::string p = histfilePath();
-				if (p.empty() || !exec.saveHistoryToFile(p)) {
-					printerr("history: cannot write history file");
-					return 1;
-				}
-
-				return 0;
-			}
-
-			if (args[0] == "-r") {
-				std::string p = histfilePath();
-				if (p.empty() || !exec.loadHistoryFromFile(p)) {
-					printerr("history: cannot read history file");
-					return 1;
-				}
-
-				return 0;
-			}
-
-			if (args[0] == "-s") {
-				if (args.size() < 2) return 0;
-				std::string entry = args[1];
-				for (std::size_t i = 2; i < args.size(); ++i) {
-					entry.push_back(' ');
-					entry += args[i];
-				}
-
-				exec.addHistoryEntry(std::move(entry));
-				return 0;
-			}
+			path = home + kHistoryFileName;
 		}
 
-		long n = -1;
-		if (!args.empty()) {
-			bool ok; long long v = toIntSafe(args[0], ok);
-			if (ok) n = static_cast<long>(v);
-		}
+		return exec.pathConv().toWin32(path);
+	}
 
-		const auto& h = exec.history();
-		std::size_t start = (n > 0 && static_cast<std::size_t>(n) < h.size())
-			? h.size() - static_cast<std::size_t>(n) : 0;
-		for (std::size_t i = start; i < h.size(); ++i) {
-			std::printf("%5zu  %s\n", i + 1, h[i].c_str());
+	static int writeHistoryFile(Executor& exec) {
+		const std::string path = historyFilePath(exec);
+		if (path.empty() || !exec.saveHistoryToFile(path)) {
+			printerr("history: cannot write history file");
+			return 1;
 		}
 
 		return 0;
+	}
+
+	static int readHistoryFile(Executor& exec) {
+		const std::string path = historyFilePath(exec);
+		if (path.empty() || !exec.loadHistoryFromFile(path)) {
+			printerr("history: cannot read history file");
+			return 1;
+		}
+
+		return 0;
+	}
+
+	static int appendHistoryEntry(Executor& exec, const std::vector<std::string>& args) {
+		if (args.size() < 2) return 0;
+
+		exec.addHistoryEntry(joinWithSpaces(args.begin() + 1, args.end()));
+		return 0;
+	}
+
+	static std::size_t historyStartIndex(const std::vector<std::string>& args, std::size_t total) {
+		long count = -1;
+		if (!args.empty()) {
+			bool ok = false;
+			const long long value = toIntSafe(args[0], ok);
+			if (ok) count = static_cast<long>(value);
+		}
+
+		if (count > 0 && static_cast<std::size_t>(count) < total) {
+			return total - static_cast<std::size_t>(count);
+		}
+
+		return 0;
+	}
+
+	static int printHistory(Executor& exec, const std::vector<std::string>& args) {
+		const std::vector<std::string>& history = exec.history();
+		const std::size_t start = historyStartIndex(args, history.size());
+		for (std::size_t i = start; i < history.size(); ++i) {
+			std::printf("%5zu  %s\n", i + 1, history[i].c_str());
+		}
+
+		return 0;
+	}
+
+	static int builtin_history(Executor& exec, const std::vector<std::string>& args) {
+		if (!args.empty()) {
+			if (args[0] == "-c") {
+				exec.clearHistory();
+				return 0;
+			}
+
+			if (args[0] == "-w") return writeHistoryFile(exec);
+			if (args[0] == "-r") return readHistoryFile(exec);
+			if (args[0] == "-s") return appendHistoryEntry(exec, args);
+		}
+
+		return printHistory(exec, args);
+	}
+
+	namespace revsearch_detail {
+		struct RevsearchOptions {
+			bool forward = false;
+			long long start_one_based = -1;
+			std::string query;
+		};
+	}  // namespace revsearch_detail
+
+	static int parseRevsearchArgs(const std::vector<std::string>& args,
+			revsearch_detail::RevsearchOptions& options) {
+		for (std::size_t i = 0; i < args.size(); ++i) {
+			const std::string& arg = args[i];
+			if (arg == "-f") {
+				options.forward = true;
+				continue;
+			}
+
+			if (arg != "-c") {
+				options.query = arg;
+				continue;
+			}
+
+			if (i + 1 >= args.size()) {
+				printerr("__revsearch: -c requires an argument");
+				return 2;
+			}
+
+			bool ok = false;
+			options.start_one_based = toIntSafe(args[++i], ok);
+			if (!ok || options.start_one_based < 1) {
+				printerr("__revsearch: -c expects a positive integer");
+				return 2;
+			}
+		}
+
+		return 0;
+	}
+
+	static std::size_t revsearchStart(const std::vector<std::string>& history,
+			long long start_one_based) {
+		if (history.empty()) return 0;
+		if (start_one_based < 0) return history.size() - 1;
+		return static_cast<std::size_t>(start_one_based) - 1;
 	}
 
 	// Test hook driving findReverseSearchMatch without a TTY:
 	//     __revsearch [-c START_INDEX] [-f(orward)] QUERY
 	// prints "INDEX MATCHED_LINE" (1-based) or "no match".
 	static int builtin_revsearch(Executor& exec, const std::vector<std::string>& args) {
-		bool forward = false;
-		long long start_one_based = -1;
-		std::string query;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-f") { forward = true; continue; }
-			if (a == "-c") {
-				if (i + 1 >= args.size()) {
-					printerr("__revsearch: -c requires an argument");
-					return 2;
-				}
+		revsearch_detail::RevsearchOptions options;
+		const int status = parseRevsearchArgs(args, options);
+		if (status != 0) return status;
 
-				bool ok = false;
-				start_one_based = toIntSafe(args[++i], ok);
-				if (!ok || start_one_based < 1) {
-					printerr("__revsearch: -c expects a positive integer");
-					return 2;
-				}
-				continue;
-			}
-
-			query = a;
-		}
-
-		const auto& history = exec.history();
-		std::size_t start = history.empty()
-			? 0
-			: (start_one_based < 0
-				? history.size() - 1
-				: static_cast<std::size_t>(start_one_based) - 1);
-		std::size_t idx = findReverseSearchMatch(history, query, start, forward);
-		if (idx >= history.size()) {
+		const std::vector<std::string>& history = exec.history();
+		const std::size_t start = revsearchStart(history, options.start_one_based);
+		const std::size_t found = findReverseSearchMatch(history, options.query, start,
+			options.forward);
+		if (found >= history.size()) {
 			std::printf("no match\n");
 			return 1;
 		}
 
-		std::printf("%zu %s\n", idx + 1, history[idx].c_str());
+		std::printf("%zu %s\n", found + 1, history[found].c_str());
 		return 0;
 	}
 
@@ -1625,10 +1870,9 @@ namespace wbsh {
 	//     __predict PREFIX
 	// prints the predicted suffix verbatim or "no prediction".
 	static int builtin_predict(Executor& exec, const std::vector<std::string>& args) {
-		std::string prefix = args.empty() ? std::string() : args.front();
-		std::string suffix = findInlinePrediction(exec.history(),
-		                                          exec.historyStatus(),
-		                                          prefix);
+		const std::string prefix = args.empty() ? std::string() : args.front();
+		const std::string suffix = findInlinePrediction(exec.history(), exec.historyStatus(),
+			prefix);
 		if (suffix.empty()) {
 			std::printf("no prediction\n");
 			return 1;
@@ -1648,66 +1892,71 @@ namespace wbsh {
 		}
 
 		bool ok = false;
-		long long idx = toIntSafe(args[0], ok);
-		if (!ok || idx < 1) {
+		const long long index = toIntSafe(args[0], ok);
+		if (!ok || index < 1) {
 			printerr("__histstat: INDEX must be a positive integer");
 			return 2;
 		}
 
-		long long status = toIntSafe(args[1], ok);
+		const long long status = toIntSafe(args[1], ok);
 		if (!ok) {
 			printerr("__histstat: STATUS must be an integer");
 			return 2;
 		}
 
-		exec.setHistoryEntryStatus(static_cast<std::size_t>(idx - 1),
-		                           static_cast<int>(status));
+		exec.setHistoryEntryStatus(static_cast<std::size_t>(index - 1), static_cast<int>(status));
 		return 0;
+	}
+
+	static bool endsWithNoCase(const std::string& name, const std::string& suffix) {
+		if (name.size() < suffix.size()) return false;
+
+		std::string tail = name.substr(name.size() - suffix.size());
+		for (char& c : tail) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		return tail == suffix;
+	}
+
+	static std::string commandBaseName(const std::string& file_name) {
+		for (const char* suffix : kExecutableSuffixes) {
+			if (endsWithNoCase(file_name, suffix)) {
+				return file_name.substr(0, file_name.size() - std::strlen(suffix));
+			}
+		}
+
+		return file_name;
 	}
 
 	static void collectCommandsFromPath(Executor& exec, std::vector<std::string>& out) {
 		const std::string path = exec.env().get("PATH");
 		if (path.empty()) return;
-		std::set<std::string> seen;
-		for (const auto& dir : splitPathList(path)) {
-			if (dir.empty()) continue;
-			std::filesystem::path win = utf8ToPath(exec.pathConv().toWin32(dir));
-			std::error_code ec;
-			std::filesystem::directory_iterator it(win, ec);
-			if (ec) continue;
-			for (auto& e : it) {
-				std::string n = pathToUtf8(e.path().filename());
-				auto ends_with = [&](const std::string& suf) {
-					if (n.size() < suf.size()) return false;
-					std::string tail = n.substr(n.size() - suf.size());
-					for (auto& c : tail) c = (char)std::tolower((unsigned char)c);
-					return tail == suf;
-				};
-				std::string base = n;
-				for (const char* s : { ".exe", ".cmd", ".bat", ".com" }) {
-					if (ends_with(s)) {
-						base = n.substr(0, n.size() - std::strlen(s));
-						break;
-					}
-				}
 
+		std::set<std::string> seen;
+		for (const std::string& dir : splitPathList(path)) {
+			if (dir.empty()) continue;
+
+			std::error_code ec;
+			const std::filesystem::path native = utf8ToPath(exec.pathConv().toWin32(dir));
+			std::filesystem::directory_iterator it(native, ec);
+			if (ec) continue;
+
+			for (const auto& entry : it) {
+				const std::string base = commandBaseName(pathToUtf8(entry.path().filename()));
 				if (seen.insert(base).second) out.push_back(base);
 			}
 		}
 	}
 
-	static std::vector<std::string> filterByPrefix(const std::vector<std::string>& v,
-	                                        const std::string& prefix) {
+	static std::vector<std::string> filterByPrefix(const std::vector<std::string>& values,
+			const std::string& prefix) {
 		std::vector<std::string> out;
-		for (const auto& s : v) {
-			if (s.compare(0, prefix.size(), prefix) == 0)
-				out.push_back(s);
+		for (const std::string& value : values) {
+			if (value.compare(0, prefix.size(), prefix) == 0) out.push_back(value);
 		}
 
 		return out;
 	}
 
-	namespace compgen_internal {
+	namespace compgen_detail {
 		struct CompgenFlags {
 			std::string action;
 			std::string prefix;
@@ -1721,386 +1970,410 @@ namespace wbsh {
 			bool include_vars     = false;
 			bool include_keywords = false;
 		};
-	}  // namespace compgen_internal
+	}  // namespace compgen_detail
 
-	static std::vector<std::string> splitDashWWordList(const std::string& s) {
+	static std::vector<std::string> splitDashWWordList(const std::string& text) {
 		std::vector<std::string> out;
-		std::string cur;
-		for (char c : s) {
-			if (c == ' ' || c == '\t' || c == '\n') {
-				if (!cur.empty()) { out.push_back(std::move(cur)); cur.clear(); }
-			} else {
-				cur.push_back(c);
-			}
-		}
-
-		if (!cur.empty()) out.push_back(std::move(cur));
-		return out;
-	}
-
-	static void parseCompgenFlags(const std::vector<std::string>& args,
-	                              compgen_internal::CompgenFlags& f) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-W" && i + 1 < args.size()) {
-				f.wordlist = splitDashWWordList(args[++i]);
+		std::string current;
+		for (const char c : text) {
+			if (c != ' ' && c != '\t' && c != '\n') {
+				current.push_back(c);
 				continue;
 			}
 
-			if (a == "-A" && i + 1 < args.size()) { f.action = args[++i]; continue; }
-			if (a == "-f") { f.include_files    = true; continue; }
-			if (a == "-d") { f.include_dirs     = true; continue; }
-			if (a == "-c") { f.include_cmds     = true; continue; }
-			if (a == "-b") { f.include_builtins = true; continue; }
-			if (a == "-a") { f.include_aliases  = true; continue; }
-			if (a == "-v") { f.include_vars     = true; continue; }
-			if (a == "-k") { f.include_keywords = true; continue; }
-			if (a == "-u" || a == "-g" || a == "-s" || a == "-e") continue;
-			if (a == "-o" && i + 1 < args.size()) { ++i; continue; }
-			if (a == "-F" && i + 1 < args.size()) { ++i; continue; }
-			if (a == "-C" && i + 1 < args.size()) { ++i; continue; }
-			if (!a.empty() && a[0] == '-' && a != "-" && a != "--") continue;
-			if (a == "--") continue;
-			f.prefix = a;
+			if (!current.empty()) out.push_back(std::move(current));
+			current.clear();
 		}
 
-		if (f.action == "function")  f.include_funcs    = true;
-		if (f.action == "variable")  f.include_vars     = true;
-		if (f.action == "alias")     f.include_aliases  = true;
-		if (f.action == "builtin")   f.include_builtins = true;
-		if (f.action == "command")   f.include_cmds     = true;
-		if (f.action == "file")      f.include_files    = true;
-		if (f.action == "directory") f.include_dirs     = true;
+		if (!current.empty()) out.push_back(std::move(current));
+		return out;
 	}
 
-	static void appendSortedFiltered(std::vector<std::string>& out,
-	                                 std::vector<std::string> src,
-	                                 const std::string& prefix) {
-		std::sort(src.begin(), src.end());
-		for (auto& n : filterByPrefix(src, prefix)) out.push_back(std::move(n));
+	static void applyCompgenAction(compgen_detail::CompgenFlags& flags) {
+		if (flags.action == "function")  flags.include_funcs    = true;
+		if (flags.action == "variable")  flags.include_vars     = true;
+		if (flags.action == "alias")     flags.include_aliases  = true;
+		if (flags.action == "builtin")   flags.include_builtins = true;
+		if (flags.action == "command")   flags.include_cmds     = true;
+		if (flags.action == "file")      flags.include_files    = true;
+		if (flags.action == "directory") flags.include_dirs     = true;
 	}
 
-	static void appendCommandCandidates(std::vector<std::string>& out,
-	                                    Executor& exec, const std::string& prefix) {
+	static void parseCompgenFlags(const std::vector<std::string>& args,
+			compgen_detail::CompgenFlags& flags) {
+		for (std::size_t i = 0; i < args.size(); ++i) {
+			const std::string& arg = args[i];
+			const bool has_value = i + 1 < args.size();
+			if (arg == "-W" && has_value) {
+				flags.wordlist = splitDashWWordList(args[++i]);
+				continue;
+			}
+
+			if (arg == "-A" && has_value) { flags.action = args[++i]; continue; }
+			if (arg == "-f") { flags.include_files    = true; continue; }
+			if (arg == "-d") { flags.include_dirs     = true; continue; }
+			if (arg == "-c") { flags.include_cmds     = true; continue; }
+			if (arg == "-b") { flags.include_builtins = true; continue; }
+			if (arg == "-a") { flags.include_aliases  = true; continue; }
+			if (arg == "-v") { flags.include_vars     = true; continue; }
+			if (arg == "-k") { flags.include_keywords = true; continue; }
+			if (arg == "-u" || arg == "-g" || arg == "-s" || arg == "-e") continue;
+			if (arg == "-o" && has_value) { ++i; continue; }
+			if (arg == "-F" && has_value) { ++i; continue; }
+			if (arg == "-C" && has_value) { ++i; continue; }
+			if (!arg.empty() && arg[0] == '-' && arg != "-" && arg != "--") continue;
+			if (arg == "--") continue;
+			flags.prefix = arg;
+		}
+
+		applyCompgenAction(flags);
+	}
+
+	static void appendSortedFiltered(std::vector<std::string>& out, std::vector<std::string> source,
+			const std::string& prefix) {
+		std::sort(source.begin(), source.end());
+		for (std::string& name : filterByPrefix(source, prefix)) out.push_back(std::move(name));
+	}
+
+	static void appendCommandCandidates(std::vector<std::string>& out, Executor& exec,
+			const std::string& prefix) {
 		std::vector<std::string> names = exec.builtinNames();
-		auto fns = exec.functionNames();
-		names.insert(names.end(), fns.begin(), fns.end());
+		const std::vector<std::string> functions = exec.functionNames();
+		names.insert(names.end(), functions.begin(), functions.end());
 		collectCommandsFromPath(exec, names);
+
 		std::sort(names.begin(), names.end());
 		names.erase(std::unique(names.begin(), names.end()), names.end());
-		for (auto& n : filterByPrefix(names, prefix)) out.push_back(std::move(n));
+		for (std::string& name : filterByPrefix(names, prefix)) out.push_back(std::move(name));
 	}
 
-	static void appendKeywordCandidates(std::vector<std::string>& out,
-	                                    const std::string& prefix) {
-		static const char* kw[] = {
-			"if","then","else","elif","fi","case","esac","for",
-			"while","until","do","done","function","in","select",
-			"time","[[","]]","return","break","continue", nullptr };
-		std::vector<std::string> v;
-		for (int k = 0; kw[k]; ++k) v.push_back(kw[k]);
-		for (auto& n : filterByPrefix(v, prefix)) out.push_back(std::move(n));
+	static void appendKeywordCandidates(std::vector<std::string>& out, const std::string& prefix) {
+		std::vector<std::string> keywords;
+		for (const char* keyword : kShellKeywords) keywords.push_back(keyword);
+		for (std::string& name : filterByPrefix(keywords, prefix)) out.push_back(std::move(name));
+	}
+
+	static void splitCompletionPrefix(const std::string& prefix, std::string& out_dir,
+			std::string& out_leaf) {
+		out_dir = ".";
+		out_leaf = prefix;
+
+		const std::size_t slash = prefix.find_last_of('/');
+		if (slash == std::string::npos) return;
+
+		out_dir  = prefix.substr(0, slash);
+		out_leaf = prefix.substr(slash + 1);
+		if (out_dir.empty()) out_dir = "/";
+	}
+
+	static std::string joinCompletionPath(const std::string& dir, const std::string& name) {
+		if (dir == ".") return name;
+		if (dir == "/") return "/" + name;
+		return dir + "/" + name;
 	}
 
 	static void appendFileDirCandidates(std::vector<std::string>& out, Executor& exec,
-	                                    const std::string& prefix,
-	                                    bool include_files, bool include_dirs) {
-		namespace fs = std::filesystem;
-		std::string dir = ".";
-		std::string leaf = prefix;
-		const auto sl = prefix.find_last_of('/');
-		if (sl != std::string::npos) {
-			dir  = prefix.substr(0, sl);
-			leaf = prefix.substr(sl + 1);
-			if (dir.empty()) dir = "/";
-		}
+			const std::string& prefix, bool include_files, bool include_dirs) {
+		std::string dir;
+		std::string leaf;
+		splitCompletionPrefix(prefix, dir, leaf);
 
 		std::error_code ec;
-		fs::path list_dir = utf8ToPath(exec.pathConv().toWin32(dir));
-		fs::directory_iterator it(list_dir, ec);
+		const std::filesystem::path list_dir = utf8ToPath(exec.pathConv().toWin32(dir));
+		std::filesystem::directory_iterator it(list_dir, ec);
 		if (ec) return;
 
-		for (auto& e : it) {
-			std::string n = pathToUtf8(e.path().filename());
-			if (n.empty() || n[0] == '.') continue;
-			if (n.compare(0, leaf.size(), leaf) != 0) continue;
-			const bool isdir = e.is_directory(ec);
-			if (include_dirs && !isdir && !include_files) continue;
-			std::string full = (dir == ".")
-				? n
-				: (dir == "/" ? "/" + n : dir + "/" + n);
-			if (isdir) full.push_back('/');
+		for (const auto& entry : it) {
+			const std::string name = pathToUtf8(entry.path().filename());
+			if (name.empty() || name[0] == '.') continue;
+			if (name.compare(0, leaf.size(), leaf) != 0) continue;
+
+			const bool is_dir = entry.is_directory(ec);
+			if (include_dirs && !is_dir && !include_files) continue;
+
+			std::string full = joinCompletionPath(dir, name);
+			if (is_dir) full.push_back('/');
 			out.push_back(std::move(full));
 		}
 	}
 
-	static std::vector<std::string> generateCompletions(
-			Executor& exec,
-			const std::vector<std::string>& args,
-			/*out*/ std::string& prefix_out)
-	{
-		compgen_internal::CompgenFlags f;
-		parseCompgenFlags(args, f);
+	static std::vector<std::string> generateCompletions(Executor& exec,
+			const std::vector<std::string>& args, std::string& out_prefix) {
+		compgen_detail::CompgenFlags flags;
+		parseCompgenFlags(args, flags);
 
 		std::vector<std::string> out;
-
-		if (!f.wordlist.empty()) {
-			for (auto& w : filterByPrefix(f.wordlist, f.prefix))
-				out.push_back(std::move(w));
+		for (std::string& word : filterByPrefix(flags.wordlist, flags.prefix)) {
+			out.push_back(std::move(word));
 		}
 
-		if (f.include_funcs)    appendSortedFiltered(out, exec.functionNames(),  f.prefix);
-		if (f.include_builtins) appendSortedFiltered(out, exec.builtinNames(),   f.prefix);
-		if (f.include_aliases) {
-			std::vector<std::string> names;
-			for (const auto& kv : exec.aliases()) names.push_back(kv.first);
-			appendSortedFiltered(out, std::move(names), f.prefix);
+		if (flags.include_funcs)    appendSortedFiltered(out, exec.functionNames(), flags.prefix);
+		if (flags.include_builtins) appendSortedFiltered(out, exec.builtinNames(), flags.prefix);
+		if (flags.include_aliases)  appendSortedFiltered(out, keysOf(exec.aliases()), flags.prefix);
+		if (flags.include_vars) {
+			appendSortedFiltered(out, keysOf(exec.env().vars()), flags.prefix);
 		}
 
-		if (f.include_vars) {
-			std::vector<std::string> names;
-			for (const auto& kv : exec.env().vars()) names.push_back(kv.first);
-			appendSortedFiltered(out, std::move(names), f.prefix);
+		if (flags.include_cmds)     appendCommandCandidates(out, exec, flags.prefix);
+		if (flags.include_keywords) appendKeywordCandidates(out, flags.prefix);
+		if (flags.include_files || flags.include_dirs) {
+			appendFileDirCandidates(out, exec, flags.prefix, flags.include_files,
+				flags.include_dirs);
 		}
 
-		if (f.include_cmds)     appendCommandCandidates(out, exec, f.prefix);
-		if (f.include_keywords) appendKeywordCandidates(out, f.prefix);
-		if (f.include_files || f.include_dirs) {
-			appendFileDirCandidates(out, exec, f.prefix,
-				f.include_files, f.include_dirs);
-		}
-
-		prefix_out = f.prefix;
+		out_prefix = flags.prefix;
 		return out;
 	}
 
 	static int builtin_compgen(Executor& exec, const std::vector<std::string>& args) {
 		std::string prefix;
-		auto cands = generateCompletions(exec, args, prefix);
-		for (const auto& s : cands) std::printf("%s\n", s.c_str());
-		return cands.empty() ? 1 : 0;
+		const std::vector<std::string> candidates = generateCompletions(exec, args, prefix);
+		for (const std::string& candidate : candidates) std::printf("%s\n", candidate.c_str());
+		return candidates.empty() ? 1 : 0;
 	}
 
-	namespace complete_internal {
+	namespace complete_detail {
 		struct CompleteOptions {
 			Executor::CompletionSpec spec;
 			std::vector<std::string> commands;
 			bool remove_mode = false;
 			bool print_mode = false;
+			// -D is parsed but not yet acted on.
 			bool default_complete = false;
 		};
-	}  // namespace complete_internal
+	}  // namespace complete_detail
+
+	static void applyCompleteBehaviour(const std::string& option, Executor::CompletionSpec& spec) {
+		if (option == "default")  spec.default_fallback = true;
+		if (option == "plusdirs") spec.plusdirs = true;
+		if (option == "nospace")  spec.nospace = true;
+	}
 
 	static void parseCompleteArgs(const std::vector<std::string>& args,
-	                              complete_internal::CompleteOptions& o) {
+			complete_detail::CompleteOptions& options) {
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (a == "-r") { o.remove_mode = true; continue; }
-			if (a == "-p") { o.print_mode  = true; continue; }
-			if (a == "-D") { o.default_complete = true; continue; }
-			if (a == "-W" && i + 1 < args.size()) {
-				o.spec.words = splitDashWWordList(args[++i]);
+			const std::string& arg = args[i];
+			const bool has_value = i + 1 < args.size();
+			if (arg == "-r") { options.remove_mode      = true; continue; }
+			if (arg == "-p") { options.print_mode       = true; continue; }
+			if (arg == "-D") { options.default_complete = true; continue; }
+			if (arg == "-W" && has_value) {
+				options.spec.words = splitDashWWordList(args[++i]);
 				continue;
 			}
 
-			if (a == "-F" && i + 1 < args.size()) { o.spec.function = args[++i]; continue; }
-			if (a == "-C" && i + 1 < args.size()) { o.spec.command  = args[++i]; continue; }
-			if (a == "-f") { o.spec.include_files = true; continue; }
-			if (a == "-d") { o.spec.include_dirs  = true; continue; }
-			if (a == "-o" && i + 1 < args.size()) {
-				const std::string& opt = args[++i];
-				if      (opt == "default")  o.spec.default_fallback = true;
-				else if (opt == "plusdirs") o.spec.plusdirs = true;
-				else if (opt == "nospace")  o.spec.nospace = true;
+			if (arg == "-o" && has_value) {
+				applyCompleteBehaviour(args[++i], options.spec);
 				continue;
 			}
 
-			if (!a.empty() && a[0] == '-' && a != "-" && a != "--") continue;
-			if (a == "--") continue;
-			o.commands.push_back(a);
+			if (arg == "-F" && has_value) { options.spec.function = args[++i]; continue; }
+			if (arg == "-C" && has_value) { options.spec.command  = args[++i]; continue; }
+			if (arg == "-f") { options.spec.include_files = true; continue; }
+			if (arg == "-d") { options.spec.include_dirs  = true; continue; }
+			if (!arg.empty() && arg[0] == '-' && arg != "-" && arg != "--") continue;
+			if (arg == "--") continue;
+			options.commands.push_back(arg);
 		}
 	}
 
-	static int printCompleteSpecs(Executor& exec,
-	                              const std::vector<std::string>& commands) {
+	static int printCompleteSpecs(Executor& exec, const std::vector<std::string>& commands) {
 		const auto& specs = exec.completionSpecs();
 		if (commands.empty()) {
-			for (const auto& kv : specs) {
-				std::printf("complete %s\n", kv.first.c_str());
-			}
-
+			for (const auto& entry : specs) std::printf("complete %s\n", entry.first.c_str());
 			return 0;
 		}
 
-		int rc = 0;
-		for (const auto& c : commands) {
-			if (specs.count(c) == 0) {
-				std::fprintf(stderr,
-					"wbsh: complete: %s: no completion specification\n",
-					c.c_str());
-				rc = 1;
+		int status = 0;
+		for (const std::string& command : commands) {
+			if (specs.count(command) == 0) {
+				std::fprintf(stderr, "wbsh: complete: %s: no completion specification\n",
+					command.c_str());
+				status = 1;
 				continue;
 			}
 
-			std::printf("complete %s\n", c.c_str());
+			std::printf("complete %s\n", command.c_str());
 		}
 
-		return rc;
+		return status;
 	}
 
-	static int clearCompleteSpecs(Executor& exec,
-	                              const std::vector<std::string>& commands) {
+	static int clearCompleteSpecs(Executor& exec, const std::vector<std::string>& commands) {
 		if (commands.empty()) {
-			for (const auto& kv : exec.completionSpecs())
-				exec.removeCompletionSpec(kv.first);
+			for (const std::string& name : keysOf(exec.completionSpecs())) {
+				exec.removeCompletionSpec(name);
+			}
+
 			return 0;
 		}
 
-		for (const auto& c : commands) exec.removeCompletionSpec(c);
+		for (const std::string& command : commands) exec.removeCompletionSpec(command);
 		return 0;
 	}
 
 	static int builtin_complete(Executor& exec, const std::vector<std::string>& args) {
-		complete_internal::CompleteOptions o;
-		parseCompleteArgs(args, o);
-		(void)o.default_complete;   // not yet acted on; stored for future use
+		complete_detail::CompleteOptions options;
+		parseCompleteArgs(args, options);
 
-		if (o.print_mode)  return printCompleteSpecs(exec, o.commands);
-		if (o.remove_mode) return clearCompleteSpecs(exec, o.commands);
-		if (o.commands.empty()) return 0;
+		if (options.print_mode)  return printCompleteSpecs(exec, options.commands);
+		if (options.remove_mode) return clearCompleteSpecs(exec, options.commands);
+		if (options.commands.empty()) return 0;
 
-		for (const auto& c : o.commands) exec.setCompletionSpec(c, o.spec);
+		for (const std::string& command : options.commands) {
+			exec.setCompletionSpec(command, options.spec);
+		}
+
 		return 0;
 	}
 
-	static int builtin_compopt(Executor&, const std::vector<std::string>& args) {
-		(void)args;
+	static int builtin_compopt(Executor&, const std::vector<std::string>&) {
 		return 0;
 	}
 
 	static int builtin_let(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) return 1;
+
 		long long last = 0;
-		for (const auto& e : args) {
-			if (!exec.expander().tryEvalArith(e, last)) return 1;
+		for (const std::string& expression : args) {
+			if (!exec.expander().tryEvalArith(expression, last)) return 1;
 		}
 
 		return last != 0 ? 0 : 1;
 	}
 
-	static int builtin_umask(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty() || (args.size() == 1 && args[0] == "-S")) {
-			std::string cur = exec.env().get("_WBSH_UMASK");
-			if (cur.empty()) cur = "0022";
-			if (!args.empty() && args[0] == "-S") {
-				int v = 0;
-				if (!parseInt(cur, v, 8)) v = 022;
-				auto bits = [&](int shift) {
-					std::string s;
-					s.push_back((v & (0400 >> shift)) ? '-' : 'r');
-					s.push_back((v & (0200 >> shift)) ? '-' : 'w');
-					s.push_back((v & (0100 >> shift)) ? '-' : 'x');
-					return s;
-				};
-				std::printf("u=%s,g=%s,o=%s\n",
-					bits(0).c_str(), bits(3).c_str(), bits(6).c_str());
-			} else {
-				std::printf("%s\n", cur.c_str());
-			}
-
-			return 0;
-		}
-
-		if (args.size() == 1 && !args[0].empty() && args[0][0] != '-') {
-			int v = 0;
-			if (!parseInt(args[0], v, 8)) return 1;
-			char buf[16];
-			std::snprintf(buf, sizeof(buf), "%04o", v & 0777);
-			exec.env().set("_WBSH_UMASK", buf);
-#ifdef _WIN32
-			_umask(v & 0700);
-#endif
-			return 0;
-		}
-
-		return 1;
+	static std::string umaskTriplet(int mask, int shift) {
+		std::string bits;
+		bits.push_back((mask & (0400 >> shift)) != 0 ? '-' : 'r');
+		bits.push_back((mask & (0200 >> shift)) != 0 ? '-' : 'w');
+		bits.push_back((mask & (0100 >> shift)) != 0 ? '-' : 'x');
+		return bits;
 	}
 
+	static int printUmask(Executor& exec, bool symbolic) {
+		std::string current = exec.env().get("_WBSH_UMASK");
+		if (current.empty()) current = kDefaultUmask;
+		if (!symbolic) {
+			std::printf("%s\n", current.c_str());
+			return 0;
+		}
+
+		int mask = 0;
+		if (!parseInt(current, mask, 8)) mask = 022;
+		std::printf("u=%s,g=%s,o=%s\n", umaskTriplet(mask, 0).c_str(),
+			umaskTriplet(mask, 3).c_str(), umaskTriplet(mask, 6).c_str());
+		return 0;
+	}
+
+	static int setUmask(Executor& exec, const std::string& text) {
+		int mask = 0;
+		if (!parseInt(text, mask, 8)) return 1;
+
+		char stored[16];
+		std::snprintf(stored, sizeof(stored), "%04o", mask & 0777);
+		exec.env().set("_WBSH_UMASK", stored);
+#ifdef _WIN32
+		_umask(mask & 0700);
+#endif
+		return 0;
+	}
+
+	static int builtin_umask(Executor& exec, const std::vector<std::string>& args) {
+		if (args.empty()) return printUmask(exec, false);
+		if (args.size() != 1) return 1;
+		if (args[0] == "-S") return printUmask(exec, true);
+		if (args[0].empty() || args[0][0] == '-') return 1;
+
+		return setUmask(exec, args[0]);
+	}
+
+	// Nothing is hashed, so every flag but -r is accepted and ignored.
 	static int builtin_hash(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
 			std::printf("hash: no commands hashed\n");
 			return 0;
 		}
 
-		for (const auto& a : args) {
-			if (a == "-r") { exec.clearExecutablePathCache(); continue; }
-			if (a == "-l" || a == "-d") continue;
-			if (a == "-p" || a == "-t") continue;
+		for (const std::string& arg : args) {
+			if (arg == "-r") exec.clearExecutablePathCache();
 		}
 
 		return 0;
 	}
 
+#ifdef _WIN32
+	static const double kFileTimeTicksPerSecond = 10000000.0;
+
+	static double fileTimeSeconds(const FILETIME& time) {
+		const unsigned long long ticks =
+			(static_cast<unsigned long long>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+		return ticks / kFileTimeTicksPerSecond;
+	}
+
+	static void printTimesLine(double user, double kernel) {
+		const int user_minutes = static_cast<int>(user / 60);
+		const int kernel_minutes = static_cast<int>(kernel / 60);
+		std::printf("%dm%.3fs %dm%.3fs\n", user_minutes, user - user_minutes * 60,
+			kernel_minutes, kernel - kernel_minutes * 60);
+	}
+#endif /* _WIN32 */
+
 	static int builtin_times(Executor&, const std::vector<std::string>&) {
 #ifdef _WIN32
-		FILETIME create, exitT, kernel, user;
-		if (GetProcessTimes(GetCurrentProcess(), &create, &exitT, &kernel, &user)) {
-			auto toSec = [](const FILETIME& f) {
-				unsigned long long t =
-					((unsigned long long)f.dwHighDateTime << 32) | f.dwLowDateTime;
-				return t / 10000000.0;
-			};
-			double u = toSec(user);
-			double k = toSec(kernel);
-			int um = (int)(u / 60); double us = u - um * 60;
-			int km = (int)(k / 60); double ks = k - km * 60;
-			std::printf("%dm%.3fs %dm%.3fs\n", um, us, km, ks);
-			std::printf("0m0.000s 0m0.000s\n");
+		FILETIME created;
+		FILETIME exited;
+		FILETIME kernel;
+		FILETIME user;
+		if (::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel, &user) != 0) {
+			printTimesLine(fileTimeSeconds(user), fileTimeSeconds(kernel));
 		} else {
-			std::printf("0m0.000s 0m0.000s\n");
-			std::printf("0m0.000s 0m0.000s\n");
+			printTimesLine(0.0, 0.0);
 		}
+
+		printTimesLine(0.0, 0.0);
 #endif /* _WIN32 */
 		return 0;
 	}
 
-	static int builtin_caller(Executor& exec, const std::vector<std::string>& args) {
-		(void)args;
+	static int builtin_caller(Executor& exec, const std::vector<std::string>&) {
 		if (exec.funcDepth() == 0) return 1;
-		std::printf("%d %s\n",
-			exec.env().currentLineno(),
-			exec.env().shellName().c_str());
+
+		std::printf("%d %s\n", exec.env().currentLineno(), exec.env().shellName().c_str());
 		return 0;
 	}
 
-	static int builtin_help(Executor& exec, const std::vector<std::string>& args) {
-		auto print_index = [&]() {
-			std::printf("wbsh built-in commands:\n\n");
-			std::vector<std::string> names = exec.builtinNames();
-			std::sort(names.begin(), names.end());
-			for (std::size_t i = 0; i < names.size(); ++i) {
-				std::printf("  %-14s", names[i].c_str());
-				if (i % 5 == 4) std::printf("\n");
-			}
+	static void printBuiltinIndex(Executor& exec) {
+		std::printf("wbsh built-in commands:\n\n");
 
-			if (names.size() % 5 != 0) std::printf("\n");
-			std::printf("\nUse `help NAME` for more on a specific builtin.\n");
-		};
-		if (args.empty()) { print_index(); return 0; }
-		int rc = 0;
-		for (const auto& n : args) {
-			if (!exec.isBuiltin(n)) {
-				std::fprintf(stderr, "wbsh: help: no help topics match '%s'\n",
-					n.c_str());
-				rc = 1;
+		std::vector<std::string> names = exec.builtinNames();
+		std::sort(names.begin(), names.end());
+		for (std::size_t i = 0; i < names.size(); ++i) {
+			std::printf("  %-14s", names[i].c_str());
+			if (i % kHelpColumns == kHelpColumns - 1) std::printf("\n");
+		}
+
+		if (names.size() % kHelpColumns != 0) std::printf("\n");
+		std::printf("\nUse `help NAME` for more on a specific builtin.\n");
+	}
+
+	static int builtin_help(Executor& exec, const std::vector<std::string>& args) {
+		if (args.empty()) {
+			printBuiltinIndex(exec);
+			return 0;
+		}
+
+		int status = 0;
+		for (const std::string& name : args) {
+			if (!exec.isBuiltin(name)) {
+				std::fprintf(stderr, "wbsh: help: no help topics match '%s'\n", name.c_str());
+				status = 1;
 				continue;
 			}
 
-			std::printf("%s: %s — see bash(1) for full semantics\n",
-				n.c_str(), n.c_str());
+			std::printf("%s: %s — see bash(1) for full semantics\n", name.c_str(), name.c_str());
 		}
 
-		return rc;
+		return status;
 	}
 
 	static int builtin_local(Executor& exec, const std::vector<std::string>& args) {
@@ -2109,11 +2382,11 @@ namespace wbsh {
 			return 1;
 		}
 
-		for (const auto& a : args) {
-			auto eq = a.find('=');
-			std::string name = (eq == std::string::npos) ? a : a.substr(0, eq);
-			std::string val  = (eq == std::string::npos) ? std::string() : a.substr(eq + 1);
-			exec.declareLocal(name, val);
+		for (const std::string& arg : args) {
+			std::string name;
+			std::string value;
+			splitAssignment(arg, name, value);
+			exec.declareLocal(name, value);
 		}
 
 		return 0;
@@ -2125,7 +2398,7 @@ namespace wbsh {
 			return 2;
 		}
 
-		std::vector<std::string> body(args.begin(), args.end() - 1);
+		const std::vector<std::string> body(args.begin(), args.end() - 1);
 		return evalTest(body, exec.pathConv());
 	}
 

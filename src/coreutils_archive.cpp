@@ -23,6 +23,29 @@ namespace wbsh {
 
 	namespace fs = std::filesystem;
 
+	static const std::size_t kTarBlock = 512;
+	static const std::size_t kTarTrailerBlocks = 2;
+	static const char kTarTypeFile = '0';
+	static const char kTarTypeDirectory = '5';
+
+	static const std::size_t kReadChunk = 4096;
+
+	static const std::uint32_t kCrcPolynomial = 0xEDB88320u;
+	static const std::size_t kGzipMinSize = 18;
+	static const std::size_t kGzipFooterSize = 8;
+	static const std::size_t kStoredBlockMax = 65535;
+
+	static const std::uint32_t kZipLocalHeaderSig = 0x04034B50u;
+	static const std::uint32_t kZipCentralDirSig  = 0x02014B50u;
+	static const std::uint32_t kZipEocdSig        = 0x06054B50u;
+	static const std::size_t kZipEocdSize = 22;
+	static const std::size_t kZipEocdSearchLimit = 65557;
+	static const std::size_t kZipLocalHeaderSize = 30;
+	static const std::size_t kZipCentralEntrySize = 46;
+	static const std::uint16_t kZipMethodStored = 0;
+	static const std::uint16_t kZipMethodDeflate = 8;
+	static const std::uint16_t kZipVersion = 20;
+
 	struct TarHeader {
 		char name[100];
 		char mode[8];
@@ -42,60 +65,76 @@ namespace wbsh {
 		char prefix[155];
 		char pad[12];
 	};
-	static_assert(sizeof(TarHeader) == 512, "tar header must be 512 bytes");
+	static_assert(sizeof(TarHeader) == kTarBlock, "tar header must be 512 bytes");
 
-	static void tarOctal(char* dst, std::size_t width, std::uintmax_t v) {
-		std::string s;
-		while (v > 0) { s.insert(s.begin(), char('0' + (v & 7))); v >>= 3; }
-		if (s.empty()) s = "0";
-		while (s.size() < width - 1) s.insert(s.begin(), '0');
-		std::memset(dst, 0, width);
-		std::memcpy(dst, s.data(), (std::min)(s.size(), width - 1));
-	}
-
-	std::uintmax_t tarParseOctal(const char* p, std::size_t n) {
-		std::uintmax_t v = 0;
-		for (std::size_t i = 0; i < n && p[i] && p[i] != ' '; ++i) {
-			if (p[i] < '0' || p[i] > '7') break;
-			v = (v << 3) | (p[i] - '0');
+	static std::string octalDigits(std::uintmax_t value) {
+		std::string digits;
+		while (value > 0) {
+			digits.insert(digits.begin(), static_cast<char>('0' + (value & 7)));
+			value >>= 3;
 		}
 
-		return v;
+		if (digits.empty()) digits = "0";
+		return digits;
 	}
 
-	static void tarFillChecksum(TarHeader* h) {
-		std::memset(h->chksum, ' ', sizeof(h->chksum));
-		std::uintmax_t s = 0;
-		const unsigned char* p = reinterpret_cast<const unsigned char*>(h);
-		for (std::size_t i = 0; i < sizeof(*h); ++i) s += p[i];
-		tarOctal(h->chksum, 7, s);
-		h->chksum[6] = '\0';
-		h->chksum[7] = ' ';
+	static void tarOctal(char* dst, std::size_t width, std::uintmax_t value) {
+		std::string digits = octalDigits(value);
+		while (digits.size() < width - 1) digits.insert(digits.begin(), '0');
+
+		std::memset(dst, 0, width);
+		std::memcpy(dst, digits.data(), (std::min)(digits.size(), width - 1));
+	}
+
+	static std::uintmax_t tarParseOctal(const char* text, std::size_t length) {
+		std::uintmax_t value = 0;
+		for (std::size_t i = 0; i < length && text[i] != '\0' && text[i] != ' '; ++i) {
+			if (text[i] < '0' || text[i] > '7') break;
+			value = (value << 3) | static_cast<std::uintmax_t>(text[i] - '0');
+		}
+
+		return value;
+	}
+
+	static void tarFillChecksum(TarHeader& header) {
+		std::memset(header.chksum, ' ', sizeof(header.chksum));
+
+		std::uintmax_t sum = 0;
+		const unsigned char* bytes = reinterpret_cast<const unsigned char*>(&header);
+		for (std::size_t i = 0; i < sizeof(header); ++i) sum += bytes[i];
+
+		tarOctal(header.chksum, 7, sum);
+		header.chksum[6] = '\0';
+		header.chksum[7] = ' ';
 	}
 
 	static std::time_t tarFileMtime(const fs::path& src) {
 		std::error_code ec;
-		auto t = fs::last_write_time(src, ec);
+		const auto written = fs::last_write_time(src, ec);
 		if (ec) return 0;
+
 		return std::chrono::system_clock::to_time_t(
 			std::chrono::system_clock::now()
 			+ std::chrono::duration_cast<std::chrono::system_clock::duration>(
-				t - fs::file_time_type::clock::now()));
+				written - fs::file_time_type::clock::now()));
 	}
 
 	static bool tarWriteFileData(FILE* out, const fs::path& src, std::uintmax_t size) {
 		FILE* in = openUtf8(pathToUtf8(src), "rb");
-		if (!in) return false;
-		char buf[512];
+		if (in == nullptr) return false;
+
+		char block[kTarBlock];
 		std::uintmax_t left = size;
 		while (left > 0) {
-			std::size_t want = (std::min)(static_cast<std::uintmax_t>(512), left);
-			std::size_t got = std::fread(buf, 1, want, in);
+			const std::size_t want = static_cast<std::size_t>(
+				(std::min)(static_cast<std::uintmax_t>(kTarBlock), left));
+			const std::size_t got = std::fread(block, 1, want, in);
 			if (got == 0) break;
-			std::fwrite(buf, 1, got, out);
-			if (got < 512) {
-				char zero[512] = {};
-				std::fwrite(zero, 1, 512 - got, out);
+
+			std::fwrite(block, 1, got, out);
+			if (got < kTarBlock) {
+				char zero[kTarBlock] = {};
+				std::fwrite(zero, 1, kTarBlock - got, out);
 			}
 
 			left -= got;
@@ -105,259 +144,343 @@ namespace wbsh {
 		return true;
 	}
 
-	static bool tarWriteEntry(FILE* out, const fs::path& src, const std::string& rel,
-		bool verbose) {
-		std::error_code ec;
-		fs::file_status st = fs::symlink_status(src, ec);
-		if (ec) return false;
-
-		TarHeader h{};
+	static std::string tarEntryName(const std::string& rel, bool is_directory) {
 		std::string name = rel;
 		std::replace(name.begin(), name.end(), '\\', '/');
-		if (fs::is_directory(st)) {
-			if (!name.empty() && name.back() != '/') name.push_back('/');
-			h.typeflag = '5';
-		}
-		else {
-			h.typeflag = '0';
-		}
+		if (is_directory && !name.empty() && name.back() != '/') name.push_back('/');
+		return name;
+	}
 
-		if (name.size() >= sizeof(h.name)) {
+	static void tarFillHeader(TarHeader& header, const std::string& name, char typeflag,
+			std::uintmax_t size, std::time_t mtime) {
+		std::strncpy(header.name, name.c_str(), sizeof(header.name) - 1);
+		tarOctal(header.mode, 8, 0644);
+		tarOctal(header.uid, 8, 0);
+		tarOctal(header.gid, 8, 0);
+		header.typeflag = typeflag;
+		tarOctal(header.size, 12, size);
+		tarOctal(header.mtime, 12, static_cast<std::uintmax_t>(mtime));
+		std::memcpy(header.magic, "ustar\0", 6);
+		std::memcpy(header.version, "00", 2);
+		tarFillChecksum(header);
+	}
+
+	static bool tarWriteEntry(FILE* out, const fs::path& src, const std::string& rel,
+			bool verbose) {
+		std::error_code ec;
+		const fs::file_status status = fs::symlink_status(src, ec);
+		if (ec) return false;
+
+		const bool is_directory = fs::is_directory(status);
+		const std::string name = tarEntryName(rel, is_directory);
+		if (name.size() >= sizeof(TarHeader::name)) {
 			std::fprintf(stderr, "wbsh: tar: name too long: %s\n", name.c_str());
 			return false;
 		}
 
-		std::strncpy(h.name, name.c_str(), sizeof(h.name) - 1);
-		tarOctal(h.mode, 8, 0644);
-		tarOctal(h.uid, 8, 0);
-		tarOctal(h.gid, 8, 0);
-		std::uintmax_t size = (h.typeflag == '5') ? 0 : fs::file_size(src, ec);
+		std::uintmax_t size = is_directory ? 0 : fs::file_size(src, ec);
 		if (ec) size = 0;
-		tarOctal(h.size, 12, size);
-		tarOctal(h.mtime, 12, static_cast<std::uintmax_t>(tarFileMtime(src)));
-		std::memcpy(h.magic, "ustar\0", 6);
-		std::memcpy(h.version, "00", 2);
-		tarFillChecksum(&h);
-		std::fwrite(&h, 1, sizeof(h), out);
+
+		TarHeader header{};
+		tarFillHeader(header, name, is_directory ? kTarTypeDirectory : kTarTypeFile,
+			size, tarFileMtime(src));
+		std::fwrite(&header, 1, sizeof(header), out);
 		if (verbose) std::fprintf(stderr, "%s\n", name.c_str());
 
-		if (h.typeflag != '5' && size > 0) {
-			return tarWriteFileData(out, src, size);
+		if (!is_directory && size > 0) return tarWriteFileData(out, src, size);
+		return true;
+	}
+
+	static void tarAddDirectory(FILE* out, const fs::path& native, const std::string& item,
+			bool verbose) {
+		std::error_code ec;
+		fs::recursive_directory_iterator it(native,
+			fs::directory_options::skip_permission_denied, ec);
+		if (ec) return;
+
+		for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
+			if (ec) break;
+
+			std::error_code rel_ec;
+			const std::string rel = item + "/"
+				+ pathToUtf8(fs::relative(cur->path(), native, rel_ec));
+			tarWriteEntry(out, cur->path(), rel, verbose);
+		}
+	}
+
+	static bool tarAddItem(Executor& exec, FILE* out, const std::string& item, bool verbose) {
+		const fs::path native(toNative(exec, item));
+		std::error_code ec;
+		if (!fs::exists(native, ec)) {
+			perr("tar", item + ": not found");
+			return false;
 		}
 
+		tarWriteEntry(out, native, item, verbose);
+		if (fs::is_directory(native, ec)) tarAddDirectory(out, native, item, verbose);
 		return true;
 	}
 
 	static int tarCreate(Executor& exec, const std::string& archive,
-		const std::vector<std::string>& items, bool verbose) {
+			const std::vector<std::string>& items, bool verbose) {
 		FILE* out = fopenNative(exec, archive, "wb");
-		if (!out) { perr("tar", archive + ": " + std::strerror(errno)); return 1; }
-		int rc = 0;
-		for (const auto& item : items) {
-			fs::path nat(toNative(exec, item));
-			std::error_code ec;
-			if (!fs::exists(nat, ec)) {
-				perr("tar", item + ": not found");
-				rc = 1;
-				continue;
-			}
-
-			if (fs::is_directory(nat, ec)) {
-				tarWriteEntry(out, nat, item, verbose);
-				fs::recursive_directory_iterator it(nat,
-					fs::directory_options::skip_permission_denied, ec);
-				if (ec) continue;
-				for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
-					if (ec) break;
-					std::error_code rec;
-					std::string rel = item + "/" + pathToUtf8(fs::relative(cur->path(), nat, rec));
-					tarWriteEntry(out, cur->path(), rel, verbose);
-				}
-			}
-			else {
-				tarWriteEntry(out, nat, item, verbose);
-			}
+		if (out == nullptr) {
+			perr("tar", archive + ": " + std::strerror(errno));
+			return 1;
 		}
 
-		char zero[1024] = {};
-		std::fwrite(zero, 1, 1024, out);
+		int status = 0;
+		for (const auto& item : items) {
+			if (!tarAddItem(exec, out, item, verbose)) status = 1;
+		}
+
+		char trailer[kTarBlock * kTarTrailerBlocks] = {};
+		std::fwrite(trailer, 1, sizeof(trailer), out);
 		std::fclose(out);
-		return rc;
+		return status;
 	}
 
 	static void tarSkipPadded(FILE* in, std::uintmax_t size) {
-		std::uintmax_t skip = (size + 511) & ~static_cast<std::uintmax_t>(511);
+		const std::uintmax_t skip =
+			(size + kTarBlock - 1) & ~static_cast<std::uintmax_t>(kTarBlock - 1);
 		std::fseek(in, static_cast<long>(skip), SEEK_CUR);
 	}
 
 	static void tarCopyFileData(FILE* in, FILE* out, std::uintmax_t size) {
-		char buf[512];
+		char block[kTarBlock];
 		std::uintmax_t left = size;
 		while (left > 0) {
-			std::size_t r = std::fread(buf, 1, 512, in);
-			if (r == 0) break;
-			std::size_t writeN = (left >= 512) ? 512 : static_cast<std::size_t>(left);
-			std::fwrite(buf, 1, writeN, out);
-			left -= writeN;
+			const std::size_t got = std::fread(block, 1, kTarBlock, in);
+			if (got == 0) break;
+
+			const std::size_t take =
+				(left >= kTarBlock) ? kTarBlock : static_cast<std::size_t>(left);
+			std::fwrite(block, 1, take, out);
+			left -= take;
 		}
 	}
 
-	static bool tarHeaderIsAllZero(const TarHeader& h) {
-		const unsigned char* p = reinterpret_cast<const unsigned char*>(&h);
-		for (std::size_t k = 0; k < sizeof(h); ++k) {
-			if (p[k]) return false;
+	static bool tarHeaderIsAllZero(const TarHeader& header) {
+		const unsigned char* bytes = reinterpret_cast<const unsigned char*>(&header);
+		for (std::size_t k = 0; k < sizeof(header); ++k) {
+			if (bytes[k] != 0) return false;
 		}
 
 		return true;
 	}
 
+	static bool tarExtractFile(Executor& exec, FILE* in, const std::string& name,
+			std::uintmax_t size) {
+		const fs::path native(toNative(exec, name));
+		std::error_code ec;
+		fs::create_directories(native.parent_path(), ec);
+
+		FILE* out = fopenNative(exec, name, "wb");
+		if (out == nullptr) {
+			perr("tar", name + ": " + std::strerror(errno));
+			tarSkipPadded(in, size);
+			return false;
+		}
+
+		tarCopyFileData(in, out, size);
+		std::fclose(out);
+		return true;
+	}
+
+	static bool tarProcessEntry(Executor& exec, FILE* in, const TarHeader& header,
+			bool verbose, bool list_only) {
+		const std::string name(header.name, ::strnlen(header.name, sizeof(header.name)));
+		const std::uintmax_t size = tarParseOctal(header.size, sizeof(header.size));
+		const bool is_directory = header.typeflag == kTarTypeDirectory
+			|| (!name.empty() && name.back() == '/');
+		if (verbose || list_only) std::printf("%s\n", name.c_str());
+
+		if (list_only) {
+			tarSkipPadded(in, size);
+			return true;
+		}
+
+		if (is_directory) {
+			std::error_code ec;
+			fs::create_directories(toNative(exec, name), ec);
+			tarSkipPadded(in, size);
+			return true;
+		}
+
+		return tarExtractFile(exec, in, name, size);
+	}
+
 	static int tarExtract(Executor& exec, const std::string& archive,
-	                      bool verbose, bool list_only) {
+			bool verbose, bool list_only) {
 		FILE* in = fopenNative(exec, archive, "rb");
-		if (!in) { perr("tar", archive + ": " + std::strerror(errno)); return 1; }
+		if (in == nullptr) {
+			perr("tar", archive + ": " + std::strerror(errno));
+			return 1;
+		}
 
-		int rc = 0;
+		int status = 0;
 		while (true) {
-			TarHeader h{};
-			std::size_t got = std::fread(&h, 1, sizeof(h), in);
-			if (got != sizeof(h)) break;
-			if (tarHeaderIsAllZero(h)) break;
+			TarHeader header{};
+			const std::size_t got = std::fread(&header, 1, sizeof(header), in);
+			if (got != sizeof(header)) break;
+			if (tarHeaderIsAllZero(header)) break;
 
-			std::string name(h.name, ::strnlen(h.name, sizeof(h.name)));
-			std::uintmax_t size = tarParseOctal(h.size, sizeof(h.size));
-			bool is_dir = (h.typeflag == '5')
-				|| (!name.empty() && name.back() == '/');
-			if (verbose || list_only) std::printf("%s\n", name.c_str());
-			if (list_only) {
-				tarSkipPadded(in, size);
-				continue;
-			}
-
-			if (is_dir) {
-				std::error_code ec;
-				fs::create_directories(toNative(exec, name), ec);
-				tarSkipPadded(in, size);
-				continue;
-			}
-
-			{
-				fs::path p(toNative(exec, name));
-				std::error_code ec;
-				fs::create_directories(p.parent_path(), ec);
-			}
-
-			FILE* out = fopenNative(exec, name, "wb");
-			if (!out) {
-				perr("tar", name + ": " + std::strerror(errno));
-				rc = 1;
-				tarSkipPadded(in, size);
-				continue;
-			}
-
-			tarCopyFileData(in, out, size);
-			std::fclose(out);
+			if (!tarProcessEntry(exec, in, header, verbose, list_only)) status = 1;
 		}
 
 		std::fclose(in);
-		return rc;
+		return status;
 	}
 
-	static int builtin_tar(Executor& exec, const std::vector<std::string>& args) {
+	struct TarOptions {
 		char mode = 0;
 		bool verbose = false;
 		std::string archive;
 		std::vector<std::string> items;
+	};
+
+	static void applyTarFlagCluster(const std::vector<std::string>& args, std::size_t& i,
+			TarOptions& options) {
+		const std::string& cluster = args[i];
+		for (std::size_t k = 1; k < cluster.size(); ++k) {
+			const char flag = cluster[k];
+			if (flag == 'c' || flag == 'x' || flag == 't') {
+				options.mode = flag;
+			} else if (flag == 'v') {
+				options.verbose = true;
+			} else if (flag == 'f') {
+				if (k + 1 < cluster.size()) options.archive = cluster.substr(k + 1);
+				else if (i + 1 < args.size()) options.archive = args[++i];
+				k = cluster.size();
+			}
+		}
+	}
+
+	static TarOptions parseTarArgs(const std::vector<std::string>& args) {
+		TarOptions options;
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if (!a.empty() && a[0] == '-' && a.size() > 1) {
-				for (std::size_t k = 1; k < a.size(); ++k) {
-					char c = a[k];
-					if (c == 'c' || c == 'x' || c == 't') mode = c;
-					else if (c == 'v') verbose = true;
-					else if (c == 'f') {
-						if (k + 1 < a.size()) archive = a.substr(k + 1);
-						else if (i + 1 < args.size()) archive = args[++i];
-						k = a.size();
-					}
-				}
+			const std::string& arg = args[i];
+			if (!arg.empty() && arg[0] == '-' && arg.size() > 1) {
+				applyTarFlagCluster(args, i, options);
 				continue;
 			}
 
-			items.push_back(a);
+			options.items.push_back(arg);
 		}
 
-		if (mode == 0) { perr("tar", "specify -c, -x, or -t"); return 2; }
-		if (archive.empty()) { perr("tar", "missing -f ARCHIVE"); return 2; }
-		switch (mode) {
-		case 'c': return tarCreate(exec, archive, items, verbose);
-		case 'x': return tarExtract(exec, archive, verbose, false);
-		case 't': return tarExtract(exec, archive, false, true);
+		return options;
+	}
+
+	static int builtin_tar(Executor& exec, const std::vector<std::string>& args) {
+		const TarOptions options = parseTarArgs(args);
+		if (options.mode == 0) {
+			perr("tar", "specify -c, -x, or -t");
+			return 2;
+		}
+
+		if (options.archive.empty()) {
+			perr("tar", "missing -f ARCHIVE");
+			return 2;
+		}
+
+		switch (options.mode) {
+		case 'c': return tarCreate(exec, options.archive, options.items, options.verbose);
+		case 'x': return tarExtract(exec, options.archive, options.verbose, false);
+		case 't': return tarExtract(exec, options.archive, false, true);
 		}
 
 		return 2;
 	}
 
-	// CRC-32/IEEE 802.3 (poly 0xEDB88320). Required for gzip footer.
-	std::uint32_t crc32Update(std::uint32_t crc, const std::uint8_t* buf, std::size_t n) {
-		static std::uint32_t table[256];
-		static bool inited = false;
-		if (!inited) {
-			for (std::uint32_t i = 0; i < 256; ++i) {
-				std::uint32_t c = i;
-				for (int k = 0; k < 8; ++k)
-					c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-				table[i] = c;
+	static void buildCrcTable(std::uint32_t (&table)[256]) {
+		for (std::uint32_t i = 0; i < 256; ++i) {
+			std::uint32_t entry = i;
+			for (int k = 0; k < 8; ++k) {
+				entry = ((entry & 1) != 0) ? (kCrcPolynomial ^ (entry >> 1)) : (entry >> 1);
 			}
 
-			inited = true;
+			table[i] = entry;
+		}
+	}
+
+	// CRC-32/IEEE 802.3 (poly 0xEDB88320). Required for gzip footer.
+	static std::uint32_t crc32Update(std::uint32_t crc, const std::uint8_t* data,
+			std::size_t length) {
+		static std::uint32_t table[256];
+		static bool built = false;
+		if (!built) {
+			buildCrcTable(table);
+			built = true;
 		}
 
 		crc ^= 0xFFFFFFFFu;
-		for (std::size_t i = 0; i < n; ++i)
-			crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+		for (std::size_t i = 0; i < length; ++i) {
+			crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+		}
+
 		return crc ^ 0xFFFFFFFFu;
 	}
 
-	static std::vector<std::uint8_t> readAllBytesFromFile(FILE* f) {
-		std::vector<std::uint8_t> out;
-		std::uint8_t buf[4096];
+	static std::vector<std::uint8_t> readAllBytesFromFile(FILE* file) {
+		std::vector<std::uint8_t> bytes;
+		std::uint8_t chunk[kReadChunk];
 		while (true) {
-			std::size_t n = std::fread(buf, 1, sizeof(buf), f);
-			if (n == 0) break;
-			out.insert(out.end(), buf, buf + n);
+			const std::size_t got = std::fread(chunk, 1, sizeof(chunk), file);
+			if (got == 0) break;
+			bytes.insert(bytes.end(), chunk, chunk + got);
 		}
 
-		return out;
+		return bytes;
+	}
+
+	static void appendLe16(std::vector<std::uint8_t>& out, std::uint16_t value) {
+		out.push_back(static_cast<std::uint8_t>(value & 0xFF));
+		out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
+	}
+
+	static void appendLe32(std::vector<std::uint8_t>& out, std::uint32_t value) {
+		for (int k = 0; k < 4; ++k) {
+			out.push_back(static_cast<std::uint8_t>((value >> (8 * k)) & 0xFF));
+		}
+	}
+
+	static std::uint16_t readLe16(const std::uint8_t* bytes) {
+		return static_cast<std::uint16_t>(bytes[0] | (bytes[1] << 8));
+	}
+
+	static std::uint32_t readLe32(const std::uint8_t* bytes) {
+		return static_cast<std::uint32_t>(bytes[0])
+			| (static_cast<std::uint32_t>(bytes[1]) << 8)
+			| (static_cast<std::uint32_t>(bytes[2]) << 16)
+			| (static_cast<std::uint32_t>(bytes[3]) << 24);
+	}
+
+	static void skipZeroTerminated(const std::vector<std::uint8_t>& bytes, std::size_t& i) {
+		while (i < bytes.size() && bytes[i] != 0) ++i;
+		if (i < bytes.size()) ++i;
 	}
 
 	static bool gzipParseHeader(const std::vector<std::uint8_t>& bytes,
-		std::size_t& deflate_start,
-		std::size_t& deflate_end) {
-		if (bytes.size() < 18) return false;
+			std::size_t& deflate_start, std::size_t& deflate_end) {
+		if (bytes.size() < kGzipMinSize) return false;
 		if (bytes[0] != 0x1F || bytes[1] != 0x8B) return false;
 		if (bytes[2] != 8) return false;   // CM = deflate
-		std::uint8_t flg = bytes[3];
+
+		const std::uint8_t flags = bytes[3];
 		std::size_t i = 10;   // skip MTIME, XFL, OS
-		if (flg & 0x04) {     // FEXTRA
+		if ((flags & 0x04) != 0) {     // FEXTRA
 			if (i + 2 > bytes.size()) return false;
-			std::size_t xlen = bytes[i] | (bytes[i + 1] << 8);
-			i += 2 + xlen;
+			const std::size_t extra_length = readLe16(bytes.data() + i);
+			i += 2 + extra_length;
 		}
 
-		if (flg & 0x08) {     // FNAME
-			while (i < bytes.size() && bytes[i] != 0) ++i;
-			if (i < bytes.size()) ++i;
-		}
+		if ((flags & 0x08) != 0) skipZeroTerminated(bytes, i);   // FNAME
+		if ((flags & 0x10) != 0) skipZeroTerminated(bytes, i);   // FCOMMENT
+		if ((flags & 0x02) != 0) i += 2;                         // FHCRC
+		if (i + kGzipFooterSize > bytes.size()) return false;
 
-		if (flg & 0x10) {     // FCOMMENT
-			while (i < bytes.size() && bytes[i] != 0) ++i;
-			if (i < bytes.size()) ++i;
-		}
-
-		if (flg & 0x02) i += 2;   // FHCRC
-		if (i + 8 > bytes.size()) return false;
 		deflate_start = i;
-		deflate_end = bytes.size() - 8;
+		deflate_end = bytes.size() - kGzipFooterSize;
 		return true;
 	}
 
@@ -371,41 +494,36 @@ namespace wbsh {
 		out.push_back(0xFF);   // OS = unknown
 	}
 
-	static void appendDeflateStoredBlocks(const std::vector<std::uint8_t>& data,
-		std::vector<std::uint8_t>& out) {
-		std::size_t i = 0;
-		std::size_t n = data.size();
-		if (n == 0) {
-			out.push_back(0x01);
-			out.push_back(0x00); out.push_back(0x00);
-			out.push_back(0xFF); out.push_back(0xFF);
-		}
+	static void appendStoredBlockHeader(std::vector<std::uint8_t>& out, std::size_t length,
+			bool last) {
+		out.push_back(last ? 0x01 : 0x00);
+		appendLe16(out, static_cast<std::uint16_t>(length));
+		appendLe16(out, static_cast<std::uint16_t>(~length));
+	}
 
-		while (i < n) {
-			std::size_t take = n - i;
-			if (take > 65535) take = 65535;
-			bool last = (i + take >= n);
-			out.push_back(last ? 0x01 : 0x00);
-			out.push_back((std::uint8_t)(take & 0xFF));
-			out.push_back((std::uint8_t)((take >> 8) & 0xFF));
-			std::uint16_t nlen = (std::uint16_t)~take;
-			out.push_back((std::uint8_t)(nlen & 0xFF));
-			out.push_back((std::uint8_t)((nlen >> 8) & 0xFF));
+	static void appendDeflateStoredBlocks(const std::vector<std::uint8_t>& data,
+			std::vector<std::uint8_t>& out) {
+		const std::size_t size = data.size();
+		if (size == 0) appendStoredBlockHeader(out, 0, true);
+
+		std::size_t i = 0;
+		while (i < size) {
+			const std::size_t take = (std::min)(size - i, kStoredBlockMax);
+			const bool last = i + take >= size;
+			appendStoredBlockHeader(out, take, last);
 			out.insert(out.end(), data.begin() + i, data.begin() + i + take);
 			i += take;
 		}
 	}
 
 	static void appendGzipFooter(const std::vector<std::uint8_t>& data,
-		std::vector<std::uint8_t>& out) {
-		std::uint32_t crc = crc32Update(0, data.data(), data.size());
-		std::uint32_t isize = (std::uint32_t)(data.size() & 0xFFFFFFFFu);
-		for (int k = 0; k < 4; ++k) out.push_back((std::uint8_t)((crc >> (8 * k)) & 0xFF));
-		for (int k = 0; k < 4; ++k) out.push_back((std::uint8_t)((isize >> (8 * k)) & 0xFF));
+			std::vector<std::uint8_t>& out) {
+		appendLe32(out, crc32Update(0, data.data(), data.size()));
+		appendLe32(out, static_cast<std::uint32_t>(data.size() & 0xFFFFFFFFu));
 	}
 
 	static void gzipEncodeStored(const std::vector<std::uint8_t>& data,
-		std::vector<std::uint8_t>& out) {
+			std::vector<std::uint8_t>& out) {
 		appendGzipHeader(out);
 		appendDeflateStoredBlocks(data, out);
 		appendGzipFooter(data, out);
@@ -418,162 +536,151 @@ namespace wbsh {
 		std::vector<std::string> files;
 	};
 
-	static GzipOptions parseGzipArgs(const std::vector<std::string>& args) {
-		GzipOptions o;
-		for (const auto& a : args) {
-			if (a == "-d" || a == "--decompress") o.decompress = true;
-			else if (a == "-c" || a == "--stdout") o.to_stdout = true;
-			else if (a == "-k" || a == "--keep") o.keep = true;
-			else if (a == "-f" || a == "--force") { /* accepted, no-op */ }
-			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore other flags */ }
-			else o.files.push_back(a);
-		}
-
-		return o;
+	static bool isOptionArg(const std::string& arg) {
+		return !arg.empty() && arg[0] == '-' && arg != "-";
 	}
 
-	static bool gzipLoadInput(Executor& exec, const std::string& tool, const std::string& fname,
-	                          std::vector<std::uint8_t>& input) {
-		if (fname == "-" || fname.empty()) {
+	static GzipOptions parseGzipArgs(const std::vector<std::string>& args) {
+		GzipOptions options;
+		for (const auto& arg : args) {
+			if (arg == "-d" || arg == "--decompress") options.decompress = true;
+			else if (arg == "-c" || arg == "--stdout") options.to_stdout = true;
+			else if (arg == "-k" || arg == "--keep") options.keep = true;
+			else if (!isOptionArg(arg)) options.files.push_back(arg);
+		}
+
+		return options;
+	}
+
+	static bool gzipLoadInput(Executor& exec, const std::string& tool, const std::string& path,
+			std::vector<std::uint8_t>& input) {
+		if (path == "-" || path.empty()) {
 			input = readAllBytesFromFile(stdin);
 			return true;
 		}
 
-		FILE* f = fopenNative(exec, fname, "rb");
-		if (!f) {
-			perr(tool, fname, std::error_code(errno, std::system_category()));
+		FILE* file = fopenNative(exec, path, "rb");
+		if (file == nullptr) {
+			perr(tool, path, std::error_code(errno, std::system_category()));
 			return false;
 		}
 
-		input = readAllBytesFromFile(f);
-		std::fclose(f);
+		input = readAllBytesFromFile(file);
+		std::fclose(file);
 		return true;
 	}
 
-	static std::string gzipDeriveOutputPath(const std::string& fname, bool decompress) {
-		if (decompress) {
-			if (fname.size() > 3 && fname.substr(fname.size() - 3) == ".gz") {
-				return fname.substr(0, fname.size() - 3);
-			}
+	static std::string gzipDeriveOutputPath(const std::string& path, bool decompress) {
+		if (!decompress) return path + ".gz";
 
-			return fname + ".out";
+		if (path.size() > 3 && path.substr(path.size() - 3) == ".gz") {
+			return path.substr(0, path.size() - 3);
 		}
 
-		return fname + ".gz";
+		return path + ".out";
 	}
 
-	static int gzipTransform(const GzipOptions& opt, const std::string& fname,
-	                         const std::vector<std::uint8_t>& input,
-	                         std::vector<std::uint8_t>& output) {
-		if (!opt.decompress) {
+	static int gzipTransform(const GzipOptions& options, const std::string& path,
+			const std::vector<std::uint8_t>& input, std::vector<std::uint8_t>& output) {
+		if (!options.decompress) {
 			gzipEncodeStored(input, output);
 			return 0;
 		}
 
-		std::size_t s, e;
-		if (!gzipParseHeader(input, s, e)) {
-			std::fprintf(stderr, "wbsh: gunzip: not in gzip format: %s\n", fname.c_str());
+		std::size_t deflate_start;
+		std::size_t deflate_end;
+		if (!gzipParseHeader(input, deflate_start, deflate_end)) {
+			std::fprintf(stderr, "wbsh: gunzip: not in gzip format: %s\n", path.c_str());
 			return 1;
 		}
 
-		if (!inflateRaw(input.data() + s, e - s, output)) {
-			std::fprintf(stderr, "wbsh: gunzip: invalid compressed data: %s\n", fname.c_str());
+		if (!inflateRaw(input.data() + deflate_start, deflate_end - deflate_start, output)) {
+			std::fprintf(stderr, "wbsh: gunzip: invalid compressed data: %s\n", path.c_str());
 			return 1;
 		}
 
 		return 0;
 	}
 
-	static int gzipProcessOne(Executor& exec, const GzipOptions& opt, const std::string& fname) {
-		const char* tool = opt.decompress ? "gunzip" : "gzip";
+	static bool gzipWritesToFile(const GzipOptions& options, const std::string& path) {
+		return !options.to_stdout && !path.empty() && path != "-";
+	}
+
+	static int gzipProcessOne(Executor& exec, const GzipOptions& options, const std::string& path) {
+		const char* tool = options.decompress ? "gunzip" : "gzip";
 		std::vector<std::uint8_t> input;
-		if (!gzipLoadInput(exec, tool, fname, input)) return 1;
+		if (!gzipLoadInput(exec, tool, path, input)) return 1;
+
 		std::vector<std::uint8_t> output;
-		if (int rc = gzipTransform(opt, fname, input, output); rc != 0) return rc;
-		FILE* of = stdout;
-		std::string out_path;
-		if (!opt.to_stdout && !fname.empty() && fname != "-") {
-			out_path = gzipDeriveOutputPath(fname, opt.decompress);
-			of = fopenNative(exec, out_path, "wb");
-			if (!of) {
+		if (int status = gzipTransform(options, path, input, output); status != 0) return status;
+
+		FILE* out = stdout;
+		if (gzipWritesToFile(options, path)) {
+			const std::string out_path = gzipDeriveOutputPath(path, options.decompress);
+			out = fopenNative(exec, out_path, "wb");
+			if (out == nullptr) {
 				perr(tool, out_path, std::error_code(errno, std::system_category()));
 				return 1;
 			}
 		}
 
-		std::fwrite(output.data(), 1, output.size(), of);
-		if (of != stdout) std::fclose(of);
-		if (!opt.to_stdout && !opt.keep && !fname.empty() && fname != "-") {
+		std::fwrite(output.data(), 1, output.size(), out);
+		if (out != stdout) std::fclose(out);
+
+		if (gzipWritesToFile(options, path) && !options.keep) {
 			std::error_code ec;
-			std::filesystem::remove(toNative(exec, fname), ec);
+			fs::remove(toNative(exec, path), ec);
 		}
 
 		return 0;
 	}
 
 	static int builtin_gzip(Executor& exec, const std::vector<std::string>& args) {
-		GzipOptions opt = parseGzipArgs(args);
-		if (opt.files.empty()) {
-			opt.to_stdout = true;
-			return gzipProcessOne(exec, opt, "");
+		GzipOptions options = parseGzipArgs(args);
+		if (options.files.empty()) {
+			options.to_stdout = true;
+			return gzipProcessOne(exec, options, "");
 		}
 
-		int rc = 0;
-		for (const auto& f : opt.files) {
-			int r = gzipProcessOne(exec, opt, f);
-			if (r) rc = r;
+		int status = 0;
+		for (const auto& file : options.files) {
+			const int file_status = gzipProcessOne(exec, options, file);
+			if (file_status != 0) status = file_status;
 		}
 
-		return rc;
+		return status;
 	}
 
 	static int builtin_gunzip(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> a = { "-d" };
-		a.insert(a.end(), args.begin(), args.end());
-		return builtin_gzip(exec, a);
+		std::vector<std::string> gzip_args = { "-d" };
+		gzip_args.insert(gzip_args.end(), args.begin(), args.end());
+		return builtin_gzip(exec, gzip_args);
 	}
 
 	static int builtin_zcat(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> a = { "-d", "-c" };
-		a.insert(a.end(), args.begin(), args.end());
-		return builtin_gzip(exec, a);
+		std::vector<std::string> gzip_args = { "-d", "-c" };
+		gzip_args.insert(gzip_args.end(), args.begin(), args.end());
+		return builtin_gzip(exec, gzip_args);
 	}
 
-	std::uint16_t zipR16(const std::uint8_t* p) {
-		return (std::uint16_t)(p[0] | (p[1] << 8));
-	}
+	static bool zipFindEocd(const std::vector<std::uint8_t>& bytes, std::size_t& pos) {
+		if (bytes.size() < kZipEocdSize) return false;
 
-	std::uint32_t zipR32(const std::uint8_t* p) {
-		return (std::uint32_t)p[0]
-			| ((std::uint32_t)p[1] << 8)
-			| ((std::uint32_t)p[2] << 16)
-			| ((std::uint32_t)p[3] << 24);
-	}
+		const std::size_t max_back = (std::min)(bytes.size(), kZipEocdSearchLimit);
+		const std::size_t search_floor = bytes.size() - max_back;
+		for (std::size_t i = bytes.size() - kZipEocdSize; i + kZipEocdSize >= search_floor; --i) {
+			if (readLe32(bytes.data() + i) == kZipEocdSig) {
+				pos = i;
+				return true;
+			}
 
-	static void zipW16(std::vector<std::uint8_t>& out, std::uint16_t v) {
-		out.push_back((std::uint8_t)(v & 0xFF));
-		out.push_back((std::uint8_t)((v >> 8) & 0xFF));
-	}
-
-	static void zipW32(std::vector<std::uint8_t>& out, std::uint32_t v) {
-		out.push_back((std::uint8_t)(v & 0xFF));
-		out.push_back((std::uint8_t)((v >> 8) & 0xFF));
-		out.push_back((std::uint8_t)((v >> 16) & 0xFF));
-		out.push_back((std::uint8_t)((v >> 24) & 0xFF));
-	}
-
-	static bool zipFindEOCD(const std::vector<std::uint8_t>& bytes, std::size_t& pos) {
-		if (bytes.size() < 22) return false;
-		std::size_t max_back = bytes.size() < 65557 ? bytes.size() : 65557;
-		for (std::size_t i = bytes.size() - 22; i + 22 >= bytes.size() - max_back; --i) {
-			if (zipR32(bytes.data() + i) == 0x06054B50u) { pos = i; return true; }
 			if (i == 0) break;
 		}
 
 		return false;
 	}
 
-	namespace unzip_internal {
+	namespace unzip_detail {
 		struct UnzipOptions {
 			bool list_only = false;
 			bool to_stdout = false;
@@ -589,333 +696,365 @@ namespace wbsh {
 			std::uint32_t lfh_off;
 			std::string name;
 		};
-	}  // namespace unzip_internal
+	}  // namespace unzip_detail
 
-	static unzip_internal::UnzipOptions parseUnzipArgs(const std::vector<std::string>& args) {
-		unzip_internal::UnzipOptions o;
+	using unzip_detail::UnzipOptions;
+	using unzip_detail::CentralEntry;
+
+	// -o (overwrite) is the default and -n (never overwrite) is not
+	// implemented, so both are accepted and ignored.
+	static UnzipOptions parseUnzipArgs(const std::vector<std::string>& args) {
+		UnzipOptions options;
 		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& a = args[i];
-			if      (a == "-l") o.list_only = true;
-			else if (a == "-p") o.to_stdout = true;
-			else if (a == "-o") { /* overwrite (default) */ }
-			else if (a == "-n") { /* never overwrite — not implemented */ }
-			else if (a == "-d" && i + 1 < args.size()) o.outdir = args[++i];
-			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore */ }
-			else if (o.archive.empty()) o.archive = a;
-			else o.select.push_back(a);
+			const std::string& arg = args[i];
+			if (arg == "-l") options.list_only = true;
+			else if (arg == "-p") options.to_stdout = true;
+			else if (arg == "-d" && i + 1 < args.size()) options.outdir = args[++i];
+			else if (isOptionArg(arg)) continue;
+			else if (options.archive.empty()) options.archive = arg;
+			else options.select.push_back(arg);
 		}
 
-		return o;
+		return options;
 	}
 
-	static bool readZipCentralEntry(const std::vector<std::uint8_t>& bytes, std::size_t* p,
-	                                unzip_internal::CentralEntry& e) {
-		if (*p + 46 > bytes.size()) return false;
-		if (zipR32(bytes.data() + *p) != 0x02014B50u) return false;
-		e.method  = zipR16(bytes.data() + *p + 10);
-		e.csize   = zipR32(bytes.data() + *p + 20);
-		e.usize   = zipR32(bytes.data() + *p + 24);
-		const std::uint16_t nlen = zipR16(bytes.data() + *p + 28);
-		const std::uint16_t xlen = zipR16(bytes.data() + *p + 30);
-		const std::uint16_t clen = zipR16(bytes.data() + *p + 32);
-		e.lfh_off = zipR32(bytes.data() + *p + 42);
-		e.name.assign(reinterpret_cast<const char*>(bytes.data() + *p + 46), nlen);
-		*p += 46 + nlen + xlen + clen;
+	static bool readZipCentralEntry(const std::vector<std::uint8_t>& bytes, std::size_t& pos,
+			CentralEntry& entry) {
+		if (pos + kZipCentralEntrySize > bytes.size()) return false;
+		const std::uint8_t* record = bytes.data() + pos;
+		if (readLe32(record) != kZipCentralDirSig) return false;
+
+		entry.method  = readLe16(record + 10);
+		entry.csize   = readLe32(record + 20);
+		entry.usize   = readLe32(record + 24);
+		const std::uint16_t name_length    = readLe16(record + 28);
+		const std::uint16_t extra_length   = readLe16(record + 30);
+		const std::uint16_t comment_length = readLe16(record + 32);
+		entry.lfh_off = readLe32(record + 42);
+		entry.name.assign(reinterpret_cast<const char*>(record + kZipCentralEntrySize),
+			name_length);
+
+		pos += kZipCentralEntrySize + name_length + extra_length + comment_length;
 		return true;
 	}
 
 	static bool decompressZipEntry(const std::vector<std::uint8_t>& bytes,
-	                               const unzip_internal::CentralEntry& e,
-	                               std::vector<std::uint8_t>& out_data) {
-		if (e.lfh_off + 30 > bytes.size()) return false;
-		if (zipR32(bytes.data() + e.lfh_off) != 0x04034B50u) return false;
-		const std::uint16_t l_nlen = zipR16(bytes.data() + e.lfh_off + 26);
-		const std::uint16_t l_xlen = zipR16(bytes.data() + e.lfh_off + 28);
-		const std::size_t data_off = e.lfh_off + 30 + l_nlen + l_xlen;
-		if (data_off + e.csize > bytes.size()) return false;
+			const CentralEntry& entry, std::vector<std::uint8_t>& out_data) {
+		if (entry.lfh_off + kZipLocalHeaderSize > bytes.size()) return false;
+		const std::uint8_t* header = bytes.data() + entry.lfh_off;
+		if (readLe32(header) != kZipLocalHeaderSig) return false;
 
-		if (e.method == 0) {
-			out_data.assign(bytes.begin() + data_off,
-			                bytes.begin() + data_off + e.csize);
+		const std::uint16_t name_length  = readLe16(header + 26);
+		const std::uint16_t extra_length = readLe16(header + 28);
+		const std::size_t data_off =
+			entry.lfh_off + kZipLocalHeaderSize + name_length + extra_length;
+		if (data_off + entry.csize > bytes.size()) return false;
+
+		if (entry.method == kZipMethodStored) {
+			out_data.assign(bytes.begin() + data_off, bytes.begin() + data_off + entry.csize);
 			return true;
 		}
 
-		if (e.method == 8) {
-			return inflateRaw(bytes.data() + data_off, e.csize, out_data);
+		if (entry.method == kZipMethodDeflate) {
+			return inflateRaw(bytes.data() + data_off, entry.csize, out_data);
 		}
 
 		return false;
 	}
 
 	static void writeZipEntryToDisk(Executor& exec, const std::string& outdir,
-	                                const std::string& name,
-	                                const std::vector<std::uint8_t>& data) {
+			const std::string& name, const std::vector<std::uint8_t>& data) {
 		const std::string out_path = outdir.empty() ? name : (outdir + "/" + name);
-		if (!name.empty() && name.back() == '/') {
-			std::error_code ec;
-			std::filesystem::create_directories(toNative(exec, out_path), ec);
-			return;
-		}
-
-		std::filesystem::path pp = toNative(exec, out_path);
 		std::error_code ec;
-		if (pp.has_parent_path()) {
-			std::filesystem::create_directories(pp.parent_path(), ec);
-		}
-
-		FILE* of = openUtf8(pathToUtf8(pp), "wb");
-		if (!of) {
-			perr("unzip", out_path,
-				std::error_code(errno, std::system_category()));
+		if (!name.empty() && name.back() == '/') {
+			fs::create_directories(toNative(exec, out_path), ec);
 			return;
 		}
 
-		std::fwrite(data.data(), 1, data.size(), of);
-		std::fclose(of);
+		const fs::path native = toNative(exec, out_path);
+		if (native.has_parent_path()) fs::create_directories(native.parent_path(), ec);
+
+		FILE* out = openUtf8(pathToUtf8(native), "wb");
+		if (out == nullptr) {
+			perr("unzip", out_path, std::error_code(errno, std::system_category()));
+			return;
+		}
+
+		std::fwrite(data.data(), 1, data.size(), out);
+		std::fclose(out);
 	}
 
-	static bool entryIsSelected(const std::vector<std::string>& select,
-	                            const std::string& name) {
+	static bool entryIsSelected(const std::vector<std::string>& select, const std::string& name) {
 		if (select.empty()) return true;
-		for (const auto& s : select) if (s == name) return true;
+		for (const auto& wanted : select) {
+			if (wanted == name) return true;
+		}
+
 		return false;
 	}
 
 	static bool unzipLoadArchive(Executor& exec, const std::string& path,
-	                             std::vector<std::uint8_t>& out) {
-		FILE* f = fopenNative(exec, path, "rb");
-		if (!f) {
+			std::vector<std::uint8_t>& bytes) {
+		FILE* file = fopenNative(exec, path, "rb");
+		if (file == nullptr) {
 			perr("unzip", path, std::error_code(errno, std::system_category()));
 			return false;
 		}
 
-		out = readAllBytesFromFile(f);
-		std::fclose(f);
+		bytes = readAllBytesFromFile(file);
+		std::fclose(file);
 		return true;
 	}
 
-	static void unzipHandleEntry(Executor& exec, const unzip_internal::UnzipOptions& o,
-	                             const std::vector<std::uint8_t>& bytes,
-	                             const unzip_internal::CentralEntry& e,
-	                             std::size_t& total_bytes) {
-		if (o.list_only) {
+	static void unzipHandleEntry(Executor& exec, const UnzipOptions& options,
+			const std::vector<std::uint8_t>& bytes, const CentralEntry& entry,
+			std::size_t& total_bytes) {
+		if (options.list_only) {
 			std::printf("%9u  ----------- ------  %s\n",
-				static_cast<unsigned>(e.usize), e.name.c_str());
-			total_bytes += e.usize;
+				static_cast<unsigned>(entry.usize), entry.name.c_str());
+			total_bytes += entry.usize;
 			return;
 		}
 
 		std::vector<std::uint8_t> data;
-		if (!decompressZipEntry(bytes, e, data)) {
+		if (!decompressZipEntry(bytes, entry, data)) {
 			std::fprintf(stderr,
-				"wbsh: unzip: inflate / unsupported-method on %s\n", e.name.c_str());
+				"wbsh: unzip: inflate / unsupported-method on %s\n", entry.name.c_str());
 			return;
 		}
 
-		if (o.to_stdout) {
+		if (options.to_stdout) {
 			std::fwrite(data.data(), 1, data.size(), stdout);
 			return;
 		}
 
-		writeZipEntryToDisk(exec, o.outdir, e.name, data);
-		std::printf("  inflating: %s\n", e.name.c_str());
+		writeZipEntryToDisk(exec, options.outdir, entry.name, data);
+		std::printf("  inflating: %s\n", entry.name.c_str());
+	}
+
+	static void printUnzipListHeader(const std::string& archive) {
+		std::printf("Archive:  %s\n", archive.c_str());
+		std::printf("  Length      Date    Time    Name\n");
+		std::printf("---------  ---------- -----   ----\n");
+	}
+
+	static void printUnzipListFooter(std::size_t total_bytes, std::uint16_t total) {
+		std::printf("---------                     -------\n");
+		std::printf("%9zu                     %u files\n",
+			total_bytes, static_cast<unsigned>(total));
 	}
 
 	static int builtin_unzip(Executor& exec, const std::vector<std::string>& args) {
-		const unzip_internal::UnzipOptions o = parseUnzipArgs(args);
-		if (o.archive.empty()) {
+		const UnzipOptions options = parseUnzipArgs(args);
+		if (options.archive.empty()) {
 			perr("unzip", "missing archive name");
 			return 1;
 		}
 
 		std::vector<std::uint8_t> bytes;
-		if (!unzipLoadArchive(exec, o.archive, bytes)) return 1;
+		if (!unzipLoadArchive(exec, options.archive, bytes)) return 1;
 
 		std::size_t eocd = 0;
-		if (!zipFindEOCD(bytes, eocd)) {
-			perr("unzip", "not a zip archive: " + o.archive);
+		if (!zipFindEocd(bytes, eocd)) {
+			perr("unzip", "not a zip archive: " + options.archive);
 			return 1;
 		}
 
-		const std::uint16_t total = zipR16(bytes.data() + eocd + 10);
-		std::size_t p = zipR32(bytes.data() + eocd + 16);
-
-		if (o.list_only) {
-			std::printf("Archive:  %s\n", o.archive.c_str());
-			std::printf("  Length      Date    Time    Name\n");
-			std::printf("---------  ---------- -----   ----\n");
-		}
+		const std::uint16_t total = readLe16(bytes.data() + eocd + 10);
+		std::size_t pos = readLe32(bytes.data() + eocd + 16);
+		if (options.list_only) printUnzipListHeader(options.archive);
 
 		std::size_t total_bytes = 0;
 		for (std::size_t k = 0; k < total; ++k) {
-			unzip_internal::CentralEntry e;
-			if (!readZipCentralEntry(bytes, &p, e)) break;
-			if (!entryIsSelected(o.select, e.name)) continue;
-			unzipHandleEntry(exec, o, bytes, e, total_bytes);
+			CentralEntry entry;
+			if (!readZipCentralEntry(bytes, pos, entry)) break;
+			if (!entryIsSelected(options.select, entry.name)) continue;
+			unzipHandleEntry(exec, options, bytes, entry, total_bytes);
 		}
 
-		if (o.list_only) {
-			std::printf("---------                     -------\n");
-			std::printf("%9zu                     %u files\n",
-				total_bytes, static_cast<unsigned>(total));
-		}
-
+		if (options.list_only) printUnzipListFooter(total_bytes, total);
 		return 0;
 	}
 
-	namespace zip_internal {
+	namespace zip_detail {
 		struct ZipCdEntry {
 			std::string name;
 			std::uint32_t crc;
 			std::uint32_t size;
 			std::uint32_t lfh_off;
 		};
-	}  // namespace zip_internal
+
+		struct ZipOptions {
+			bool recurse = false;
+			std::string archive;
+			std::vector<std::string> inputs;
+		};
+	}  // namespace zip_detail
+
+	using zip_detail::ZipCdEntry;
+	using zip_detail::ZipOptions;
+
+	static void gatherZipDirectory(const fs::path& dir, std::vector<std::string>& paths) {
+		std::error_code ec;
+		for (auto it = fs::recursive_directory_iterator(dir, ec);
+				it != fs::recursive_directory_iterator(); it.increment(ec)) {
+			if (ec) break;
+			if (!it->is_regular_file(ec)) continue;
+
+			std::string rel = pathToUtf8(fs::relative(it->path(), fs::current_path(ec)));
+			std::replace(rel.begin(), rel.end(), '\\', '/');
+			paths.push_back(std::move(rel));
+		}
+	}
 
 	static std::vector<std::string> gatherZipInputs(Executor& exec,
-	                                                const std::vector<std::string>& inputs,
-	                                                bool recurse) {
-		namespace fs = std::filesystem;
+			const std::vector<std::string>& inputs, bool recurse) {
 		std::vector<std::string> paths;
-		for (const auto& in : inputs) {
-			const fs::path win = toNative(exec, in);
+		for (const auto& input : inputs) {
+			const fs::path native = toNative(exec, input);
 			std::error_code ec;
-			if (fs::is_directory(win, ec) && recurse) {
-				for (auto it = fs::recursive_directory_iterator(win, ec);
-				     it != fs::recursive_directory_iterator(); it.increment(ec))
-				{
-					if (ec) break;
-					if (it->is_regular_file(ec)) {
-						std::string rel = pathToUtf8(fs::relative(it->path(),
-							fs::current_path(ec)));
-						std::replace(rel.begin(), rel.end(), '\\', '/');
-						paths.push_back(std::move(rel));
-					}
-				}
-			} else if (fs::is_regular_file(win, ec)) {
-				paths.push_back(in);
+			if (fs::is_directory(native, ec) && recurse) {
+				gatherZipDirectory(native, paths);
+			} else if (fs::is_regular_file(native, ec)) {
+				paths.push_back(input);
 			}
 		}
 
 		return paths;
 	}
 
-	static zip_internal::ZipCdEntry writeZipLocalEntry(Executor& exec,
-	                                                   const std::string& path,
-	                                                   std::vector<std::uint8_t>& out) {
-		zip_internal::ZipCdEntry meta{ path, 0, 0, 0 };
+	static void appendZipLocalHeader(std::vector<std::uint8_t>& out, const std::string& path,
+			std::uint32_t crc, std::uint32_t size) {
+		appendLe32(out, kZipLocalHeaderSig);
+		appendLe16(out, kZipVersion);                   // version needed
+		appendLe16(out, 0);                             // flags
+		appendLe16(out, kZipMethodStored);              // method = stored
+		appendLe16(out, 0);                             // mod time
+		appendLe16(out, 0);                             // mod date
+		appendLe32(out, crc);
+		appendLe32(out, size);                          // comp size
+		appendLe32(out, size);                          // uncomp size
+		appendLe16(out, static_cast<std::uint16_t>(path.size()));
+		appendLe16(out, 0);                             // extra
+		out.insert(out.end(), path.begin(), path.end());
+	}
 
-		FILE* f = fopenNative(exec, path, "rb");
-		if (!f) {
+	static ZipCdEntry writeZipLocalEntry(Executor& exec, const std::string& path,
+			std::vector<std::uint8_t>& out) {
+		ZipCdEntry meta{ path, 0, 0, 0 };
+
+		FILE* file = fopenNative(exec, path, "rb");
+		if (file == nullptr) {
 			perr("zip", path, std::error_code(errno, std::system_category()));
 			meta.name.clear();
 			return meta;
 		}
 
-		const auto data = readAllBytesFromFile(f);
-		std::fclose(f);
+		const std::vector<std::uint8_t> data = readAllBytesFromFile(file);
+		std::fclose(file);
 
-		const std::uint32_t crc = crc32Update(0, data.data(), data.size());
-		const std::uint32_t lfh_off = static_cast<std::uint32_t>(out.size());
-
-		zipW32(out, 0x04034B50u);
-		zipW16(out, 20);                                // version needed
-		zipW16(out, 0);                                 // flags
-		zipW16(out, 0);                                 // method = stored
-		zipW16(out, 0);                                 // mod time
-		zipW16(out, 0);                                 // mod date
-		zipW32(out, crc);
-		zipW32(out, static_cast<std::uint32_t>(data.size()));
-		zipW32(out, static_cast<std::uint32_t>(data.size()));
-		zipW16(out, static_cast<std::uint16_t>(path.size()));
-		zipW16(out, 0);                                 // extra
-		out.insert(out.end(), path.begin(), path.end());
-		out.insert(out.end(), data.begin(), data.end());
-
-		meta.crc = crc;
+		meta.crc = crc32Update(0, data.data(), data.size());
 		meta.size = static_cast<std::uint32_t>(data.size());
-		meta.lfh_off = lfh_off;
+		meta.lfh_off = static_cast<std::uint32_t>(out.size());
+		appendZipLocalHeader(out, path, meta.crc, meta.size);
+		out.insert(out.end(), data.begin(), data.end());
 		return meta;
 	}
 
-	static void writeZipCentralDir(std::vector<std::uint8_t>& out,
-	                               const std::vector<zip_internal::ZipCdEntry>& cd) {
-		for (const auto& e : cd) {
-			zipW32(out, 0x02014B50u);
-			zipW16(out, 20);                            // version made
-			zipW16(out, 20);                            // version needed
-			zipW16(out, 0);                             // flags
-			zipW16(out, 0);                             // method
-			zipW16(out, 0);                             // mod time
-			zipW16(out, 0);                             // mod date
-			zipW32(out, e.crc);
-			zipW32(out, e.size);                        // comp size
-			zipW32(out, e.size);                        // uncomp size
-			zipW16(out, static_cast<std::uint16_t>(e.name.size()));
-			zipW16(out, 0);                             // extra
-			zipW16(out, 0);                             // comment len
-			zipW16(out, 0);                             // disk
-			zipW16(out, 0);                             // int attr
-			zipW32(out, 0);                             // ext attr
-			zipW32(out, e.lfh_off);
-			out.insert(out.end(), e.name.begin(), e.name.end());
-		}
+	static void appendZipCentralEntry(std::vector<std::uint8_t>& out, const ZipCdEntry& entry) {
+		appendLe32(out, kZipCentralDirSig);
+		appendLe16(out, kZipVersion);                   // version made
+		appendLe16(out, kZipVersion);                   // version needed
+		appendLe16(out, 0);                             // flags
+		appendLe16(out, kZipMethodStored);              // method
+		appendLe16(out, 0);                             // mod time
+		appendLe16(out, 0);                             // mod date
+		appendLe32(out, entry.crc);
+		appendLe32(out, entry.size);                    // comp size
+		appendLe32(out, entry.size);                    // uncomp size
+		appendLe16(out, static_cast<std::uint16_t>(entry.name.size()));
+		appendLe16(out, 0);                             // extra
+		appendLe16(out, 0);                             // comment len
+		appendLe16(out, 0);                             // disk
+		appendLe16(out, 0);                             // int attr
+		appendLe32(out, 0);                             // ext attr
+		appendLe32(out, entry.lfh_off);
+		out.insert(out.end(), entry.name.begin(), entry.name.end());
 	}
 
-	static void writeZipEocd(std::vector<std::uint8_t>& out,
-	                         std::uint32_t cd_off,
-	                         std::uint32_t cd_size,
-	                         std::uint16_t entry_count) {
-		zipW32(out, 0x06054B50u);
-		zipW16(out, 0);
-		zipW16(out, 0);
-		zipW16(out, entry_count);
-		zipW16(out, entry_count);
-		zipW32(out, cd_size);
-		zipW32(out, cd_off);
-		zipW16(out, 0);
+	static void writeZipCentralDir(std::vector<std::uint8_t>& out,
+			const std::vector<ZipCdEntry>& entries) {
+		for (const auto& entry : entries) appendZipCentralEntry(out, entry);
+	}
+
+	static void writeZipEocd(std::vector<std::uint8_t>& out, std::uint32_t cd_off,
+			std::uint32_t cd_size, std::uint16_t entry_count) {
+		appendLe32(out, kZipEocdSig);
+		appendLe16(out, 0);                             // this disk
+		appendLe16(out, 0);                             // central dir disk
+		appendLe16(out, entry_count);                   // entries on this disk
+		appendLe16(out, entry_count);                   // entries total
+		appendLe32(out, cd_size);
+		appendLe32(out, cd_off);
+		appendLe16(out, 0);                             // comment len
+	}
+
+	static ZipOptions parseZipArgs(const std::vector<std::string>& args) {
+		ZipOptions options;
+		for (const auto& arg : args) {
+			if (arg == "-r" || arg == "--recurse-paths") options.recurse = true;
+			else if (isOptionArg(arg)) continue;
+			else if (options.archive.empty()) options.archive = arg;
+			else options.inputs.push_back(arg);
+		}
+
+		return options;
+	}
+
+	static bool writeZipArchive(Executor& exec, const std::string& archive,
+			const std::vector<std::uint8_t>& bytes) {
+		FILE* out = fopenNative(exec, archive, "wb");
+		if (out == nullptr) {
+			perr("zip", archive, std::error_code(errno, std::system_category()));
+			return false;
+		}
+
+		std::fwrite(bytes.data(), 1, bytes.size(), out);
+		std::fclose(out);
+		return true;
 	}
 
 	static int builtin_zip(Executor& exec, const std::vector<std::string>& args) {
-		bool recurse = false;
-		std::string archive;
-		std::vector<std::string> inputs;
-		for (const auto& a : args) {
-			if (a == "-r" || a == "--recurse-paths") recurse = true;
-			else if (!a.empty() && a[0] == '-' && a != "-") { /* ignore */ }
-			else if (archive.empty()) archive = a;
-			else inputs.push_back(a);
-		}
-
-		if (archive.empty()) { perr("zip", "missing archive name"); return 1; }
-		if (inputs.empty())  { perr("zip", "no input files");      return 1; }
-
-		const std::vector<std::string> paths = gatherZipInputs(exec, inputs, recurse);
-
-		std::vector<std::uint8_t> out;
-		std::vector<zip_internal::ZipCdEntry> cd;
-		for (const auto& path : paths) {
-			zip_internal::ZipCdEntry e = writeZipLocalEntry(exec, path, out);
-			if (e.name.empty()) continue;
-			std::printf("  adding: %s (stored)\n", path.c_str());
-			cd.push_back(std::move(e));
-		}
-
-		const std::uint32_t cd_off = static_cast<std::uint32_t>(out.size());
-		writeZipCentralDir(out, cd);
-		const std::uint32_t cd_size = static_cast<std::uint32_t>(out.size() - cd_off);
-		writeZipEocd(out, cd_off, cd_size,
-		             static_cast<std::uint16_t>(cd.size()));
-
-		FILE* of = fopenNative(exec, archive, "wb");
-		if (!of) {
-			perr("zip", archive, std::error_code(errno, std::system_category()));
+		const ZipOptions options = parseZipArgs(args);
+		if (options.archive.empty()) {
+			perr("zip", "missing archive name");
 			return 1;
 		}
 
-		std::fwrite(out.data(), 1, out.size(), of);
-		std::fclose(of);
-		return 0;
+		if (options.inputs.empty()) {
+			perr("zip", "no input files");
+			return 1;
+		}
+
+		const std::vector<std::string> paths =
+			gatherZipInputs(exec, options.inputs, options.recurse);
+
+		std::vector<std::uint8_t> out;
+		std::vector<ZipCdEntry> entries;
+		for (const auto& path : paths) {
+			ZipCdEntry entry = writeZipLocalEntry(exec, path, out);
+			if (entry.name.empty()) continue;
+
+			std::printf("  adding: %s (stored)\n", path.c_str());
+			entries.push_back(std::move(entry));
+		}
+
+		const std::uint32_t cd_off = static_cast<std::uint32_t>(out.size());
+		writeZipCentralDir(out, entries);
+		const std::uint32_t cd_size = static_cast<std::uint32_t>(out.size() - cd_off);
+		writeZipEocd(out, cd_off, cd_size, static_cast<std::uint16_t>(entries.size()));
+
+		return writeZipArchive(exec, options.archive, out) ? 0 : 1;
 	}
 
 	void registerArchiveBuiltins(Executor& exec) {

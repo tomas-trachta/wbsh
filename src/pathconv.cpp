@@ -1,3 +1,8 @@
+/**
+ * @file pathconv.cpp
+ * @brief UTF-8 ↔ native path conversion and POSIX ↔ Win32 path translation.
+ */
+
 #include "pathconv.h"
 
 #ifdef _WIN32
@@ -12,34 +17,40 @@
 
 namespace wbsh {
 
+	static const char kWin32ListSeparator = ';';
+	static const char kPosixListSeparator = ':';
+
 	std::wstring utf8ToWide(const std::string& s) {
 #ifdef _WIN32
 		if (s.empty()) return {};
-		int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(),
-									   nullptr, 0);
-		if (n <= 0) return {};
-		std::wstring out(static_cast<std::size_t>(n), L'\0');
-		::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(),
-							  out.data(), n);
+
+		const int size = static_cast<int>(s.size());
+		const int length = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), size, nullptr, 0);
+		if (length <= 0) return {};
+
+		std::wstring out(static_cast<std::size_t>(length), L'\0');
+		::MultiByteToWideChar(CP_UTF8, 0, s.data(), size, out.data(), length);
 		return out;
 #else
 		return std::wstring(s.begin(), s.end());
-#endif
+#endif /* _WIN32 */
 	}
 
 	std::string wideToUtf8(const std::wstring& w) {
 #ifdef _WIN32
 		if (w.empty()) return {};
-		int n = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(),
-									   nullptr, 0, nullptr, nullptr);
-		if (n <= 0) return {};
-		std::string out(static_cast<std::size_t>(n), '\0');
-		::WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(),
-							  out.data(), n, nullptr, nullptr);
+
+		const int size = static_cast<int>(w.size());
+		const int length = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), size,
+			nullptr, 0, nullptr, nullptr);
+		if (length <= 0) return {};
+
+		std::string out(static_cast<std::size_t>(length), '\0');
+		::WideCharToMultiByte(CP_UTF8, 0, w.data(), size, out.data(), length, nullptr, nullptr);
 		return out;
 #else
 		return std::string(w.begin(), w.end());
-#endif
+#endif /* _WIN32 */
 	}
 
 	std::filesystem::path utf8ToPath(const std::string& s) {
@@ -47,7 +58,7 @@ namespace wbsh {
 		return std::filesystem::path(utf8ToWide(s));
 #else
 		return std::filesystem::path(s);
-#endif
+#endif /* _WIN32 */
 	}
 
 	std::string pathToUtf8(const std::filesystem::path& p) {
@@ -55,35 +66,46 @@ namespace wbsh {
 		return wideToUtf8(p.wstring());
 #else
 		return p.string();
-#endif
+#endif /* _WIN32 */
 	}
 
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode) {
 #ifdef _WIN32
-		std::wstring wpath = utf8ToWide(utf8_path);
-		std::wstring wmode;
-		for (const char* m = mode; *m; ++m) {
-			wmode.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*m)));
+		const std::wstring wide_path = utf8ToWide(utf8_path);
+		std::wstring wide_mode;
+		for (const char* m = mode; *m != '\0'; ++m) {
+			wide_mode.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*m)));
 		}
 
-		return ::_wfopen(wpath.c_str(), wmode.c_str());
+		return ::_wfopen(wide_path.c_str(), wide_mode.c_str());
 #else
 		return std::fopen(utf8_path.c_str(), mode);
-#endif
+#endif /* _WIN32 */
 	}
 
 	static std::string getTempDir() {
 #ifdef _WIN32
-		char buf[MAX_PATH];
-		DWORD n = GetTempPathA(MAX_PATH, buf);
-		if (n == 0 || n > MAX_PATH) return {};
-		std::string s(buf, n);
-		while (!s.empty() && (s.back() == '\\' || s.back() == '/')) s.pop_back();
-		return s;
+		char buffer[MAX_PATH];
+		const DWORD length = ::GetTempPathA(MAX_PATH, buffer);
+		if (length == 0 || length > MAX_PATH) return {};
+
+		std::string dir(buffer, length);
+		while (!dir.empty() && (dir.back() == '\\' || dir.back() == '/')) dir.pop_back();
+		return dir;
 #else
 		return "/tmp";
-#endif
+#endif /* _WIN32 */
 	}
+
+#ifdef _WIN32
+	// "X:\" of the current drive, or empty when it cannot be told.
+	static std::string currentDriveRoot() {
+		char buffer[MAX_PATH];
+		const DWORD length = ::GetCurrentDirectoryA(MAX_PATH, buffer);
+		if (length >= 3 && buffer[1] == ':') return std::string(1, buffer[0]) + ":\\";
+		return {};
+	}
+#endif /* _WIN32 */
 
 	static void slashesToBackslashes(std::string& s) {
 		for (char& c : s) {
@@ -97,22 +119,36 @@ namespace wbsh {
 		}
 	}
 
-	PathConv::PathConv() {
-		for (char c = 'a'; c <= 'z'; ++c) {
-			Mount m;
-			m.posix = std::string("/") + c;
-			std::string w; w += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-			w += ":";
-			m.win32 = std::move(w);
-			m.exact = false;
-			mounts_.push_back(std::move(m));
+	static bool isAscii(const std::string& s) {
+		for (unsigned char c : s) {
+			if (c >= 0x80) return false;
 		}
 
-		std::string tmp = getTempDir();
-		if (!tmp.empty()) {
-			Mount m{ "/tmp", tmp, false };
-			mounts_.push_back(std::move(m));
+		return true;
+	}
+
+	static bool isDriveLetterPath(const std::string& p) {
+		return p.size() >= 2 && std::isalpha(static_cast<unsigned char>(p[0])) && p[1] == ':';
+	}
+
+	static bool isUncPath(const std::string& p) {
+		return p.size() >= 2
+			&& (p[0] == '\\' || p[0] == '/')
+			&& (p[1] == '\\' || p[1] == '/');
+	}
+
+	PathConv::PathConv() {
+		for (char letter = 'a'; letter <= 'z'; ++letter) {
+			const char upper = static_cast<char>(std::toupper(static_cast<unsigned char>(letter)));
+			Mount mount;
+			mount.posix = std::string("/") + letter;
+			mount.win32 = std::string(1, upper) + ":";
+			mount.exact = false;
+			mounts_.push_back(std::move(mount));
 		}
+
+		const std::string temp_dir = getTempDir();
+		if (!temp_dir.empty()) mounts_.push_back({ "/tmp", temp_dir, false });
 
 		mounts_.push_back({ "/dev/null", "NUL", true });
 
@@ -127,219 +163,243 @@ namespace wbsh {
 	}
 
 	bool PathConv::isWin32Absolute(const std::string& p) {
-		if (p.size() >= 2
-		    && std::isalpha(static_cast<unsigned char>(p[0])) && p[1] == ':') {
-			return true;
-		}
-
-		if (p.size() >= 2
-		    && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) {
-			return true;
-		}
-
-		return false;
+		return isDriveLetterPath(p) || isUncPath(p);
 	}
 
 	bool PathConv::looksLikeWin32(const std::string& s) {
 		if (isWin32Absolute(s)) return true;
-		for (char c : s) if (c == '\\') return true;
-		return false;
+		return s.find('\\') != std::string::npos;
 	}
 
-	bool PathConv::applyMount(const std::string& p, std::string& out) const {
+	const PathConv::Mount* PathConv::findMount(const std::string& p) const {
 		const Mount* best = nullptr;
-		std::size_t best_len = 0;
-		for (const auto& m : mounts_) {
-			if (m.exact) {
-				if (p == m.posix) { best = &m; best_len = m.posix.size(); break; }
+		std::size_t best_length = 0;
+
+		for (const auto& mount : mounts_) {
+			if (mount.exact) {
+				if (p == mount.posix) return &mount;
 				continue;
 			}
 
-			if (p.size() < m.posix.size()) continue;
-			if (p.compare(0, m.posix.size(), m.posix) != 0) continue;
-			if (p.size() > m.posix.size() && p[m.posix.size()] != '/') continue;
-			if (m.posix.size() > best_len) {
-				best = &m;
-				best_len = m.posix.size();
+			const std::size_t prefix_length = mount.posix.size();
+			if (p.size() < prefix_length) continue;
+			if (p.compare(0, prefix_length, mount.posix) != 0) continue;
+			if (p.size() > prefix_length && p[prefix_length] != '/') continue;
+
+			if (prefix_length > best_length) {
+				best = &mount;
+				best_length = prefix_length;
 			}
 		}
 
-		if (!best) return false;
+		return best;
+	}
+
+	static std::string joinMountTail(const std::string& win32_root, std::string tail) {
+		if (!tail.empty() && tail.front() == '/') tail.erase(0, 1);
+
+		std::string out = win32_root;
+		if (tail.empty()) {
+			if (!out.empty() && out.back() == ':') out.push_back('\\');
+		} else {
+			if (!out.empty() && out.back() != '\\' && out.back() != '/') out.push_back('\\');
+			out += tail;
+		}
+
+		slashesToBackslashes(out);
+		return out;
+	}
+
+	bool PathConv::applyMount(const std::string& p, std::string& out) const {
+		const Mount* best = findMount(p);
+		if (best == nullptr) return false;
+
 		if (best->exact) {
 			out = best->win32;
 			return true;
 		}
 
-		std::string tail = p.substr(best->posix.size());
-		if (!tail.empty() && tail.front() == '/') tail.erase(0, 1);
-		std::string w = best->win32;
-		if (!tail.empty()) {
-			if (!w.empty() && w.back() != '\\' && w.back() != '/') w.push_back('\\');
-			w += tail;
-		} else {
-			if (!w.empty() && w.back() == ':') w.push_back('\\');
-		}
-
-		slashesToBackslashes(w);
-		out = std::move(w);
+		out = joinMountTail(best->win32, p.substr(best->posix.size()));
 		return true;
 	}
 
 	std::string PathConv::toWin32(const std::string& p) const {
 		if (p.empty()) return p;
+
 		if (looksLikeWin32(p)) {
-			std::string s = p;
-			slashesToBackslashes(s);
-			return s;
+			std::string native = p;
+			slashesToBackslashes(native);
+			return native;
 		}
 
 		if (p == "/") {
 #ifdef _WIN32
-			char buf[MAX_PATH];
-			DWORD n = GetCurrentDirectoryA(MAX_PATH, buf);
-			if (n >= 3 && buf[1] == ':') {
-				return std::string(1, buf[0]) + ":\\";
-			}
-
+			const std::string root = currentDriveRoot();
+			if (!root.empty()) return root;
 			return "C:\\";
 #else
 			return "/";
-#endif
+#endif /* _WIN32 */
 		}
 
-		if (isPosixAbsolute(p)) {
-			std::string out;
-			if (applyMount(p, out)) return out;
-			std::string s = p.substr(1);
-			slashesToBackslashes(s);
+		if (!isPosixAbsolute(p)) return p;
+
+		std::string mounted;
+		if (applyMount(p, mounted)) return mounted;
+
+		std::string rest = p.substr(1);
+		slashesToBackslashes(rest);
 #ifdef _WIN32
-			char buf[MAX_PATH];
-			DWORD n = GetCurrentDirectoryA(MAX_PATH, buf);
-			if (n >= 3 && buf[1] == ':') {
-				return std::string(1, buf[0]) + ":\\" + s;
-			}
-#endif
-			return "\\" + s;
-		}
-
-		return p;
+		const std::string root = currentDriveRoot();
+		if (!root.empty()) return root + rest;
+#endif /* _WIN32 */
+		return "\\" + rest;
 	}
 
 	std::string PathConv::toPosix(const std::string& p) const {
 		if (p.empty()) return p;
-		std::string s = p;
-		if (s.size() >= 2 && std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':') {
-			char drive = static_cast<char>(std::tolower(static_cast<unsigned char>(s[0])));
-			std::string rest = s.substr(2);
+
+		if (isDriveLetterPath(p)) {
+			const char drive = static_cast<char>(std::tolower(static_cast<unsigned char>(p[0])));
+			std::string rest = p.substr(2);
 			backslashesToSlashes(rest);
 			if (rest.empty() || rest[0] != '/') rest.insert(rest.begin(), '/');
 			return std::string("/") + drive + rest;
 		}
 
-		if (s.size() >= 2 && (s[0] == '\\' || s[0] == '/') && (s[1] == '\\' || s[1] == '/')) {
-			backslashesToSlashes(s);
-			return s;
-		}
-
-		backslashesToSlashes(s);
-		return s;
+		std::string posix = p;
+		backslashesToSlashes(posix);
+		return posix;
 	}
 
-	std::string PathConv::toWin32Short(const std::string& p) const {
-		std::string longw = toWin32(p);
 #ifdef _WIN32
-		if (longw.empty()) return longw;
-		bool has_non_ascii = false;
-		for (unsigned char c : longw) {
-			if (c >= 0x80) { has_non_ascii = true; break; }
-		}
+	static bool toWideStrict(const std::string& utf8, std::wstring& out) {
+		const int size = static_cast<int>(utf8.size());
+		const int length = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), size, nullptr, 0);
+		if (length <= 0) return false;
 
-		if (!has_non_ascii) return longw;
+		out.assign(static_cast<std::size_t>(length), L'\0');
+		::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), size, out.data(), length);
+		return true;
+	}
 
-		int wn = ::MultiByteToWideChar(CP_UTF8, 0, longw.data(), (int)longw.size(),
-									   nullptr, 0);
-		if (wn <= 0) return longw;
-		std::wstring wlong(static_cast<std::size_t>(wn), L'\0');
-		::MultiByteToWideChar(CP_UTF8, 0, longw.data(), (int)longw.size(),
-							  wlong.data(), wn);
+	static bool toUtf8Strict(const std::wstring& wide, std::string& out) {
+		const int size = static_cast<int>(wide.size());
+		const int length = ::WideCharToMultiByte(CP_UTF8, 0, wide.data(), size,
+			nullptr, 0, nullptr, nullptr);
+		if (length <= 0) return false;
 
-		DWORD need = ::GetShortPathNameW(wlong.c_str(), nullptr, 0);
-		if (need == 0) return longw;
-		std::wstring wshort(need, L'\0');
-		DWORD got = ::GetShortPathNameW(wlong.c_str(), wshort.data(), need);
-		if (got == 0 || got >= need) return longw;
-		wshort.resize(got);
+		out.assign(static_cast<std::size_t>(length), '\0');
+		::WideCharToMultiByte(CP_UTF8, 0, wide.data(), size, out.data(), length, nullptr, nullptr);
+		return true;
+	}
 
-		int n = ::WideCharToMultiByte(CP_UTF8, 0, wshort.data(), (int)wshort.size(),
-									  nullptr, 0, nullptr, nullptr);
-		if (n <= 0) return longw;
-		std::string out(static_cast<std::size_t>(n), '\0');
-		::WideCharToMultiByte(CP_UTF8, 0, wshort.data(), (int)wshort.size(),
-							  out.data(), n, nullptr, nullptr);
+	static bool queryShortPathName(const std::wstring& long_form, std::wstring& out) {
+		const DWORD needed = ::GetShortPathNameW(long_form.c_str(), nullptr, 0);
+		if (needed == 0) return false;
+
+		out.assign(needed, L'\0');
+		const DWORD got = ::GetShortPathNameW(long_form.c_str(), out.data(), needed);
+		if (got == 0 || got >= needed) return false;
+
+		out.resize(got);
+		return true;
+	}
+#endif /* _WIN32 */
+
+	std::string PathConv::toWin32Short(const std::string& p) const {
+		const std::string long_form = toWin32(p);
+#ifdef _WIN32
+		if (long_form.empty() || isAscii(long_form)) return long_form;
+
+		std::wstring wide_long;
+		if (!toWideStrict(long_form, wide_long)) return long_form;
+
+		std::wstring wide_short;
+		if (!queryShortPathName(wide_long, wide_short)) return long_form;
+
+		std::string short_form;
+		if (!toUtf8Strict(wide_short, short_form)) return long_form;
 
 		// If 8.3 generation is off on this volume, GetShortPathName returns
 		// the long form unchanged — still non-ASCII, still mangleable.
 		// Fall back to the long form (caller is no worse off than before).
-		for (unsigned char c : out) {
-			if (c >= 0x80) return longw;
+		if (!isAscii(short_form)) return long_form;
+		return short_form;
+#else
+		return long_form;
+#endif /* _WIN32 */
+	}
+
+	static void appendListEntry(std::string& out, char separator, const std::string& entry) {
+		if (!out.empty()) out.push_back(separator);
+		out += entry;
+	}
+
+	static std::vector<std::string> splitWin32PathList(const std::string& list) {
+		std::vector<std::string> entries;
+		std::string current;
+		for (char c : list) {
+			if (c != kWin32ListSeparator) {
+				current.push_back(c);
+				continue;
+			}
+
+			entries.push_back(current);
+			current.clear();
 		}
 
-		return out;
-#else
-		return longw;
-#endif /* _WIN32 */
+		entries.push_back(current);
+		return entries;
+	}
+
+	// A colon right after a lone letter is a drive separator, not a
+	// list separator, so `C:\x:/usr/bin` splits into two entries.
+	static std::vector<std::string> splitPosixPathList(const std::string& list) {
+		std::vector<std::string> entries;
+		std::string current;
+		for (char c : list) {
+			if (c != kPosixListSeparator) {
+				current.push_back(c);
+				continue;
+			}
+
+			const bool drive_colon = current.size() == 1
+				&& std::isalpha(static_cast<unsigned char>(current[0]));
+			if (drive_colon) {
+				current.push_back(c);
+				continue;
+			}
+
+			entries.push_back(current);
+			current.clear();
+		}
+
+		entries.push_back(current);
+		return entries;
 	}
 
 	std::string PathConv::pathListWin32ToPosix(const std::string& list) const {
 		if (list.empty()) return list;
+
 		std::string out;
-		std::string cur;
-		auto flush = [&]() {
-			if (!cur.empty()) {
-				if (!out.empty()) out.push_back(':');
-				out += toPosix(cur);
-				cur.clear();
-			}
-		};
-		for (char c : list) {
-			if (c == ';') flush();
-			else cur.push_back(c);
+		for (const std::string& entry : splitWin32PathList(list)) {
+			if (entry.empty()) continue;
+			appendListEntry(out, kPosixListSeparator, toPosix(entry));
 		}
 
-		flush();
 		return out;
 	}
 
 	std::string PathConv::pathListPosixToWin32(const std::string& list) const {
 		if (list.empty()) return list;
+
 		std::string out;
-		std::string cur;
-		auto flush = [&]() {
-			if (!cur.empty()) {
-				if (!out.empty()) out.push_back(';');
-				out += toWin32(cur);
-				cur.clear();
-			}
-		};
-		std::size_t i = 0;
-		while (i < list.size()) {
-			char c = list[i];
-			if (c == ':') {
-				if (cur.size() == 1 && std::isalpha(static_cast<unsigned char>(cur[0]))) {
-					cur.push_back(c);
-				} else {
-					flush();
-				}
-
-				++i;
-				continue;
-			}
-
-			cur.push_back(c);
-			++i;
+		for (const std::string& entry : splitPosixPathList(list)) {
+			if (entry.empty()) continue;
+			appendListEntry(out, kWin32ListSeparator, toWin32(entry));
 		}
 
-		flush();
 		return out;
 	}
 
@@ -349,34 +409,34 @@ namespace wbsh {
 		if (arg.find("://") != std::string::npos) return false;
 		if (arg[0] == '-') return false;
 		if (arg[0] != '/') return false;
+
 		// Single-letter `/x` is almost always a Win32-style switch (`cmd /c`,
 		// `cmd /k`, `where /q`, etc.). Require a deeper path before we
 		// translate, OR an exact match against a known mount.
 		if (arg.size() < 3) return false;
 		if (arg.size() >= 4 && arg[2] == '/') return true;
+
 		// /dev/std{in,out,err} and /dev/tty: pass through verbatim. Mapping
 		// to CONIN$/CONOUT$/CON breaks cross-process uses like
 		// `docker exec ... -i /dev/stdin`, where the path is meant to be
 		// interpreted by the callee (here: sqlcmd inside a Linux container).
 		if (arg == "/dev/stdin" || arg == "/dev/stdout"
 		    || arg == "/dev/stderr" || arg == "/dev/tty") return false;
-		std::string out;
-		return applyMount(arg, out);
+
+		std::string mounted;
+		return applyMount(arg, mounted);
 	}
 
 	std::string PathConv::translateArg(const std::string& arg) const {
 		if (argLooksTranslatable(arg)) return toWin32(arg);
-		if (!arg.empty() && arg[0] == '-') {
-			std::size_t eq = arg.find('=');
-			if (eq != std::string::npos && eq + 1 < arg.size()) {
-				std::string val = arg.substr(eq + 1);
-				if (argLooksTranslatable(val)) {
-					return arg.substr(0, eq + 1) + toWin32(val);
-				}
-			}
-		}
+		if (arg.empty() || arg[0] != '-') return arg;
 
-		return arg;
+		const std::size_t equals = arg.find('=');
+		if (equals == std::string::npos || equals + 1 >= arg.size()) return arg;
+
+		const std::string value = arg.substr(equals + 1);
+		if (!argLooksTranslatable(value)) return arg;
+		return arg.substr(0, equals + 1) + toWin32(value);
 	}
 
 }  // namespace wbsh

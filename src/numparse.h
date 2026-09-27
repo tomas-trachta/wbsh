@@ -29,19 +29,21 @@ namespace wbsh {
 		const char* begin = s.c_str();
 		char* end = nullptr;
 		errno = 0;
-		const long long v = std::strtoll(begin, &end, base);
+		const long long value = std::strtoll(begin, &end, base);
 		if (end == begin || errno == ERANGE) return false;
-		out = v;
-		if (consumed) *consumed = static_cast<std::size_t>(end - begin);
+
+		out = value;
+		if (consumed != nullptr) *consumed = static_cast<std::size_t>(end - begin);
 		return true;
 	}
 
 	inline bool parseInt(const std::string& s, int& out, int base = 10,
 	                     std::size_t* consumed = nullptr) {
-		long long v = 0;
-		if (!parseLL(s, v, base, consumed)) return false;
-		if (v < INT_MIN || v > INT_MAX) return false;
-		out = static_cast<int>(v);
+		long long value = 0;
+		if (!parseLL(s, value, base, consumed)) return false;
+		if (value < INT_MIN || value > INT_MAX) return false;
+
+		out = static_cast<int>(value);
 		return true;
 	}
 
@@ -50,10 +52,11 @@ namespace wbsh {
 		const char* begin = s.c_str();
 		char* end = nullptr;
 		errno = 0;
-		const unsigned long v = std::strtoul(begin, &end, base);
+		const unsigned long value = std::strtoul(begin, &end, base);
 		if (end == begin || errno == ERANGE) return false;
-		out = v;
-		if (consumed) *consumed = static_cast<std::size_t>(end - begin);
+
+		out = value;
+		if (consumed != nullptr) *consumed = static_cast<std::size_t>(end - begin);
 		return true;
 	}
 
@@ -62,10 +65,11 @@ namespace wbsh {
 		const char* begin = s.c_str();
 		char* end = nullptr;
 		errno = 0;
-		const double v = std::strtod(begin, &end);
+		const double value = std::strtod(begin, &end);
 		if (end == begin || errno == ERANGE) return false;
-		out = v;
-		if (consumed) *consumed = static_cast<std::size_t>(end - begin);
+
+		out = value;
+		if (consumed != nullptr) *consumed = static_cast<std::size_t>(end - begin);
 		return true;
 	}
 

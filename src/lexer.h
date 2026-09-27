@@ -23,16 +23,10 @@
 
 namespace wbsh {
 
-	/**
-	 * @brief Lexical token kind.
-	 *
-	 * Includes the shell's word/operator/punctuation tokens plus the
-	 * synthetic terminators `Newline` and `EndOfInput`. Reserved
-	 * words (`if`, `for`, …) are not separate token kinds; they're
-	 * detected at parse time from the raw text of a `Word` token.
-	 */
+	// Reserved words (`if`, `for`, …) are not token kinds; the parser
+	// recognises them from the raw text of a Word token.
 	enum class TokKind {
-		Word,            // generic word; reserved words detected at parse time
+		Word,
 		IoNumber,        // digits immediately followed by '<' or '>' (no space)
 		Newline,
 		EndOfInput,
@@ -66,14 +60,8 @@ namespace wbsh {
 
 	const char* tokKindName(TokKind k);
 
-	/**
-	 * @brief One segment of a Word token.
-	 *
-	 * A WORD is a sequence of segments. The lexer captures the
-	 * structural boundaries of quotes and `$`-expansion; the contents
-	 * of expansion bodies are kept as raw text and re-parsed by the
-	 * expander stage later.
-	 */
+	// One segment of a Word token. Expansion bodies are kept as raw
+	// text for the expander to re-parse.
 	struct WordSegment {
 		enum class Kind {
 			Literal,         ///< Raw literal characters.
@@ -87,112 +75,92 @@ namespace wbsh {
 			ArithExp,        ///< `$((...))` — text is the body.
 			ProcSubst,       ///< `<(...)` or `>(...)` — text is body, `proc_dir` is `<`/`>`.
 		};
-		Kind kind = Kind::Literal;          ///< What this segment is.
-		std::string text;                   ///< Raw text payload (see Kind for meaning).
-		std::vector<WordSegment> nested;    ///< Used by DoubleQuoted to hold inner segments.
-		char proc_dir = 0;                  ///< `'<'` or `'>'` for ProcSubst, 0 otherwise.
+		Kind kind = Kind::Literal;
+		std::string text;
+		std::vector<WordSegment> nested;
+		char proc_dir = 0;
 	};
 
 	const char* segKindName(WordSegment::Kind k);
 
-	/**
-	 * @brief A single lexical token.
-	 *
-	 * Word tokens carry a structured `segments` vector; operator and
-	 * punctuation tokens use only `kind`, `text`, and `loc`. Heredoc
-	 * delimiter tokens additionally carry the slurped body and its
-	 * quoting/strip flags.
-	 */
 	struct Token {
-		TokKind kind = TokKind::EndOfInput; ///< Token kind.
+		TokKind kind = TokKind::EndOfInput;
 		std::string text;                   ///< Raw spelling from the source.
 		std::vector<WordSegment> segments;  ///< Populated for TokKind::Word.
 		bool first_on_line = false;         ///< First non-whitespace token on its line.
 		SourceLoc loc;                      ///< Position of the token's first character.
 
-		// ---- Heredoc state ----
 		// Filled in when this token is the delimiter WORD that
 		// immediately follows a DLess / DLessDash operator. The body
 		// is collected after the next newline.
-		bool is_heredoc_delim = false;      ///< This token is a heredoc delimiter.
+		bool is_heredoc_delim = false;
 		bool heredoc_strip_tabs = false;    ///< `<<-` form: strip leading tabs.
 		bool heredoc_quoted = false;        ///< Delimiter quoted -> body kept verbatim.
 		std::string heredoc_body;           ///< Slurped body (excludes terminator line).
 	};
 
 	struct LexError {
-		SourceLoc loc;          ///< Where in the source the problem was detected.
-		std::string message;    ///< Human-readable description.
+		SourceLoc loc;
+		std::string message;
 	};
 
-	/**
-	 * @brief POSIX shell tokenizer.
-	 *
-	 * Constructed with a source string; call tokenize() to get the
-	 * full token vector. Errors are accumulated rather than thrown so
-	 * the parser can still try to make progress.
-	 */
+	// Errors are accumulated rather than thrown so the parser can still
+	// try to make progress.
 	class Lexer {
 	public:
 		explicit Lexer(std::string input);
 
-		/// Tokenize the entire input. The result is always terminated
-		/// with a TokKind::EndOfInput token.
+		/// The result is always terminated with a TokKind::EndOfInput token.
 		std::vector<Token> tokenize();
 
 		const std::vector<LexError>& errors() const { return errors_; }
 
 	private:
 		char peek(std::size_t n = 0) const;
-		char advance();                       // consume + return current char
+		char advance();
 		bool eof() const;
-		bool match(char c);                   // advance if peek()==c
-		bool startsWith(const char* s) const;
-		void skipLineContinuations();         // collapse "\\\n"
+		bool match(char c);
+		void skipLineContinuations();
 		void error(const SourceLoc& at, std::string msg);
 
 		void scanToken();
-		void scanOperator();                  // assumes current char starts an operator
+		void scanProcessSubstitution();
+		void scanOperator();
+		void scanArithCommand(SourceLoc start);
 		void emitOperator(SourceLoc start, TokKind kind, const char* text);
 		void scanAmpRun(SourceLoc start);
 		void scanSemiRun(SourceLoc start);
 		void scanLessRun(SourceLoc start);
 		void scanGreatRun(SourceLoc start);
-		void scanWord();                      // builds a Word token from current position
-		void skipWhitespace();                // spaces / tabs (no newlines)
-		void skipComment();                   // from '#' to end of line (excl newline)
+		void scanWord();
+		void markHeredocDelimiter(Token& word) const;
+		void skipWhitespace();
+		void skipComment();
 
-		// ---- Word internals ----
-		// Read a single segment into `out`, starting at the current position.
-		// Returns false if no more segments belong to the current word.
+		// Each reader starts at the current position and consumes one
+		// segment; readWordSegment returns false once no more segments
+		// belong to the current word.
 		bool readWordSegment(std::vector<WordSegment>& out);
-		void readSingleQuoted(WordSegment& seg);
-		void readDoubleQuoted(WordSegment& seg);
-		void readDollar(std::vector<WordSegment>& out);   // dispatch on $-form
+		void readEscapedChar(std::vector<WordSegment>& out);
+		bool readLiteralRun(std::vector<WordSegment>& out);
+		WordSegment readSingleQuoted();
+		WordSegment readDoubleQuoted();
+		void readDoubleQuotedEscape(WordSegment& seg);
+		void readDollar(std::vector<WordSegment>& out);
 		void readDollarSingleQuoted(SourceLoc start, std::vector<WordSegment>& out);
 		void readSimpleDollarVar(char n1, std::vector<WordSegment>& out);
-		void readBacktick(WordSegment& seg);
-		void readDollarBrace(WordSegment& seg);           // ${...}
-		void readDollarParen(std::vector<WordSegment>& out); // $(...) or $((...))
-		void readDollarSingle(WordSegment& seg);          // $'...'
+		WordSegment readBacktick();
+		void readDollarParen(std::vector<WordSegment>& out);
 
-		// Capture the body of a balanced ()-delimited construct starting just
-		// past the opening '('. Stops at the matching ')'. Respects strings
-		// and nested parens. Result excludes the closing ')'.
+		// The readBalanced* family starts just past the opening
+		// delimiter and consumes through the matching closer, which
+		// is not part of the result. Quoted strings and nested forms
+		// of the same construct are respected.
 		std::string readBalancedParens();
-
-		// Capture the body of a ${...} construct, starting past the '{'.
-		// Stops at the matching '}'. Respects nested ${...} and strings.
 		std::string readBalancedBraces();
-
-		// Capture a $((...)) body, starting past the leading "((".
-		// Stops at the matching "))". Respects strings and nested ((..)).
 		std::string readBalancedDoubleParens();
-
-		// Capture a `$[...]` (legacy bash arithmetic) body, starting past
-		// the opening `[`. Stops at the matching `]`. Respects strings
-		// and nested `[...]` so that array subscripts inside the
-		// expression don't terminate the form prematurely.
+		// `$[...]` (legacy bash arithmetic); nested `[...]` is respected
+		// so array subscripts inside the expression don't end the form.
 		std::string readBalancedBrackets();
 
 		// Verbatim-copy helpers shared by the readBalanced* family. Each
@@ -202,9 +170,11 @@ namespace wbsh {
 		void copySingleQuotedRun(std::string& out);
 		void copyDoubleQuotedRun(std::string& out);
 		void copyBackquotedRun  (std::string& out);
-		void copyDollarParenRun (std::string& out, int* paren_depth);
+		void copyDollarParenRun (std::string& out, int& paren_depth);
 
-		void collectHeredocBodies();          // run after each "logical" newline
+		void collectHeredocBodies();
+		std::string readHeredocBody(const Token& delim);
+		std::string readLineText();
 
 		std::string src_;
 		std::size_t pos_ = 0;
@@ -214,8 +184,8 @@ namespace wbsh {
 
 		bool at_line_start_ = true;
 
-		// Pending heredoc delimiters waiting for their body to be read after the
-		// next newline. We store indices into `tokens_` so we can fill them in.
+		// Heredoc delimiters waiting for their body after the next
+		// newline, as indices into `tokens_` so the body can be filled in.
 		struct PendingHeredoc {
 			std::size_t delim_token_index;
 		};

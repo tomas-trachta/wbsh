@@ -1,7 +1,11 @@
+/**
+ * @file lexer.cpp
+ * @brief POSIX shell tokenizer.
+ */
+
 #include "lexer.h"
 
 #include <cctype>
-#include <cstring>
 #include <utility>
 
 namespace wbsh {
@@ -57,7 +61,9 @@ namespace wbsh {
 		return "?";
 	}
 
-	static bool isBlank(char c) { return c == ' ' || c == '\t'; }
+	static bool isBlank(char c) {
+		return c == ' ' || c == '\t';
+	}
 
 	static bool isOperatorStart(char c) {
 		switch (c) {
@@ -78,25 +84,46 @@ namespace wbsh {
 		return c == '_' || std::isalnum(static_cast<unsigned char>(c));
 	}
 
+	static bool isDigit(char c) {
+		return std::isdigit(static_cast<unsigned char>(c)) != 0;
+	}
+
+	static bool isSegmentStart(char c) {
+		return c == '\\' || c == '\'' || c == '"' || c == '$' || c == '`';
+	}
+
+	static bool endsWord(char c) {
+		return isBlank(c) || c == '\n' || isOperatorStart(c);
+	}
+
+	static WordSegment segmentOf(WordSegment::Kind kind, std::string text) {
+		WordSegment segment;
+		segment.kind = kind;
+		segment.text = std::move(text);
+		return segment;
+	}
+
+	static WordSegment literalSegment(std::string text) {
+		return segmentOf(WordSegment::Kind::Literal, std::move(text));
+	}
+
 	static std::string flattenDelim(const Token& delim) {
 		std::string out;
-		for (const auto& seg : delim.segments) {
-			switch (seg.kind) {
-			case WordSegment::Kind::DoubleQuoted:
-				for (const auto& n : seg.nested) out += n.text;
-				break;
-			default:
-				out += seg.text;
-				break;
+		for (const auto& segment : delim.segments) {
+			if (segment.kind != WordSegment::Kind::DoubleQuoted) {
+				out += segment.text;
+				continue;
 			}
+
+			for (const auto& inner : segment.nested) out += inner.text;
 		}
 
 		return out;
 	}
 
 	static bool delimQuoted(const Token& delim) {
-		for (const auto& seg : delim.segments) {
-			switch (seg.kind) {
+		for (const auto& segment : delim.segments) {
+			switch (segment.kind) {
 			case WordSegment::Kind::SingleQuoted:
 			case WordSegment::Kind::DoubleQuoted:
 			case WordSegment::Kind::Escaped:
@@ -110,21 +137,40 @@ namespace wbsh {
 		return false;
 	}
 
+	static bool isDigitsOnly(const std::vector<WordSegment>& segments) {
+		if (segments.empty()) return false;
+
+		for (const auto& segment : segments) {
+			if (segment.kind != WordSegment::Kind::Literal) return false;
+			for (char c : segment.text) {
+				if (!isDigit(c)) return false;
+			}
+		}
+
+		return true;
+	}
+
+	static void stripLeadingTabs(std::string& line) {
+		std::size_t count = 0;
+		while (count < line.size() && line[count] == '\t') ++count;
+		line.erase(0, count);
+	}
+
 	Lexer::Lexer(std::string input) : src_(std::move(input)) {}
 
 	std::vector<Token> Lexer::tokenize() {
-		while (!eof()) {
-			scanToken();
-		}
+		while (!eof()) scanToken();
 
-		Token eofTok;
-		eofTok.kind = TokKind::EndOfInput;
-		eofTok.loc = loc_;
-		tokens_.push_back(std::move(eofTok));
+		Token end;
+		end.kind = TokKind::EndOfInput;
+		end.loc = loc_;
+		tokens_.push_back(std::move(end));
 		return std::move(tokens_);
 	}
 
-	bool Lexer::eof() const { return pos_ >= src_.size(); }
+	bool Lexer::eof() const {
+		return pos_ >= src_.size();
+	}
 
 	char Lexer::peek(std::size_t n) const {
 		if (pos_ + n >= src_.size()) return '\0';
@@ -132,29 +178,23 @@ namespace wbsh {
 	}
 
 	char Lexer::advance() {
-		char c = src_[pos_++];
+		const char c = src_[pos_++];
 		loc_.offset++;
 		if (c == '\n') {
 			loc_.line++;
 			loc_.column = 1;
-		}
-		else {
-			loc_.column++;
+			return c;
 		}
 
+		loc_.column++;
 		return c;
 	}
 
 	bool Lexer::match(char c) {
 		if (peek() != c) return false;
+
 		advance();
 		return true;
-	}
-
-	bool Lexer::startsWith(const char* s) const {
-		std::size_t n = std::strlen(s);
-		if (pos_ + n > src_.size()) return false;
-		return std::memcmp(src_.data() + pos_, s, n) == 0;
 	}
 
 	void Lexer::skipLineContinuations() {
@@ -171,13 +211,9 @@ namespace wbsh {
 	void Lexer::skipWhitespace() {
 		while (!eof()) {
 			skipLineContinuations();
-			char c = peek();
-			if (isBlank(c)) {
-				advance();
-			}
-			else {
-				break;
-			}
+			if (!isBlank(peek())) break;
+
+			advance();
 		}
 	}
 
@@ -188,30 +224,15 @@ namespace wbsh {
 	void Lexer::scanToken() {
 		skipWhitespace();
 		if (eof()) return;
-		char c = peek();
+
+		const char c = peek();
 		if (c == '#') {
 			skipComment();
 			return;
 		}
 
 		if ((c == '<' || c == '>') && peek(1) == '(') {
-			SourceLoc start = loc_;
-			std::size_t startPos = pos_;
-			char dir = advance();
-			advance();
-			std::string body = readBalancedParens();
-			Token tok;
-			tok.kind = TokKind::Word;
-			tok.loc = start;
-			tok.first_on_line = at_line_start_;
-			at_line_start_ = false;
-			WordSegment seg;
-			seg.kind = WordSegment::Kind::ProcSubst;
-			seg.text = body;
-			seg.proc_dir = dir;
-			tok.segments.push_back(std::move(seg));
-			tok.text = src_.substr(startPos, pos_ - startPos);
-			tokens_.push_back(std::move(tok));
+			scanProcessSubstitution();
 			return;
 		}
 
@@ -223,55 +244,110 @@ namespace wbsh {
 		scanWord();
 	}
 
+	void Lexer::scanProcessSubstitution() {
+		Token word;
+		word.kind = TokKind::Word;
+		word.loc = loc_;
+		word.first_on_line = at_line_start_;
+		at_line_start_ = false;
+
+		const std::size_t start_pos = pos_;
+		const char direction = advance();
+		advance();
+
+		WordSegment segment;
+		segment.kind = WordSegment::Kind::ProcSubst;
+		segment.text = readBalancedParens();
+		segment.proc_dir = direction;
+		word.segments.push_back(std::move(segment));
+
+		word.text = src_.substr(start_pos, pos_ - start_pos);
+		tokens_.push_back(std::move(word));
+	}
+
 	void Lexer::emitOperator(SourceLoc start, TokKind kind, const char* text) {
-		Token tok;
-		tok.loc = start;
-		tok.kind = kind;
-		tok.text = text;
-		tokens_.push_back(std::move(tok));
-		if (kind == TokKind::Newline) {
-			collectHeredocBodies();
-			at_line_start_ = true;
-		} else {
+		Token token;
+		token.loc = start;
+		token.kind = kind;
+		token.text = text;
+		tokens_.push_back(std::move(token));
+
+		if (kind != TokKind::Newline) {
 			at_line_start_ = false;
+			return;
 		}
+
+		collectHeredocBodies();
+		at_line_start_ = true;
 	}
 
 	void Lexer::scanAmpRun(SourceLoc start) {
 		advance();
-		if (match('&'))      { emitOperator(start, TokKind::AndIf, "&&");     return; }
-		if (match('>')) {
-			if (match('>'))  { emitOperator(start, TokKind::AmpDGreat, "&>>"); return; }
-			emitOperator(start, TokKind::AmpGreat, "&>");
+		if (match('&')) {
+			emitOperator(start, TokKind::AndIf, "&&");
 			return;
 		}
 
-		emitOperator(start, TokKind::Amp, "&");
+		if (!match('>')) {
+			emitOperator(start, TokKind::Amp, "&");
+			return;
+		}
+
+		if (match('>')) {
+			emitOperator(start, TokKind::AmpDGreat, "&>>");
+			return;
+		}
+
+		emitOperator(start, TokKind::AmpGreat, "&>");
 	}
 
 	void Lexer::scanSemiRun(SourceLoc start) {
 		advance();
 		if (match(';')) {
-			if (match('&')) { emitOperator(start, TokKind::DSemiAmp, ";;&"); return; }
+			if (match('&')) {
+				emitOperator(start, TokKind::DSemiAmp, ";;&");
+				return;
+			}
+
 			emitOperator(start, TokKind::DSemi, ";;");
 			return;
 		}
 
-		if (match('&')) { emitOperator(start, TokKind::SemiAmp, ";&"); return; }
+		if (match('&')) {
+			emitOperator(start, TokKind::SemiAmp, ";&");
+			return;
+		}
+
 		emitOperator(start, TokKind::Semi, ";");
 	}
 
 	void Lexer::scanLessRun(SourceLoc start) {
 		advance();
 		if (match('<')) {
-			if (match('-'))     { emitOperator(start, TokKind::DLessDash, "<<-"); return; }
-			if (match('<'))     { emitOperator(start, TokKind::TLess, "<<<");     return; }
+			if (match('-')) {
+				emitOperator(start, TokKind::DLessDash, "<<-");
+				return;
+			}
+
+			if (match('<')) {
+				emitOperator(start, TokKind::TLess, "<<<");
+				return;
+			}
+
 			emitOperator(start, TokKind::DLess, "<<");
 			return;
 		}
 
-		if (match('&')) { emitOperator(start, TokKind::LessAnd, "<&"); return; }
-		if (match('>')) { emitOperator(start, TokKind::LessGreat, "<>"); return; }
+		if (match('&')) {
+			emitOperator(start, TokKind::LessAnd, "<&");
+			return;
+		}
+
+		if (match('>')) {
+			emitOperator(start, TokKind::LessGreat, "<>");
+			return;
+		}
+
 		emitOperator(start, TokKind::Less, "<");
 	}
 
@@ -283,36 +359,58 @@ namespace wbsh {
 		emitOperator(start, TokKind::Great, ">");
 	}
 
+	void Lexer::scanArithCommand(SourceLoc start) {
+		advance();
+		advance();
+
+		Token token;
+		token.kind = TokKind::DArithCmd;
+		token.loc = start;
+		token.first_on_line = at_line_start_;
+		at_line_start_ = false;
+		token.text = readBalancedDoubleParens();
+		tokens_.push_back(std::move(token));
+	}
+
 	void Lexer::scanOperator() {
 		const SourceLoc start = loc_;
 		const char c = peek();
 		switch (c) {
-		case '\n': advance(); emitOperator(start, TokKind::Newline, "\n"); return;
-		case '&':  scanAmpRun(start);   return;
+		case '\n':
+			advance();
+			emitOperator(start, TokKind::Newline, "\n");
+			return;
+		case '&':
+			scanAmpRun(start);
+			return;
 		case '|':
 			advance();
 			if (match('|'))      emitOperator(start, TokKind::OrIf, "||");
 			else if (match('&')) emitOperator(start, TokKind::PipeAmp, "|&");
 			else                 emitOperator(start, TokKind::Pipe, "|");
 			return;
-		case ';': scanSemiRun(start);   return;
-		case '<': scanLessRun(start);   return;
-		case '>': scanGreatRun(start);  return;
+		case ';':
+			scanSemiRun(start);
+			return;
+		case '<':
+			scanLessRun(start);
+			return;
+		case '>':
+			scanGreatRun(start);
+			return;
 		case '(':
 			if (peek(1) == '(') {
-				advance(); advance();
-				Token tok;
-				tok.kind = TokKind::DArithCmd;
-				tok.loc = start;
-				tok.first_on_line = at_line_start_;
-				at_line_start_ = false;
-				tok.text = readBalancedDoubleParens();
-				tokens_.push_back(std::move(tok));
+				scanArithCommand(start);
 				return;
 			}
 
-			advance(); emitOperator(start, TokKind::LParen, "("); return;
-		case ')': advance(); emitOperator(start, TokKind::RParen, ")"); return;
+			advance();
+			emitOperator(start, TokKind::LParen, "(");
+			return;
+		case ')':
+			advance();
+			emitOperator(start, TokKind::RParen, ")");
+			return;
 		default:
 			error(start, std::string("unexpected character '") + c + "'");
 			advance();
@@ -321,256 +419,235 @@ namespace wbsh {
 	}
 
 	void Lexer::scanWord() {
-		SourceLoc start = loc_;
-		std::size_t startPos = pos_;
-		Token tok;
-		tok.kind = TokKind::Word;
-		tok.loc = start;
-		tok.first_on_line = at_line_start_;
+		const std::size_t start_pos = pos_;
+		Token word;
+		word.kind = TokKind::Word;
+		word.loc = loc_;
+		word.first_on_line = at_line_start_;
 		at_line_start_ = false;
 
 		while (!eof()) {
 			skipLineContinuations();
 			if (eof()) break;
-			char c = peek();
-			if (isBlank(c) || c == '\n' || isOperatorStart(c)) break;
-			if (!readWordSegment(tok.segments)) break;
+			if (endsWord(peek())) break;
+			if (!readWordSegment(word.segments)) break;
 		}
 
-		tok.text = src_.substr(startPos, pos_ - startPos);
-
-		bool digits_only = !tok.segments.empty();
-		for (const auto& s : tok.segments) {
-			if (s.kind != WordSegment::Kind::Literal) { digits_only = false; break; }
-			for (char ch : s.text) {
-				if (!std::isdigit(static_cast<unsigned char>(ch))) { digits_only = false; break; }
-			}
-
-			if (!digits_only) break;
+		word.text = src_.substr(start_pos, pos_ - start_pos);
+		if (isDigitsOnly(word.segments) && (peek() == '<' || peek() == '>')) {
+			word.kind = TokKind::IoNumber;
 		}
 
-		if (digits_only && (peek() == '<' || peek() == '>')) {
-			tok.kind = TokKind::IoNumber;
-		}
+		markHeredocDelimiter(word);
+		tokens_.push_back(std::move(word));
+		if (tokens_.back().is_heredoc_delim) pending_heredocs_.push_back({ tokens_.size() - 1 });
+	}
 
-		if (!tokens_.empty()) {
-			TokKind prev = tokens_.back().kind;
-			if (prev == TokKind::DLess || prev == TokKind::DLessDash) {
-				tok.is_heredoc_delim = true;
-				tok.heredoc_strip_tabs = (prev == TokKind::DLessDash);
-				tok.heredoc_quoted = delimQuoted(tok);
-			}
-		}
+	void Lexer::markHeredocDelimiter(Token& word) const {
+		if (tokens_.empty()) return;
 
-		tokens_.push_back(std::move(tok));
+		const TokKind previous = tokens_.back().kind;
+		if (previous != TokKind::DLess && previous != TokKind::DLessDash) return;
 
-		Token& just_pushed = tokens_.back();
-		if (just_pushed.is_heredoc_delim) {
-			pending_heredocs_.push_back({ tokens_.size() - 1 });
-		}
+		word.is_heredoc_delim = true;
+		word.heredoc_strip_tabs = (previous == TokKind::DLessDash);
+		word.heredoc_quoted = delimQuoted(word);
 	}
 
 	bool Lexer::readWordSegment(std::vector<WordSegment>& out) {
-		char c = peek();
-		switch (c) {
-		case '\\': {
-			advance();
-			if (eof()) {
-				WordSegment s; s.kind = WordSegment::Kind::Literal; s.text = "\\";
-				out.push_back(std::move(s));
-				return true;
-			}
-
-			WordSegment s; s.kind = WordSegment::Kind::Escaped;
-			s.text = std::string(1, advance());
-			out.push_back(std::move(s));
+		switch (peek()) {
+		case '\\':
+			readEscapedChar(out);
 			return true;
-		}
-		case '\'': {
-			WordSegment s; readSingleQuoted(s);
-			out.push_back(std::move(s));
+		case '\'':
+			out.push_back(readSingleQuoted());
 			return true;
-		}
-		case '"': {
-			WordSegment s; readDoubleQuoted(s);
-			out.push_back(std::move(s));
+		case '"':
+			out.push_back(readDoubleQuoted());
 			return true;
-		}
 		case '$':
 			readDollar(out);
 			return true;
-		case '`': {
-			WordSegment s; readBacktick(s);
-			out.push_back(std::move(s));
+		case '`':
+			out.push_back(readBacktick());
 			return true;
-		}
 		default:
-			break;
+			return readLiteralRun(out);
 		}
-
-		WordSegment s; s.kind = WordSegment::Kind::Literal;
-		while (!eof()) {
-			skipLineContinuations();
-			if (eof()) break;
-			char ch = peek();
-			if (ch == '\\' || ch == '\'' || ch == '"' || ch == '$' || ch == '`')
-				break;
-			if (isBlank(ch) || ch == '\n' || isOperatorStart(ch))
-				break;
-			s.text.push_back(advance());
-		}
-
-		if (s.text.empty()) return false;
-		out.push_back(std::move(s));
-		return true;
 	}
 
-	void Lexer::readSingleQuoted(WordSegment& seg) {
-		SourceLoc start = loc_;
+	void Lexer::readEscapedChar(std::vector<WordSegment>& out) {
 		advance();
-		seg.kind = WordSegment::Kind::SingleQuoted;
-		while (!eof() && peek() != '\'') {
-			seg.text.push_back(advance());
-		}
-
 		if (eof()) {
-			error(start, "unterminated single-quoted string");
+			out.push_back(literalSegment("\\"));
 			return;
 		}
 
-		advance();
+		out.push_back(segmentOf(WordSegment::Kind::Escaped, std::string(1, advance())));
 	}
 
-	void Lexer::readDoubleQuoted(WordSegment& seg) {
-		SourceLoc start = loc_;
+	bool Lexer::readLiteralRun(std::vector<WordSegment>& out) {
+		std::string text;
+		while (!eof()) {
+			skipLineContinuations();
+			if (eof()) break;
+
+			const char c = peek();
+			if (isSegmentStart(c) || endsWord(c)) break;
+
+			text.push_back(advance());
+		}
+
+		if (text.empty()) return false;
+
+		out.push_back(literalSegment(std::move(text)));
+		return true;
+	}
+
+	WordSegment Lexer::readSingleQuoted() {
+		const SourceLoc start = loc_;
 		advance();
-		seg.kind = WordSegment::Kind::DoubleQuoted;
+
+		WordSegment segment;
+		segment.kind = WordSegment::Kind::SingleQuoted;
+		while (!eof() && peek() != '\'') segment.text.push_back(advance());
+
+		if (eof()) {
+			error(start, "unterminated single-quoted string");
+			return segment;
+		}
+
+		advance();
+		return segment;
+	}
+
+	WordSegment Lexer::readDoubleQuoted() {
+		const SourceLoc start = loc_;
+		advance();
+
+		WordSegment segment;
+		segment.kind = WordSegment::Kind::DoubleQuoted;
 		while (!eof() && peek() != '"') {
-			char c = peek();
+			const char c = peek();
 			if (c == '\\') {
 				advance();
 				if (eof()) break;
-				char nx = peek();
-				if (nx == '$' || nx == '`' || nx == '"' || nx == '\\' || nx == '\n') {
-					if (nx == '\n') {
-						advance();
-					}
-					else {
-						WordSegment s; s.kind = WordSegment::Kind::Escaped;
-						s.text = std::string(1, advance());
-						seg.nested.push_back(std::move(s));
-					}
-				}
-				else {
-					WordSegment s; s.kind = WordSegment::Kind::Literal;
-					s.text = "\\";
-					seg.nested.push_back(std::move(s));
-				}
+
+				readDoubleQuotedEscape(segment);
 				continue;
 			}
 
 			if (c == '$') {
-				readDollar(seg.nested);
+				readDollar(segment.nested);
 				continue;
 			}
 
 			if (c == '`') {
-				WordSegment s; readBacktick(s);
-				seg.nested.push_back(std::move(s));
+				segment.nested.push_back(readBacktick());
 				continue;
 			}
 
-			if (seg.nested.empty() || seg.nested.back().kind != WordSegment::Kind::Literal) {
-				WordSegment lit; lit.kind = WordSegment::Kind::Literal;
-				seg.nested.push_back(std::move(lit));
-			}
+			const bool literal_open = !segment.nested.empty()
+				&& segment.nested.back().kind == WordSegment::Kind::Literal;
+			if (!literal_open) segment.nested.push_back(literalSegment(""));
 
-			seg.nested.back().text.push_back(advance());
+			segment.nested.back().text.push_back(advance());
 		}
 
 		if (eof()) {
 			error(start, "unterminated double-quoted string");
-			return;
+			return segment;
 		}
 
 		advance();
+		return segment;
+	}
+
+	void Lexer::readDoubleQuotedEscape(WordSegment& seg) {
+		const char next = peek();
+		if (next == '\n') {
+			advance();
+			return;
+		}
+
+		if (next == '$' || next == '`' || next == '"' || next == '\\') {
+			const std::string escaped(1, advance());
+			seg.nested.push_back(segmentOf(WordSegment::Kind::Escaped, escaped));
+			return;
+		}
+
+		seg.nested.push_back(literalSegment("\\"));
 	}
 
 	void Lexer::readDollarSingleQuoted(SourceLoc start, std::vector<WordSegment>& out) {
-		advance(); advance();
-		WordSegment s;
-		s.kind = WordSegment::Kind::DollarSingle;
+		advance();
+		advance();
+
+		WordSegment segment;
+		segment.kind = WordSegment::Kind::DollarSingle;
 		while (!eof() && peek() != '\'') {
 			if (peek() == '\\' && peek(1) != '\0') {
-				s.text.push_back(advance());
-				s.text.push_back(advance());
+				segment.text.push_back(advance());
+				segment.text.push_back(advance());
 				continue;
 			}
 
-			s.text.push_back(advance());
+			segment.text.push_back(advance());
 		}
 
 		if (eof()) error(start, "unterminated $'...' string");
 		else advance();
-		out.push_back(std::move(s));
+
+		out.push_back(std::move(segment));
 	}
 
 	static bool isSimpleVarStart(char n1) {
 		return isNameStart(n1)
 		    || n1 == '?' || n1 == '#' || n1 == '@' || n1 == '*'
 		    || n1 == '$' || n1 == '!' || n1 == '-' || n1 == '_'
-		    || std::isdigit(static_cast<unsigned char>(n1));
+		    || isDigit(n1);
 	}
 
 	void Lexer::readSimpleDollarVar(char n1, std::vector<WordSegment>& out) {
 		advance();
-		WordSegment s;
-		s.kind = WordSegment::Kind::SimpleVar;
+
+		WordSegment segment;
+		segment.kind = WordSegment::Kind::SimpleVar;
 		if (isNameStart(n1)) {
-			while (!eof() && isNameCont(peek())) s.text.push_back(advance());
-		} else if (std::isdigit(static_cast<unsigned char>(n1))) {
-			s.text.push_back(advance());
+			while (!eof() && isNameCont(peek())) segment.text.push_back(advance());
 		} else {
-			s.text.push_back(advance());
+			segment.text.push_back(advance());
 		}
 
-		out.push_back(std::move(s));
+		out.push_back(std::move(segment));
 	}
 
 	void Lexer::readDollar(std::vector<WordSegment>& out) {
 		const SourceLoc start = loc_;
 		const char n1 = peek(1);
 		switch (n1) {
-		case '{': {
-			advance(); advance();
-			WordSegment s;
-			s.kind = WordSegment::Kind::ParamExp;
-			s.text = readBalancedBraces();
-			out.push_back(std::move(s));
+		case '{':
+			advance();
+			advance();
+			out.push_back(segmentOf(WordSegment::Kind::ParamExp, readBalancedBraces()));
 			return;
-		}
 		case '(':
 			advance();
 			readDollarParen(out);
 			return;
-		case '[': {
-			advance(); advance();
-			WordSegment s;
-			s.kind = WordSegment::Kind::ArithExp;
-			s.text = readBalancedBrackets();
-			out.push_back(std::move(s));
+		case '[':
+			advance();
+			advance();
+			out.push_back(segmentOf(WordSegment::Kind::ArithExp, readBalancedBrackets()));
 			return;
-		}
 		case '\'':
 			readDollarSingleQuoted(start, out);
 			return;
-		case '"': {
+		case '"':
 			// $" is bash's localized string. Treat the $ as literal for now.
-			WordSegment lit; lit.kind = WordSegment::Kind::Literal; lit.text = "$";
 			advance();
-			out.push_back(std::move(lit));
+			out.push_back(literalSegment("$"));
 			return;
-		}
 		default:
 			break;
 		}
@@ -581,56 +658,50 @@ namespace wbsh {
 		}
 
 		advance();
-		WordSegment lit; lit.kind = WordSegment::Kind::Literal; lit.text = "$";
-		out.push_back(std::move(lit));
+		out.push_back(literalSegment("$"));
 	}
 
-	void Lexer::readBacktick(WordSegment& seg) {
-		SourceLoc start = loc_;
+	WordSegment Lexer::readBacktick() {
+		const SourceLoc start = loc_;
 		advance();
-		seg.kind = WordSegment::Kind::CmdSubst;
+
+		WordSegment segment;
+		segment.kind = WordSegment::Kind::CmdSubst;
 		while (!eof() && peek() != '`') {
-			if (peek() == '\\') {
-				advance();
-				if (eof()) break;
-				char nx = peek();
-				if (nx == '$' || nx == '`' || nx == '\\') {
-					seg.text.push_back(advance());
-				}
-				else {
-					seg.text.push_back('\\');
-				}
+			if (peek() != '\\') {
+				segment.text.push_back(advance());
 				continue;
 			}
 
-			seg.text.push_back(advance());
+			advance();
+			if (eof()) break;
+
+			const char next = peek();
+			if (next == '$' || next == '`' || next == '\\') {
+				segment.text.push_back(advance());
+			} else {
+				segment.text.push_back('\\');
+			}
 		}
 
 		if (eof()) {
 			error(start, "unterminated backquote command substitution");
-			return;
+			return segment;
 		}
 
 		advance();
+		return segment;
 	}
 
 	void Lexer::readDollarParen(std::vector<WordSegment>& out) {
-		SourceLoc start = loc_;
 		advance();
 		if (peek() == '(') {
 			advance();
-			WordSegment s;
-			s.kind = WordSegment::Kind::ArithExp;
-			s.text = readBalancedDoubleParens();
-			out.push_back(std::move(s));
+			out.push_back(segmentOf(WordSegment::Kind::ArithExp, readBalancedDoubleParens()));
 			return;
 		}
 
-		WordSegment s;
-		s.kind = WordSegment::Kind::CmdSubst;
-		s.text = readBalancedParens();
-		out.push_back(std::move(s));
-		(void)start;
+		out.push_back(segmentOf(WordSegment::Kind::CmdSubst, readBalancedParens()));
 	}
 
 	void Lexer::copyBackslashEscape(std::string& out) {
@@ -647,7 +718,11 @@ namespace wbsh {
 	void Lexer::copyDoubleQuotedRun(std::string& out) {
 		out.push_back(advance());
 		while (!eof() && peek() != '"') {
-			if (peek() == '\\') { copyBackslashEscape(out); continue; }
+			if (peek() == '\\') {
+				copyBackslashEscape(out);
+				continue;
+			}
+
 			out.push_back(advance());
 		}
 
@@ -657,28 +732,33 @@ namespace wbsh {
 	void Lexer::copyBackquotedRun(std::string& out) {
 		out.push_back(advance());
 		while (!eof() && peek() != '`') {
-			if (peek() == '\\') { copyBackslashEscape(out); continue; }
+			if (peek() == '\\') {
+				copyBackslashEscape(out);
+				continue;
+			}
+
 			out.push_back(advance());
 		}
 
 		if (!eof()) out.push_back(advance());
 	}
 
-	void Lexer::copyDollarParenRun(std::string& out, int* paren_depth) {
+	void Lexer::copyDollarParenRun(std::string& out, int& paren_depth) {
 		out.push_back(advance());
 		out.push_back(advance());
 		if (peek() != '(') {
-			++*paren_depth;
+			++paren_depth;
 			return;
 		}
 
 		out.push_back(advance());
-		int dep2 = 1;
-		while (!eof() && dep2 > 0) {
-			if (peek() == '(') ++dep2;
-			else if (peek() == ')') --dep2;
+		int inner_depth = 1;
+		while (!eof() && inner_depth > 0) {
+			if (peek() == '(') ++inner_depth;
+			else if (peek() == ')') --inner_depth;
+
 			out.push_back(advance());
-			if (dep2 == 0 && peek() == ')') {
+			if (inner_depth == 0 && peek() == ')') {
 				out.push_back(advance());
 				break;
 			}
@@ -689,15 +769,14 @@ namespace wbsh {
 		std::string out;
 		int depth = 1;
 		while (!eof() && depth > 0) {
-			const char c = peek();
-			switch (c) {
+			switch (peek()) {
 			case '\\': copyBackslashEscape(out); continue;
 			case '\'': copySingleQuotedRun(out); continue;
 			case '"':  copyDoubleQuotedRun(out); continue;
 			case '`':  copyBackquotedRun(out); continue;
 			case '$':
 				if (peek(1) == '(') {
-					copyDollarParenRun(out, &depth);
+					copyDollarParenRun(out, depth);
 					continue;
 				}
 
@@ -730,8 +809,7 @@ namespace wbsh {
 		std::string out;
 		int depth = 1;
 		while (!eof() && depth > 0) {
-			char c = peek();
-			switch (c) {
+			switch (peek()) {
 			case '\\': copyBackslashEscape(out); continue;
 			case '\'': copySingleQuotedRun(out); continue;
 			case '"':  copyDoubleQuotedRun(out); continue;
@@ -772,8 +850,7 @@ namespace wbsh {
 		std::string out;
 		int depth = 1;
 		while (!eof() && depth > 0) {
-			const char c = peek();
-			switch (c) {
+			switch (peek()) {
 			case '\\': copyBackslashEscape(out); continue;
 			case '\'': copySingleQuotedRun(out); continue;
 			case '"':  copyDoubleQuotedRun(out); continue;
@@ -804,15 +881,15 @@ namespace wbsh {
 		std::string out;
 		int depth = 1;
 		while (!eof() && depth > 0) {
-			const char c = peek();
-			switch (c) {
+			switch (peek()) {
 			case '(':
 				++depth;
 				out.push_back(advance());
 				continue;
 			case ')':
 				if (peek(1) == ')' && depth == 1) {
-					advance(); advance();
+					advance();
+					advance();
 					return out;
 				}
 
@@ -834,45 +911,41 @@ namespace wbsh {
 
 	void Lexer::collectHeredocBodies() {
 		while (!pending_heredocs_.empty()) {
-			auto ph = pending_heredocs_.front();
+			const PendingHeredoc pending = pending_heredocs_.front();
 			pending_heredocs_.erase(pending_heredocs_.begin());
-			Token& delim = tokens_[ph.delim_token_index];
-			std::string delim_str = flattenDelim(delim);
-			std::string body;
-			while (true) {
-				std::string line;
-				while (!eof() && peek() != '\n') {
-					line.push_back(advance());
-				}
 
-				std::string check = line;
-				std::string emitted = line;
-				if (delim.heredoc_strip_tabs) {
-					std::size_t p = 0;
-					while (p < check.size() && check[p] == '\t') ++p;
-					check.erase(0, p);
-					std::size_t p2 = 0;
-					while (p2 < emitted.size() && emitted[p2] == '\t') ++p2;
-					emitted.erase(0, p2);
-				}
+			Token& delim = tokens_[pending.delim_token_index];
+			delim.heredoc_body = readHeredocBody(delim);
+		}
+	}
 
-				if (check == delim_str) {
-					if (!eof()) advance();
-					break;
-				}
+	std::string Lexer::readHeredocBody(const Token& delim) {
+		const std::string terminator = flattenDelim(delim);
+		std::string body;
+		for (;;) {
+			std::string line = readLineText();
+			if (delim.heredoc_strip_tabs) stripLeadingTabs(line);
 
-				if (eof()) {
-					error(delim.loc, "unterminated heredoc body");
-					break;
-				}
-
-				body += emitted;
-				body.push_back('\n');
-				advance();
+			if (line == terminator) {
+				if (!eof()) advance();
+				return body;
 			}
 
-			delim.heredoc_body = std::move(body);
+			if (eof()) {
+				error(delim.loc, "unterminated heredoc body");
+				return body;
+			}
+
+			body += line;
+			body.push_back('\n');
+			advance();
 		}
+	}
+
+	std::string Lexer::readLineText() {
+		std::string line;
+		while (!eof() && peek() != '\n') line.push_back(advance());
+		return line;
 	}
 
 }  // namespace wbsh

@@ -43,11 +43,11 @@ namespace wbsh {
 
 	static bool isWordBoundary(const std::string& text, std::size_t i) {
 		if (i == 0) return true;
-		unsigned char prev = static_cast<unsigned char>(text[i - 1]);
-		unsigned char cur  = static_cast<unsigned char>(text[i]);
+		const unsigned char prev = static_cast<unsigned char>(text[i - 1]);
+		const unsigned char cur  = static_cast<unsigned char>(text[i]);
 		if (prev == '/' || prev == '\\' || prev == '_'
 		    || prev == '-' || prev == '.' || prev == ' ') return true;
-		return std::islower(prev) && std::isupper(cur);
+		return std::islower(prev) != 0 && std::isupper(cur) != 0;
 	}
 
 	// Greedy subsequence match starting from a fixed anchor for the first
@@ -63,7 +63,7 @@ namespace wbsh {
 		std::size_t prev_pos = 0;
 
 		for (char qc_raw : query) {
-			unsigned char qc = std::tolower(static_cast<unsigned char>(qc_raw));
+			const unsigned char qc = std::tolower(static_cast<unsigned char>(qc_raw));
 			while (ti < text.size()
 			       && std::tolower(static_cast<unsigned char>(text[ti])) != qc) ++ti;
 			if (ti >= text.size()) return false;
@@ -98,9 +98,13 @@ namespace wbsh {
 	// fzf uses one), but it fixes the common "anchor trap" case cheaply.
 	static bool fuzzyMatch(const std::string& query, const std::string& text,
 	                       int& score, std::vector<std::size_t>& positions) {
-		if (query.empty()) { score = 0; positions.clear(); return true; }
+		if (query.empty()) {
+			score = 0;
+			positions.clear();
+			return true;
+		}
 
-		unsigned char first = std::tolower(static_cast<unsigned char>(query[0]));
+		const unsigned char first = std::tolower(static_cast<unsigned char>(query[0]));
 		bool found = false;
 
 		for (std::size_t anchor = 0; anchor < text.size(); ++anchor) {
@@ -123,10 +127,10 @@ namespace wbsh {
 	                                              const std::string& query) {
 		std::vector<FzfMatch> matches;
 		for (std::size_t i = 0; i < candidates.size(); ++i) {
-			FzfMatch m;
-			m.index = i;
-			if (!fuzzyMatch(query, candidates[i], m.score, m.positions)) continue;
-			matches.push_back(std::move(m));
+			FzfMatch match;
+			match.index = i;
+			if (!fuzzyMatch(query, candidates[i], match.score, match.positions)) continue;
+			matches.push_back(std::move(match));
 		}
 
 		std::stable_sort(matches.begin(), matches.end(),
@@ -193,51 +197,62 @@ namespace wbsh {
 		std::size_t drawn_lines = 0;
 	};
 
-	static bool fzfOpenConsole(FzfSession& s) {
-		s.h_in  = CreateFileW(L"CONIN$",  GENERIC_READ | GENERIC_WRITE,
+	static bool fzfOpenConsole(FzfSession& session) {
+		session.h_in  = ::CreateFileW(L"CONIN$",  GENERIC_READ | GENERIC_WRITE,
 			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-		s.h_out = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+		session.h_out = ::CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
 			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-		if (s.h_in == INVALID_HANDLE_VALUE || s.h_out == INVALID_HANDLE_VALUE) return false;
+		if (session.h_in == INVALID_HANDLE_VALUE) return false;
+		if (session.h_out == INVALID_HANDLE_VALUE) return false;
 
-		GetConsoleMode(s.h_in, &s.saved_in_mode);
-		GetConsoleMode(s.h_out, &s.saved_out_mode);
+		::GetConsoleMode(session.h_in, &session.saved_in_mode);
+		::GetConsoleMode(session.h_out, &session.saved_out_mode);
 
-		DWORD in_mode = s.saved_in_mode;
+		DWORD in_mode = session.saved_in_mode;
 		in_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT
 		           | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT);
-		SetConsoleMode(s.h_in, in_mode);
+		::SetConsoleMode(session.h_in, in_mode);
 
-		DWORD out_mode = s.saved_out_mode
+		DWORD out_mode = session.saved_out_mode
 			| ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT;
-		SetConsoleMode(s.h_out, out_mode);
+		::SetConsoleMode(session.h_out, out_mode);
 		return true;
 	}
 
-	static void fzfCloseConsole(FzfSession& s) {
-		if (s.h_in  != INVALID_HANDLE_VALUE) SetConsoleMode(s.h_in,  s.saved_in_mode);
-		if (s.h_out != INVALID_HANDLE_VALUE) SetConsoleMode(s.h_out, s.saved_out_mode);
-		if (s.h_in  != INVALID_HANDLE_VALUE) CloseHandle(s.h_in);
-		if (s.h_out != INVALID_HANDLE_VALUE) CloseHandle(s.h_out);
+	static void fzfCloseConsole(FzfSession& session) {
+		if (session.h_in != INVALID_HANDLE_VALUE) {
+			::SetConsoleMode(session.h_in, session.saved_in_mode);
+		}
+
+		if (session.h_out != INVALID_HANDLE_VALUE) {
+			::SetConsoleMode(session.h_out, session.saved_out_mode);
+		}
+
+		if (session.h_in  != INVALID_HANDLE_VALUE) ::CloseHandle(session.h_in);
+		if (session.h_out != INVALID_HANDLE_VALUE) ::CloseHandle(session.h_out);
 	}
 
-	static void fzfEmit(FzfSession& s, const std::string& out) {
+	static void fzfEmit(FzfSession& session, const std::string& out) {
 		DWORD wrote;
-		WriteFile(s.h_out, out.data(), static_cast<DWORD>(out.size()), &wrote, nullptr);
+		::WriteFile(session.h_out, out.data(), static_cast<DWORD>(out.size()), &wrote, nullptr);
 	}
 
-	static void fzfRefilter(FzfSession& s) {
-		s.matches = filterCandidates(s.candidates, s.query);
-		s.selected = 0;
+	static void fzfRefilter(FzfSession& session) {
+		session.matches = filterCandidates(session.candidates, session.query);
+		session.selected = 0;
 	}
 
 	static std::string fzfHighlightLine(const std::string& text,
 	                                    const std::vector<std::size_t>& positions) {
 		std::string out;
-		std::size_t pi = 0;
+		std::size_t next_position = 0;
 		for (std::size_t i = 0; i < text.size(); ++i) {
-			bool hit = pi < positions.size() && positions[pi] == i;
-			if (hit) { out += "\x1b[1;33m"; ++pi; }
+			const bool hit = next_position < positions.size() && positions[next_position] == i;
+			if (hit) {
+				out += "\x1b[1;33m";
+				++next_position;
+			}
+
 			out += text[i];
 			if (hit) out += "\x1b[0m";
 		}
@@ -245,110 +260,111 @@ namespace wbsh {
 		return out;
 	}
 
-	static void fzfRenderRow(FzfSession& s, std::size_t row, std::string& out) {
-		const FzfMatch& m = s.matches[row];
-		bool is_sel = row == s.selected;
-		out += is_sel ? "\x1b[7m> " : "  ";
-		out += fzfHighlightLine(s.candidates[m.index], m.positions);
-		if (is_sel) out += "\x1b[0m";
+	static void fzfRenderRow(FzfSession& session, std::size_t row, std::string& out) {
+		const FzfMatch& match = session.matches[row];
+		const bool is_selected = row == session.selected;
+		out += is_selected ? "\x1b[7m> " : "  ";
+		out += fzfHighlightLine(session.candidates[match.index], match.positions);
+		if (is_selected) out += "\x1b[0m";
 		out += "\x1b[0m\r\n";
 	}
 
-	static void fzfRender(FzfSession& s) {
+	static void fzfRender(FzfSession& session) {
 		std::string out;
-		if (s.drawn_lines > 0) out += "\x1b[" + std::to_string(s.drawn_lines) + "A";
+		if (session.drawn_lines > 0) out += "\x1b[" + std::to_string(session.drawn_lines) + "A";
 		out += "\r\x1b[J";
 
-		out += "> " + s.query + "\r\n";
-		out += "  " + std::to_string(s.matches.size()) + "/"
-		     + std::to_string(s.candidates.size()) + "\r\n";
+		out += "> " + session.query + "\r\n";
+		out += "  " + std::to_string(session.matches.size()) + "/"
+		     + std::to_string(session.candidates.size()) + "\r\n";
 
-		std::size_t shown = std::min(s.max_rows, s.matches.size());
-		for (std::size_t row = 0; row < shown; ++row) fzfRenderRow(s, row, out);
+		const std::size_t shown = std::min(session.max_rows, session.matches.size());
+		for (std::size_t row = 0; row < shown; ++row) fzfRenderRow(session, row, out);
 
-		s.drawn_lines = 2 + shown;
-		fzfEmit(s, out);
+		session.drawn_lines = 2 + shown;
+		fzfEmit(session, out);
 	}
 
-	static void fzfMoveSelection(FzfSession& s, int delta) {
-		if (s.matches.empty()) return;
-		std::size_t n = std::min(s.max_rows, s.matches.size());
-		long next = static_cast<long>(s.selected) + delta;
+	static void fzfMoveSelection(FzfSession& session, int delta) {
+		if (session.matches.empty()) return;
+		const std::size_t shown = std::min(session.max_rows, session.matches.size());
+		long next = static_cast<long>(session.selected) + delta;
 		if (next < 0) next = 0;
-		if (next >= static_cast<long>(n)) next = static_cast<long>(n) - 1;
-		s.selected = static_cast<std::size_t>(next);
+		if (next >= static_cast<long>(shown)) next = static_cast<long>(shown) - 1;
+		session.selected = static_cast<std::size_t>(next);
 	}
 
-	static void fzfInsertChar(FzfSession& s, const std::string& utf8) {
-		s.query += utf8;
-		fzfRefilter(s);
+	static void fzfInsertChar(FzfSession& session, const std::string& utf8) {
+		session.query += utf8;
+		fzfRefilter(session);
 	}
 
-	static void fzfBackspace(FzfSession& s) {
-		if (s.query.empty()) return;
-		std::size_t i = s.query.size() - 1;
-		while (i > 0 && (static_cast<unsigned char>(s.query[i]) & 0xC0) == 0x80) --i;
-		s.query.erase(i);
-		fzfRefilter(s);
+	static void fzfBackspace(FzfSession& session) {
+		if (session.query.empty()) return;
+		std::size_t i = session.query.size() - 1;
+		while (i > 0 && (static_cast<unsigned char>(session.query[i]) & 0xC0) == 0x80) --i;
+		session.query.erase(i);
+		fzfRefilter(session);
 	}
 
 	static std::string fzfEncodeChar(wchar_t ch, HANDLE h_in) {
 		WCHAR pair[2] = { ch, 0 };
 		int len = 1;
 		if (ch >= 0xD800 && ch <= 0xDBFF) {
-			INPUT_RECORD r2;
-			DWORD nr = 0;
-			if (ReadConsoleInputW(h_in, &r2, 1, &nr) && nr == 1
-			    && r2.EventType == KEY_EVENT && r2.Event.KeyEvent.bKeyDown) {
-				pair[1] = r2.Event.KeyEvent.uChar.UnicodeChar;
+			INPUT_RECORD record;
+			DWORD read = 0;
+			if (::ReadConsoleInputW(h_in, &record, 1, &read) && read == 1
+			    && record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown) {
+				pair[1] = record.Event.KeyEvent.uChar.UnicodeChar;
 				len = 2;
 			}
 		}
 
-		char buf[8] = {};
-		int n = WideCharToMultiByte(CP_UTF8, 0, pair, len, buf, sizeof(buf), nullptr, nullptr);
-		return n > 0 ? std::string(buf, n) : std::string();
+		char bytes[8] = {};
+		const int length = ::WideCharToMultiByte(CP_UTF8, 0, pair, len, bytes, sizeof(bytes),
+			nullptr, nullptr);
+		return length > 0 ? std::string(bytes, length) : std::string();
 	}
 
 	// Handles one keystroke. Returns false when the modal loop should end;
 	// `accepted` distinguishes Enter (true) from Esc / Ctrl-C / Ctrl-G (false).
-	static bool fzfHandleKey(FzfSession& s, const KEY_EVENT_RECORD& k, bool& accepted) {
+	static bool fzfHandleKey(FzfSession& session, const KEY_EVENT_RECORD& k, bool& accepted) {
 		const bool ctrl = (k.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
 		const WORD vk = k.wVirtualKeyCode;
 
-		if (vk == VK_RETURN) { accepted = !s.matches.empty(); return false; }
+		if (vk == VK_RETURN) { accepted = !session.matches.empty(); return false; }
 		if (vk == VK_ESCAPE
 		    || (ctrl && (vk == 'C' || vk == 'G'))) { accepted = false; return false; }
 
-		if (vk == VK_UP || (ctrl && vk == 'P')) { fzfMoveSelection(s, -1); return true; }
+		if (vk == VK_UP || (ctrl && vk == 'P')) { fzfMoveSelection(session, -1); return true; }
 		if (vk == VK_DOWN
-		    || (ctrl && vk == 'N') || vk == VK_TAB) { fzfMoveSelection(s, 1); return true; }
-		if (vk == VK_BACK) { fzfBackspace(s); return true; }
-		if (ctrl && vk == 'U') { s.query.clear(); fzfRefilter(s); return true; }
+		    || (ctrl && vk == 'N') || vk == VK_TAB) { fzfMoveSelection(session, 1); return true; }
+		if (vk == VK_BACK) { fzfBackspace(session); return true; }
+		if (ctrl && vk == 'U') { session.query.clear(); fzfRefilter(session); return true; }
 
 		const WCHAR ch = k.uChar.UnicodeChar;
-		if (!ctrl && ch >= 0x20) fzfInsertChar(s, fzfEncodeChar(ch, s.h_in));
+		if (!ctrl && ch >= 0x20) fzfInsertChar(session, fzfEncodeChar(ch, session.h_in));
 		return true;
 	}
 
-	static bool fzfRunLoop(FzfSession& s, std::string& selected) {
+	static bool fzfRunLoop(FzfSession& session, std::string& selected) {
 		bool accepted = false;
-		fzfRefilter(s);
-		fzfRender(s);
+		fzfRefilter(session);
+		fzfRender(session);
 
 		while (true) {
 			INPUT_RECORD rec;
 			DWORD nread = 0;
-			if (!ReadConsoleInputW(s.h_in, &rec, 1, &nread) || nread == 0) break;
+			if (!::ReadConsoleInputW(session.h_in, &rec, 1, &nread) || nread == 0) break;
 			if (rec.EventType != KEY_EVENT || !rec.Event.KeyEvent.bKeyDown) continue;
 
-			bool keep_going = fzfHandleKey(s, rec.Event.KeyEvent, accepted);
-			fzfRender(s);
+			const bool keep_going = fzfHandleKey(session, rec.Event.KeyEvent, accepted);
+			fzfRender(session);
 			if (!keep_going) break;
 		}
 
-		fzfEmit(s, "\r\n");
-		if (accepted) selected = s.candidates[s.matches[s.selected].index];
+		fzfEmit(session, "\r\n");
+		if (accepted) selected = session.candidates[session.matches[session.selected].index];
 		return accepted;
 	}
 
@@ -378,15 +394,15 @@ namespace wbsh {
 		if (ec) abs = native;
 		abs.make_preferred();
 
-		HINSTANCE r = ShellExecuteW(nullptr, L"open", abs.c_str(),
+		const HINSTANCE result = ::ShellExecuteW(nullptr, L"open", abs.c_str(),
 			nullptr, abs.parent_path().c_str(), SW_SHOWNORMAL);
-		auto code = reinterpret_cast<INT_PTR>(r);
+		const auto code = reinterpret_cast<INT_PTR>(result);
 		if (code > 32) return true;
 
 		if (code == SE_ERR_NOASSOC || code == SE_ERR_ASSOCINCOMPLETE) {
-			HINSTANCE r2 = ShellExecuteW(nullptr, L"openas", abs.c_str(),
+			const HINSTANCE retry = ::ShellExecuteW(nullptr, L"openas", abs.c_str(),
 				nullptr, abs.parent_path().c_str(), SW_SHOWNORMAL);
-			return reinterpret_cast<INT_PTR>(r2) > 32;
+			return reinterpret_cast<INT_PTR>(retry) > 32;
 		}
 
 		perr("fzf", fzfShellExecError(code));
@@ -410,7 +426,11 @@ namespace wbsh {
 		if (fs::is_directory(native, ec)) {
 			handled = true;
 			std::string err;
-			if (!changeDirectory(exec, selected, err)) { perr("fzf", err); return 1; }
+			if (!changeDirectory(exec, selected, err)) {
+				perr("fzf", err);
+				return 1;
+			}
+
 			return 0;
 		}
 
@@ -440,7 +460,7 @@ namespace wbsh {
 		if (ec) return fs::path();
 
 		const std::wstring name = L"wbsh-pick-"
-			+ std::to_wstring(static_cast<unsigned long>(GetCurrentProcessId())) + L".txt";
+			+ std::to_wstring(static_cast<unsigned long>(::GetCurrentProcessId())) + L".txt";
 		return dir / name;
 	}
 
@@ -491,7 +511,7 @@ namespace wbsh {
 		for (;;) {
 			INPUT_RECORD record{};
 			DWORD read = 0;
-			if (!ReadConsoleInputW(input, &record, 1, &read) || read == 0) return false;
+			if (!::ReadConsoleInputW(input, &record, 1, &read) || read == 0) return false;
 			if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) continue;
 
 			const wchar_t letter = record.Event.KeyEvent.uChar.UnicodeChar;
@@ -500,7 +520,7 @@ namespace wbsh {
 			if (letter == 0) continue;
 
 			char bytes[8] = {};
-			const int length = WideCharToMultiByte(CP_UTF8, 0, &letter, 1, bytes,
+			const int length = ::WideCharToMultiByte(CP_UTF8, 0, &letter, 1, bytes,
 				static_cast<int>(sizeof(bytes)), nullptr, nullptr);
 			if (length > 0) line.append(bytes, static_cast<std::size_t>(length));
 		}
@@ -515,19 +535,19 @@ namespace wbsh {
 	// pipe, and reading that ends the pick before the user has chosen
 	// anything -- the terminal answer then lands on the next prompt.
 	static bool readPickReply(std::string& selected) {
-		const HANDLE input = CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE,
+		const HANDLE input = ::CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE,
 			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
 		if (input == INVALID_HANDLE_VALUE) return false;
 
 		DWORD saved_mode = 0;
-		GetConsoleMode(input, &saved_mode);
-		SetConsoleMode(input, saved_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT
+		::GetConsoleMode(input, &saved_mode);
+		::SetConsoleMode(input, saved_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT
 			| ENABLE_PROCESSED_INPUT | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
 
 		const bool answered = readPickReplyFrom(input, selected);
 
-		SetConsoleMode(input, saved_mode);
-		CloseHandle(input);
+		::SetConsoleMode(input, saved_mode);
+		::CloseHandle(input);
 		return answered;
 	}
 
@@ -548,8 +568,8 @@ namespace wbsh {
 		if (!answered) return 130;
 
 		bool handled = false;
-		const int rc = fzfActOnSelection(exec, selected, handled);
-		if (handled) return rc;
+		const int status = fzfActOnSelection(exec, selected, handled);
+		if (handled) return status;
 
 		std::fputs(selected.c_str(), stdout);
 		std::fputc('\n', stdout);
@@ -557,26 +577,26 @@ namespace wbsh {
 	}
 
 	static int builtin_fzf(Executor& exec, const std::vector<std::string>&) {
-		FzfSession s;
-		s.candidates = collectCandidates(exec);
-		if (s.candidates.empty()) return 1;
+		FzfSession session;
+		session.candidates = collectCandidates(exec);
+		if (session.candidates.empty()) return 1;
 
-		if (terminalDrawsPicker()) return pickThroughTerminal(exec, s.candidates);
+		if (terminalDrawsPicker()) return pickThroughTerminal(exec, session.candidates);
 
-		if (!fzfOpenConsole(s)) {
+		if (!fzfOpenConsole(session)) {
 			perr("fzf", "not attached to a console");
-			fzfCloseConsole(s);
+			fzfCloseConsole(session);
 			return 2;
 		}
 
 		std::string selected;
-		bool ok = fzfRunLoop(s, selected);
-		fzfCloseConsole(s);
-		if (!ok) return 130;
+		const bool accepted = fzfRunLoop(session, selected);
+		fzfCloseConsole(session);
+		if (!accepted) return 130;
 
 		bool handled = false;
-		int rc = fzfActOnSelection(exec, selected, handled);
-		if (handled) return rc;
+		const int status = fzfActOnSelection(exec, selected, handled);
+		if (handled) return status;
 
 		std::fputs(selected.c_str(), stdout);
 		std::fputc('\n', stdout);
@@ -586,8 +606,7 @@ namespace wbsh {
 #else  // !_WIN32
 
 	static int builtin_fzf(Executor& exec, const std::vector<std::string>&) {
-		std::vector<std::string> candidates = collectCandidates(exec);
-		(void)candidates;
+		collectCandidates(exec);
 		perr("fzf", "interactive picker requires a Windows console");
 		return 1;
 	}

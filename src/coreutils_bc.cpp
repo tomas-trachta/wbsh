@@ -27,6 +27,8 @@ namespace wbsh {
 
 	namespace bc_detail {
 
+		static const int kMathLibScale = 20;
+
 		struct BcState {
 			std::map<std::string, double> vars;
 			int scale = 0;
@@ -35,420 +37,480 @@ namespace wbsh {
 			bool exit_now = false;
 		};
 
-		struct BcLex {
-			const std::string& src;
-			std::size_t i = 0;
-			std::vector<std::string> pushback;
-			explicit BcLex(const std::string& s) : src(s) {}
+		static bool isNameStart(char c) {
+			return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+		}
 
-			void skip() {
-				while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) ++i;
-				while (i + 1 < src.size() && src[i] == '\\' && src[i + 1] == '\n') i += 2;
-				if (i < src.size() && src[i] == '#') {
-					while (i < src.size() && src[i] != '\n') ++i;
+		static bool isNameChar(char c) {
+			return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+		}
+
+		static bool isNumberChar(char c) {
+			return std::isdigit(static_cast<unsigned char>(c)) || c == '.';
+		}
+
+		static bool isOperatorChar(char c) {
+			return std::strchr("<>=!+-*/%^", c) != nullptr && c != '\0';
+		}
+
+		static bool isDoublingChar(char c) {
+			return c == '&' || c == '|' || c == '+' || c == '-';
+		}
+
+		struct BcLex {
+			const std::string& source;
+			std::size_t pos = 0;
+			std::vector<std::string> pushback;
+
+			explicit BcLex(const std::string& text) : source(text) {}
+
+			char current() const {
+				return pos < source.size() ? source[pos] : '\0';
+			}
+
+			char lookahead() const {
+				return pos + 1 < source.size() ? source[pos + 1] : '\0';
+			}
+
+			void skipBlanks() {
+				while (pos < source.size() && (source[pos] == ' ' || source[pos] == '\t')) ++pos;
+				while (current() == '\\' && lookahead() == '\n') pos += 2;
+				if (current() != '#') return;
+
+				while (pos < source.size() && source[pos] != '\n') ++pos;
+			}
+
+			std::string readWhile(bool (*accept)(char)) {
+				const std::size_t start = pos;
+				while (pos < source.size() && accept(source[pos])) ++pos;
+				return source.substr(start, pos - start);
+			}
+
+			std::string readTwoChars() {
+				std::string text = source.substr(pos, 2);
+				pos += 2;
+				return text;
+			}
+
+			std::string readOperator() {
+				const char c = current();
+				if (isOperatorChar(c) && lookahead() == '=') return readTwoChars();
+				if (isDoublingChar(c) && lookahead() == c) return readTwoChars();
+				if (c == '\n') {
+					++pos;
+					return ";";
 				}
+
+				++pos;
+				return std::string(1, c);
 			}
 
 			std::string next() {
 				if (!pushback.empty()) {
-					std::string t = pushback.back();
+					std::string token = pushback.back();
 					pushback.pop_back();
-					return t;
+					return token;
 				}
 
-				skip();
-				if (i >= src.size()) return "";
-				char c = src[i];
-				if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') {
-					std::size_t s = i;
-					while (i < src.size()
-					       && (std::isdigit(static_cast<unsigned char>(src[i])) || src[i] == '.'))
-						++i;
-					return src.substr(s, i - s);
-				}
+				skipBlanks();
+				if (pos >= source.size()) return "";
 
-				if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
-					std::size_t s = i;
-					while (i < src.size()
-					       && (std::isalnum(static_cast<unsigned char>(src[i])) || src[i] == '_'))
-						++i;
-					return src.substr(s, i - s);
-				}
-
-				if (c == '<' || c == '>' || c == '=' || c == '!'
-				    || c == '+' || c == '-' || c == '*' || c == '/'
-				    || c == '%' || c == '^') {
-					if (i + 1 < src.size() && src[i + 1] == '=') {
-						std::string r = src.substr(i, 2);
-						i += 2;
-						return r;
-					}
-				}
-
-				if ((c == '&' || c == '|' || c == '+' || c == '-')
-				    && i + 1 < src.size() && src[i + 1] == c) {
-					std::string r = src.substr(i, 2);
-					i += 2;
-					return r;
-				}
-
-				if (c == '\n') { ++i; return ";"; }
-				char r = src[i++];
-				return std::string(1, r);
+				const char c = current();
+				if (isNumberChar(c)) return readWhile(isNumberChar);
+				if (isNameStart(c)) return readWhile(isNameChar);
+				return readOperator();
 			}
 
 			std::string peek() {
 				if (pushback.empty()) {
-					std::string t = next();
-					if (t.empty()) return t;
-					pushback.push_back(t);
+					std::string token = next();
+					if (token.empty()) return token;
+					pushback.push_back(token);
 				}
 
 				return pushback.back();
 			}
 
-			void unread(std::string t) { pushback.push_back(std::move(t)); }
+			void unread(std::string token) {
+				pushback.push_back(std::move(token));
+			}
 		};
 
-		static bool isName(const std::string& t) {
-			if (t.empty()) return false;
-			const char c = t[0];
-			if (!(std::isalpha(static_cast<unsigned char>(c)) || c == '_')) return false;
-			for (char x : t) {
-				if (!std::isalnum(static_cast<unsigned char>(x)) && x != '_') return false;
+		static bool isName(const std::string& token) {
+			if (token.empty()) return false;
+			if (!isNameStart(token[0])) return false;
+
+			for (char c : token) {
+				if (!isNameChar(c)) return false;
 			}
 
 			return true;
 		}
 
-		static bool isNumber(const std::string& t) {
-			if (t.empty()) return false;
-			for (char c : t) {
-				if (!std::isdigit(static_cast<unsigned char>(c)) && c != '.') return false;
+		static bool isNumber(const std::string& token) {
+			if (token.empty()) return false;
+
+			for (char c : token) {
+				if (!isNumberChar(c)) return false;
 			}
 
 			return true;
+		}
+
+		static bool isAssignOp(const std::string& op) {
+			return op == "=" || op == "+=" || op == "-=" || op == "*="
+				|| op == "/=" || op == "%=" || op == "^=";
+		}
+
+		static bool isComparisonOp(const std::string& op) {
+			return op == "==" || op == "!=" || op == "<" || op == "<="
+				|| op == ">" || op == ">=";
+		}
+
+		static double applyCompoundOp(const std::string& op, double current, double rhs) {
+			if (op == "+=") return current + rhs;
+			if (op == "-=") return current - rhs;
+			if (op == "*=") return current * rhs;
+			if (op == "/=") return rhs == 0 ? 0 : current / rhs;
+			if (op == "%=") return rhs == 0 ? 0 : std::fmod(current, rhs);
+			if (op == "^=") return std::pow(current, rhs);
+			return rhs;
+		}
+
+		static bool compareDoubles(const std::string& op, double left, double right) {
+			if (op == "==") return left == right;
+			if (op == "!=") return left != right;
+			if (op == "<")  return left <  right;
+			if (op == "<=") return left <= right;
+			if (op == ">")  return left >  right;
+			return left >= right;
+		}
+
+		static double digitCount(double value) {
+			char buffer[64];
+			std::snprintf(buffer, sizeof(buffer), "%.20g", value);
+
+			int count = 0;
+			for (const char* c = buffer; *c != '\0'; ++c) {
+				if (std::isdigit(static_cast<unsigned char>(*c))) ++count;
+			}
+
+			return static_cast<double>(count);
 		}
 
 		struct BcEval {
 			BcLex& lex;
-			BcState& st;
-			BcEval(BcLex& l, BcState& s) : lex(l), st(s) {}
+			BcState& state;
 
-			double varOrZero(const std::string& n) const {
-				const auto it = st.vars.find(n);
-				return it == st.vars.end() ? 0.0 : it->second;
+			BcEval(BcLex& lexer, BcState& bc_state) : lex(lexer), state(bc_state) {}
+
+			double varOrZero(const std::string& name) const {
+				const auto it = state.vars.find(name);
+				return it == state.vars.end() ? 0.0 : it->second;
 			}
 
-			double parseExpr() { return parseAssign(); }
+			void storeVar(const std::string& name, double value) {
+				if (name == "scale") state.scale = static_cast<int>(value);
+				else                 state.vars[name] = value;
+			}
+
+			double parseExpr() {
+				return parseAssign();
+			}
+
+			double parseAssignmentTail(const std::string& name, const std::string& op) {
+				lex.next();
+				const double rhs = parseAssign();
+				const double value = applyCompoundOp(op, varOrZero(name), rhs);
+				storeVar(name, value);
+				return value;
+			}
 
 			double parseAssign() {
-				const std::string t = lex.peek();
-				if (isName(t)) {
-					std::string n = lex.next();
-					const std::string op = lex.peek();
-					if (op == "=" || op == "+=" || op == "-=" || op == "*="
-					    || op == "/=" || op == "%=" || op == "^=")
-					{
-						lex.next();
-						const double rhs = parseAssign();
-						const double cur = varOrZero(n);
-						double v = rhs;
-						if      (op == "+=") v = cur + rhs;
-						else if (op == "-=") v = cur - rhs;
-						else if (op == "*=") v = cur * rhs;
-						else if (op == "/=") v = rhs == 0 ? 0 : cur / rhs;
-						else if (op == "%=") v = rhs == 0 ? 0 : std::fmod(cur, rhs);
-						else if (op == "^=") v = std::pow(cur, rhs);
-						if (n == "scale") st.scale = static_cast<int>(v);
-						else              st.vars[n] = v;
-						return v;
-					}
+				if (!isName(lex.peek())) return parseOr();
 
-					lex.unread(std::move(n));
-				}
+				std::string name = lex.next();
+				const std::string op = lex.peek();
+				if (isAssignOp(op)) return parseAssignmentTail(name, op);
 
+				lex.unread(std::move(name));
 				return parseOr();
 			}
 
 			double parseOr() {
-				double a = parseAnd();
+				double left = parseAnd();
 				while (lex.peek() == "||") {
 					lex.next();
-					const double b = parseAnd();
-					a = (a != 0 || b != 0) ? 1 : 0;
+					const double right = parseAnd();
+					left = (left != 0 || right != 0) ? 1 : 0;
 				}
 
-				return a;
+				return left;
 			}
 
 			double parseAnd() {
-				double a = parseCmp();
+				double left = parseCmp();
 				while (lex.peek() == "&&") {
 					lex.next();
-					const double b = parseCmp();
-					a = (a != 0 && b != 0) ? 1 : 0;
+					const double right = parseCmp();
+					left = (left != 0 && right != 0) ? 1 : 0;
 				}
 
-				return a;
+				return left;
 			}
 
 			double parseCmp() {
-				double a = parseAddSub();
-				while (true) {
-					const std::string p = lex.peek();
-					if (p == "==" || p == "!=" || p == "<" || p == "<="
-					    || p == ">" || p == ">=")
-					{
-						lex.next();
-						const double b = parseAddSub();
-						bool r = false;
-						if      (p == "==") r = a == b;
-						else if (p == "!=") r = a != b;
-						else if (p == "<")  r = a <  b;
-						else if (p == "<=") r = a <= b;
-						else if (p == ">")  r = a >  b;
-						else                r = a >= b;
-						a = r ? 1.0 : 0.0;
-					} else {
-						break;
-					}
-				}
+				double left = parseAddSub();
+				for (;;) {
+					const std::string op = lex.peek();
+					if (!isComparisonOp(op)) return left;
 
-				return a;
+					lex.next();
+					const double right = parseAddSub();
+					left = compareDoubles(op, left, right) ? 1.0 : 0.0;
+				}
 			}
 
 			double parseAddSub() {
-				double a = parseMul();
-				while (true) {
-					const std::string p = lex.peek();
-					if      (p == "+") { lex.next(); a += parseMul(); }
-					else if (p == "-") { lex.next(); a -= parseMul(); }
-					else break;
-				}
+				double left = parseMul();
+				for (;;) {
+					const std::string op = lex.peek();
+					if (op != "+" && op != "-") return left;
 
-				return a;
+					lex.next();
+					const double right = parseMul();
+					if (op == "+") left += right;
+					else           left -= right;
+				}
 			}
 
 			double parseMul() {
-				double a = parseExp();
-				while (true) {
-					const std::string p = lex.peek();
-					if (p == "*") { lex.next(); a *= parseExp(); }
-					else if (p == "/") {
-						lex.next();
-						const double b = parseExp();
-						a = b == 0 ? 0 : a / b;
-					} else if (p == "%") {
-						lex.next();
-						const double b = parseExp();
-						a = b == 0 ? 0 : std::fmod(a, b);
+				double left = parseExp();
+				for (;;) {
+					const std::string op = lex.peek();
+					if (op != "*" && op != "/" && op != "%") return left;
+
+					lex.next();
+					const double right = parseExp();
+					if (op == "*") {
+						left *= right;
+					} else if (op == "/") {
+						left = right == 0 ? 0 : left / right;
 					} else {
-						break;
+						left = right == 0 ? 0 : std::fmod(left, right);
 					}
 				}
-
-				return a;
 			}
 
 			double parseExp() {
-				double a = parseUnary();
-				if (lex.peek() == "^") {
-					lex.next();
-					a = std::pow(a, parseExp());
-				}
+				const double base = parseUnary();
+				if (lex.peek() != "^") return base;
 
-				return a;
+				lex.next();
+				return std::pow(base, parseExp());
+			}
+
+			double preIncrement(double delta) {
+				const std::string name = lex.next();
+				const double value = varOrZero(name) + delta;
+				state.vars[name] = value;
+				return value;
 			}
 
 			double parseUnary() {
-				const std::string p = lex.peek();
-				if (p == "-")  { lex.next(); return -parseUnary(); }
-				if (p == "+")  { lex.next(); return  parseUnary(); }
-				if (p == "!")  { lex.next(); return parseUnary() == 0 ? 1 : 0; }
-				if (p == "++") {
-					lex.next();
-					const std::string n = lex.next();
-					const double v = varOrZero(n) + 1;
-					st.vars[n] = v;
-					return v;
-				}
-
-				if (p == "--") {
-					lex.next();
-					const std::string n = lex.next();
-					const double v = varOrZero(n) - 1;
-					st.vars[n] = v;
-					return v;
-				}
-
+				const std::string op = lex.peek();
+				if (op == "-")  { lex.next(); return -parseUnary(); }
+				if (op == "+")  { lex.next(); return  parseUnary(); }
+				if (op == "!")  { lex.next(); return parseUnary() == 0 ? 1 : 0; }
+				if (op == "++") { lex.next(); return preIncrement(1); }
+				if (op == "--") { lex.next(); return preIncrement(-1); }
 				return parsePrimary();
 			}
 
-			double parsePrimary() {
-				const std::string t = lex.next();
-				if (t.empty()) return 0;
-				if (t == "(") {
-					const double v = parseExpr();
-					if (lex.peek() == ")") lex.next();
-					return v;
-				}
-
-				if (isNumber(t)) {
-					double v = 0;
-					parseDouble(t, v);
-					return v;
-				}
-
-				if (isName(t)) {
-					if (lex.peek() == "(") {
+			std::vector<double> parseCallArgs() {
+				std::vector<double> args;
+				if (lex.peek() != ")") {
+					args.push_back(parseExpr());
+					while (lex.peek() == ",") {
 						lex.next();
-						std::vector<double> args;
-						if (lex.peek() != ")") {
-							args.push_back(parseExpr());
-							while (lex.peek() == ",") {
-								lex.next();
-								args.push_back(parseExpr());
-							}
-						}
-
-						if (lex.peek() == ")") lex.next();
-						return callFunc(t, args);
+						args.push_back(parseExpr());
 					}
-
-					if (lex.peek() == "++" || lex.peek() == "--") {
-						const double cur = varOrZero(t);
-						const double nv = (lex.next() == "++") ? cur + 1 : cur - 1;
-						st.vars[t] = nv;
-						return cur;
-					}
-
-					if (t == "scale") return st.scale;
-					return varOrZero(t);
 				}
 
+				if (lex.peek() == ")") lex.next();
+				return args;
+			}
+
+			double postIncrement(const std::string& name) {
+				const double current = varOrZero(name);
+				const double updated = (lex.next() == "++") ? current + 1 : current - 1;
+				state.vars[name] = updated;
+				return current;
+			}
+
+			double parseNameRef(const std::string& name) {
+				if (lex.peek() == "(") {
+					lex.next();
+					const std::vector<double> args = parseCallArgs();
+					return callFunc(name, args);
+				}
+
+				if (lex.peek() == "++" || lex.peek() == "--") return postIncrement(name);
+				if (name == "scale") return state.scale;
+				return varOrZero(name);
+			}
+
+			double parseGroup() {
+				const double value = parseExpr();
+				if (lex.peek() == ")") lex.next();
+				return value;
+			}
+
+			double parsePrimary() {
+				const std::string token = lex.next();
+				if (token.empty()) return 0;
+				if (token == "(") return parseGroup();
+				if (isNumber(token)) {
+					double value = 0;
+					parseDouble(token, value);
+					return value;
+				}
+
+				if (isName(token)) return parseNameRef(token);
 				return 0;
 			}
 
-			double callFunc(const std::string& n, const std::vector<double>& a) {
-				auto get0 = [&]() { return a.empty() ? 0 : a[0]; };
-				if (n == "sqrt") return std::sqrt(get0());
-				if (st.with_lib) {
-					if (n == "s") return std::sin(get0());
-					if (n == "c") return std::cos(get0());
-					if (n == "e") return std::exp(get0());
-					if (n == "l") return std::log(get0());
-					if (n == "a") return std::atan(get0());
+			double callFunc(const std::string& name, const std::vector<double>& args) {
+				const double arg = args.empty() ? 0 : args[0];
+				if (name == "sqrt") return std::sqrt(arg);
+				if (state.with_lib) {
+					if (name == "s") return std::sin(arg);
+					if (name == "c") return std::cos(arg);
+					if (name == "e") return std::exp(arg);
+					if (name == "l") return std::log(arg);
+					if (name == "a") return std::atan(arg);
 				}
 
-				if (n == "length") {
-					char buf[64];
-					std::snprintf(buf, sizeof(buf), "%.20g", get0());
-					const std::string s = buf;
-					int c = 0;
-					for (char x : s) {
-						if (std::isdigit(static_cast<unsigned char>(x))) ++c;
-					}
-
-					return static_cast<double>(c);
-				}
-
+				if (name == "length") return digitCount(arg);
 				return 0;
 			}
 		};
 
+		// Peeks two tokens ahead: an assignment or pre-increment statement
+		// prints nothing, everything else prints its value.
 		static bool startsAssign(BcLex& lex) {
-			std::string t1 = lex.next();
-			if (t1.empty()) return false;
-			std::string t2 = lex.next();
-			lex.unread(t2);
-			lex.unread(t1);
-			if (t1 == "++" || t1 == "--") return true;
-			if (!isName(t1)) return false;
-			return t2 == "=" || t2 == "+=" || t2 == "-=" || t2 == "*="
-			    || t2 == "/=" || t2 == "%=" || t2 == "^=";
+			std::string first = lex.next();
+			if (first.empty()) return false;
+
+			std::string second = lex.next();
+			lex.unread(second);
+			lex.unread(first);
+			if (first == "++" || first == "--") return true;
+			if (!isName(first)) return false;
+			return isAssignOp(second);
+		}
+
+		static void skipBraceBlock(BcLex& lex) {
+			int depth = 1;
+			while (depth > 0) {
+				const std::string token = lex.next();
+				if (token.empty()) return;
+				if (token == "{") ++depth;
+				else if (token == "}") --depth;
+			}
 		}
 
 		static void skipControlledStmt(BcLex& lex) {
-			std::string nx = lex.next();
-			if (nx == "{") {
-				int d = 1;
-				while (d > 0) {
-					const std::string t = lex.next();
-					if (t.empty()) return;
-					if      (t == "{") ++d;
-					else if (t == "}") --d;
-				}
-
+			std::string token = lex.next();
+			if (token == "{") {
+				skipBraceBlock(lex);
 				return;
 			}
 
-			while (!nx.empty() && nx != ";" && nx != "\n") nx = lex.next();
+			while (!token.empty() && token != ";" && token != "\n") token = lex.next();
 		}
 
-		static void evalLine(BcLex& lex, BcState& st);
+		static void evalLine(BcLex& lex, BcState& state);
 
-		static void printBcResult(double v, const BcState& st) {
-			if (st.scale == 0) std::printf("%lld\n", static_cast<long long>(v));
-			else               std::printf("%.*f\n", st.scale, v);
+		static void printBcResult(double value, const BcState& state) {
+			if (state.scale == 0) std::printf("%lld\n", static_cast<long long>(value));
+			else                  std::printf("%.*f\n", state.scale, value);
 		}
 
-		static void evalLine(BcLex& lex, BcState& st) {
-			while (true) {
-				const std::string p = lex.peek();
-				if (p.empty()) return;
-				if (p == ";") { lex.next(); continue; }
-				if (p == "quit" || p == "halt") {
+		static void evalIf(BcLex& lex, BcState& state) {
+			lex.next();
+			if (lex.peek() == "(") lex.next();
+
+			BcEval eval(lex, state);
+			const double cond = eval.parseExpr();
+			if (lex.peek() == ")") lex.next();
+
+			if (cond != 0) evalLine(lex, state);
+			else           skipControlledStmt(lex);
+		}
+
+		static void evalBraceBlock(BcLex& lex, BcState& state) {
+			lex.next();
+			while (lex.peek() != "}" && !lex.peek().empty()) evalLine(lex, state);
+			if (lex.peek() == "}") lex.next();
+		}
+
+		static void evalExprStmt(BcLex& lex, BcState& state) {
+			const bool suppress = startsAssign(lex);
+			BcEval eval(lex, state);
+			const double value = eval.parseExpr();
+			if (!suppress) printBcResult(value, state);
+		}
+
+		static void evalLine(BcLex& lex, BcState& state) {
+			for (;;) {
+				const std::string token = lex.peek();
+				if (token.empty()) return;
+				if (token == "}") return;
+				if (token == ";") {
 					lex.next();
-					st.exit_now = true;
+					continue;
+				}
+
+				if (token == "quit" || token == "halt") {
+					lex.next();
+					state.exit_now = true;
 					return;
 				}
 
-				if (p == "if") {
-					lex.next();
-					if (lex.peek() == "(") lex.next();
-					BcEval e(lex, st);
-					const double cond = e.parseExpr();
-					if (lex.peek() == ")") lex.next();
-					if (cond) evalLine(lex, st);
-					else      skipControlledStmt(lex);
+				if (token == "if") {
+					evalIf(lex, state);
 					continue;
 				}
 
-				if (p == "{") {
-					lex.next();
-					while (lex.peek() != "}" && !lex.peek().empty()) evalLine(lex, st);
-					if (lex.peek() == "}") lex.next();
+				if (token == "{") {
+					evalBraceBlock(lex, state);
 					continue;
 				}
 
-				if (p == "}") return;
-
-				const bool suppress = startsAssign(lex);
-				BcEval e(lex, st);
-				const double v = e.parseExpr();
-				if (!suppress) printBcResult(v, st);
+				evalExprStmt(lex, state);
 				if (lex.peek() == ";") lex.next();
 				if (lex.peek().empty() || lex.peek() == "}") return;
 			}
 		}
 
-		static void runStream(FILE* f, BcState& st) {
-			std::string buf;
-			int c;
-			while ((c = std::fgetc(f)) != EOF && !st.exit_now) {
-				buf.push_back(static_cast<char>(c));
-				if (c == '\n') {
-					BcLex lex(buf);
-					while (!lex.peek().empty() && !st.exit_now) evalLine(lex, st);
-					buf.clear();
-				}
+		static void evalText(const std::string& text, BcState& state) {
+			BcLex lex(text);
+			while (!lex.peek().empty() && !state.exit_now) evalLine(lex, state);
+		}
+
+		static void runStream(FILE* file, BcState& state) {
+			std::string buffer;
+			int c = 0;
+			while ((c = std::fgetc(file)) != EOF && !state.exit_now) {
+				buffer.push_back(static_cast<char>(c));
+				if (c != '\n') continue;
+
+				evalText(buffer, state);
+				buffer.clear();
 			}
 
-			if (!buf.empty() && !st.exit_now) {
-				BcLex lex(buf);
-				while (!lex.peek().empty() && !st.exit_now) evalLine(lex, st);
-			}
+			if (!buffer.empty() && !state.exit_now) evalText(buffer, state);
 		}
 
 		static void diagnoseFileError(const char* tool, const std::string& path) {
@@ -456,42 +518,57 @@ namespace wbsh {
 				tool, path.c_str(), std::strerror(errno));
 		}
 
-		static int builtin_bc(Executor& exec, const std::vector<std::string>& args) {
-			BcState st;
-			std::vector<std::string> files;
+		static bool isIgnoredOption(const std::string& arg) {
+			return arg.size() > 1 && arg[0] == '-';
+		}
+
+		static void parseBcArgs(const std::vector<std::string>& args, BcState& state,
+				std::vector<std::string>& files) {
 			for (std::size_t i = 0; i < args.size(); ++i) {
-				const std::string& a = args[i];
-				if (a == "-l" || a == "--mathlib") {
-					st.with_lib = true;
-					st.scale = 20;
-				} else if (a == "-q" || a == "--quiet") {
-					st.quiet = true;
-				} else if (a == "-e" && i + 1 < args.size()) {
-					BcLex lex(args[++i]);
-					while (!lex.peek().empty() && !st.exit_now) evalLine(lex, st);
-				} else if (!a.empty() && a[0] == '-' && a != "-") {
-					/* ignore unknown opt */
-				} else {
-					files.push_back(a);
-				}
-			}
-
-			if (files.empty()) {
-				runStream(stdin, st);
-				return 0;
-			}
-
-			for (const auto& fn : files) {
-				FILE* f = openUtf8(exec.pathConv().toWin32(fn), "rb");
-				if (!f) {
-					diagnoseFileError("bc", fn);
+				const std::string& arg = args[i];
+				if (arg == "-l" || arg == "--mathlib") {
+					state.with_lib = true;
+					state.scale = kMathLibScale;
 					continue;
 				}
 
-				runStream(f, st);
-				std::fclose(f);
+				if (arg == "-q" || arg == "--quiet") {
+					state.quiet = true;
+					continue;
+				}
+
+				if (arg == "-e" && i + 1 < args.size()) {
+					evalText(args[++i], state);
+					continue;
+				}
+
+				if (isIgnoredOption(arg)) continue;
+				files.push_back(arg);
+			}
+		}
+
+		static void runFile(Executor& exec, const std::string& name, BcState& state) {
+			FILE* file = openUtf8(exec.pathConv().toWin32(name), "rb");
+			if (file == nullptr) {
+				diagnoseFileError("bc", name);
+				return;
 			}
 
+			runStream(file, state);
+			std::fclose(file);
+		}
+
+		static int builtin_bc(Executor& exec, const std::vector<std::string>& args) {
+			BcState state;
+			std::vector<std::string> files;
+			parseBcArgs(args, state, files);
+
+			if (files.empty()) {
+				runStream(stdin, state);
+				return 0;
+			}
+
+			for (const auto& name : files) runFile(exec, name, state);
 			return 0;
 		}
 

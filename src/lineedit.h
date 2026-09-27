@@ -29,86 +29,39 @@
 
 namespace wbsh {
 
-	/**
-	 * @brief Walk up from the cwd to the enclosing repository's git dir.
-	 *
-	 * Resolves the `.git`-file indirection used by linked worktrees and
-	 * submodules. Returns an empty path when not inside a repository.
-	 * Used by the prompt's `\g` expansion and the git Tab completions.
-	 */
+	// Walks up from the cwd to the enclosing repository's git dir, following
+	// the `.git`-file indirection of linked worktrees and submodules. Empty
+	// when not inside a repository.
 	std::filesystem::path findGitDir();
 
-	/**
-	 * @brief Substring search over shell history, used by reverse-i-search.
-	 *
-	 * Scans `history` either backward from `start_index` toward 0 (when
-	 * `forward` is false) or forward from `start_index` toward the end,
-	 * inclusive at the starting position, and returns the index of the
-	 * first entry that contains `query` as a substring.
-	 *
-	 * @param history     History entries, oldest first.
-	 * @param query       Substring to look for. An empty query never matches.
-	 * @param start_index Index to begin scanning from, inclusive. Values
-	 *                    past the end are clamped to the last entry.
-	 * @param forward     true to scan toward newer entries, false toward older.
-	 *
-	 * @return Index of the matching entry, or `history.size()` when no
-	 *         entry matches (also when `history` is empty or `query` is empty).
-	 */
+	// Substring search over shell history for reverse-i-search. Scans from
+	// `start_index` (inclusive; clamped to the last entry) toward older
+	// entries, or toward newer ones when `forward`. Returns the index of
+	// the first entry containing `query`, or `history.size()` when nothing
+	// matches -- also for an empty history or an empty query.
 	std::size_t findReverseSearchMatch(const std::vector<std::string>& history,
 	                                   const std::string& query,
 	                                   std::size_t start_index,
 	                                   bool forward);
 
-	/**
-	 * @brief Compute the ghost-text inline prediction for a typed prefix.
-	 *
-	 * Scans @p history newest-first for the first entry that begins with
-	 * @p prefix and is strictly longer than it; returns just the trailing
-	 * portion that the editor should render in dim text past the cursor
-	 * (PowerShell-style inline prediction). Entries whose last execution
-	 * exited non-zero (as reported via @p history_status) are skipped, so
-	 * typos and previously-failed commands never get suggested. Empty
-	 * prefix never predicts.
-	 *
-	 * @param history        Shell history, oldest first (same vector
-	 *                       layout as Executor::history()).
-	 * @param history_status Parallel exit-status vector (0 = OK). Indices
-	 *                       past the end are treated as 0; pass an empty
-	 *                       vector to disable filtering entirely.
-	 * @param prefix         The buffer typed so far. An empty string
-	 *                       returns "".
-	 *
-	 * @return The suggested suffix to display after the cursor, or an
-	 *         empty string when no entry matches or @p prefix is empty.
-	 */
+	// Ghost-text inline prediction for a typed prefix: the tail of the
+	// newest history entry that begins with `prefix` and is strictly longer
+	// than it. Entries whose last run exited non-zero (per `history_status`,
+	// parallel to `history`; indices past its end count as 0) are skipped so
+	// typos and failed commands are never suggested. Empty for an empty
+	// prefix or no match.
 	std::string findInlinePrediction(const std::vector<std::string>& history,
 	                                 const std::vector<int>& history_status,
 	                                 const std::string& prefix);
 
-	/**
-	 * @brief Interactive line editor.
-	 *
-	 * Stateful object — one instance per REPL session. Keeps the
-	 * current edit buffer, cursor position, history scroll position,
-	 * and Tab-state across readLine() calls.
-	 */
+	// One instance per REPL session: keeps the edit buffer, cursor, history
+	// scroll position, and Tab state across readLine() calls.
 	class LineEditor {
 	public:
 		LineEditor(Environment& env, Executor& exec);
 
-		/**
-		 * @brief Read one line from the user.
-		 *
-		 * @param prompt  Prompt string to display (already expanded).
-		 * @param[out] out On success, the typed line (without the
-		 *                 terminating newline).
-		 *
-		 * @return true on Enter (the line is also appended to the
-		 *         executor's history if non-empty and distinct from
-		 *         the previous entry). false on EOF (Ctrl-D on an
-		 *         empty line, or stdin closed).
-		 */
+		// Returns true on Enter with the typed line in `out` (without the
+		// newline), false on EOF (Ctrl-D on an empty line, or stdin closed).
 		bool readLine(const std::string& prompt, std::string& out);
 
 	private:
@@ -116,28 +69,35 @@ namespace wbsh {
 		bool readLineCooked(std::string& out);
 
 #ifdef _WIN32
-		// Helpers used inside readLineRaw — declared here only to keep the
-		// .cpp's per-key dispatch under 60 lines. KEY_EVENT_RECORD comes
-		// from <windows.h>, which the .cpp pulls in unconditionally.
-		void handleAltKeyUp(const ::KEY_EVENT_RECORD& k);
-		bool handleCtrlKey(const ::KEY_EVENT_RECORD& k,
-		                   const std::string& prompt,
+		void handleAltKeyUp(const ::KEY_EVENT_RECORD& key);
+		void dispatchKeyDown(const ::KEY_EVENT_RECORD& key,
+		                     std::string& out, bool& done, bool& eof);
+		bool handleCtrlKey(const ::KEY_EVENT_RECORD& key,
 		                   std::string& out, bool& done, bool& eof);
-		bool handleNavigationKey(const ::KEY_EVENT_RECORD& k,
+		bool handleNavigationKey(const ::KEY_EVENT_RECORD& key,
 		                         std::string& out, bool& done, bool& was_tab);
 		void insertReceivedChar(wchar_t ch);
+		void handleInterrupt();
+		void handleEofOrDelete(bool& done, bool& eof);
+		void moveCursorBack();
+		void moveCursorForward();
+		void moveCursorHome();
+		void moveCursorEnd();
+
 		// One keystroke inside the reverse-search modal. Returns true to
 		// keep looping, false to exit. Sets `cancel` on Esc / Ctrl-G /
 		// Ctrl-C (restore the pre-search buffer) and `submit` on Enter.
-		bool revsearchHandleKey(const ::KEY_EVENT_RECORD& k,
+		bool revsearchHandleKey(const ::KEY_EVENT_RECORD& key,
 		                        std::string& query, std::size_t& match_index,
 		                        bool& cancel, bool& submit);
 		void revsearchStepOlder(const std::string& query, std::size_t& match_index);
 		void revsearchStepNewer(const std::string& query, std::size_t& match_index);
+		void revsearchEraseQueryChar(std::string& query, std::size_t& match_index);
+		void revsearchExtendQuery(std::string& query, char letter, std::size_t& match_index);
 #endif
 
 		void redraw();
-		void emit(const std::string& s);
+		void emit(const std::string& text);
 		void handleEnter(std::string& out, bool& done);
 		void handleBackspace();
 		void handleDelete();
@@ -148,34 +108,30 @@ namespace wbsh {
 		void handleKillToStart();
 		void handleKillWordBack();
 		void handleClearScreen();
-		void insertChars(const std::string& s);
+		void insertChars(const std::string& text);
 
-		// PowerShell-style inline prediction. refreshSuggestion() is
-		// called at the top of redraw() and populates suggestion_ from
-		// history when the cursor sits at end-of-buffer and we aren't in
-		// the reverse-search modal. handleRightArrow() folds in
-		// suggestion-accept at end-of-line: ordinary right-arrow moves
-		// one char forward, but when the cursor is already at the end
-		// and a suggestion is shown, it absorbs the suggestion instead.
+		// PowerShell-style inline prediction: refreshSuggestion() fills
+		// suggestion_ from history when the cursor sits at end-of-buffer
+		// outside the reverse-search modal. Right-arrow at end-of-line
+		// absorbs the suggestion instead of moving.
 		void refreshSuggestion();
 		bool acceptInlineSuggestion();
 		void handleRightArrow();
 
-		// Ctrl-R: enter the reverse-incremental-search modal loop. The
-		// search prompt replaces the normal prompt; printable chars extend
-		// the query, Ctrl-R/Ctrl-S iterate matches, Enter accepts and
-		// submits, Esc/Ctrl-G cancels, any other editing key accepts the
-		// match and falls through to normal editing. Windows-only; a no-op
-		// stub on other platforms.
+		// Ctrl-R modal: the search prompt replaces the normal one; printable
+		// chars extend the query, Ctrl-R/Ctrl-S iterate matches, Enter
+		// accepts and submits, Esc/Ctrl-G cancels, any other editing key
+		// accepts the match and returns to normal editing. Windows-only;
+		// a no-op stub elsewhere.
 		void runReverseSearch(std::string& out, bool& done, bool& eof);
 		void revsearchRefresh(const std::string& query, std::size_t match_index);
 
-		// Ctrl-V: pull CF_UNICODETEXT off the clipboard, strip newlines,
-		// insert at cursor. Windows-only; a no-op stub on other platforms.
+		// Ctrl-V: CF_UNICODETEXT with newlines stripped, inserted at the
+		// cursor. Windows-only; a no-op stub elsewhere.
 		void pasteFromClipboard();
-		// Wide-char input >= 0x80: emit as UTF-8, fetching the low
+		// Wide-char input >= 0x80: emitted as UTF-8, fetching the low
 		// surrogate from the console input queue when `ch` is a high
-		// surrogate. Windows-only; a no-op stub on other platforms.
+		// surrogate. Windows-only; a no-op stub elsewhere.
 		void insertWideCharFromConsole(wchar_t ch);
 
 		struct Tok {
@@ -188,9 +144,9 @@ namespace wbsh {
 		                                        bool command_pos);
 		std::vector<std::string> commandCompletions(const std::string& prefix);
 		// PATH-derived executable names (extension-stripped), memoized
-		// across Tab presses and rebuilt only when PATH itself changes —
-		// consecutive Tabs on the same prefix no longer re-list every
-		// PATH directory from disk.
+		// across Tab presses and rebuilt only when PATH itself changes --
+		// consecutive Tabs on the same prefix never re-list every PATH
+		// directory from disk.
 		const std::set<std::string>& pathCommandNames();
 		std::vector<std::string> pathCompletions(const std::string& prefix);
 
@@ -200,6 +156,13 @@ namespace wbsh {
 		// path completion).
 		std::vector<std::string> toolCompletions(const std::string& prefix,
 		                                         const Tok& tok);
+		std::vector<std::string> specCompletions(const Executor::CompletionSpec& spec,
+		                                         const std::string& prefix, const Tok& tok,
+		                                         const std::vector<std::string>& prev);
+		void appendFunctionCompletions(const std::string& function,
+		                               const std::string& prefix, const Tok& tok,
+		                               const std::vector<std::string>& prev,
+		                               std::vector<std::string>& matches);
 		std::vector<std::string> gitCompletions(const std::string& prefix,
 		                                        const std::vector<std::string>& prev);
 		std::vector<std::string> dockerCompletions(const std::string& prefix,
@@ -216,7 +179,7 @@ namespace wbsh {
 		void applyCompletion(const Tok& tok,
 		                     const std::vector<std::string>& matches);
 		void printMatches(const std::vector<std::string>& matches);
-		std::string longestCommonPrefix(const std::vector<std::string>& v);
+		std::string longestCommonPrefix(const std::vector<std::string>& words);
 
 		Environment& env_;
 		Executor& exec_;
@@ -242,7 +205,7 @@ namespace wbsh {
 
 		// Current ghost-text inline prediction (the tail past the
 		// cursor), rendered in dim style by redraw(). Empty when no
-		// prediction applies — including while the reverse-search
+		// prediction applies -- including while the reverse-search
 		// modal owns the prompt, gated by revsearch_active_.
 		std::string suggestion_;
 		bool revsearch_active_ = false;

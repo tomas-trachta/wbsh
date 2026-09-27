@@ -13,11 +13,21 @@
 
 namespace wbsh {
 
-	int runOnSource(const std::string& src,
-	                bool show_tokens,
-	                bool show_ast,
-	                bool do_expand,
-	                bool do_run,
-	                const std::string& script_name = "");
+	/** One non-interactive run: what to read and which of the stages to show. */
+	struct ScriptRun {
+		std::string source;
+		std::string script_name;
+		bool show_tokens     = false;
+		bool show_ast        = false;
+		bool show_expansions = false;
+		bool execute         = false;
+	};
+
+	/**
+	 * Lexes and parses `run.source`, prints whichever dumps were asked
+	 * for, then executes when `run.execute` is set. Without execution the
+	 * status is 0 unless the lexer or parser reported an error.
+	 */
+	int runScript(const ScriptRun& run);
 
 }  // namespace wbsh
