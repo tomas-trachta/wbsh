@@ -15,6 +15,7 @@
 extern char** environ;
 #endif /* _WIN32 */
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
@@ -244,6 +245,18 @@ namespace wbsh {
 		return utf8;
 	}
 
+	// Windows variable names are case-insensitive and the OS spells the
+	// search path `Path`. The shell reads and rewrites it as `PATH`, so the
+	// imported name must be folded or the child block carries both
+	// spellings and each child picks one of them at random.
+	static std::string canonicalProcessVariableName(std::string name) {
+		if (name.size() != 4) return name;
+
+		std::string lower = name;
+		for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		return lower == "path" ? std::string("PATH") : name;
+	}
+
 	void Environment::loadFromProcessEnv() {
 		LPWCH block = ::GetEnvironmentStringsW();
 		if (block == nullptr) return;
@@ -255,7 +268,7 @@ namespace wbsh {
 			const std::size_t eq = entry.find(L'=');
 			if (eq == std::wstring::npos || eq == 0) continue;
 
-			importProcessVariable(wideToUtf8(entry.substr(0, eq)),
+			importProcessVariable(canonicalProcessVariableName(wideToUtf8(entry.substr(0, eq))),
 				wideToUtf8(entry.substr(eq + 1)));
 		}
 

@@ -171,6 +171,7 @@ namespace wbsh {
 		for (const auto& dir : dirs) {
 			const std::string posix = path_conv.toPosix(dir);
 			if (!path.empty() && path.find(posix) != std::string::npos) continue;
+			if (prepend.find(posix) != std::string::npos) continue;
 			if (!prepend.empty()) prepend.push_back(':');
 			prepend += posix;
 		}
