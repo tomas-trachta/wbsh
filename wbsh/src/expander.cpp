@@ -1504,20 +1504,9 @@ namespace wbsh {
 		for (char c : text) out.push(c, mark);
 	}
 
-	static bool isQuotingSegment(WordSegment::Kind kind) {
-		return kind == WordSegment::Kind::SingleQuoted
-			|| kind == WordSegment::Kind::DoubleQuoted
-			|| kind == WordSegment::Kind::Escaped
-			|| kind == WordSegment::Kind::DollarSingle;
-	}
-
 	Expander::Tagged Expander::renderWord(const Word& w) {
 		Tagged out;
 		out.reserve(w.raw.size());
-		for (const WordSegment& segment : w.segments) {
-			if (isQuotingSegment(segment.kind)) out.had_quote = true;
-		}
-
 		for (const WordSegment& segment : w.segments) {
 			if (aborting()) break;
 			renderSegment(segment, out, /*inside_dq=*/false);
@@ -1542,23 +1531,56 @@ namespace wbsh {
 		return body.substr(start, open - start);
 	}
 
-	// `"${a[*]}"` joins with the first IFS character inside the quotes;
-	// every other form separates elements with an unquoted space so
-	// word splitting can cut between them.
+	// The `*` forms join with the first IFS character, as `$*` does.
+	// The `@` forms separate elements with an F_FIELD_END marker, so
+	// each element stays a field of its own whatever IFS holds.
 	void Expander::renderArrayFields(const std::vector<std::string>& elems, bool star,
 			bool inside_dq, Tagged& out) {
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
-		const bool join_with_ifs = star && inside_dq;
-		const std::string sep = join_with_ifs ? starSeparator(true) : std::string(" ");
-		const std::uint8_t sep_mark = join_with_ifs ? mark : 0;
+		const std::string sep = starSeparator(true);
 
 		for (std::size_t k = 0; k < elems.size(); ++k) {
-			if (k != 0) pushText(out, sep, sep_mark);
+			if (k != 0 && star) pushText(out, sep, mark);
+			if (k != 0 && !star) out.endField(inside_dq);
 			pushText(out, elems[k], mark);
 		}
 	}
 
+	// True for an `@` expansion that has no elements. Inside double
+	// quotes it removes the quoted null too, as in bash: with no
+	// positionals, `"$@"` and `"$x$@"` (x empty) both give zero fields.
+	bool Expander::isEmptyAtExpansion(const WordSegment& s) const {
+		if (s.kind != WordSegment::Kind::SimpleVar && s.kind != WordSegment::Kind::ParamExp) {
+			return false;
+		}
+
+		if (s.text == "@") return env_.positional().empty();
+		if (s.kind != WordSegment::Kind::ParamExp) return false;
+
+		const std::string array_name = fieldAwareArrayName(s.text);
+		if (array_name.empty() || s.text[s.text.size() - 2] != '@') return false;
+		return arrayLength(array_name) == 0;
+	}
+
+	void Expander::renderDoubleQuoted(const WordSegment& s, Tagged& out) {
+		bool quoted_null = true;
+		for (const WordSegment& nested : s.nested) {
+			if (isEmptyAtExpansion(nested)) quoted_null = false;
+		}
+
+		if (quoted_null) out.had_quote = true;
+		for (const WordSegment& nested : s.nested) {
+			if (aborting()) break;
+			renderSegment(nested, out, /*inside_dq=*/true);
+		}
+	}
+
 	void Expander::renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
+		if (s.text == "@") {
+			renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
+			return;
+		}
+
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
 		const std::string array_name = fieldAwareArrayName(s.text);
 		if (array_name.empty()) {
@@ -1571,7 +1593,6 @@ namespace wbsh {
 		const std::vector<std::string> elems = indices ? arrayKeys(array_name)
 			: arrayValues(array_name);
 		renderArrayFields(elems, star, inside_dq, out);
-		if (inside_dq) out.had_quote = true;
 	}
 
 #ifdef _WIN32
@@ -1613,15 +1634,6 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
-	void Expander::renderDollarAt(Tagged& out, bool inside_dq) {
-		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
-		const std::vector<std::string>& positional = env_.positional();
-		for (std::size_t i = 0; i < positional.size(); ++i) {
-			if (i != 0) out.push(' ', 0);
-			pushText(out, positional[i], mark);
-		}
-	}
-
 	void Expander::renderSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
 		using K = WordSegment::Kind;
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
@@ -1632,18 +1644,17 @@ namespace wbsh {
 		case K::Escaped:
 		case K::SingleQuoted:
 			pushText(out, s.text, F_QUOTED);
+			out.had_quote = true;
 			break;
 		case K::DoubleQuoted:
-			for (const WordSegment& nested : s.nested) {
-				if (aborting()) break;
-				renderSegment(nested, out, /*inside_dq=*/true);
-			}
+			renderDoubleQuoted(s, out);
 			break;
 		case K::DollarSingle:
 			pushText(out, interpretAnsiC(s.text), F_QUOTED);
+			out.had_quote = true;
 			break;
 		case K::SimpleVar:
-			if (s.text == "@") renderDollarAt(out, inside_dq);
+			if (s.text == "@") renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
 			else pushText(out, lookupParam(s.text), mark);
 			break;
 		case K::ParamExp:
@@ -1711,21 +1722,69 @@ namespace wbsh {
 		}
 	}
 
-	std::vector<Expander::Tagged> Expander::splitWords(const Tagged& t) {
-		const std::string ifs = env_.get("IFS");
-		std::vector<Tagged> out;
-		if (ifs.empty()) {
-			if (t.size() > 0 || t.had_quote) out.push_back(t);
-			return out;
+	// IFS-split a text that holds no F_FIELD_END marker. A text with a
+	// quoted part gives at least one field, even an empty one.
+	static void splitOnIfs(const Expander::Tagged& t, const std::string& ifs,
+			std::vector<Expander::Tagged>& out) {
+		const std::size_t first = out.size();
+		std::size_t i = 0;
+		while (!ifs.empty() && i < t.size() && !quotedAt(t, i) && isIfsWhitespace(ifs, t.text[i])) {
+			++i;
 		}
 
-		std::size_t i = 0;
-		while (i < t.size() && !quotedAt(t, i) && isIfsWhitespace(ifs, t.text[i])) ++i;
-		while (i < t.size()) {
+		while (!ifs.empty() && i < t.size()) {
 			out.push_back(takeField(t, ifs, i));
 			skipFieldSeparator(t, ifs, i);
 		}
 
+		if (ifs.empty() && t.size() > 0) out.push_back(t);
+		if (out.size() == first && t.had_quote) {
+			Expander::Tagged empty;
+			empty.had_quote = true;
+			out.push_back(std::move(empty));
+		}
+	}
+
+	static bool hasFieldEnd(const Expander::Tagged& t) {
+		for (std::uint8_t f : t.flags) {
+			if ((f & Expander::F_FIELD_END) != 0) return true;
+		}
+
+		return false;
+	}
+
+	// An unquoted `$@` acts as if its elements were joined with the
+	// first IFS character, so `IFS=:` keeps empty elements, as in bash.
+	// A quoted `"$@"`, or any `$@` when IFS is empty, cuts a hard field
+	// boundary instead.
+	std::vector<Expander::Tagged> Expander::splitWords(const Tagged& t) {
+		const std::string ifs = env_.get("IFS");
+		std::vector<Tagged> out;
+		if (!hasFieldEnd(t)) {
+			splitOnIfs(t, ifs, out);
+			return out;
+		}
+
+		Tagged field;
+		for (std::size_t i = 0; i < t.size(); ++i) {
+			const std::uint8_t f = t.flags[i];
+			if ((f & F_FIELD_END) == 0) {
+				field.push(t.text[i], f);
+				continue;
+			}
+
+			field.had_quote = field.had_quote || (f & F_QUOTED_FIELD) != 0;
+			if ((f & F_QUOTED) == 0 && !ifs.empty()) {
+				field.push(ifs[0], 0);
+				continue;
+			}
+
+			splitOnIfs(field, ifs, out);
+			field = Tagged();
+		}
+
+		field.had_quote = field.had_quote || t.had_quote;
+		splitOnIfs(field, ifs, out);
 		return out;
 	}
 
@@ -2189,14 +2248,7 @@ namespace wbsh {
 
 	std::vector<std::string> Expander::expandWordPostBrace(const Word& w) {
 		const Word tilded = applyTildeExpansion(w);
-		const Tagged rendered = renderWord(tilded);
-		std::vector<Tagged> fields = splitWords(rendered);
-		if (fields.empty() && rendered.had_quote) {
-			Tagged empty;
-			empty.had_quote = true;
-			fields.push_back(std::move(empty));
-		}
-
+		const std::vector<Tagged> fields = splitWords(renderWord(tilded));
 		std::vector<std::string> out;
 		for (const Tagged& field : fields) {
 			std::vector<std::string> results = globExpand(field);

@@ -16,9 +16,13 @@ sparse vals: zero five ten
 sparse len:  3
 === 6. for loop quoting
   quoted:
-    [a a b b c c]
+    [a a]
+    [b b]
+    [c c]
   unquoted (gets word-split):
-    [a a b b c c]
+    [a a]
+    [b b]
+    [c c]
 === 7. unset element
 after unset u[1]: keys=0 2 3 vals=a c d
 === 8. assoc array

@@ -1,0 +1,63 @@
+=== 1. no positionals
+n=0
+n=0
+n=1 []
+n=1 []
+n=1 [x]
+n=0
+n=0
+n=1 []
+n=0
+=== 2. empty array
+n=0
+n=0
+n=1 []
+n=0
+n=0
+  loop done
+=== 3. empty elements
+n=2 [] []
+n=0
+n=2 [x] [y]
+n=1 []
+n=1 [ ]
+n=1 []
+n=0
+n=1 [xy]
+n=1 []
+n=1 []
+=== 4. IFS=:
+n=3 [a] [b c] [d]
+n=3 [a] [b c] [d]
+n=3 [xa] [b c] [dy]
+n=1 [a:b c:d]
+n=3 [a] [b c] [d]
+n=3 [a] [] [b:c]
+n=4 [a] [] [b] [c]
+n=3 [xa] [] [b:cy]
+n=1 [a::b:c]
+n=4 [a] [] [b] [c]
+n=3 [p] [q r] [s]
+n=3 [p] [q r] [s]
+n=1 [p:q r:s]
+n=3 [p] [q r] [s]
+n=3 [0] [1] [2]
+  [p]
+  [q r]
+  [s]
+assign [a b]
+assign unquoted [a b]
+assign star [a:b]
+case space
+=== 5. IFS empty
+n=3 [a] [b c] []
+n=2 [a] [b c]
+n=1 [ab c]
+n=3 [p] [q r] [s]
+n=3 [p] [q r] [s]
+assign [p q r s]
+=== 6. default IFS
+n=2 [ a ] [b]
+n=2 [a] [b]
+n=3 [x] [a] [b]
+n=3 [one two] [] [three]

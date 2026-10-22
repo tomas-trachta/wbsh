@@ -170,15 +170,34 @@ namespace wbsh {
 		// Public because file-static helpers in expander.cpp consume it as
 		// an opaque "string + per-char flags" buffer.
 		static constexpr std::uint8_t F_QUOTED = 1u << 0;
+		// A space that separates two elements of `$@` / `${a[@]}`. In
+		// non-splitting contexts it stays a plain space; word splitting
+		// treats it as a field boundary that IFS cannot merge away.
+		// With F_QUOTED it comes from `"$@"`, so both neighbouring
+		// fields survive even when empty.
+		static constexpr std::uint8_t F_FIELD_END = 1u << 1;
+		// On an F_FIELD_END marker: the field that ends here had a
+		// quoted part, so it survives even when empty.
+		static constexpr std::uint8_t F_QUOTED_FIELD = 1u << 2;
 
 		struct Tagged {
 			std::string text;
 			std::vector<std::uint8_t> flags;
-			bool had_quote = false;     // ever entered a quoted segment in source
+			// The field after the last F_FIELD_END marker has a quoted
+			// part (`''`, `"$x"`, ...), so it survives even when empty.
+			bool had_quote = false;
 			std::size_t size() const { return text.size(); }
 			void push(char c, std::uint8_t f) {
 				text.push_back(c);
 				flags.push_back(f);
+			}
+			// Close the current field with an F_FIELD_END marker.
+			void endField(bool quoted) {
+				std::uint8_t f = F_FIELD_END;
+				if (quoted) f |= F_QUOTED;
+				if (had_quote || quoted) f |= F_QUOTED_FIELD;
+				push(' ', f);
+				had_quote = quoted;
 			}
 			// Pre-size both parallel buffers; rendered output is usually
 			// at least as long as the source spelling, so reserving the
@@ -212,9 +231,10 @@ namespace wbsh {
 		void   renderSegment(const WordSegment& s, Tagged& out, bool inside_dq);
 		void   renderArrayFields(const std::vector<std::string>& elems,
 		                         bool star, bool inside_dq, Tagged& out);
+		void   renderDoubleQuoted(const WordSegment& s, Tagged& out);
 		void   renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq);
 		void   renderProcSubstSegment(const WordSegment& s, Tagged& out);
-		void   renderDollarAt(Tagged& out, bool inside_dq);
+		bool   isEmptyAtExpansion(const WordSegment& s) const;
 
 		std::string lookupParam(const std::string& name, bool suppress_nounset = false);
 		std::string lookupPositional(std::size_t index) const;
