@@ -729,10 +729,18 @@ namespace wbsh {
 		return k;
 	}
 
-	static void expandHeredocBackslash(const std::string& body, std::size_t& i,
-			std::string& out) {
+	static bool heredocEscapes(char c) {
+		return c == '\\' || c == '$' || c == '`';
+	}
+
+	static bool doubleQuoteEscapes(char c) {
+		return heredocEscapes(c) || c == '"';
+	}
+
+	static void expandBackslash(const std::string& body, std::size_t& i,
+			bool (*escapes)(char), std::string& out) {
 		const char next = body[i + 1];
-		if (next == '\\' || next == '$' || next == '`' || next == '"') {
+		if (escapes(next)) {
 			out.push_back(next);
 			i += 2;
 			return;
@@ -864,7 +872,7 @@ namespace wbsh {
 		while (i < end && !aborting()) {
 			const char c = body[i];
 			if (c == '\\' && i + 1 < end) {
-				expandHeredocBackslash(body, i, out);
+				expandBackslash(body, i, heredocEscapes, out);
 				continue;
 			}
 
@@ -917,7 +925,7 @@ namespace wbsh {
 			}
 
 			if (c == '\\' && i + 1 < end) {
-				expandHeredocBackslash(body, i, out);
+				expandBackslash(body, i, doubleQuoteEscapes, out);
 				continue;
 			}
 
