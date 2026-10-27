@@ -66,6 +66,8 @@ namespace wbsh {
 
 	void registerSortBuiltin(Executor& exec);
 
+	void registerXargsBuiltin(Executor& exec);
+
 	void registerEncodingBuiltins(Executor& exec);
 
 	void registerDumpBuiltins(Executor& exec);

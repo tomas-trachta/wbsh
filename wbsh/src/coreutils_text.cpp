@@ -2,7 +2,7 @@
  * @file coreutils_text.cpp
  * @brief Text-processing coreutils: uniq, cut, tee, paste,
  *        tac, rev, nl, grep, find, sed, fold, column, expand,
- *        unexpand, comm, xargs (awk lives in awk.cpp).
+ *        unexpand, comm (awk lives in awk.cpp).
  */
 
 #include "coreutils_internal.h"
@@ -1893,160 +1893,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	struct XargsOptions {
-		int n_per = -1;   // -1 means "all in one batch"
-		std::vector<std::string> cmd;
-		std::string replace_str;
-	};
-
-	static bool parseXargsArgs(const std::vector<std::string>& args, XargsOptions& options) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "-n" && i + 1 < args.size()) {
-				if (!parseInt(args[++i], options.n_per)) return false;
-				continue;
-			}
-
-			if (hasAttachedValue(arg, "-n")) {
-				if (!parseInt(arg.substr(2), options.n_per)) return false;
-				continue;
-			}
-
-			if (arg == "-I" && i + 1 < args.size()) {
-				options.replace_str = args[++i];
-				continue;
-			}
-
-			if (hasAttachedValue(arg, "-I")) {
-				options.replace_str = arg.substr(2);
-				continue;
-			}
-
-			if (arg == "--") {
-				for (++i; i < args.size(); ++i) options.cmd.push_back(args[i]);
-				break;
-			}
-
-			options.cmd.push_back(arg);
-		}
-
-		return true;
-	}
-
-	static std::string xargsSubstitute(const std::string& word, const std::string& replace_str,
-			const std::string& item) {
-		std::string out;
-		std::size_t pos = 0;
-		while (true) {
-			const std::size_t hit = word.find(replace_str, pos);
-			if (hit == std::string::npos) {
-				out += word.substr(pos);
-				return out;
-			}
-
-			out += word.substr(pos, hit - pos);
-			out += item;
-			pos = hit + replace_str.size();
-		}
-	}
-
-	static std::vector<std::string> xargsReadItems() {
-		std::vector<std::string> items;
-		std::string current;
-		int c;
-		while ((c = std::fgetc(stdin)) != EOF) {
-			if (std::isspace(static_cast<unsigned char>(c)) == 0) {
-				current.push_back(static_cast<char>(c));
-				continue;
-			}
-
-			if (!current.empty()) {
-				items.push_back(std::move(current));
-				current.clear();
-			}
-		}
-
-		if (!current.empty()) items.push_back(std::move(current));
-		return items;
-	}
-
-	static std::string xargsQuoteArgv(const std::vector<std::string>& argv) {
-		std::string line;
-		for (std::size_t k = 0; k < argv.size(); ++k) {
-			if (k != 0) line.push_back(' ');
-			line.push_back('\'');
-			for (char ch : argv[k]) {
-				if (ch == '\'') line += "'\\''";
-				else line.push_back(ch);
-			}
-
-			line.push_back('\'');
-		}
-
-		return line;
-	}
-
-	static int xargsInvokeBatch(Executor& exec, const std::vector<std::string>& cmd,
-			std::vector<std::string> batch, bool skip_empty) {
-		if (batch.empty() && skip_empty) return 0;
-
-		std::vector<std::string> argv = cmd;
-		for (auto& item : batch) argv.push_back(std::move(item));
-		if (argv.empty()) return 0;
-
-		if (exec.isFunction(argv[0]) || exec.isBuiltin(argv[0])) {
-			const std::vector<std::string> call_args(argv.begin() + 1, argv.end());
-			if (exec.isBuiltin(argv[0])) return exec.callBuiltin(argv[0], call_args);
-			return exec.callFunction(argv[0], call_args);
-		}
-
-		return exec.executeText(xargsQuoteArgv(argv), "<xargs>");
-	}
-
-	static int xargsRunReplacing(Executor& exec, const XargsOptions& options,
-			const std::vector<std::string>& items) {
-		int status = 0;
-		for (const auto& item : items) {
-			std::vector<std::string> argv;
-			for (const auto& word : options.cmd) {
-				argv.push_back(xargsSubstitute(word, options.replace_str, item));
-			}
-
-			const int batch_status = xargsInvokeBatch(exec, argv, {}, false);
-			if (batch_status != 0) status = batch_status;
-		}
-
-		return status;
-	}
-
-	static int xargsRunBatches(Executor& exec, const XargsOptions& options,
-			const std::vector<std::string>& items) {
-		const std::size_t per_batch = static_cast<std::size_t>(options.n_per);
-		int status = 0;
-		for (std::size_t k = 0; k < items.size(); k += per_batch) {
-			std::vector<std::string> batch;
-			for (std::size_t j = 0; j < per_batch && k + j < items.size(); ++j) {
-				batch.push_back(items[k + j]);
-			}
-
-			const int batch_status = xargsInvokeBatch(exec, options.cmd, std::move(batch), false);
-			if (batch_status != 0) status = batch_status;
-		}
-
-		return status;
-	}
-
-	static int builtin_xargs(Executor& exec, const std::vector<std::string>& args) {
-		XargsOptions options;
-		if (!parseXargsArgs(args, options)) return 1;
-		if (options.cmd.empty()) options.cmd.push_back("echo");
-
-		const std::vector<std::string> items = xargsReadItems();
-		if (!options.replace_str.empty()) return xargsRunReplacing(exec, options, items);
-		if (options.n_per > 0) return xargsRunBatches(exec, options, items);
-		return xargsInvokeBatch(exec, options.cmd, items, true);
-	}
-
 	void registerTextBuiltins(Executor& exec) {
 		exec.registerBuiltin("uniq",     builtin_uniq);
 		exec.registerBuiltin("cut",      builtin_cut);
@@ -2061,7 +1907,6 @@ namespace wbsh {
 		exec.registerBuiltin("unexpand", builtin_unexpand);
 		exec.registerBuiltin("comm",     builtin_comm);
 		exec.registerBuiltin("find",     builtin_find);
-		exec.registerBuiltin("xargs",    builtin_xargs);
 		exec.registerBuiltin("awk",      builtin_awk);
 		exec.registerBuiltin("gawk",     builtin_awk);
 	}
