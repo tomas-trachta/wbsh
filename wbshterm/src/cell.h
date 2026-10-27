@@ -37,18 +37,23 @@ namespace wbshterm {
 	static const std::uint16_t kAttrUnderlineShapes = kAttrUnderlineDouble | kAttrUnderlineCurly
 		| kAttrUnderlineDotted | kAttrUnderlineDashed;
 
-	/** The underline colour is kDefaultColor when it follows the text's. */
+	/**
+	 * The underline colour is kDefaultColor when it follows the text's.
+	 * A link is an OSC 8 hyperlink's number in its Screen, 0 for none.
+	 */
 	struct Cell {
 		char32_t      code       = U' ';
 		std::uint32_t foreground = kDefaultColor;
 		std::uint32_t background = kDefaultColor;
 		std::uint32_t underline  = kDefaultColor;
 		std::uint16_t attributes = kAttrNone;
+		std::uint16_t link       = 0;
 	};
 
 	inline bool sameStyle(const Cell& left, const Cell& right) {
 		return left.foreground == right.foreground && left.background == right.background
-			&& left.underline == right.underline && left.attributes == right.attributes;
+			&& left.underline == right.underline && left.attributes == right.attributes
+			&& left.link == right.link;
 	}
 
 } /* namespace wbshterm */

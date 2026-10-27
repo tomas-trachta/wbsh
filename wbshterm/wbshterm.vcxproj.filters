@@ -145,6 +145,9 @@
     <ClCompile Include="src\screen.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\screen_vt.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\selftest.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

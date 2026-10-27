@@ -667,13 +667,22 @@ namespace wbshterm {
 		}
 	}
 
+	// A hyperlink the program did not underline itself gets a dashed line,
+	// so it can be told apart from plain text before it is hovered.
+	static std::uint16_t underlineFor(const Cell& style) {
+		const auto shapes = static_cast<std::uint16_t>(
+			style.attributes & (kAttrUnderline | kAttrUnderlineShapes));
+		if (shapes != 0 || style.link == 0) return shapes;
+
+		return static_cast<std::uint16_t>(kAttrUnderline | kAttrUnderlineDashed);
+	}
+
 	void Renderer::drawRun(const PaneCanvas& canvas, const std::wstring& text, const Cell& style,
 			int row, int column) {
 		if ((style.attributes & kAttrInvisible) != 0) return;
-		if (text.find_first_not_of(L' ') == std::wstring::npos
-			&& (style.attributes & kAttrUnderline) == 0) {
-			return;
-		}
+
+		const std::uint16_t underline = underlineFor(style);
+		if (text.find_first_not_of(L' ') == std::wstring::npos && underline == 0) return;
 
 		const CellMetrics& cell_box = font_.metrics();
 		const D2D1_POINT_2F origin = originOf(canvas);
@@ -690,14 +699,14 @@ namespace wbshterm {
 				text_options_);
 		}
 
-		if ((style.attributes & kAttrUnderline) == 0) return;
+		if (underline == 0) return;
 
 		const float right = left + cell_box.width * static_cast<float>(text.size());
 		if (style.underline != kDefaultColor) {
 			setBrushColor(resolveColor(style.underline, config_.palette.foreground), alpha);
 		}
 
-		drawUnderline(canvas.target, style.attributes,
+		drawUnderline(canvas.target, underline,
 			D2D1::RectF(left, top + cell_box.ascent + 1.5f, right, top + cell_box.height));
 	}
 
@@ -751,6 +760,21 @@ namespace wbshterm {
 			brush_.Get(), 1.0f);
 	}
 
+	// A program's DECSCUSR wins over the configured style while it lasts.
+	// Whether a blinking shape actually blinks is still the window's
+	// call: it drives the phase, and only when blinking is configured.
+	Renderer::CursorLook Renderer::cursorLookFor(CursorShape shape) const {
+		switch (shape) {
+		case CursorShape::kBlinkingBlock:     return { CursorStyle::Block, true };
+		case CursorShape::kSteadyBlock:       return { CursorStyle::Block, false };
+		case CursorShape::kBlinkingUnderline: return { CursorStyle::Underline, true };
+		case CursorShape::kSteadyUnderline:   return { CursorStyle::Underline, false };
+		case CursorShape::kBlinkingBar:       return { CursorStyle::Bar, true };
+		case CursorShape::kSteadyBar:         return { CursorStyle::Bar, false };
+		default:                              return { config_.cursor.style, true };
+		}
+	}
+
 	// Scrolled back past the cursor's row there is no live cursor to show.
 	// An unfocused pane gets a hollow box that never blinks, the way vim
 	// and tmux mark theirs.
@@ -775,15 +799,16 @@ namespace wbshterm {
 			return;
 		}
 
-		if (!cursor_phase_) return;
+		const CursorLook look = cursorLookFor(canvas.screen->cursorShape());
+		if (look.blinks && !cursor_phase_) return;
 
-		if (config_.cursor.style == CursorStyle::Bar) {
+		if (look.style == CursorStyle::Bar) {
 			canvas.target->FillRectangle(
 				D2D1::RectF(left, top, left + 2.0f, top + cell_box.height), brush_.Get());
 			return;
 		}
 
-		if (config_.cursor.style == CursorStyle::Underline) {
+		if (look.style == CursorStyle::Underline) {
 			canvas.target->FillRectangle(
 				D2D1::RectF(left, top + cell_box.height - 2.0f, left + cell_box.width,
 					top + cell_box.height), brush_.Get());

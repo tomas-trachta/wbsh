@@ -9,6 +9,10 @@ namespace wbshterm {
 
 	static const char32_t kReplacementChar = 0xFFFD;
 
+	// OSC 52 carries a whole clipboard as base64, so the cap is generous;
+	// it only keeps an unterminated string from growing without end.
+	static const std::size_t kMaxOscBytes = 1u << 20;
+
 	int VtSequence::param(std::size_t index, int fallback) const {
 		if (index >= params.size()) return fallback;
 		return params[index] < 0 ? fallback : params[index];
@@ -334,7 +338,7 @@ namespace wbshterm {
 			return;
 		}
 
-		if (byte >= 0x20 && osc_.size() < 4096) osc_.push_back(static_cast<char>(byte));
+		if (byte >= 0x20 && osc_.size() < kMaxOscBytes) osc_.push_back(static_cast<char>(byte));
 	}
 
 	void VtParser::stepStringIgnore(unsigned char byte) {

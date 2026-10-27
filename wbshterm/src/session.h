@@ -38,6 +38,7 @@ namespace wbshterm {
 
 		/** Wakes this window with this message when bytes arrive. */
 		void wakeWith(HWND window, UINT message);
+		HWND wakeWindow() const { return wake_window_; }
 
 		void resize(int columns, int rows);
 		void writeInput(const char* data, std::size_t length);

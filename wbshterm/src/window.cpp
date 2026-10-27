@@ -197,6 +197,7 @@ namespace wbshterm {
 		shell.working_directory = directory_hint_;
 
 		pane.screen().setTmuxHandler(this);
+		pane.screen().setPalette(&renderer_.palette());
 		pane.session().wakeWith(window_, kMessagePtyData);
 		if (!record_path_.empty()) pane.session().recordTo(record_path_);
 		if (!pane.start(shell, out_error)) return false;
@@ -1419,6 +1420,29 @@ namespace wbshterm {
 		return click_count_;
 	}
 
+	static std::wstring widenUtf8(const std::string& text) {
+		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(),
+			static_cast<int>(text.size()), nullptr, 0);
+		if (needed <= 0) return std::wstring();
+
+		std::wstring wide(static_cast<std::size_t>(needed), L'\0');
+		::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+			wide.data(), needed);
+		return wide;
+	}
+
+	// Ctrl+click follows an OSC 8 hyperlink; a plain click still selects.
+	static bool openLinkAt(const Screen& screen, const GridPoint& point) {
+		if ((::GetKeyState(VK_CONTROL) & 0x8000) == 0) return false;
+
+		const std::string* target = screen.linkAt(point.row, point.column);
+		if (target == nullptr || !linkIsSafeToOpen(*target)) return false;
+
+		::ShellExecuteW(nullptr, L"open", widenUtf8(*target).c_str(), nullptr, nullptr,
+			SW_SHOWNORMAL);
+		return true;
+	}
+
 	void TerminalWindow::onMouseDown(LPARAM lparam) {
 		if (titleBarTakesPress(lparam)) return;
 		if (beginDividerDrag(lparam)) return;
@@ -1430,6 +1454,8 @@ namespace wbshterm {
 		panes_.focusOn(leaf);
 
 		const GridPoint point = pointInLeaf(*leaf, lparam);
+		if (openLinkAt(leaf->pane()->screen(), point)) return;
+
 		const int clicks = clickCountAt(point);
 		TerminalView& view = leaf->pane()->view();
 		const Screen& screen = leaf->pane()->screen();

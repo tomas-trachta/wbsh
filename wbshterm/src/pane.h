@@ -23,7 +23,7 @@ namespace wbshterm {
 	 * pointers and are never copied, moved, or held by value in a
 	 * container.
 	 */
-	class Pane : public PickHandler {
+	class Pane : public PickHandler, public ClipboardHandler {
 	public:
 		Pane();
 
@@ -47,6 +47,8 @@ namespace wbshterm {
 		void pickItem(const std::string& text) override;
 		void pickEnd() override;
 		void pickCancel() override;
+
+		void clipboardWrite(const std::string& utf8) override;
 
 	private:
 		Session      session_;

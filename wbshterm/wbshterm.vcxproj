@@ -251,6 +251,7 @@
     <ClCompile Include="src\render.cpp" />
     <ClCompile Include="src\replay.cpp" />
     <ClCompile Include="src\screen.cpp" />
+    <ClCompile Include="src\screen_vt.cpp" />
     <ClCompile Include="src\scrollbar.cpp" />
     <ClCompile Include="src\status.cpp" />
     <ClCompile Include="src\sysinfo.cpp" />

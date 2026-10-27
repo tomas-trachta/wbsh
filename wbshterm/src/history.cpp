@@ -45,6 +45,7 @@ namespace wbshterm {
 				putU32(out, style.background);
 				putU32(out, style.underline);
 				putU16(out, style.attributes);
+				putU16(out, style.link);
 				putU32(out, static_cast<std::uint32_t>(end - starts[run]));
 			}
 		}
@@ -84,7 +85,8 @@ namespace wbshterm {
 				std::uint32_t count = 0;
 				if (!in.u32(style.foreground) || !in.u32(style.background)) return false;
 				if (!in.u32(style.underline)) return false;
-				if (!in.u16(style.attributes) || !in.u32(count)) return false;
+				if (!in.u16(style.attributes) || !in.u16(style.link)) return false;
+				if (!in.u32(count)) return false;
 				if (filled + count > line.size()) return false;
 
 				std::fill(line.begin() + static_cast<std::ptrdiff_t>(filled),
