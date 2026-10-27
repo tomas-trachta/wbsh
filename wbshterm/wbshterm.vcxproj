@@ -213,6 +213,7 @@
     <ClInclude Include="src\theme.h" />
     <ClInclude Include="src\config.h" />
     <ClInclude Include="src\charwidth.h" />
+    <ClInclude Include="src\charwidth_ucd.h" />
     <ClInclude Include="src\keymap.h" />
     <ClInclude Include="src\pty.h" />
     <ClInclude Include="src\render.h" />
@@ -245,6 +246,7 @@
     <ClCompile Include="src\theme.cpp" />
     <ClCompile Include="src\config.cpp" />
     <ClCompile Include="src\charwidth.cpp" />
+    <ClCompile Include="src\charwidth_ucd.cpp" />
     <ClCompile Include="src\keymap.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\pty.cpp" />
@@ -252,6 +254,7 @@
     <ClCompile Include="src\replay.cpp" />
     <ClCompile Include="src\screen.cpp" />
     <ClCompile Include="src\screen_vt.cpp" />
+    <ClCompile Include="src\screen_cluster.cpp" />
     <ClCompile Include="src\scrollbar.cpp" />
     <ClCompile Include="src\status.cpp" />
     <ClCompile Include="src\sysinfo.cpp" />

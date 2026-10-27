@@ -5,6 +5,7 @@
 
 #include "selftest_internal.h"
 
+#include "charwidth.h"
 #include "vtparse.h"
 
 #include <string>
@@ -444,9 +445,82 @@ namespace wbshterm {
 			checkColorQueries(report);
 		}
 
+		static bool clusterIs(const Screen& screen, int column, const std::u32string& expected) {
+			const std::u32string* cluster = screen.clusterOf(screen.cell(0, column));
+			return cluster != nullptr && *cluster == expected;
+		}
+
+		static bool isWideAt(const Screen& screen, int row, int column) {
+			return (screen.cell(row, column).attributes & kAttrWide) != 0
+				&& (screen.cell(row, column + 1).attributes & kAttrWideTail) != 0;
+		}
+
+		static void checkCombiningMarksJoinTheirBase(Report& report) {
+			Screen screen(10, 2);
+			feedToScreen(screen, "e\xcc\x81|");
+			report.check("a combining mark joins the character before it",
+				clusterIs(screen, 0, U"é") && screen.baseCodeOf(screen.cell(0, 0)) == U'e'
+					&& screen.cell(0, 1).code == U'|', screen.toText());
+
+			Screen lone(10, 2);
+			feedToScreen(lone, "\xcc\x81X");
+			report.check("a mark with nothing before it takes no cell",
+				lone.cell(0, 0).code == U'X', lone.toText());
+
+			Screen moved(10, 2);
+			feedToScreen(moved, "e\x1b[C\xcc\x81X");
+			report.check("a cursor move ends the cluster", moved.cell(0, 2).code == U'X'
+				&& moved.clusterOf(moved.cell(0, 0)) == nullptr, moved.toText());
+		}
+
+		static void checkEmojiWidthsMatchTheConsole(Report& report) {
+			report.check("emoji-presentation BMP symbols are two cells wide",
+				characterWidth(0x2705) == 2 && characterWidth(0x231A) == 2
+					&& characterWidth(0x2615) == 2 && characterWidth(0x2714) == 1, "");
+
+			Screen check(10, 2);
+			feedToScreen(check, "\xe2\x9c\x85X");
+			report.check("text after a wide check mark lands past it",
+				isWideAt(check, 0, 0) && check.cell(0, 2).code == U'X', check.toText());
+
+			Screen selector(10, 2);
+			feedToScreen(selector, "\xe2\x9c\x94\xef\xb8\x8fX");
+			report.check("VS16 widens the symbol before it",
+				isWideAt(selector, 0, 0) && clusterIs(selector, 0, U"✔️")
+					&& selector.cell(0, 2).code == U'X', selector.toText());
+		}
+
+		static void checkSequencesAreOneCluster(Report& report) {
+			Screen family(10, 2);
+			feedToScreen(family,
+				"\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7X");
+			report.check("a ZWJ emoji sequence is one two-cell cluster",
+				isWideAt(family, 0, 0) && family.cell(0, 2).code == U'X'
+					&& clusterIs(family, 0, U"\U0001F468‍\U0001F469‍\U0001F467"),
+				family.toText());
+
+			Screen flag(10, 2);
+			feedToScreen(flag, "\xf0\x9f\x87\xa8\xf0\x9f\x87\xbfX");
+			report.check("a regional-indicator pair is one flag, two cells wide",
+				isWideAt(flag, 0, 0) && flag.cell(0, 2).code == U'X', flag.toText());
+
+			Screen edge(3, 2);
+			feedToScreen(edge, "ab\xe2\x9c\x94\xef\xb8\x8fX");
+			report.check("a cluster widened in the last column moves to the next row",
+				edge.cell(0, 2).code == U' ' && isWideAt(edge, 1, 0)
+					&& edge.cell(1, 2).code == U'X', edge.toText());
+		}
+
+		static void runClusterChecks(Report& report) {
+			checkCombiningMarksJoinTheirBase(report);
+			checkEmojiWidthsMatchTheConsole(report);
+			checkSequencesAreOneCluster(report);
+		}
+
 	} /* namespace vt_test */
 
 	void runVtChecks(test::Report& report) {
+		vt_test::runClusterChecks(report);
 		vt_test::runSaveRestoreAndResetChecks(report);
 		vt_test::runLineScrollingChecks(report);
 		vt_test::runSgrChecks(report);
