@@ -49,4 +49,34 @@ matchstar() {
 matchstar '*'
 matchstar abc
 
+echo "=== 10. quoted and escaped pattern characters match literally"
+p='a*'
+for pat_kind in escaped single double var-quoted var-unquoted; do
+    printf "  %-12s ab -> " "$pat_kind"
+    case $pat_kind in
+        escaped)      case ab in a\*) echo literal;; *) echo no;; esac;;
+        single)       case ab in 'a*') echo literal;; *) echo no;; esac;;
+        double)       case ab in "a*") echo literal;; *) echo no;; esac;;
+        var-quoted)   case ab in "$p") echo literal;; *) echo no;; esac;;
+        var-unquoted) case ab in $p) echo glob;; *) echo no;; esac;;
+    esac
+done
+case 'a\b' in 'a\b') echo "  backslash literal";; *) echo "  backslash broken";; esac
+case '[x' in '['*) echo "  bracket literal";; *) echo "  bracket broken";; esac
+case b in [a"-"c]) echo "  dash in class is a range";; *) echo "  dash in class literal";; esac
+case ab in "a"*) echo "  quoted prefix + glob";; esac
+
+echo "=== 11. [[ == ]] honours quoting per segment"
+[[ ab == "$p" ]] && echo "  quoted var globbed" || echo "  quoted var literal"
+[[ ab == a"*" ]] && echo "  mixed globbed" || echo "  mixed literal"
+[[ ab == a\* ]] && echo "  escaped globbed" || echo "  escaped literal"
+[[ ab == $p ]] && echo "  unquoted var glob" || echo "  unquoted var literal"
+
+echo "=== 12. quoted patterns in \${var#pat} family"
+v='*abc*'
+q='*'
+echo "  ${v#"*"} ${v%"*"} ${v/"*"/X} ${v//\*/Y} ${v#"$q"} ${v#$q}"
+w=abc
+echo "  ${w/b/"x"} ${w/b/'$x'} ${w^"a"}"
+
 echo "=== done"

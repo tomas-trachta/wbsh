@@ -26,5 +26,23 @@ a bd cd
   [9z]       -> other [9z]
 === 9. case with literal star (quoted glob)
 literal star
-literal star
+anything else
+=== 10. quoted and escaped pattern characters match literally
+  escaped      ab -> no
+  single       ab -> no
+  double       ab -> no
+  var-quoted   ab -> no
+  var-unquoted ab -> glob
+  backslash literal
+  bracket literal
+  dash in class literal
+  quoted prefix + glob
+=== 11. [[ == ]] honours quoting per segment
+  quoted var literal
+  mixed literal
+  escaped literal
+  unquoted var glob
+=== 12. quoted patterns in ${var#pat} family
+  abc* *abc Xabc* YabcY abc* *abc*
+  axc a$xc Abc
 === done

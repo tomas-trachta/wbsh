@@ -2339,7 +2339,7 @@ namespace wbsh {
 
 	bool Executor::caseItemMatches(const CaseClause::Item& item, const std::string& subject) {
 		for (const auto& pattern_word : item.patterns) {
-			const std::string pattern = expander_.expandStringValue(pattern_word);
+			const std::string pattern = expander_.expandPattern(pattern_word);
 			if (expander_.failed()) {
 				expander_.takeError();
 				continue;
@@ -2444,18 +2444,8 @@ namespace wbsh {
 		}
 	}
 
-	// `[[ x == pat ]]` glob-matches an unquoted RHS against x (bash
-	// treats it as a pattern, not a literal string) but compares
-	// literally when the RHS was quoted, e.g. `[[ x == "pat" ]]`.
-	static bool rhsWordIsPattern(const Word& rhs) {
-		for (const auto& segment : rhs.segments) {
-			if (segment.kind != WordSegment::Kind::SingleQuoted
-			    && segment.kind != WordSegment::Kind::DoubleQuoted) {
-				return true;
-			}
-		}
-
-		return false;
+	static bool isDBracketPatternOp(const std::string& op) {
+		return op == "==" || op == "=" || op == "!=";
 	}
 
 	static bool isDBracketStringOp(const std::string& op) {
@@ -2472,9 +2462,9 @@ namespace wbsh {
 	}
 
 	static bool evalDBracketStringOp(const std::string& op, const std::string& lhs,
-	                                 const std::string& rhs, bool rhs_is_pattern) {
-		if (op == "==" || op == "=") return rhs_is_pattern ? fnmatchFull(rhs, lhs) : lhs == rhs;
-		if (op == "!=")              return rhs_is_pattern ? !fnmatchFull(rhs, lhs) : lhs != rhs;
+	                                 const std::string& rhs) {
+		if (op == "==" || op == "=") return fnmatchFull(rhs, lhs);
+		if (op == "!=")              return !fnmatchFull(rhs, lhs);
 		if (op == "<")               return lhs < rhs;
 		if (op == ">")               return lhs > rhs;
 		return false;
@@ -2526,15 +2516,22 @@ namespace wbsh {
 			&& lhs_info.st_dev == rhs_info.st_dev && lhs_info.st_ino == rhs_info.st_ino;
 	}
 
+	// The `==` / `!=` right side is a pattern in which only unquoted
+	// glob characters are wildcards; `[[ x == "a*" ]]` compares literally.
+	static std::string expandDBracketRhs(const DBracketCond::Expr& expr, Expander& expander) {
+		if (isDBracketPatternOp(expr.op)) return expander.expandPattern(expr.rhs);
+		return expander.expandStringValue(expr.rhs);
+	}
+
 	static bool evalDBracketBinary(const DBracketCond::Expr& expr, const std::string& lhs,
 	                               const DBracketContext& ctx) {
-		const std::string rhs = ctx.expander.expandStringValue(expr.rhs);
+		const std::string rhs = expandDBracketRhs(expr, ctx.expander);
 		if (ctx.expander.failed()) return false;
 
 		if (isDBracketStringOp(expr.op)) {
 			const std::string cmp_lhs = ctx.nocasematch ? asciiLower(lhs) : lhs;
 			const std::string cmp_rhs = ctx.nocasematch ? asciiLower(rhs) : rhs;
-			return evalDBracketStringOp(expr.op, cmp_lhs, cmp_rhs, rhsWordIsPattern(expr.rhs));
+			return evalDBracketStringOp(expr.op, cmp_lhs, cmp_rhs);
 		}
 
 		if (expr.op == "=~") return evalDBracketRegexOp(lhs, rhs, ctx.nocasematch);
