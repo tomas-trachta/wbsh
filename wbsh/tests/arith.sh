@@ -44,4 +44,21 @@ expr 20 / 3
 expr 20 % 3
 expr length "abcdef"
 
+echo "=== arithmetic errors fail the command"
+for expression in '1/0' '5 % 0' '08' '2#2' '65#1' '12ab' '1 +' '1 2' '1 @ 2' '1 = 2' \
+        '2 ** -1' '1 ? 2'; do
+    echo "\$(( $expression )) -> $(( $expression ))"
+    echo "  status $?"
+done
+(( 1/0 )); echo "(( 1/0 )) status $?"
+let 'x = 1/0'; echo "let status $?"
+y=1/0; echo $(( y + 1 )); echo "nested status $?"
+x=5; : $(( x = 1/0 )); echo "x after failed assignment: $x"
+x=3; : $(( x /= 0 )); echo "x after failed /=: $x"
+
+echo "=== arithmetic edge cases"
+echo $(( 0x )) $(( 2# )) $(( 64#zZ@_ )) $(( 0X1f )) $(( 017 )) $(( 10#08 ))
+echo $(( ++5 )) $(( --5 )) $(( 2 ** 62 )) $(( 3 ** 40 ))
+echo $(( (-9223372036854775807 - 1) / -1 )) $(( (-9223372036854775807 - 1) % -1 ))
+
 echo "=== done"

@@ -2385,9 +2385,14 @@ namespace wbsh {
 	static int builtin_let(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) return 1;
 
+		Expander& expander = exec.expander();
 		long long last = 0;
 		for (const std::string& expression : args) {
-			if (!exec.expander().tryEvalArith(expression, last)) return 1;
+			last = expander.evalArith(expression);
+			if (expander.failed()) {
+				std::fprintf(stderr, "wbsh: let: %s\n", expander.takeError().c_str());
+				return 1;
+			}
 		}
 
 		return last != 0 ? 0 : 1;
