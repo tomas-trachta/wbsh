@@ -1,0 +1,25 @@
+=== Backspace erases a whole two-byte character
+[echo ][]
+[žl][]
+=== Left then typing lands between characters
+[ax][č]
+[řx][eka]
+[abx][č]
+=== Delete erases the character under the cursor
+[a][b]
+[a][b]
+=== three- and four-byte characters
+[a][b]
+[xz][😀y]
+[漢][]
+=== a letter with a combining accent moves and erases as one
+[a][éx]
+[o][]
+=== an emoji with a skin-tone modifier moves and erases as one
+[a][]
+[y][👍🏽z]
+=== ASCII is unchanged
+[heL][lo]
+[bcd][]
+accept [abc]
+eof

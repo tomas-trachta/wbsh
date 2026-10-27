@@ -26,6 +26,7 @@
 #include "consolekeys.h"
 #include "strscan.h"
 #include "termreq.h"
+#include "textcells.h"
 #include "utils.h"
 
 namespace wbsh {
@@ -44,10 +45,6 @@ namespace wbsh {
 		return _isatty(_fileno(stdin)) != 0;
 	}
 
-	static bool isUtf8Continuation(char byte) {
-		return (static_cast<unsigned char>(byte) & 0xC0) == 0x80;
-	}
-
 	static std::size_t skipCsiSequence(const std::string& text, std::size_t i) {
 		i += 2;
 		while (i < text.size() && !(text[i] >= '@' && text[i] <= '~')) ++i;
@@ -55,33 +52,25 @@ namespace wbsh {
 		return i;
 	}
 
-	// Display columns: skips ANSI CSI sequences, counts UTF-8 codepoints
-	// not bytes. Wide CJK / combining marks are not handled.
-	static std::size_t visibleLen(const std::string& text) {
-		std::size_t count = 0;
+	static std::string withoutCsiSequences(const std::string& text) {
+		std::string shown;
 		std::size_t i = 0;
 		while (i < text.size()) {
-			const unsigned char byte = static_cast<unsigned char>(text[i]);
-			if (byte == 0x1b && i + 1 < text.size() && text[i + 1] == '[') {
+			if (text[i] == '\x1b' && i + 1 < text.size() && text[i + 1] == '[') {
 				i = skipCsiSequence(text, i);
 				continue;
 			}
 
-			if (!isUtf8Continuation(text[i])) ++count;
+			shown.push_back(text[i]);
 			++i;
 		}
 
-		return count;
+		return shown;
 	}
 
-	static std::size_t utf8Cols(const std::string& text, std::size_t end_byte) {
-		std::size_t count = 0;
-		const std::size_t limit = std::min<std::size_t>(end_byte, text.size());
-		for (std::size_t i = 0; i < limit; ++i) {
-			if (!isUtf8Continuation(text[i])) ++count;
-		}
-
-		return count;
+	static std::size_t visibleLen(const std::string& text) {
+		const std::string shown = withoutCsiSequences(text);
+		return displayWidth(shown, shown.size());
 	}
 #endif /* _WIN32 */
 
@@ -200,6 +189,18 @@ namespace wbsh {
 		: env_(env), exec_(exec) {}
 
 	bool LineEditor::readLine(const std::string& prompt, std::string& out) {
+		resetLine(prompt);
+
+#ifdef _WIN32
+		if (stdinIsTty()) return readLineRaw(prompt, out);
+#endif /* _WIN32 */
+
+		std::fputs(prompt.c_str(), stdout);
+		std::fflush(stdout);
+		return readLineCooked(out);
+	}
+
+	void LineEditor::resetLine(const std::string& prompt) {
 		buffer_.clear();
 		cursor_ = 0;
 		history_pos_ = 0;
@@ -214,12 +215,7 @@ namespace wbsh {
 
 #ifdef _WIN32
 		prompt_visible_len_ = visibleLen(prompt);
-		if (stdinIsTty()) return readLineRaw(prompt, out);
 #endif /* _WIN32 */
-
-		std::fputs(prompt.c_str(), stdout);
-		std::fflush(stdout);
-		return readLineCooked(out);
 	}
 
 	bool LineEditor::readLineCooked(std::string& out) {
@@ -275,6 +271,8 @@ namespace wbsh {
 	}
 
 	void LineEditor::emit(const std::string& text) {
+		if (headless_) return;
+
 		const HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
 		DWORD wrote;
 		::WriteFile(out, text.data(), static_cast<DWORD>(text.size()), &wrote, nullptr);
@@ -302,10 +300,10 @@ namespace wbsh {
 		// exactly to the right edge: in VT mode the cursor stays at the
 		// boundary column until the next char arrives, so we emit \r\n
 		// to materialise the wrap and land on a fresh row.
-		const std::size_t buffer_cols     = utf8Cols(buffer_, buffer_.size());
-		const std::size_t suggestion_cols = utf8Cols(suggestion_, suggestion_.size());
+		const std::size_t buffer_cols     = displayWidth(buffer_, buffer_.size());
+		const std::size_t suggestion_cols = displayWidth(suggestion_, suggestion_.size());
 		const std::size_t end_cols  = prompt_visible_len_ + buffer_cols + suggestion_cols;
-		const std::size_t want_cols = prompt_visible_len_ + utf8Cols(buffer_, cursor_);
+		const std::size_t want_cols = prompt_visible_len_ + displayWidth(buffer_, cursor_);
 		const std::size_t end_row   = end_cols / width;
 		const std::size_t want_row  = want_cols / width;
 		const std::size_t want_col  = want_cols % width;
@@ -356,7 +354,7 @@ namespace wbsh {
 
 	void LineEditor::handleRightArrow() {
 		if (cursor_ < buffer_.size()) {
-			++cursor_;
+			cursor_ = nextClusterEnd(buffer_, cursor_);
 			redraw();
 			return;
 		}
@@ -367,14 +365,14 @@ namespace wbsh {
 	void LineEditor::moveCursorBack() {
 		if (cursor_ == 0) return;
 
-		--cursor_;
+		cursor_ = previousClusterStart(buffer_, cursor_);
 		redraw();
 	}
 
 	void LineEditor::moveCursorForward() {
 		if (cursor_ >= buffer_.size()) return;
 
-		++cursor_;
+		cursor_ = nextClusterEnd(buffer_, cursor_);
 		redraw();
 	}
 
@@ -396,14 +394,15 @@ namespace wbsh {
 	void LineEditor::handleBackspace() {
 		if (cursor_ == 0) return;
 
-		buffer_.erase(cursor_ - 1, 1);
-		--cursor_;
+		const std::size_t start = previousClusterStart(buffer_, cursor_);
+		buffer_.erase(start, cursor_ - start);
+		cursor_ = start;
 	}
 
 	void LineEditor::handleDelete() {
 		if (cursor_ >= buffer_.size()) return;
 
-		buffer_.erase(cursor_, 1);
+		buffer_.erase(cursor_, nextClusterEnd(buffer_, cursor_) - cursor_);
 	}
 
 	void LineEditor::handleKillToEnd() {
@@ -1547,6 +1546,134 @@ namespace wbsh {
 		return !eof || !out.empty();
 	}
 
+	namespace replay_detail {
+
+		struct NamedKey {
+			const char* name;
+			WORD vk;
+			WCHAR ch;
+		};
+
+		static const NamedKey kNamedKeys[] = {
+			{ "LEFT",  VK_LEFT,   0 },
+			{ "RIGHT", VK_RIGHT,  0 },
+			{ "UP",    VK_UP,     0 },
+			{ "DOWN",  VK_DOWN,   0 },
+			{ "HOME",  VK_HOME,   0 },
+			{ "END",   VK_END,    0 },
+			{ "BS",    VK_BACK,   0x08 },
+			{ "DEL",   VK_DELETE, 0 },
+			{ "TAB",   VK_TAB,    0x09 },
+			{ "ENTER", VK_RETURN, 0x0D },
+			{ "ESC",   VK_ESCAPE, 0x1B },
+		};
+
+		static KEY_EVENT_RECORD pressOf(WORD vk, WCHAR ch, DWORD modifiers) {
+			KEY_EVENT_RECORD key{};
+			key.bKeyDown = TRUE;
+			key.wRepeatCount = 1;
+			key.wVirtualKeyCode = vk;
+			key.uChar.UnicodeChar = ch;
+			key.dwControlKeyState = modifiers;
+			return key;
+		}
+
+		static bool namedKey(const std::string& name, DWORD modifiers, KEY_EVENT_RECORD& key) {
+			for (const NamedKey& named : kNamedKeys) {
+				if (name != named.name) continue;
+
+				key = pressOf(named.vk, named.ch, modifiers);
+				return true;
+			}
+
+			return false;
+		}
+
+		static bool isLowerLetter(char letter) {
+			return letter >= 'a' && letter <= 'z';
+		}
+
+		static WCHAR chordChar(char letter, bool ctrl) {
+			if (ctrl) return static_cast<WCHAR>(letter - 'a' + 1);
+
+			return static_cast<WCHAR>(letter);
+		}
+
+		static bool chordKey(const std::string& name, KEY_EVENT_RECORD& key) {
+			if (name.size() < 3 || name[1] != '-') return false;
+			if (name[0] != 'C' && name[0] != 'M') return false;
+
+			const bool ctrl = name[0] == 'C';
+			const DWORD modifiers = ctrl ? LEFT_CTRL_PRESSED : LEFT_ALT_PRESSED;
+			const std::string rest = name.substr(2);
+			if (namedKey(rest, modifiers, key)) return true;
+			if (rest.size() != 1 || !isLowerLetter(rest[0])) return false;
+
+			const WORD vk = static_cast<WORD>(rest[0] - 'a' + 'A');
+			key = pressOf(vk, chordChar(rest[0], ctrl), modifiers);
+			return true;
+		}
+
+		static bool keyFor(const std::string& token, KEY_EVENT_RECORD& key) {
+			if (token.size() < 3 || token.front() != '<' || token.back() != '>') return false;
+
+			const std::string name = token.substr(1, token.size() - 2);
+			return namedKey(name, 0, key) || chordKey(name, key);
+		}
+
+		static std::string describe(const std::string& buffer, std::size_t cursor,
+		                            const std::string& out, bool done, bool eof) {
+			if (eof) return "eof";
+			if (done) return "accept [" + out + "]";
+
+			return "[" + buffer.substr(0, cursor) + "][" + buffer.substr(cursor) + "]";
+		}
+
+	}  // namespace replay_detail
+
+	void LineEditor::replayText(const std::string& text, std::string& out, bool& done, bool& eof) {
+		std::size_t at = 0;
+		while (at < text.size() && !done) {
+			const std::size_t length = codePointLength(text, at);
+			if (length == 1) {
+				const auto letter = static_cast<WCHAR>(static_cast<unsigned char>(text[at]));
+				dispatchKeyDown(replay_detail::pressOf(0, letter, 0), out, done, eof);
+			} else {
+				insertChars(text.substr(at, length));
+				redraw();
+			}
+
+			at += length;
+		}
+	}
+
+	void LineEditor::replayKey(const std::string& key, std::string& out, bool& done, bool& eof) {
+		KEY_EVENT_RECORD record{};
+		if (replay_detail::keyFor(key, record)) {
+			dispatchKeyDown(record, out, done, eof);
+			return;
+		}
+
+		replayText(key, out, done, eof);
+	}
+
+	std::string LineEditor::replayKeys(const std::vector<std::string>& keys) {
+		resetLine("");
+		headless_ = true;
+
+		std::string out;
+		bool done = false;
+		bool eof = false;
+		for (const std::string& key : keys) {
+			if (done) break;
+
+			replayKey(key, out, done, eof);
+		}
+
+		headless_ = false;
+		return replay_detail::describe(buffer_, cursor_, out, done, eof);
+	}
+
 #else  /* !_WIN32 */
 
 	bool LineEditor::readLineRaw(const std::string& prompt, std::string& out) {
@@ -1582,7 +1709,14 @@ namespace wbsh {
 	void LineEditor::refreshSuggestion() {}
 	bool LineEditor::acceptInlineSuggestion() { return false; }
 	void LineEditor::handleRightArrow() {}
+	std::string LineEditor::replayKeys(const std::vector<std::string>&) { return {}; }
 
 #endif /* _WIN32 */
+
+	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args) {
+		LineEditor editor(exec.env(), exec);
+		std::printf("%s\n", editor.replayKeys(args).c_str());
+		return 0;
+	}
 
 }  // namespace wbsh

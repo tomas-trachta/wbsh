@@ -2673,6 +2673,7 @@ namespace wbsh {
 		exec.registerBuiltin("history",  builtin_history);
 		exec.registerBuiltin("__revsearch", builtin_revsearch);
 		exec.registerBuiltin("__predict",   builtin_predict);
+		exec.registerBuiltin("__lineedit",  lineEditBuiltin);
 		exec.registerBuiltin("__histstat",  builtin_histstat);
 		exec.registerBuiltin("trap",     builtin_trap);
 		exec.registerBuiltin("getopts",  builtin_getopts);

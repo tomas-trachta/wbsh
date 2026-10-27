@@ -188,6 +188,7 @@
     <ClInclude Include="src\pathconv.h" />
     <ClInclude Include="src\consolekeys.h" />
     <ClInclude Include="src\lineedit.h" />
+    <ClInclude Include="src\textcells.h" />
     <ClInclude Include="src\awk.h" />
     <ClInclude Include="src\awk_internal.h" />
     <ClInclude Include="src\awk_interp.h" />
@@ -256,6 +257,9 @@
     <ClCompile Include="src\pathconv.cpp" />
     <ClCompile Include="src\consolekeys.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
+    <ClCompile Include="src\textcells.cpp" />
+    <ClCompile Include="..\wbshterm\src\charwidth.cpp" />
+    <ClCompile Include="..\wbshterm\src\charwidth_ucd.cpp" />
     <ClCompile Include="src\awk.cpp" />
     <ClCompile Include="src\awk_builtins.cpp" />
     <ClCompile Include="src\awk_fields.cpp" />
