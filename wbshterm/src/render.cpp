@@ -16,9 +16,14 @@ namespace wbshterm {
 
 	// Shaping a run is the dear part of a frame, and most runs are the
 	// same text as the frame before: a prompt, a status line, a panel
-	// that has not moved. Their layouts are kept, and the lot is dropped
-	// once it grows past this rather than trimmed one by one.
+	// that has not moved. Their layouts are kept in two generations: a
+	// full one is set aside as the older, and whatever is still drawn
+	// from it moves back, so only layouts nobody asked for are dropped.
 	static const std::size_t kLayoutCacheLimit = 2048;
+
+	// One retained grid per pane; past this many, panes that closed are
+	// forgotten along with the rest.
+	static const std::size_t kMaxGridCaches = 32;
 
 	static D2D1_COLOR_F toColorF(std::uint32_t rgb, float alpha) {
 		const float red   = static_cast<float>((rgb >> 16) & 0xFF) / 255.0f;
@@ -61,6 +66,8 @@ namespace wbshterm {
 		}
 
 		for (LayoutCache& cache : layouts_) cache.clear();
+		for (LayoutCache& cache : older_layouts_) cache.clear();
+		++generation_;
 		return font_.create(config.font, out_error);
 	}
 
@@ -69,11 +76,23 @@ namespace wbshterm {
 	}
 
 	IDWriteTextLayout* Renderer::layoutFor(const std::wstring& text, bool bold, bool italic) {
-		LayoutCache& cache = layouts_[layoutIndex(bold, italic)];
+		const std::size_t index = layoutIndex(bold, italic);
+		LayoutCache& cache = layouts_[index];
 		const auto found = cache.find(text);
 		if (found != cache.end()) return found->second.Get();
 
-		if (cache.size() >= kLayoutCacheLimit) cache.clear();
+		if (cache.size() >= kLayoutCacheLimit) {
+			older_layouts_[index] = std::move(cache);
+			cache.clear();
+		}
+
+		LayoutCache& older = older_layouts_[index];
+		const auto kept = older.find(text);
+		if (kept != older.end()) {
+			IDWriteTextLayout* revived = cache.emplace(text, kept->second).first->second.Get();
+			older.erase(kept);
+			return revived;
+		}
 
 		const CellMetrics& cell_box = font_.metrics();
 		Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
@@ -88,6 +107,7 @@ namespace wbshterm {
 
 	void Renderer::applyConfig(const Config& config) {
 		config_ = config;
+		++generation_;
 	}
 
 	// A palette slot is resolved here rather than when the text was written,
@@ -147,17 +167,120 @@ namespace wbshterm {
 		if (!prepareBrush(canvas.target)) return;
 
 		canvas.target->PushAxisAlignedClip(canvas.bounds, D2D1_ANTIALIAS_MODE_ALIASED);
-		canvas.target->Clear(toColorF(config_.palette.background, 1.0f));
+		if (!drawRetainedGrid(canvas) && prepareBrush(canvas.target)) drawGrid(canvas, true);
 
-		const int top = canvas.view->topRow(*canvas.screen);
-		for (int row = 0; row < canvas.screen->rows(); ++row) {
-			drawRowBackgrounds(canvas, top + row, row);
-			drawRowText(canvas, top + row, row);
+		if (prepareBrush(canvas.target)) drawCursor(canvas);
+		canvas.target->PopAxisAlignedClip();
+	}
+
+	void Renderer::drawGrid(const PaneCanvas& canvas, bool whole) {
+		if (whole) canvas.target->Clear(toColorF(config_.palette.background, 1.0f));
+
+		const Screen& screen = *canvas.screen;
+		const int top = canvas.view->topRow(screen);
+		for (int row = 0; row < screen.rows(); ++row) {
+			if (whole || screen.rowDirty(top + row - screen.scrollbackRows())) {
+				drawRow(canvas, top + row, row);
+			}
+		}
+	}
+
+	// Each row is drawn inside its own strip, so redrawing one row alone
+	// leaves exactly what redrawing them all would.
+	void Renderer::drawRow(const PaneCanvas& canvas, int absolute_row, int viewport_row) {
+		const CellMetrics& cell_box = font_.metrics();
+		const float top = originOf(canvas).y + static_cast<float>(viewport_row) * cell_box.height;
+		const D2D1_RECT_F strip = D2D1::RectF(canvas.bounds.left, top, canvas.bounds.right,
+			top + cell_box.height);
+
+		canvas.target->PushAxisAlignedClip(strip, D2D1_ANTIALIAS_MODE_ALIASED);
+		canvas.target->Clear(toColorF(config_.palette.background, 1.0f));
+		drawRowBackgrounds(canvas, absolute_row, viewport_row);
+		drawRowText(canvas, absolute_row, viewport_row);
+		canvas.target->PopAxisAlignedClip();
+	}
+
+	Renderer::GridCache* Renderer::gridCacheFor(const PaneCanvas& canvas) {
+		if (grid_caches_.size() > kMaxGridCaches) grid_caches_.clear();
+
+		GridCache& cache = grid_caches_[canvas.screen];
+		const D2D1_SIZE_F size = D2D1::SizeF(canvas.bounds.right - canvas.bounds.left,
+			canvas.bounds.bottom - canvas.bounds.top);
+		float dpi_x = 0.0f;
+		float dpi_y = 0.0f;
+		canvas.target->GetDpi(&dpi_x, &dpi_y);
+
+		const bool fits = cache.bitmap && cache.owner.Get() == canvas.target
+			&& cache.size.width == size.width && cache.size.height == size.height
+			&& cache.dpi == dpi_x;
+		if (fits) return &cache;
+
+		cache = GridCache();
+		if (FAILED(canvas.target->CreateCompatibleRenderTarget(size,
+				cache.bitmap.GetAddressOf()))) {
+			grid_caches_.erase(canvas.screen);
+			return nullptr;
 		}
 
-		drawCursor(canvas);
+		cache.owner = canvas.target;
+		cache.size  = size;
+		cache.dpi   = dpi_x;
+		return &cache;
+	}
 
-		canvas.target->PopAxisAlignedClip();
+	// Rows the screen marked dirty are all that changed, unless something
+	// the whole grid depends on moved: the view, the history under it, a
+	// selection, or the colours and font.
+	bool Renderer::gridCacheIsCurrent(const GridCache& cache, const PaneCanvas& canvas) const {
+		const Screen& screen = *canvas.screen;
+		return cache.generation == generation_
+			&& cache.top == canvas.view->topRow(screen)
+			&& cache.history == screen.scrollbackRows()
+			&& cache.columns == screen.columns() && cache.rows == screen.rows()
+			&& !cache.selection && !canvas.view->hasSelection();
+	}
+
+	void Renderer::rememberGrid(GridCache& cache, const PaneCanvas& canvas) const {
+		const Screen& screen = *canvas.screen;
+		cache.generation = generation_;
+		cache.top        = canvas.view->topRow(screen);
+		cache.history    = screen.scrollbackRows();
+		cache.columns    = screen.columns();
+		cache.rows       = screen.rows();
+		cache.selection  = canvas.view->hasSelection();
+	}
+
+	// The grid is kept in a bitmap of the pane's size and only its damaged
+	// rows are drawn again; the cursor goes on top each frame. Anything
+	// that fails falls back to drawing the grid straight onto the target.
+	bool Renderer::drawRetainedGrid(const PaneCanvas& canvas) {
+		GridCache* cache = gridCacheFor(canvas);
+		if (cache == nullptr) return false;
+
+		PaneCanvas inner = canvas;
+		inner.target = cache->bitmap.Get();
+		inner.bounds = D2D1::RectF(0.0f, 0.0f, cache->size.width, cache->size.height);
+		if (!prepareBrush(inner.target)) return false;
+
+		inner.target->BeginDraw();
+		drawGrid(inner, !gridCacheIsCurrent(*cache, canvas));
+		if (FAILED(inner.target->EndDraw())) {
+			grid_caches_.erase(canvas.screen);
+			return false;
+		}
+
+		rememberGrid(*cache, canvas);
+		return blitGrid(*cache, canvas);
+	}
+
+	bool Renderer::blitGrid(const GridCache& cache, const PaneCanvas& canvas) {
+		Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
+		if (FAILED(cache.bitmap->GetBitmap(bitmap.GetAddressOf()))) return false;
+		if (!prepareBrush(canvas.target)) return false;
+
+		canvas.target->DrawBitmap(bitmap.Get(), canvas.bounds, 1.0f,
+			D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+		return true;
 	}
 
 	// Chrome colours are mixed from the palette rather than added to it,

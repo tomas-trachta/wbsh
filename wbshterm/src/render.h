@@ -105,6 +105,28 @@ namespace wbshterm {
 		void drawFocusBorder(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 
 	private:
+		/** A pane's grid as last drawn, and what it was drawn from. */
+		struct GridCache {
+			Microsoft::WRL::ComPtr<ID2D1BitmapRenderTarget> bitmap;
+			Microsoft::WRL::ComPtr<ID2D1RenderTarget>       owner;
+			D2D1_SIZE_F size{};
+			float       dpi        = 0.0f;
+			unsigned    generation = 0;
+			int         top        = -1;
+			int         history    = -1;
+			int         columns    = 0;
+			int         rows       = 0;
+			bool        selection  = false;
+		};
+
+		void drawGrid(const PaneCanvas& canvas, bool whole);
+		void drawRow(const PaneCanvas& canvas, int absolute_row, int viewport_row);
+		GridCache* gridCacheFor(const PaneCanvas& canvas);
+		bool gridCacheIsCurrent(const GridCache& cache, const PaneCanvas& canvas) const;
+		void rememberGrid(GridCache& cache, const PaneCanvas& canvas) const;
+		bool drawRetainedGrid(const PaneCanvas& canvas);
+		bool blitGrid(const GridCache& cache, const PaneCanvas& canvas);
+
 		struct CursorLook {
 			CursorStyle style  = CursorStyle::Block;
 			bool        blinks = true;
@@ -168,6 +190,9 @@ namespace wbshterm {
 		Microsoft::WRL::ComPtr<ID2D1Factory>         factory_;
 		Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;
 		LayoutCache                                  layouts_[4];
+		LayoutCache                                  older_layouts_[4];
+		std::unordered_map<const Screen*, GridCache> grid_caches_;
+		unsigned                                     generation_ = 1;
 		ID2D1RenderTarget*                           brush_owner_ = nullptr;
 		FontSet                                      font_;
 		Config                                       config_;

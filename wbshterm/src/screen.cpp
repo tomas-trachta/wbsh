@@ -15,6 +15,7 @@ namespace wbshterm {
 
 	static const std::size_t kMaxCommandBlocks = 500;
 	static const std::size_t kSwapChunkRows = 1024;
+	static const std::size_t kSpareLines = kSwapChunkRows;
 
 	static const std::uint32_t kAnsiPalette[16] = {
 		0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5,
@@ -214,6 +215,7 @@ namespace wbshterm {
 	// to continue on the next.
 	void Screen::resize(int columns, int rows) {
 		closeCluster();
+		linearize();
 
 		const int new_columns = std::max(1, columns);
 		const int new_rows    = std::max(1, rows);
@@ -315,7 +317,7 @@ namespace wbshterm {
 		const int content = contentRowCount();
 		for (int row = 0; row < content; ++row) {
 			sources.push_back({ &cell(row, 0), columns_,
-				row_breaks_[static_cast<std::size_t>(row)] });
+				breakAt(row) });
 		}
 
 		return sources;
@@ -399,6 +401,7 @@ namespace wbshterm {
 	void Screen::clearAll() {
 		cells_.assign(cells_.size(), Cell());
 		row_breaks_.assign(static_cast<std::size_t>(rows_), LineBreak::kUnknown);
+		ring_top_ = 0;
 		markAllDirty();
 	}
 
@@ -484,8 +487,15 @@ namespace wbshterm {
 		if (consumed == 0) return;
 
 		if (!cold_.append(lines)) shiftBlocksUp(static_cast<int>(consumed));
+		recycleLines(consumed);
 		scrollback_.erase(scrollback_.begin(),
 			scrollback_.begin() + static_cast<std::ptrdiff_t>(consumed));
+	}
+
+	void Screen::recycleLines(std::size_t count) {
+		for (std::size_t index = 0; index < count && spare_lines_.size() < kSpareLines; ++index) {
+			spare_lines_.push_back(std::move(scrollback_[index].cells));
+		}
 	}
 
 	void Screen::setScrollbackLimit(int lines) {
@@ -498,8 +508,37 @@ namespace wbshterm {
 		trimScrollback();
 	}
 
+	// Row 0 of the grid is ring_top_ rows into cells_: a full-screen
+	// scroll moves where the grid starts instead of moving every cell.
+	std::size_t Screen::physicalRow(int row) const {
+		const std::size_t index = static_cast<std::size_t>(row) + ring_top_;
+		const std::size_t rows = static_cast<std::size_t>(rows_);
+		return index >= rows ? index - rows : index;
+	}
+
+	LineBreak& Screen::breakAt(int row) {
+		return row_breaks_[physicalRow(row)];
+	}
+
+	LineBreak Screen::breakAt(int row) const {
+		return row_breaks_[physicalRow(row)];
+	}
+
+	// Whatever handles cells_ as one block -- a resize, the alt screen --
+	// first puts row 0 back at its start.
+	void Screen::linearize() {
+		if (ring_top_ == 0) return;
+
+		const std::size_t columns = static_cast<std::size_t>(columns_);
+		std::rotate(cells_.begin(),
+			cells_.begin() + static_cast<std::ptrdiff_t>(ring_top_ * columns), cells_.end());
+		std::rotate(row_breaks_.begin(),
+			row_breaks_.begin() + static_cast<std::ptrdiff_t>(ring_top_), row_breaks_.end());
+		ring_top_ = 0;
+	}
+
 	Cell& Screen::at(int row, int column) {
-		const std::size_t index = static_cast<std::size_t>(row) * static_cast<std::size_t>(columns_)
+		const std::size_t index = physicalRow(row) * static_cast<std::size_t>(columns_)
 			+ static_cast<std::size_t>(column);
 		return cells_[index];
 	}
@@ -513,15 +552,13 @@ namespace wbshterm {
 	// knew about the row's line break.
 	void Screen::putCell(int row, int column, const Cell& value) {
 		Cell& target = at(row, column);
-		if (!sameCell(target, value)) {
-			row_breaks_[static_cast<std::size_t>(row)] = LineBreak::kUnknown;
-		}
+		if (!sameCell(target, value)) breakAt(row) = LineBreak::kUnknown;
 
 		target = value;
 	}
 
 	const Cell& Screen::cell(int row, int column) const {
-		const std::size_t index = static_cast<std::size_t>(row) * static_cast<std::size_t>(columns_)
+		const std::size_t index = physicalRow(row) * static_cast<std::size_t>(columns_)
 			+ static_cast<std::size_t>(column);
 		return cells_[index];
 	}
@@ -580,7 +617,7 @@ namespace wbshterm {
 	}
 
 	void Screen::wrapToNextRow() {
-		row_breaks_[static_cast<std::size_t>(cursor_.row)] = LineBreak::kWraps;
+		breakAt(cursor_.row) = LineBreak::kWraps;
 		carriageReturn();
 		lineFeed();
 		wrap_pending_ = false;
@@ -702,25 +739,28 @@ namespace wbshterm {
 		markDirty(row);
 	}
 
+	// A line's cells come from the pool of lines history let go of, so a
+	// steady stream of output stops allocating once history is full.
 	void Screen::pushToScrollback(int row) {
 		if (alt_screen_) return;
 		if (scroll_top_ != 0 || scroll_bottom_ != rows_ - 1) return;
 
-		const std::size_t start =
-			static_cast<std::size_t>(row) * static_cast<std::size_t>(columns_);
 		HistoryLine line;
-		line.cells.assign(cells_.begin() + static_cast<std::ptrdiff_t>(start),
-			cells_.begin() + static_cast<std::ptrdiff_t>(start)
-				+ static_cast<std::ptrdiff_t>(columns_));
-		line.line_break = row_breaks_[static_cast<std::size_t>(row)];
+		if (!spare_lines_.empty()) {
+			line.cells = std::move(spare_lines_.back());
+			spare_lines_.pop_back();
+		}
+
+		line.cells.assign(rowStart(row), rowStart(row) + columns_);
+		line.line_break = breakAt(row);
 		scrollback_.push_back(std::move(line));
 
 		trimScrollback();
 	}
 
 	std::vector<Cell>::iterator Screen::rowStart(int row) {
-		return cells_.begin()
-			+ static_cast<std::ptrdiff_t>(row) * static_cast<std::ptrdiff_t>(columns_);
+		return cells_.begin() + static_cast<std::ptrdiff_t>(physicalRow(row))
+			* static_cast<std::ptrdiff_t>(columns_);
 	}
 
 	static int clampedLineCount(int count, int top, int bottom) {
@@ -730,7 +770,7 @@ namespace wbshterm {
 	void Screen::blankRows(int first, int last) {
 		for (int row = first; row <= last; ++row) {
 			clearRow(row, 0, columns_ - 1);
-			row_breaks_[static_cast<std::size_t>(row)] = LineBreak::kUnknown;
+			breakAt(row) = LineBreak::kUnknown;
 		}
 	}
 
@@ -738,11 +778,28 @@ namespace wbshterm {
 		for (int row = first; row <= last; ++row) markDirty(row);
 	}
 
+	void Screen::copyRow(int from, int to) {
+		std::copy(rowStart(from), rowStart(from) + columns_, rowStart(to));
+		breakAt(to) = breakAt(from);
+	}
+
+	bool Screen::wholeScreen(int top, int bottom) const {
+		return top == 0 && bottom == rows_ - 1;
+	}
+
+	void Screen::rotateRing(int rows_down) {
+		const int rows = rows_;
+		ring_top_ = static_cast<std::size_t>(
+			(static_cast<int>(ring_top_) + rows_down % rows + rows) % rows);
+	}
+
 	void Screen::shiftRowsUp(int top, int bottom, int count) {
 		const int lines = clampedLineCount(count, top, bottom);
-		std::copy(rowStart(top + lines), rowStart(bottom + 1), rowStart(top));
-		std::copy(row_breaks_.begin() + top + lines, row_breaks_.begin() + bottom + 1,
-			row_breaks_.begin() + top);
+		if (wholeScreen(top, bottom)) {
+			rotateRing(lines);
+		} else {
+			for (int row = top; row + lines <= bottom; ++row) copyRow(row + lines, row);
+		}
 
 		blankRows(bottom - lines + 1, bottom);
 		markRowsDirty(top, bottom);
@@ -750,9 +807,11 @@ namespace wbshterm {
 
 	void Screen::shiftRowsDown(int top, int bottom, int count) {
 		const int lines = clampedLineCount(count, top, bottom);
-		std::copy_backward(rowStart(top), rowStart(bottom + 1 - lines), rowStart(bottom + 1));
-		std::copy_backward(row_breaks_.begin() + top, row_breaks_.begin() + bottom + 1 - lines,
-			row_breaks_.begin() + bottom + 1);
+		if (wholeScreen(top, bottom)) {
+			rotateRing(-lines);
+		} else {
+			for (int row = bottom; row - lines >= top; --row) copyRow(row - lines, row);
+		}
 
 		blankRows(top, top + lines - 1);
 		markRowsDirty(top, bottom);
@@ -1211,7 +1270,7 @@ namespace wbshterm {
 			}
 
 			clearRow(cursor_.row, cursor_.column, cursor_.column + count - 1);
-			row_breaks_[static_cast<std::size_t>(cursor_.row)] = LineBreak::kUnknown;
+			breakAt(cursor_.row) = LineBreak::kUnknown;
 			break;
 		case 'P':
 			for (int column = cursor_.column; column < columns_; ++column) {
@@ -1220,7 +1279,7 @@ namespace wbshterm {
 					: Cell();
 			}
 
-			row_breaks_[static_cast<std::size_t>(cursor_.row)] = LineBreak::kUnknown;
+			breakAt(cursor_.row) = LineBreak::kUnknown;
 			markDirty(cursor_.row);
 			break;
 		case 'X':
@@ -1236,6 +1295,7 @@ namespace wbshterm {
 	void Screen::enterAltScreen() {
 		if (alt_screen_) return;
 
+		linearize();
 		primary_cells_  = cells_;
 		primary_cursor_ = cursor_;
 		primary_breaks_ = row_breaks_;
@@ -1254,6 +1314,7 @@ namespace wbshterm {
 		if (primary_cells_.size() == cells_.size()) {
 			cells_      = primary_cells_;
 			row_breaks_ = primary_breaks_;
+			ring_top_   = 0;
 		}
 
 		cursor_ = primary_cursor_;

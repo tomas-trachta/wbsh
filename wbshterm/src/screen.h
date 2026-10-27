@@ -318,6 +318,14 @@ namespace wbshterm {
 		void printControlGlyph(unsigned char control);
 
 		void scrollUp(int count);
+		std::size_t physicalRow(int row) const;
+		LineBreak& breakAt(int row);
+		LineBreak breakAt(int row) const;
+		void linearize();
+		void copyRow(int from, int to);
+		bool wholeScreen(int top, int bottom) const;
+		void rotateRing(int rows_down);
+		void recycleLines(std::size_t count);
 		std::vector<Cell>::iterator rowStart(int row);
 		void blankRows(int first, int last);
 		void markRowsDirty(int first, int last);
@@ -394,6 +402,8 @@ namespace wbshterm {
 		int  columns_ = 0;
 		int  rows_    = 0;
 		std::vector<Cell> cells_;
+		std::size_t       ring_top_ = 0;
+		std::vector<std::vector<Cell>> spare_lines_;
 		std::deque<HistoryLine> scrollback_;
 		HistoryStore      cold_;
 		std::size_t       scrollback_limit_ = 10000;
