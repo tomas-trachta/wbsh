@@ -37,4 +37,7 @@ namespace wbshterm {
 	/** Input to the window and text out of it: typing, the wheel, copying, the picker. */
 	void runInputChecks(test::Report& report);
 
+	/** The text screen readers get: units, boundaries, line breaks. */
+	void runAccessibilityChecks(test::Report& report);
+
 } /* namespace wbshterm */

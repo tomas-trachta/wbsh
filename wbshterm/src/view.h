@@ -65,9 +65,11 @@ namespace wbshterm {
 
 		std::string selectedText(const Screen& screen) const;
 
-	private:
+		/** The selection's ends in reading order, the last cell included. */
 		GridPoint selectionStart() const;
 		GridPoint selectionEnd() const;
+
+	private:
 		int maxScrollOffset(const Screen& screen) const;
 
 		int  scroll_offset_ = 0;

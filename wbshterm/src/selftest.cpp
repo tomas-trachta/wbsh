@@ -3369,6 +3369,7 @@ namespace wbshterm {
 		runScriptChecks(report, directory);
 		runKeyChecks(report);
 		runInputChecks(report);
+		runAccessibilityChecks(report);
 		runLiveChecks(report, shell_command_line, directory);
 
 		test::writeReport(report_path, report.text());

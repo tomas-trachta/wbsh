@@ -15,6 +15,7 @@
 #include "search.h"
 #include "scrollbar.h"
 #include "sysinfo.h"
+#include "uia_host.h"
 #include "utf8.h"
 #include "view.h"
 
@@ -32,7 +33,7 @@ namespace wbshterm {
 	 * create(): the reader posts a message and this class drains the
 	 * bytes, so the grid is only ever touched here.
 	 */
-	class TerminalWindow : public TmuxHandler, public ScriptActions {
+	class TerminalWindow : public TmuxHandler, public ScriptActions, public UiaHost {
 	public:
 		bool create(const std::wstring& command_line, const Config& config,
 			const std::wstring& config_path, std::string& out_error);
@@ -58,6 +59,13 @@ namespace wbshterm {
 		void zoomPane() override;
 		void movePane(PaneMove move) override;
 		void reloadSettings() override;
+
+		HWND  uiaWindow() const override { return window_; }
+		Pane* uiaFocusedPane() const override;
+		bool  uiaPaneAlive(const Pane* pane) const override;
+		UiaPaneGeometry uiaGeometry(const Pane& pane) const override;
+		Pane* uiaPaneAt(float x, float y) const override;
+		void  uiaRepaint() override;
 
 	private:
 		static LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wparam,
@@ -281,6 +289,7 @@ namespace wbshterm {
 		std::bitset<256> keys_down_sent_;
 		bool         has_focus_ = false;
 		const Pane*  focus_reported_ = nullptr;
+		Accessibility accessibility_;
 
 		Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
 	};

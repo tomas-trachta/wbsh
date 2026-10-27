@@ -1448,6 +1448,11 @@ namespace wbshterm {
 	}
 
 	LRESULT TerminalWindow::routeMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+		LRESULT answer = 0;
+		const bool automation = message == WM_GETOBJECT
+			&& accessibility_.answerGetObject(this, wparam, lparam, answer);
+		if (automation) return answer;
+
 		const bool mouse = message >= WM_MOUSEFIRST && message <= WM_MOUSELAST;
 		if (mouse && onMouseMessage(message, wparam, lparam)) return 0;
 
@@ -1492,6 +1497,7 @@ namespace wbshterm {
 		case kMessageReload:  config_stamp_ = 0; reloadConfigIfChanged(); return 0;
 		case WM_CLOSE:       ::DestroyWindow(window_); return 0;
 		case WM_DESTROY:
+			accessibility_.disconnect(window_);
 			disarmNewWindowHotkey();
 			stopEveryPane();
 			::PostQuitMessage(0);
@@ -1586,6 +1592,7 @@ namespace wbshterm {
 		if (was_dragging) return;
 
 		focused().view().endSelection();
+		accessibility_.selectionChanged();
 	}
 
 	// Releasing the capture raises this, and so does losing it to
@@ -1953,6 +1960,7 @@ namespace wbshterm {
 		if (changed) {
 			syncTitle();
 			repaintAfterOutput();
+			accessibility_.textChanged();
 		}
 
 		closeExitedPanes();

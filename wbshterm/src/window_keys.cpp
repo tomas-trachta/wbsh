@@ -223,6 +223,7 @@ namespace wbshterm {
 		focus_reported_ = now;
 		if (before != nullptr) reportFocus(*before, false);
 		if (now != nullptr) reportFocus(*now, true);
+		if (now != nullptr) accessibility_.textChanged();
 	}
 
 	static LONG pixelsOfDips(float dips, UINT dpi) {
