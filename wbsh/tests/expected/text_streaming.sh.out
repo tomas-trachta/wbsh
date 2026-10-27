@@ -1,0 +1,136 @@
+=== streaming from an endless producer
+a
+a
+     1	abc
+     2	abc
+cba
+abc	abc
+0000000   a   b   c  \t   a   b   c  \t
+0000010
+a
+b
+a
+=== NUL bytes survive
+0000000   a   b  \0   c   d  \n
+0000006
+0000000                           2       a   b  \0   c   d  \n
+0000016
+0000000                       1  \t   a  \0   b  \n                    
+0000020   2  \t   c  \n
+0000024
+0000000   b  \0   a  \n
+0000004
+0000000   a  \0   b  \n
+0000004
+0000000   c  \n   a  \0   b  \n
+0000006
+=== rev
+cba
+zyx|
+olléh
+0000000   b   a  \0   d   c  \0
+0000006
+=== nl styles
+     1	a
+       
+     2	b
+1  |a
+2  |
+3  |b
+0001	a
+0002	
+0003	b
+     1	a
+       
+     2	
+       
+     3	b
+     1	apple
+     2	banana
+       cherry
+    10	a
+    15	b
+     3: a
+     4: b
+=== nl sections
+     1	h1
+
+     1	head
+
+     1	body
+     2	body2
+
+     1	foot
+
+     1	h
+
+     1	b
+     1	x
+
+       head
+
+     2	body
+     1	a
+
+       b
+     1	a
+     2	\:
+     3	b
+     1	a
+     2	b
+=== nl errors
+wbsh: nl: invalid option -- 'x'
+status 1
+wbsh: nl: invalid body numbering style: 'q'
+status 1
+wbsh: nl: invalid line numbering format: 'xx'
+status 1
+wbsh: nl: invalid line number field width: '0': Numerical result out of range
+status 1
+wbsh: nl: invalid line number of blank lines: '0': Numerical result out of range
+status 1
+wbsh: nl: invalid starting line number: 'x'
+status 1
+=== paste
+1	a
+2	b
+3	
+1:a,1
+2:b,2
+3:,3
+1	2	3
+a	b
+1
+2
+3
+1	a\1
+2	b\2
+3	\3
+1a
+2b
+3
+1a
+2b
+3
+1	2
+3	4
+1	a	2
+3	b	4
+5		
+1,2,3
+a	1
+b	2
+	3
+0000000   x   ,   y  \0
+0000004
+0000000  \n
+0000001
+
+1,2,3
+=== paste errors
+wbsh: paste: invalid option -- 'x'
+status 1
+wbsh: paste: delimiter list ends with an unescaped backslash: ab\
+status 1
+wbsh: paste: _ts_missing.txt: No such file or directory
+status 1

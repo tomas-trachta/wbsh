@@ -1576,7 +1576,8 @@ namespace wbsh {
 	static void appendLinesFromStream(std::FILE* stream, std::vector<std::string>& out) {
 		std::string current;
 		int c = EOF;
-		while ((c = std::fgetc(stream)) != EOF) {
+		_lock_file(stream);
+		while ((c = _fgetc_nolock(stream)) != EOF) {
 			if (c != '\n') {
 				current.push_back(static_cast<char>(c));
 				continue;
@@ -1586,6 +1587,7 @@ namespace wbsh {
 			current.clear();
 		}
 
+		_unlock_file(stream);
 		if (!current.empty()) out.push_back(std::move(current));
 	}
 
