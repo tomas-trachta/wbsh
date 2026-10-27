@@ -40,6 +40,7 @@ namespace wbshterm {
 	static const int      kSystemRefreshFloorMs = 250;
 	static const float    kDefaultFontSize = 11.0f;
 	static const int     kWheelLines = 3;
+	static const UINT    kMaxWheelLines = 100;
 	static const float   kDividerSlop = 3.0f;
 	static const std::string kImagePasteKey = "\x1bv";
 
@@ -1491,20 +1492,32 @@ namespace wbshterm {
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
+	// The Mouse control panel's "lines to scroll"; its "one screen" choice
+	// arrives as WHEEL_PAGESCROLL.
+	static int wheelLinesPerNotch(int page_lines) {
+		UINT lines = kWheelLines;
+		if (!::SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0)) return kWheelLines;
+		if (lines == WHEEL_PAGESCROLL) return page_lines;
+		return static_cast<int>(std::min<UINT>(lines, kMaxWheelLines));
+	}
+
 	// The wheel turns the pane under the pointer, not the focused one:
 	// reading a pane while another works is the reason for splitting.
 	void TerminalWindow::onMouseWheel(WPARAM wparam, LPARAM lparam) {
-		const int notches = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
-		if (notches == 0) return;
-
 		POINT where = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
 		::ScreenToClient(window_, &where);
 
 		PaneNode* leaf = panes_.leafAt(static_cast<float>(where.x),
 			static_cast<float>(where.y));
 		Pane& pane = leaf != nullptr ? *leaf->pane() : focused();
+		if (&pane != wheel_pane_) wheel_.reset();
+		wheel_pane_ = &pane;
 
-		pane.view().scrollBy(notches * kWheelLines, pane.screen());
+		const int lines = wheel_.linesFor(GET_WHEEL_DELTA_WPARAM(wparam),
+			wheelLinesPerNotch(pane.screen().rows()));
+		if (lines == 0) return;
+
+		pane.view().scrollBy(lines, pane.screen());
 		settleHistory(pane);
 		::InvalidateRect(window_, nullptr, FALSE);
 	}

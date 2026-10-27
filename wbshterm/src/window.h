@@ -8,6 +8,7 @@
 #include "config.h"
 #include "keymap.h"
 #include "menu.h"
+#include "mouse.h"
 #include "pane_tree.h"
 #include "render.h"
 #include "script.h"
@@ -201,6 +202,8 @@ namespace wbshterm {
 		int          click_count_     = 0;
 		bool         swallow_next_char_ = false;
 		SurrogateJoiner surrogates_;
+		WheelAccumulator wheel_;
+		const Pane*  wheel_pane_ = nullptr;
 		PaneNode*    dragging_ = nullptr;
 		PaneNode*    scrolling_ = nullptr;
 		PaneNode*    scrollbar_hover_ = nullptr;

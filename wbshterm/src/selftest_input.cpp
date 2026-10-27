@@ -1,10 +1,11 @@
 /**
  * @file selftest_input.cpp
- * @brief Checks for text going in and out of the window: typing, copying, the picker.
+ * @brief Checks for input to the window and text out of it: typing, the wheel, copying.
  */
 
 #include "selftest_internal.h"
 
+#include "mouse.h"
 #include "picker.h"
 #include "utf8.h"
 #include "view.h"
@@ -150,6 +151,37 @@ namespace wbshterm {
 				picker.query());
 		}
 
+		static void checkWheelNotchesScrollWholeLines(Report& report) {
+			WheelAccumulator wheel;
+			const int notch = wheel.linesFor(120, 3);
+			const int back = wheel.linesFor(-240, 3);
+			const int page = wheel.linesFor(120, 40);
+			const int off = wheel.linesFor(120, 0);
+
+			report.check("one wheel notch scrolls the configured lines", notch == 3,
+				std::to_string(notch));
+			report.check("turning the wheel back scrolls the other way", back == -6,
+				std::to_string(back));
+			report.check("a page-per-notch setting scrolls a page", page == 40,
+				std::to_string(page));
+			report.check("a zero-lines setting does not scroll", off == 0, std::to_string(off));
+		}
+
+		static void checkTouchpadDeltasAccumulate(Report& report) {
+			WheelAccumulator wheel;
+			int total = 0;
+			for (int event = 0; event < 10; ++event) total += wheel.linesFor(12, 3);
+
+			report.check("small touchpad deltas add up to whole lines", total == 3,
+				std::to_string(total));
+
+			wheel.reset();
+			const int forward = wheel.linesFor(30, 3);
+			const int reversed = wheel.linesFor(-30, 3) + wheel.linesFor(-30, 3);
+			report.check("a reversed swipe does not first pay back the old remainder",
+				forward == 0 && reversed == -1, std::to_string(reversed));
+		}
+
 	} /* namespace test */
 
 	void runInputChecks(test::Report& report) {
@@ -161,6 +193,8 @@ namespace wbshterm {
 		test::checkCopiedWideAndClusteredCells(report);
 		test::checkCopiedWrappedLines(report);
 		test::checkPickerTakesNonAscii(report);
+		test::checkWheelNotchesScrollWholeLines(report);
+		test::checkTouchpadDeltasAccumulate(report);
 	}
 
 } /* namespace wbshterm */
