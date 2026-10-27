@@ -1286,32 +1286,96 @@ namespace wbsh {
 			return expr.compiled.get();
 		}
 
-		static int gsubAll(std::string& subject, const std::regex& re,
-				const std::string& replacement) {
+		static bool startsWith(const std::string& text, std::size_t pos, const char* prefix) {
+			return text.compare(pos, std::strlen(prefix), prefix) == 0;
+		}
+
+		// gawk's sub/gsub rules: "\\\&" is a literal "\&", "\\&" a backslash
+		// followed by the match, "\&" a literal "&"; any other backslash is literal.
+		static void appendReplacement(std::string& out, const std::string& replacement,
+				const std::string& matched) {
+			std::size_t i = 0;
+			while (i < replacement.size()) {
+				if (startsWith(replacement, i, "\\\\\\&")) {
+					out += "\\&";
+					i += 4;
+				} else if (startsWith(replacement, i, "\\\\&")) {
+					out += '\\';
+					out += matched;
+					i += 3;
+				} else if (startsWith(replacement, i, "\\&")) {
+					out += '&';
+					i += 2;
+				} else if (replacement[i] == '&') {
+					out += matched;
+					++i;
+				} else {
+					out += replacement[i];
+					++i;
+				}
+			}
+		}
+
+		static bool searchFrom(const std::string& subject, std::size_t pos, const std::regex& re,
+				std::smatch& match) {
+			const auto flags = pos == 0
+				? std::regex_constants::match_default
+				: std::regex_constants::match_prev_avail;
+			return searchRegexFlags(subject.cbegin() + static_cast<std::ptrdiff_t>(pos),
+				subject.cend(), re, match, flags);
+		}
+
+		struct GsubScan {
+			const std::string& subject;
 			std::string out;
 			std::size_t pos = 0;
+			std::size_t last_match_end = std::string::npos;
 			int count = 0;
-			while (pos <= subject.size()) {
-				std::smatch match;
-				if (!searchRegex(subject.cbegin() + pos, subject.cend(), re, &match)) break;
+		};
 
-				const auto offset = static_cast<std::size_t>(match.position(0));
-				const auto length = static_cast<std::size_t>(match.length(0));
-				out.append(subject, pos, offset);
-				out.append(match.format(replacement));
-				++count;
-				pos += offset + length;
-				if (length != 0) continue;
+		static void copyOneCharThrough(GsubScan& scan, std::size_t at) {
+			scan.out.append(scan.subject, scan.pos, at - scan.pos + 1);
+			scan.pos = at + 1;
+		}
 
-				// Zero-width match: copy one char through so the scan advances.
-				if (pos >= subject.size()) break;
-				out.push_back(subject[pos]);
-				++pos;
+		// Returns false once the scan has reached the end of the subject.
+		static bool gsubStep(GsubScan& scan, const std::smatch& match,
+				const std::string& replacement) {
+			const std::size_t start = scan.pos + static_cast<std::size_t>(match.position(0));
+			const auto length = static_cast<std::size_t>(match.length(0));
+			const bool at_end = start >= scan.subject.size();
+			if (length == 0 && start == scan.last_match_end) {
+				if (at_end) return false;
+				copyOneCharThrough(scan, start);
+				return true;
 			}
 
-			out.append(subject, pos, std::string::npos);
-			subject = std::move(out);
-			return count;
+			scan.out.append(scan.subject, scan.pos, start - scan.pos);
+			appendReplacement(scan.out, replacement, match.str(0));
+			++scan.count;
+			scan.pos = start + length;
+			if (length != 0) {
+				scan.last_match_end = scan.pos;
+				return true;
+			}
+
+			if (at_end) return false;
+			copyOneCharThrough(scan, start);
+			return true;
+		}
+
+		static int gsubAll(std::string& subject, const std::regex& re,
+				const std::string& replacement) {
+			GsubScan scan{ subject };
+			while (scan.pos <= subject.size()) {
+				std::smatch match;
+				if (!searchFrom(subject, scan.pos, re, match)) break;
+				if (!gsubStep(scan, match, replacement)) break;
+			}
+
+			if (scan.pos < subject.size()) scan.out.append(subject, scan.pos, std::string::npos);
+			subject = std::move(scan.out);
+			return scan.count;
 		}
 
 		static int subFirst(std::string& subject, const std::regex& re,
@@ -1319,7 +1383,10 @@ namespace wbsh {
 			std::smatch match;
 			if (!searchRegex(subject, re, &match)) return 0;
 
-			subject = match.prefix().str() + match.format(replacement) + match.suffix().str();
+			std::string out = match.prefix().str();
+			appendReplacement(out, replacement, match.str(0));
+			out += match.suffix().str();
+			subject = std::move(out);
 			return 1;
 		}
 
