@@ -168,6 +168,7 @@ namespace wbsh {
 		if (name == "LINENO" || name == "BASHPID") return;
 
 		if (rejectIfReadonly(name)) return;
+		if (!applyAttributes(name, value)) return;
 
 		auto indexed = indexed_.find(name);
 		if (indexed != indexed_.end()) {
@@ -189,6 +190,7 @@ namespace wbsh {
 
 		IndexedArray array;
 		for (std::size_t i = 0; i < values.size(); ++i) {
+			if (!applyAttributes(name, values[i])) continue;
 			array[static_cast<long long>(i)] = std::move(values[i]);
 		}
 
@@ -199,6 +201,7 @@ namespace wbsh {
 			std::map<long long, std::string> elems) {
 		if (rejectIfReadonly(name)) return;
 
+		for (auto& element : elems) applyAttributes(name, element.second);
 		vars_.erase(name);
 		assoc_.erase(name);
 		indexed_[name] = std::move(elems);
@@ -206,6 +209,7 @@ namespace wbsh {
 
 	void Environment::setIndexedElement(const std::string& name, long long idx, std::string val) {
 		if (rejectIfReadonly(name)) return;
+		if (!applyAttributes(name, val)) return;
 
 		if (assoc_.count(name) != 0) {
 			assoc_[name][std::to_string(idx)] = std::move(val);
@@ -239,6 +243,7 @@ namespace wbsh {
 
 	void Environment::setAssocElement(const std::string& name, std::string key, std::string val) {
 		if (rejectIfReadonly(name)) return;
+		if (!applyAttributes(name, val)) return;
 
 		auto assoc = assoc_.find(name);
 		if (assoc != assoc_.end()) {
@@ -269,6 +274,7 @@ namespace wbsh {
 		indexed_.erase(name);
 		assoc_.erase(name);
 		exported_.erase(name);
+		attributes_.erase(name);
 	}
 
 	bool Environment::has(const std::string& name) const {
@@ -313,6 +319,94 @@ namespace wbsh {
 		return exported_.count(name) != 0;
 	}
 
+	unsigned Environment::attributes(const std::string& name) const {
+		const auto found = attributes_.find(name);
+		return found == attributes_.end() ? 0u : found->second;
+	}
+
+	void Environment::setAttributes(const std::string& name, unsigned attributes) {
+		if (attributes == 0) {
+			attributes_.erase(name);
+			return;
+		}
+
+		attributes_[name] = attributes;
+	}
+
+	std::string Environment::appendedValue(const std::string& name,
+			const std::string& suffix) const {
+		const std::string current = get(name);
+		if ((attributes(name) & kAttrInteger) == 0) return current + suffix;
+		if (current.empty()) return suffix;
+
+		return "(" + current + ")+(" + suffix + ")";
+	}
+
+	static void transformCase(std::string& value, bool upper) {
+		for (char& c : value) {
+			const int code = static_cast<unsigned char>(c);
+			c = static_cast<char>(upper ? std::toupper(code) : std::tolower(code));
+		}
+	}
+
+	bool Environment::applyAttributes(const std::string& name, std::string& value) const {
+		const unsigned attrs = attributes(name);
+		if (attrs == 0) return true;
+
+		if ((attrs & kAttrInteger) != 0 && arith_evaluator_ != nullptr) {
+			long long number = 0;
+			if (!arith_evaluator_(arith_context_, value, number)) return false;
+			value = std::to_string(number);
+		}
+
+		if ((attrs & kAttrLowercase) != 0) transformCase(value, false);
+		if ((attrs & kAttrUppercase) != 0) transformCase(value, true);
+		return true;
+	}
+
+	Environment::VarState Environment::saveVar(const std::string& name) const {
+		VarState state;
+		const auto scalar = vars_.find(name);
+		if (scalar != vars_.end()) {
+			state.has_scalar = true;
+			state.scalar = scalar->second;
+		}
+
+		if (const IndexedArray* indexed = getIndexedArray(name)) {
+			state.has_indexed = true;
+			state.indexed = *indexed;
+		}
+
+		if (const AssocArray* assoc = getAssocArray(name)) {
+			state.has_assoc = true;
+			state.assoc = *assoc;
+		}
+
+		state.exported = isExported(name);
+		state.readonly = isReadonly(name);
+		state.attributes = attributes(name);
+		return state;
+	}
+
+	template <typename Set>
+	static void setMembership(Set& set, const std::string& name, bool member) {
+		if (member) set.insert(name);
+		else        set.erase(name);
+	}
+
+	void Environment::restoreVar(const std::string& name, VarState state) {
+		vars_.erase(name);
+		indexed_.erase(name);
+		assoc_.erase(name);
+		if (state.has_scalar)  vars_[name] = std::move(state.scalar);
+		if (state.has_indexed) indexed_[name] = std::move(state.indexed);
+		if (state.has_assoc)   assoc_[name] = std::move(state.assoc);
+
+		setMembership(exported_, name, state.exported);
+		setMembership(readonly_, name, state.readonly);
+		setAttributes(name, state.attributes);
+	}
+
 	void Environment::setPositional(std::vector<std::string> args) {
 		positional_ = std::move(args);
 	}
@@ -353,6 +447,7 @@ namespace wbsh {
 
 		exported_     = snapshot.exported_;
 		readonly_     = snapshot.readonly_;
+		attributes_   = snapshot.attributes_;
 		positional_   = snapshot.positional_;
 		last_bg_pid_  = snapshot.last_bg_pid_;
 		shell_name_   = snapshot.shell_name_;

@@ -61,6 +61,9 @@ namespace wbsh {
 		const std::vector<ParseError>& errors() const { return errors_; }
 		bool ok() const { return errors_.empty(); }
 
+		/// Parse the whole input as one `name=(...)` assignment.
+		bool parseLoneArrayAssignment(Assignment& out);
+
 	private:
 		const Token& peek(std::size_t n = 0) const;
 		const Token& advance();
@@ -135,6 +138,8 @@ namespace wbsh {
 
 		bool tryExtractAssignment(const Token& t, Assignment& out) const;
 		bool tryConsumeLeadingAssignment(SimpleCommand& cmd);
+		bool tryConsumeDeclarationArg(SimpleCommand& cmd);
+		std::string compoundTextFrom(std::size_t first_token) const;
 		void parseArrayLiteralBody(Assignment& a);
 		void parseArrayLiteralItem(Assignment& a);
 

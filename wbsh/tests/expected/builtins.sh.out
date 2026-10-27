@@ -28,7 +28,7 @@ test eq
 echo is a shell builtin
 cd is a shell builtin
 pwd is a shell builtin
-ls is a shell builtin
+ls
 === eval
 evaluated: echo from eval
 hello

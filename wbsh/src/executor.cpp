@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -145,6 +146,59 @@ namespace wbsh {
 
 		quoted += "'";
 		return quoted;
+	}
+
+	static bool isQuotedShellChar(const std::string& word, std::size_t i) {
+		static const std::string kMetaChars = " \t\n'\"\\|&;()<>!{}*[?]^$`";
+		const char c = word[i];
+		if (kMetaChars.find(c) != std::string::npos) return true;
+		if (c == '~') return i == 0 || word[i - 1] == '=' || word[i - 1] == ':';
+		if (c == '#') return i == 0;
+		return false;
+	}
+
+	static bool isControlChar(char c) {
+		const unsigned char code = static_cast<unsigned char>(c);
+		return code < 0x20 || code == 0x7f;
+	}
+
+	static void appendAnsiCEscape(std::string& out, char c) {
+		static const char kLetters[] = "\aa\bb\x1b" "e\ff\nn\rr\tt\vv\\\\''";
+		for (std::size_t k = 0; kLetters[k] != '\0'; k += 2) {
+			if (kLetters[k] != c) continue;
+
+			out.push_back('\\');
+			out.push_back(kLetters[k + 1]);
+			return;
+		}
+
+		if (!isControlChar(c)) {
+			out.push_back(c);
+			return;
+		}
+
+		char octal[8];
+		std::snprintf(octal, sizeof octal, "\\%03o", static_cast<unsigned char>(c));
+		out += octal;
+	}
+
+	static std::string ansiCQuote(const std::string& word) {
+		std::string quoted = "$'";
+		for (const char c : word) appendAnsiCEscape(quoted, c);
+		quoted.push_back('\'');
+		return quoted;
+	}
+
+	std::string shellQuoteForReuse(const std::string& word) {
+		if (word.empty()) return "''";
+
+		bool needs_quotes = false;
+		for (std::size_t i = 0; i < word.size(); ++i) {
+			if (isControlChar(word[i])) return ansiCQuote(word);
+			if (isQuotedShellChar(word, i)) needs_quotes = true;
+		}
+
+		return needs_quotes ? shellQuoteSingle(word) : word;
 	}
 
 	static void appendFields(std::vector<std::string>& into, std::vector<std::string>& fields) {
@@ -494,8 +548,20 @@ namespace wbsh {
 	}
 #endif  // _WIN32
 
+	static bool evalIntegerAttribute(void* context, const std::string& expr, long long& out) {
+		Expander& expander = *static_cast<Expander*>(context);
+		if (expander.failed()) return false;
+
+		out = expander.evalArith(expr);
+		if (!expander.failed()) return true;
+
+		if (!expander.fatalErrorPending()) reportExpanderError(expander);
+		return false;
+	}
+
 	Executor::Executor(Environment& env)
 		: env_(env), expander_(env, this) {
+		env_.setArithEvaluator(evalIntegerAttribute, &expander_);
 		registerCoreBuiltins(*this);
 		registerCoreutils(*this);
 		loadUtils(*this);
@@ -919,6 +985,8 @@ namespace wbsh {
 		if (!aliases.empty()) overrides.emplace_back("WBSH_ALIASES", aliases);
 		const std::string arrays = serializeArrays();
 		if (!arrays.empty()) overrides.emplace_back("WBSH_ARRAYS", arrays);
+		const std::string attributes = serializeAttributes();
+		if (!attributes.empty()) overrides.emplace_back("WBSH_ATTRIBUTES", attributes);
 
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
@@ -1464,9 +1532,35 @@ namespace wbsh {
 		return true;
 	}
 
-	bool Executor::expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv) {
-		for (const auto& word : sc.words) {
-			std::vector<std::string> fields = expander_.expandWord(word);
+	std::string Executor::expandDeclarationArg(const DeclarationArg& arg) {
+		if (!arg.compound_text.empty()) return arg.compound_text;
+
+		const Assignment& assignment = arg.assignment;
+		std::string field = assignment.name;
+		if (assignment.has_subscript) {
+			field += "[" + expander_.expandStringValue(assignment.subscript) + "]";
+		}
+
+		field += assignment.append ? "+=" : "=";
+		return field + expander_.expandAssignmentValue(assignment.value);
+	}
+
+	static const DeclarationArg* declarationArgAt(const SimpleCommand& sc, std::size_t word_index,
+	                                              std::size_t& cursor) {
+		if (cursor >= sc.declaration_args.size()) return nullptr;
+		if (sc.declaration_args[cursor].word_index != word_index) return nullptr;
+
+		return &sc.declaration_args[cursor++];
+	}
+
+	bool Executor::expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv,
+	                                   std::vector<bool>& compound) {
+		std::size_t cursor = 0;
+		for (std::size_t i = 0; i < sc.words.size(); ++i) {
+			const DeclarationArg* declaration = declarationArgAt(sc, i, cursor);
+			std::vector<std::string> fields = declaration != nullptr
+				? std::vector<std::string>{ expandDeclarationArg(*declaration) }
+				: expander_.expandWord(sc.words[i]);
 			if (expander_.failed()) {
 				reportExpanderError(expander_);
 				return false;
@@ -1474,6 +1568,9 @@ namespace wbsh {
 
 			if (flowPending()) return false;
 			appendFields(argv, fields);
+
+			compound.resize(argv.size(), false);
+			if (declaration != nullptr && !declaration->compound_text.empty()) compound.back() = true;
 		}
 
 		return true;
@@ -1664,7 +1761,7 @@ namespace wbsh {
 			return;
 		}
 
-		env.set(scalar.name, env.get(scalar.name) + scalar.value);
+		env.set(scalar.name, env.appendedValue(scalar.name, scalar.value));
 	}
 
 	void Executor::applyBareAssignmentsToShell(const SimpleCmdAssigns& assigns) {
@@ -1681,7 +1778,7 @@ namespace wbsh {
 		std::fputs(ps4.c_str(), stderr);
 		for (std::size_t i = 0; i < argv.size(); ++i) {
 			if (i != 0) std::fputc(' ', stderr);
-			std::fputs(argv[i].c_str(), stderr);
+			std::fputs(shellQuoteForReuse(argv[i]).c_str(), stderr);
 		}
 
 		std::fputc('\n', stderr);
@@ -1773,12 +1870,15 @@ namespace wbsh {
 		cmdsubst_ran_ = false;
 
 		std::vector<std::string> argv;
-		if (!expandSimpleCmdArgv(sc, argv)) return 1;
+		std::vector<bool> compound;
+		if (!expandSimpleCmdArgv(sc, argv, compound)) return 1;
 
 		SimpleCmdAssigns assigns_data;
 		if (!expandSimpleCmdAssigns(sc, assigns_data)) return 1;
 		const NameValueList assigns = assigns_data.scalarPairs();
+		const std::size_t words_before_alias = argv.size();
 		aliasExpandArgvHead(argv);
+		if (argv.size() != words_before_alias) compound.clear();
 
 		if (argv.size() == 1 && argv[0] == "exec") return execBareRedirsForExec(sc.redirs);
 		if (argv.empty()) return execSimpleCommandNoArgv(sc, assigns_data);
@@ -1792,6 +1892,7 @@ namespace wbsh {
 		if (!applyRedirectionsOrUndo(sc.redirs, state)) return 1;
 
 		traceXtrace(argv);
+		compound_args_ = std::move(compound);
 		const int status = runResolvedCommand(argv, assigns);
 		undoRedirections(state);
 		if (flowPending()) return status;
@@ -1864,9 +1965,18 @@ namespace wbsh {
 		return dirs;
 	}
 
-	bool changeDirectory(Executor& exec, const std::string& target, std::string& err) {
+	static std::filesystem::path physicalPath(const std::filesystem::path& path) {
+		std::error_code ec;
+		const std::filesystem::path resolved = std::filesystem::canonical(path, ec);
+		return ec ? path : resolved;
+	}
+
+	bool changeDirectory(Executor& exec, const std::string& target, std::string& err,
+	                     bool physical) {
 		namespace fs = std::filesystem;
-		const fs::path win_target = utf8ToPath(exec.pathConv().toWin32(target));
+		fs::path win_target = utf8ToPath(exec.pathConv().toWin32(target));
+		if (physical) win_target = physicalPath(win_target);
+
 		std::error_code ec;
 		fs::current_path(win_target, ec);
 		if (ec) {
@@ -1897,6 +2007,26 @@ namespace wbsh {
 		}
 
 		return {};
+	}
+
+	std::vector<std::string> Executor::findAllExecutables(const std::string& name) {
+		std::vector<std::string> found;
+		if (isAbsoluteOrRelativePath(name)) {
+			const std::string direct = findExecutable(name);
+			if (!direct.empty()) found.push_back(direct);
+			return found;
+		}
+
+		for (const auto& dir : splitPathList(env_.get("PATH"))) {
+			if (dir.empty()) continue;
+
+			std::filesystem::path base = utf8ToPath(path_conv_.toWin32(dir));
+			base /= utf8ToPath(name);
+			const std::string resolved = tryExecutableWithExtensions(base);
+			if (!resolved.empty()) found.push_back(resolved);
+		}
+
+		return found;
 	}
 
 	std::string Executor::findExecutable(const std::string& name) {
@@ -2872,13 +3002,21 @@ namespace wbsh {
 	void Executor::popLocalScope() {
 		if (scope_stack_.empty()) return;
 
-		const std::vector<ScopeEntry>& top = scope_stack_.back();
+		std::vector<ScopeEntry>& top = scope_stack_.back();
 		for (auto entry = top.rbegin(); entry != top.rend(); ++entry) {
-			if (entry->had_prev) env_.set(entry->name, entry->prev_value);
-			else                 env_.unset(entry->name);
+			env_.restoreVar(entry->name, std::move(entry->saved));
 		}
 
 		scope_stack_.pop_back();
+	}
+
+	const FunctionDef* Executor::findFunction(const std::string& name) const {
+		const auto found = functions_.find(name);
+		return found == functions_.end() ? nullptr : found->second;
+	}
+
+	bool Executor::unsetFunction(const std::string& name) {
+		return functions_.erase(name) != 0;
 	}
 
 	int Executor::registerJob(void* handle, long long pid, std::string cmd_text) {
@@ -3116,6 +3254,29 @@ namespace wbsh {
 		}
 	}
 
+	static std::string attributeOptionLetters(const Environment& env, const std::string& name) {
+		const unsigned attrs = env.attributes(name);
+		std::string letters;
+		if ((attrs & kAttrInteger) != 0)   letters += 'i';
+		if ((attrs & kAttrLowercase) != 0) letters += 'l';
+		if ((attrs & kAttrUppercase) != 0) letters += 'u';
+		if (env.isReadonly(name))          letters += 'r';
+		return letters;
+	}
+
+	std::string Executor::serializeAttributes() const {
+		std::set<std::string> names(env_.readonlySet().begin(), env_.readonlySet().end());
+		for (const auto& entry : env_.attributeMap()) names.insert(entry.first);
+
+		std::string out;
+		for (const std::string& name : names) {
+			const std::string letters = attributeOptionLetters(env_, name);
+			if (!letters.empty()) out += "declare -" + letters + " " + name + "\n";
+		}
+
+		return out;
+	}
+
 	std::string Executor::serializeArrays() const {
 		std::string out;
 		for (const auto& name : sortedKeys(env_.indexedArrays())) {
@@ -3165,25 +3326,46 @@ namespace wbsh {
 		return false;
 	}
 
-	void Executor::declareLocal(const std::string& name, const std::string& value) {
-		if (scope_stack_.empty()) {
-			env_.set(name, value);
-			return;
-		}
+	bool Executor::makeLocal(const std::string& name) {
+		if (scope_stack_.empty()) return false;
 
 		std::vector<ScopeEntry>& top = scope_stack_.back();
-		if (!scopeHasName(top, name)) {
-			ScopeEntry entry;
-			entry.name = name;
-			// has()/get() rather than a single vars() lookup: both also
-			// see array variables (get() reads element 0), and the scope
-			// pop must restore those instead of unsetting them.
-			entry.had_prev = env_.has(name);
-			entry.prev_value = env_.get(name);
-			top.push_back(std::move(entry));
+		if (scopeHasName(top, name)) return true;
+
+		ScopeEntry entry;
+		entry.name = name;
+		entry.saved = env_.saveVar(name);
+		const bool exported = entry.saved.exported;
+		top.push_back(std::move(entry));
+
+		env_.restoreVar(name, Environment::VarState{});
+		if (exported) env_.exportVar(name);
+		return true;
+	}
+
+	std::vector<std::string> Executor::localNames() const {
+		std::vector<std::string> names;
+		if (scope_stack_.empty()) return names;
+
+		for (const ScopeEntry& entry : scope_stack_.back()) names.push_back(entry.name);
+		return names;
+	}
+
+	bool Executor::assignCompound(const std::string& text) {
+		Lexer lexer(text);
+		std::vector<Token> tokens = lexer.tokenize();
+		Parser parser(std::move(tokens));
+		Assignment assignment;
+		if (!lexer.errors().empty() || !parser.parseLoneArrayAssignment(assignment)) return false;
+
+		const ArrayAssign array = expandArrayAssign(expander_, assignment);
+		if (expander_.failed()) {
+			reportExpanderError(expander_);
+			return false;
 		}
 
-		env_.set(name, value);
+		applyArrayAssignToEnv(env_, expander_, array);
+		return true;
 	}
 
 	template <typename Error>

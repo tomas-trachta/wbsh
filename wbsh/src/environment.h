@@ -91,6 +91,13 @@ namespace wbsh {
 	const SetOptionSpec* findSetOption(const std::string& name);
 	const SetOptionSpec* findSetFlag(char letter);
 
+	/// The `declare` attributes that transform a value as it is stored.
+	enum VarAttribute : unsigned {
+		kAttrInteger   = 1u << 0,
+		kAttrLowercase = 1u << 1,
+		kAttrUppercase = 1u << 2,
+	};
+
 	class Environment {
 	public:
 		Environment();
@@ -120,16 +127,50 @@ namespace wbsh {
 		void   exportVar(const std::string& name);
 		void   unexportVar(const std::string& name);
 		bool   isExported(const std::string& name) const;
+		const std::unordered_set<std::string>& exportedSet() const { return exported_; }
 		/// Mark @p name as readonly; further set() calls will fail.
 		void   markReadonly(const std::string& name)   { readonly_.insert(name); }
 		bool   isReadonly(const std::string& name) const { return readonly_.count(name) != 0; }
 		const std::unordered_set<std::string>& readonlySet() const { return readonly_; }
+		void   clearReadonly(const std::string& name) { readonly_.erase(name); }
+
+		unsigned attributes(const std::string& name) const;
+		void     setAttributes(const std::string& name, unsigned attributes);
+		const std::unordered_map<std::string, unsigned>& attributeMap() const {
+			return attributes_;
+		}
+		/// The value `name+=suffix` stores: a sum for an integer variable.
+		std::string appendedValue(const std::string& name, const std::string& suffix) const;
+
+		/// Evaluates the values assigned to `declare -i` variables; the
+		/// Executor installs its arithmetic evaluator here.
+		using ArithEvaluator = bool (*)(void* context, const std::string& expr, long long& out);
+		void setArithEvaluator(ArithEvaluator evaluator, void* context) {
+			arith_evaluator_ = evaluator;
+			arith_context_ = context;
+		}
 
 		const std::unordered_map<std::string, std::string>& vars() const { return vars_; }
 
 		/// Sparse indexed array — bash arrays are sparse, so a sorted map.
 		using IndexedArray = std::map<long long, std::string>;
 		using AssocArray   = std::map<std::string, std::string>;
+
+		/// Everything a function's `local` shadows, so the return can put it back.
+		struct VarState {
+			bool has_scalar  = false;
+			bool has_indexed = false;
+			bool has_assoc   = false;
+			std::string  scalar;
+			IndexedArray indexed;
+			AssocArray   assoc;
+			bool exported = false;
+			bool readonly = false;
+			unsigned attributes = 0;
+		};
+		VarState saveVar(const std::string& name) const;
+		/// Put @p name back as saved, readonly or not.
+		void     restoreVar(const std::string& name, VarState state);
 
 		bool isIndexedArray(const std::string& name) const { return indexed_.count(name) != 0; }
 		bool isAssocArray(const std::string& name) const   { return assoc_.count(name) != 0; }
@@ -270,6 +311,7 @@ namespace wbsh {
 
 	private:
 		bool rejectIfReadonly(const std::string& name) const;
+		bool applyAttributes(const std::string& name, std::string& value) const;
 		long long elapsedSeconds() const;
 		void importProcessVariable(std::string name, std::string value);
 
@@ -278,6 +320,9 @@ namespace wbsh {
 		std::unordered_map<std::string, AssocArray> assoc_;
 		std::unordered_set<std::string> exported_;
 		std::unordered_set<std::string> readonly_;
+		std::unordered_map<std::string, unsigned> attributes_;
+		ArithEvaluator arith_evaluator_ = nullptr;
+		void* arith_context_ = nullptr;
 		std::vector<std::string> positional_;
 		int last_status_ = 0;
 		long long last_bg_pid_ = 0;
