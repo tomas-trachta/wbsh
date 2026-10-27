@@ -188,6 +188,9 @@
     <ClInclude Include="src\pathconv.h" />
     <ClInclude Include="src\lineedit.h" />
     <ClInclude Include="src\awk.h" />
+    <ClInclude Include="src\awk_internal.h" />
+    <ClInclude Include="src\awk_interp.h" />
+    <ClInclude Include="src\awk_lexer.h" />
     <ClInclude Include="src\inflate.h" />
     <ClInclude Include="src\setup.h" />
     <ClInclude Include="src\repl.h" />
@@ -249,6 +252,13 @@
     <ClCompile Include="src\pathconv.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\awk.cpp" />
+    <ClCompile Include="src\awk_builtins.cpp" />
+    <ClCompile Include="src\awk_fields.cpp" />
+    <ClCompile Include="src\awk_interp.cpp" />
+    <ClCompile Include="src\awk_io.cpp" />
+    <ClCompile Include="src\awk_lexer.cpp" />
+    <ClCompile Include="src\awk_parser.cpp" />
+    <ClCompile Include="src\awk_value.cpp" />
     <ClCompile Include="src\inflate.cpp" />
     <ClCompile Include="src\setup.cpp" />
     <ClCompile Include="src\repl.cpp" />
