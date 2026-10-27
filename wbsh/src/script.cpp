@@ -331,9 +331,15 @@ namespace wbsh {
 			<< ": " << message << "\n";
 	}
 
-	static void dumpExpansions(NodePtr root, bool header_color) {
+	static void applyScriptArguments(Environment& env, const ScriptRun& run) {
+		if (!run.script_name.empty()) env.setShellName(run.script_name);
+		env.setPositional(run.positional);
+	}
+
+	static void dumpExpansions(NodePtr root, bool header_color, const ScriptRun& run) {
 		Environment env;
 		prepareEnv(env);
+		applyScriptArguments(env, run);
 		Expander expander(env, /*sub=*/nullptr);
 		printHeader(header_color, "EXPANSIONS");
 
@@ -341,17 +347,16 @@ namespace wbsh {
 		dumpExpanded(dump, *root, 0);
 	}
 
-	static int executeProgram(NodePtr root, const std::string& src,
-	                          const std::string& script_name) {
+	static int executeProgram(NodePtr root, const ScriptRun& run) {
 		Environment env;
 		prepareEnv(env);
-		if (!script_name.empty()) env.setShellName(script_name);
+		applyScriptArguments(env, run);
 
 		Executor exec(env);
-		exec.setSourceText(src);
+		exec.setSourceText(run.source);
 		absorbInheritedState(env, exec);
 
-		int status = exec.executeInput(*root, src);
+		int status = exec.executeInput(*root, run.source);
 		exec.consumeFlow(FlowSignal::Kind::Exit, &status);
 		return status;
 	}
@@ -383,10 +388,8 @@ namespace wbsh {
 			printDiagnostic(colors, "parse error", e.loc, e.message);
 		}
 
-		if (run.show_expansions && root != nullptr) dumpExpansions(root, out_color);
-		if (run.execute && root != nullptr) {
-			return executeProgram(root, run.source, run.script_name);
-		}
+		if (run.show_expansions && root != nullptr) dumpExpansions(root, out_color, run);
+		if (run.execute && root != nullptr) return executeProgram(root, run);
 
 		return (parser.errors().empty() && lex.errors().empty()) ? 0 : 1;
 	}

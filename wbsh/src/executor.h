@@ -658,6 +658,8 @@ namespace wbsh {
 		// inherits our full state (translated PATH, serialised functions
 		// and aliases, non-exported var marker).
 		std::vector<std::pair<std::string, std::string>> buildSelfSpawnOverrides();
+		std::vector<std::string> selfSpawnArgv(const std::string& self,
+		                                       const std::string& command) const;
 		HANDLE launchExternalDirect(const SimpleCommand& sc,
 		                            const std::vector<std::string>& argv,
 		                            const std::string& exec_path,

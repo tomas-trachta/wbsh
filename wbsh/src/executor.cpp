@@ -907,6 +907,16 @@ namespace wbsh {
 		}
 	}
 
+	// The child gets `$0` and the positionals the way `bash -c cmd name args`
+	// would, so `"$1" | cat` sees the same `$1` as the parent.
+	std::vector<std::string> Executor::selfSpawnArgv(const std::string& self,
+			const std::string& command) const {
+		std::vector<std::string> argv = { self, "-r", "-c", command, env_.shellName() };
+		const std::vector<std::string>& positional = env_.positional();
+		argv.insert(argv.end(), positional.begin(), positional.end());
+		return argv;
+	}
+
 	HANDLE Executor::selfSpawnPipelineElement(const Node& elem,
 	                                          HANDLE h_in, HANDLE h_out, HANDLE h_err) {
 		std::string slice = nodeSourceSlice(elem, source_text_);
@@ -920,7 +930,7 @@ namespace wbsh {
 		}
 
 		const std::string self = getSelfExecutablePath();
-		const std::vector<std::string> argv = { self, "-r", "-c", slice };
+		const std::vector<std::string> argv = selfSpawnArgv(self, slice);
 
 		SpawnCommand command;
 		command.exe      = utf8ToWide(self);
@@ -955,7 +965,7 @@ namespace wbsh {
 
 	HANDLE Executor::spawnShellCommand(const std::vector<std::string>& argv) {
 		const std::string self = getSelfExecutablePath();
-		const std::vector<std::string> child_argv = { self, "-r", "-c", quotedCommandText(argv) };
+		const std::vector<std::string> child_argv = selfSpawnArgv(self, quotedCommandText(argv));
 
 		SpawnCommand command;
 		command.exe      = utf8ToWide(self);

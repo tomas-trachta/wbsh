@@ -48,8 +48,11 @@ static void printHelp() {
 		"\n"
 		"usage:\n"
 		"  wbsh                          interactive shell (TTY auto-detect)\n"
-		"  wbsh [opts] -c <command>      run / dump the given string\n"
-		"  wbsh [opts] <file>            run / dump the file (- for stdin)\n"
+		"  wbsh [opts] -c <command> [name [arg ...]]\n"
+		"                                run / dump the given string ($0 = name)\n"
+		"  wbsh [opts] <file> [arg ...]  run / dump the file ($1.. = args)\n"
+		"  wbsh [opts] - [arg ...]       run / dump stdin (also -s)\n"
+		"  options end at the first operand or at --; later words are arguments\n"
 		"\n"
 		"modes (default for files = dump AST, NOT execute -- see -r):\n"
 		"  -i, --interactive             force interactive REPL\n"
@@ -129,13 +132,15 @@ enum class AstDump {
 	Hidden,
 };
 
-// A source given later on the command line replaces an earlier one; the
-// first informational flag (-h, -v, -i, ...) decides the action.
+// The first informational flag (-h, -v, -i, ...) decides the action.
+// Option parsing stops at the source operand: every later word is an
+// argument for the script (for -c the first of them becomes `$0`).
 struct Options {
 	Action      action = Action::RunScript;
 	SourceKind  source = SourceKind::Unset;
 	std::string command;
 	std::string file_path;
+	std::vector<std::string> operands;
 	bool        show_tokens     = false;
 	bool        show_expansions = false;
 	bool        execute         = false;
@@ -146,42 +151,84 @@ static void setAction(Options& options, Action action) {
 	if (options.action == Action::RunScript) options.action = action;
 }
 
+static bool parseInfoFlag(const std::string& arg, Options& options) {
+	const bool help        = arg == "-h" || arg == "--help";
+	const bool version     = arg == "-v" || arg == "--version";
+	const bool interactive = arg == "-i" || arg == "--interactive";
+	if (help)                  { setAction(options, Action::PrintHelp);      return true; }
+	if (arg == "--agent-info") { setAction(options, Action::PrintAgentInfo); return true; }
+	if (version)               { setAction(options, Action::PrintVersion);   return true; }
+	if (interactive)           { setAction(options, Action::RunInteractive); return true; }
+	return false;
+}
+
+static bool parseModeFlag(const std::string& arg, Options& options) {
+	if (arg == "-t" || arg == "--tokens") { options.show_tokens     = true; return true; }
+	if (arg == "-e" || arg == "--expand") { options.show_expansions = true; return true; }
+	if (arg == "-r" || arg == "--run")    { options.execute         = true; return true; }
+	if (arg == "--ast")                   { options.ast = AstDump::Shown;   return true; }
+	if (arg == "--no-ast")                { options.ast = AstDump::Hidden;  return true; }
+	return false;
+}
+
+static void takeOperands(int argc, char** argv, int first, Options& options) {
+	for (int i = first; i < argc; ++i) options.operands.emplace_back(argv[i]);
+}
+
+static bool takeCommandString(int argc, char** argv, int i, Options& options,
+		std::string& out_error) {
+	if (i + 1 >= argc) {
+		out_error = "-c requires an argument";
+		return false;
+	}
+
+	options.source  = SourceKind::CommandString;
+	options.command = argv[i + 1];
+	takeOperands(argc, argv, i + 2, options);
+	return true;
+}
+
+static void takeScriptFile(int argc, char** argv, int i, Options& options) {
+	if (i >= argc) return;
+
+	options.source    = SourceKind::File;
+	options.file_path = argv[i];
+	takeOperands(argc, argv, i + 1, options);
+}
+
+static void takeStdin(int argc, char** argv, int i, Options& options) {
+	options.source = SourceKind::Stdin;
+	takeOperands(argc, argv, i + 1, options);
+}
+
+static bool isOptionWord(const std::string& arg) {
+	return arg.size() > 1 && arg[0] == '-';
+}
+
 static bool parseArgs(int argc, char** argv, Options& options, std::string& out_error) {
 	for (int i = 1; i < argc; ++i) {
 		const std::string arg = argv[i];
+		if (parseInfoFlag(arg, options) || parseModeFlag(arg, options)) continue;
 
-		const bool help        = arg == "-h" || arg == "--help";
-		const bool version     = arg == "-v" || arg == "--version";
-		const bool interactive = arg == "-i" || arg == "--interactive";
-		if (help)                  { setAction(options, Action::PrintHelp);      continue; }
-		if (arg == "--agent-info") { setAction(options, Action::PrintAgentInfo); continue; }
-		if (version)               { setAction(options, Action::PrintVersion);   continue; }
-		if (interactive)           { setAction(options, Action::RunInteractive); continue; }
+		if (arg == "-c") return takeCommandString(argc, argv, i, options, out_error);
 
-		if (arg == "-t" || arg == "--tokens") { options.show_tokens     = true; continue; }
-		if (arg == "-e" || arg == "--expand") { options.show_expansions = true; continue; }
-		if (arg == "-r" || arg == "--run")    { options.execute         = true; continue; }
-		if (arg == "--ast")                   { options.ast = AstDump::Shown;   continue; }
-		if (arg == "--no-ast")                { options.ast = AstDump::Hidden;  continue; }
-
-		if (arg == "-c") {
-			if (i + 1 >= argc) {
-				out_error = "-c requires an argument";
-				return false;
-			}
-
-			options.source  = SourceKind::CommandString;
-			options.command = argv[++i];
-			continue;
+		if (arg == "-" || arg == "-s") {
+			takeStdin(argc, argv, i, options);
+			return true;
 		}
 
-		if (arg == "-") {
-			options.source = SourceKind::Stdin;
-			continue;
+		if (arg == "--") {
+			takeScriptFile(argc, argv, i + 1, options);
+			return true;
 		}
 
-		options.source    = SourceKind::File;
-		options.file_path = arg;
+		if (isOptionWord(arg)) {
+			out_error = arg + ": invalid option (see wbsh --help)";
+			return false;
+		}
+
+		takeScriptFile(argc, argv, i, options);
+		return true;
 	}
 
 	return true;
@@ -223,15 +270,25 @@ static bool astShown(const Options& options) {
 	return !options.execute;
 }
 
+// `wbsh -c cmd name a b` runs cmd with $0 = name and $1.. = a b, as bash does.
+static void loadCommandString(const Options& options, ScriptRun& run) {
+	run.source = options.command;
+	if (options.operands.empty()) return;
+
+	run.script_name = options.operands.front();
+	run.positional.assign(options.operands.begin() + 1, options.operands.end());
+}
+
 static bool loadScriptRun(const Options& options, ScriptRun& run) {
 	run.show_tokens     = options.show_tokens;
 	run.show_ast        = astShown(options);
 	run.show_expansions = options.show_expansions;
 	run.execute         = options.execute;
+	run.positional      = options.operands;
 
 	switch (options.source) {
 	case SourceKind::CommandString:
-		run.source = options.command;
+		loadCommandString(options, run);
 		return true;
 	case SourceKind::File:
 		run.script_name = options.file_path;
