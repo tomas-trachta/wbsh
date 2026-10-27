@@ -222,6 +222,7 @@
     <ClInclude Include="src\status.h" />
     <ClInclude Include="src\sysinfo.h" />
     <ClInclude Include="src\selftest.h" />
+    <ClInclude Include="src\selftest_internal.h" />
     <ClInclude Include="src\session.h" />
     <ClInclude Include="src\snapshot.h" />
     <ClInclude Include="src\vtparse.h" />
@@ -254,6 +255,7 @@
     <ClCompile Include="src\status.cpp" />
     <ClCompile Include="src\sysinfo.cpp" />
     <ClCompile Include="src\selftest.cpp" />
+    <ClCompile Include="src\selftest_vt.cpp" />
     <ClCompile Include="src\session.cpp" />
     <ClCompile Include="src\snapshot.cpp" />
     <ClCompile Include="src\vtparse.cpp" />
