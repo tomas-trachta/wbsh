@@ -6,6 +6,7 @@
 #include "screen.h"
 
 #include "charwidth.h"
+#include "utf8.h"
 
 #include <algorithm>
 #include <string>
@@ -125,6 +126,18 @@ namespace wbshterm {
 		const std::u32string* cluster = clusterOf(cell);
 		if (cluster != nullptr) return cluster->front();
 		return (cell.code & kClusterCode) != 0 ? U'?' : cell.code;
+	}
+
+	void Screen::appendCellText(std::string& out, const Cell& cell) const {
+		if ((cell.attributes & kAttrWideTail) != 0) return;
+
+		const std::u32string* cluster = clusterOf(cell);
+		if (cluster == nullptr) {
+			appendUtf8(out, baseCodeOf(cell));
+			return;
+		}
+
+		for (char32_t code : *cluster) appendUtf8(out, code);
 	}
 
 } /* namespace wbshterm */

@@ -434,12 +434,15 @@ namespace wbshterm {
 		return kSwapChunkRows;
 	}
 
-	static bool rowGoesOnInHistory(const HistoryLine& line) {
-		if (line.line_break == LineBreak::kWraps) return true;
-		if (line.line_break == LineBreak::kEnds || line.cells.empty()) return false;
-
-		const Cell& last = line.cells.back();
+	static bool lineGoesOn(LineBreak line_break, const Cell& last) {
+		if (line_break == LineBreak::kWraps) return true;
+		if (line_break == LineBreak::kEnds) return false;
 		return last.code != U' ' || (last.attributes & (kAttrWide | kAttrWideTail)) != 0;
+	}
+
+	static bool rowGoesOnInHistory(const HistoryLine& line) {
+		if (line.cells.empty()) return line.line_break == LineBreak::kWraps;
+		return lineGoesOn(line.line_break, line.cells.back());
 	}
 
 	// Whole lines go to disk, so the chunk stretches to where the last
@@ -577,6 +580,26 @@ namespace wbshterm {
 		return index < line.size() ? line[index] : blank;
 	}
 
+	bool Screen::coldRowWraps(int row) const {
+		if (row + 1 >= cold_.rows()) return false;
+		return cold_.locate(row).line == cold_.locate(row + 1).line;
+	}
+
+	bool Screen::gridRowWraps(int row) const {
+		return lineGoesOn(breakAt(row), cell(row, columns_ - 1));
+	}
+
+	bool Screen::rowWraps(int absolute_row) const {
+		if (absolute_row < 0 || absolute_row >= totalRows()) return false;
+
+		const int history = scrollbackRows();
+		const int cold = cold_.rows();
+		if (absolute_row >= history) return gridRowWraps(absolute_row - history);
+		if (absolute_row < cold) return coldRowWraps(absolute_row);
+
+		return rowGoesOnInHistory(scrollback_[static_cast<std::size_t>(absolute_row - cold)]);
+	}
+
 	bool Screen::rowDirty(int row) const {
 		return row >= 0 && row < rows_ && dirty_[static_cast<std::size_t>(row)];
 	}
@@ -601,10 +624,7 @@ namespace wbshterm {
 				if (cell(row, column).code != U' ') last = column;
 			}
 
-			for (int column = 0; column <= last; ++column) {
-				const char32_t code = cell(row, column).code;
-				text.push_back(code < 0x80 ? static_cast<char>(code) : '?');
-			}
+			for (int column = 0; column <= last; ++column) appendCellText(text, cell(row, column));
 
 			text.push_back('\n');
 		}

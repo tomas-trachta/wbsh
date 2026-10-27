@@ -86,6 +86,9 @@
     <ClInclude Include="src\vtparse.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\utf8.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\view.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -170,6 +173,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\vtparse.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\selftest_input.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\utf8.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\view.cpp">

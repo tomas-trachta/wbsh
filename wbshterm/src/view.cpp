@@ -21,6 +21,20 @@ namespace wbshterm {
 		return isWordCharacter(screen.baseCodeOf(screen.cellAt(row, column)));
 	}
 
+	static std::string rowText(const Screen& screen, int row, int first, int last) {
+		std::string line;
+		const int end = std::min(last, screen.columns() - 1);
+		for (int column = first; column <= end; ++column) {
+			screen.appendCellText(line, screen.cellAt(row, column));
+		}
+
+		return line;
+	}
+
+	static void trimTrailingBlanks(std::string& line) {
+		while (!line.empty() && line.back() == ' ') line.pop_back();
+	}
+
 	static bool pointBefore(const GridPoint& left, const GridPoint& right) {
 		if (left.row != right.row) return left.row < right.row;
 		return left.column < right.column;
@@ -188,18 +202,13 @@ namespace wbshterm {
 		for (int row = start.row; row <= end.row; ++row) {
 			const int first = row == start.row ? start.column : 0;
 			const int last  = row == end.row ? end.column : screen.columns() - 1;
+			const bool joins_next = row != end.row && screen.rowWraps(row);
 
-			std::string line;
-			for (int column = first; column <= last && column < screen.columns(); ++column) {
-				const char32_t code = screen.cellAt(row, column).code;
-				if (code < 0x80) line.push_back(static_cast<char>(code));
-				else line.push_back('?');
-			}
-
-			while (!line.empty() && line.back() == ' ') line.pop_back();
+			std::string line = rowText(screen, row, first, last);
+			if (!joins_next) trimTrailingBlanks(line);
 
 			text += line;
-			if (row != end.row) text += "\r\n";
+			if (row != end.row && !joins_next) text += "\r\n";
 		}
 
 		return text;
