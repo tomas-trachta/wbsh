@@ -1,0 +1,101 @@
+=== batching by length
+4 20000
+a b c
+d
+a b c
+d
+status 0
+wbsh: xargs: argument line too long
+status 1
+=== quotes and backslashes
+a b
+c
+x  y
+z
+a b
+c\d
+ax41
+wbsh: xargs: unmatched single quote; by default quotes are special to xargs unless you use the -0 option
+status 1
+wbsh: xargs: unmatched double quote; by default quotes are special to xargs unless you use the -0 option
+status 1
+=== -I takes whole lines
+[a b]
+[c]
+[a b  ]
+[c]
+<a>
+<b>
+<a>
+<b>
+a-a
+b-b
+one two one two
+x y
+=== -0 / -d / -E
+x y
+0000000   a  \n   b  \n  \n
+0000005
+a b  c
+a
+b
+a b
+
+a b
+a b
+(a)
+(b)
+=== -n / -L / -r / empty input
+a b
+c d
+e
+a b
+c
+d e f
+a b c
+d e f
+a b c
+d e f
+hi
+a b
+=== -t / -P / -a
+echo a b
+a b
+echo a
+a
+echo b
+b
+1 2
+3 4
+5 6
+n=1
+n=2
+n=3
+n=4
+from-file one two
+=== the command does not get xargs' input
+arg a
+arg b
+=== streaming and a closed output
+abc abc
+abc abc
+wbsh: xargs: echo: terminated by signal 13
+=== exit statuses
+status 123
+wbsh: xargs: stop255: exited with status 255; aborting
+status 124
+wbsh: xargs: _xargs_no_such_command: No such file or directory
+status 127
+=== option errors
+wbsh: xargs: invalid option -- 'Q'
+status 1
+wbsh: xargs: value 0 for -n option should be >= 1
+status 1
+wbsh: xargs: invalid number "x" for -n option
+status 1
+wbsh: xargs: invalid number "x" for -P option
+status 1
+wbsh: xargs: value 0 for -L option should be >= 1
+status 1
+wbsh: xargs: invalid input delimiter specification ab: the delimiter must be either a single character or an escape sequence starting with \.
+status 1
