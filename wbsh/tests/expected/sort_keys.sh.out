@@ -1,0 +1,173 @@
+=== keys
+a 1
+b 2
+c 1
+b 2
+a 10
+y:1:a
+z:2:c
+x:3:b
+y:1:a
+x:3:b
+z:2:c
+a a d
+b a a
+a b c
+a 2
+a 10
+b 1
+foo  bar
+foo baz
+foo  bar
+foo baz
+foo  bar
+foo baz
+aYb
+aXc
+aXcd
+aYbe
+ab cd
+ab ce
+x 3
+x 20
+x 100
+a,a
+a,b
+x:
+:x
+a b
+a	b
+=== stable / unique by key
+1
+c 0
+a 1
+b 1
+c 0
+a 1
+b 1
+c 1
+a
+B
+=== orderings
+-1M
+0
+500
+1k
+10K
+1M
+2G
+1.1
+1.1a
+1.2
+1.9
+1.10
+v2
+v10
+.
+..
+.b
+a-1.0~rc1.tar.gz
+a-1.0.tar.gz
+a-1.0.1.tar.gz
+abc
+-inf
+-5
+2.5
+0x10
+1e3
+inf
+xyz
+jan
+FEB
+Mar
+Dec
+A
+a
+B
+b
+_
+A
+B
+a
+b
+ a
+  b
+c
+  b
+ a
+c
+a.b
+ab
+a,c
+0000000   x   a  \n   x 001   b  \n
+0000007
+c
+b
+a
+2
+1
+1
+-10
+-2
+-1
+-.5
+0
+.5
+1,000
+999
+3
+20
+100
+100
+20
+3
+
+a
+b
+3
+1
+2
+3
+=== check / output / merge / -z
+status 0
+wbsh: sort: -:3: disorder: b
+status 1
+wbsh: sort: -:2: disorder: a
+status 1
+status 1
+0000000   a  \0   b  \0
+0000004
+a
+b
+c
+a
+a
+b
+b
+c
+c
+3
+5
+=== errors
+wbsh: sort: field number is zero: invalid field specification '0'
+status 2
+wbsh: sort: character offset is zero: invalid field specification '1.0'
+status 2
+wbsh: sort: stray character in field spec: invalid field specification '1x'
+status 2
+wbsh: sort: invalid number at field start: invalid count at start of 'a'
+status 2
+wbsh: sort: multi-character tab 'ab'
+status 2
+wbsh: sort: options '-gn' are incompatible
+status 2
+wbsh: sort: options '-Mn' are incompatible
+status 2
+wbsh: sort: options '-dn' are incompatible
+status 2
+wbsh: sort: invalid option -- 'Q'
+status 2
+wbsh: sort: cannot read: _sort_missing.txt: No such file or directory
+status 2
+wbsh: sort: extra operand 'b' not allowed with -c
+status 2

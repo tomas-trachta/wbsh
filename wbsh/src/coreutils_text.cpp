@@ -1,6 +1,6 @@
 /**
  * @file coreutils_text.cpp
- * @brief Text-processing coreutils: sort, uniq, cut, tee, paste,
+ * @brief Text-processing coreutils: uniq, cut, tee, paste,
  *        tac, rev, nl, grep, find, sed, fold, column, expand,
  *        unexpand, comm, xargs (awk lives in awk.cpp).
  */
@@ -40,10 +40,6 @@ namespace wbsh {
 
 	static bool isOptionArg(const std::string& arg) {
 		return !arg.empty() && arg[0] == '-' && arg != kStdinPath;
-	}
-
-	static bool isShortCluster(const std::string& arg) {
-		return arg.size() > 1 && arg[0] == '-' && arg[1] != '-';
 	}
 
 	static bool isNumericOption(const std::string& arg) {
@@ -171,132 +167,6 @@ namespace wbsh {
 			std::fclose(stream);
 		}
 
-		return 0;
-	}
-
-	static std::string asciiLower(std::string text) {
-		for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		return text;
-	}
-
-	static bool equalFold(const std::string& a, const std::string& b) {
-		if (a.size() != b.size()) return false;
-		for (std::size_t i = 0; i < a.size(); ++i) {
-			if (std::tolower(static_cast<unsigned char>(a[i]))
-					!= std::tolower(static_cast<unsigned char>(b[i]))) return false;
-		}
-
-		return true;
-	}
-
-	static bool linesEqual(const std::string& a, const std::string& b, bool fold) {
-		return fold ? equalFold(a, b) : a == b;
-	}
-
-	struct SortOptions {
-		bool reverse = false;
-		bool numeric = false;
-		bool unique = false;
-		bool fold = false;
-		std::vector<std::string> files;
-	};
-
-	static bool applySortCluster(const std::string& cluster, SortOptions& options) {
-		for (std::size_t k = 1; k < cluster.size(); ++k) {
-			switch (cluster[k]) {
-			case 'r': options.reverse = true; break;
-			case 'n': options.numeric = true; break;
-			case 'u': options.unique = true; break;
-			case 'f': options.fold = true; break;
-			default:
-				std::fprintf(stderr, "wbsh: sort: unknown -%c\n", cluster[k]);
-				return false;
-			}
-		}
-
-		return true;
-	}
-
-	static int parseSortArgs(const std::vector<std::string>& args, SortOptions& options) {
-		for (const auto& arg : args) {
-			if (arg == "--") continue;
-
-			if (arg == "-r" || arg == "--reverse") {
-				options.reverse = true;
-			} else if (arg == "-n" || arg == "--numeric-sort") {
-				options.numeric = true;
-			} else if (arg == "-u" || arg == "--unique") {
-				options.unique = true;
-			} else if (arg == "-f" || arg == "--ignore-case") {
-				options.fold = true;
-			} else if (isShortCluster(arg)) {
-				if (!applySortCluster(arg, options)) return 2;
-			} else {
-				options.files.push_back(arg);
-			}
-		}
-
-		defaultToStdin(options.files);
-		return 0;
-	}
-
-	static void sortLinesNumeric(std::vector<std::string>& lines) {
-		std::vector<std::pair<double, std::string>> keyed;
-		keyed.reserve(lines.size());
-		for (auto& line : lines) {
-			double key = 0;
-			parseDouble(line, key);
-			keyed.emplace_back(key, std::move(line));
-		}
-
-		std::sort(keyed.begin(), keyed.end());
-		for (std::size_t i = 0; i < keyed.size(); ++i) lines[i] = std::move(keyed[i].second);
-	}
-
-	static void sortLinesFolded(std::vector<std::string>& lines) {
-		std::vector<std::pair<std::string, std::string>> keyed;
-		keyed.reserve(lines.size());
-		for (auto& line : lines) {
-			std::string key = asciiLower(line);
-			keyed.emplace_back(std::move(key), std::move(line));
-		}
-
-		std::sort(keyed.begin(), keyed.end());
-		for (std::size_t i = 0; i < keyed.size(); ++i) lines[i] = std::move(keyed[i].second);
-	}
-
-	static void dropAdjacentDuplicates(std::vector<std::string>& lines, bool fold) {
-		auto same = [fold](const std::string& a, const std::string& b) {
-			return linesEqual(a, b, fold);
-		};
-		lines.erase(std::unique(lines.begin(), lines.end(), same), lines.end());
-	}
-
-	static void writeLines(const std::vector<std::string>& lines) {
-		for (const auto& line : lines) {
-			std::fwrite(line.data(), 1, line.size(), stdout);
-			std::fputc('\n', stdout);
-		}
-	}
-
-	static int builtin_sort(Executor& exec, const std::vector<std::string>& args) {
-		SortOptions options;
-		if (int status = parseSortArgs(args, options); status != 0) return status;
-
-		std::vector<std::string> lines;
-		for (const auto& file : options.files) {
-			if (!loadLinesWithErrno(exec, "sort", file, lines)) return 2;
-		}
-
-		if (options.numeric)   sortLinesNumeric(lines);
-		else if (options.fold) sortLinesFolded(lines);
-		else                   std::sort(lines.begin(), lines.end());
-
-		if (options.reverse) std::reverse(lines.begin(), lines.end());
-		if (options.unique) dropAdjacentDuplicates(lines, options.fold);
-
-		writeLines(lines);
-		std::fflush(stdout);
 		return 0;
 	}
 
@@ -2178,7 +2048,6 @@ namespace wbsh {
 	}
 
 	void registerTextBuiltins(Executor& exec) {
-		exec.registerBuiltin("sort",     builtin_sort);
 		exec.registerBuiltin("uniq",     builtin_uniq);
 		exec.registerBuiltin("cut",      builtin_cut);
 		exec.registerBuiltin("tee",      builtin_tee);
