@@ -39,6 +39,7 @@
     <ClInclude Include="src\awk_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\awk_interp.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\awk_lexer.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\awk_regex.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -65,6 +66,7 @@
     <ClCompile Include="src\awk_io.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_lexer.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_parser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk_regex.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_value.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_cpio.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_misc.cpp"><Filter>Source Files</Filter></ClCompile>

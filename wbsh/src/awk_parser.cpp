@@ -5,7 +5,6 @@
 
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "awk_internal.h"
@@ -24,58 +23,70 @@ namespace wbsh {
 			return kSpecialVarNames[slot];
 		}
 
-		bool isBuiltinFunction(const std::string& name) {
-			static const std::unordered_set<std::string> kBuiltins = {
-				"length", "substr", "index", "split", "sub", "gsub", "match", "sprintf",
-				"sin", "cos", "atan2", "exp", "log", "sqrt", "int", "rand", "srand",
-				"tolower", "toupper", "system", "close", "fflush",
+		Builtin builtinFunction(const std::string& name) {
+			static const std::unordered_map<std::string, Builtin> kBuiltins = {
+				{ "length", Builtin::Length }, { "substr", Builtin::Substr },
+				{ "index", Builtin::Index }, { "split", Builtin::Split },
+				{ "sub", Builtin::Sub }, { "gsub", Builtin::Gsub },
+				{ "match", Builtin::Match }, { "sprintf", Builtin::Sprintf },
+				{ "sin", Builtin::Sin }, { "cos", Builtin::Cos }, { "atan2", Builtin::Atan2 },
+				{ "exp", Builtin::Exp }, { "log", Builtin::Log }, { "sqrt", Builtin::Sqrt },
+				{ "int", Builtin::Int }, { "rand", Builtin::Rand }, { "srand", Builtin::Srand },
+				{ "tolower", Builtin::Tolower }, { "toupper", Builtin::Toupper },
+				{ "system", Builtin::System }, { "close", Builtin::Close },
+				{ "fflush", Builtin::Fflush },
 			};
 
-			return kBuiltins.count(name) != 0;
+			const auto it = kBuiltins.find(name);
+			return it == kBuiltins.end() ? Builtin::None : it->second;
 		}
 
-		static const char* assignOpText(TokenKind kind) {
+		bool isBuiltinFunction(const std::string& name) {
+			return builtinFunction(name) != Builtin::None;
+		}
+
+		static Op assignOp(TokenKind kind) {
 			switch (kind) {
-				case TokenKind::Assign:        return "=";
-				case TokenKind::PlusAssign:    return "+=";
-				case TokenKind::MinusAssign:   return "-=";
-				case TokenKind::StarAssign:    return "*=";
-				case TokenKind::SlashAssign:   return "/=";
-				case TokenKind::PercentAssign: return "%=";
-				case TokenKind::CaretAssign:   return "^=";
-				default:                       return nullptr;
+				case TokenKind::Assign:        return Op::Assign;
+				case TokenKind::PlusAssign:    return Op::AddAssign;
+				case TokenKind::MinusAssign:   return Op::SubAssign;
+				case TokenKind::StarAssign:    return Op::MulAssign;
+				case TokenKind::SlashAssign:   return Op::DivAssign;
+				case TokenKind::PercentAssign: return Op::ModAssign;
+				case TokenKind::CaretAssign:   return Op::PowAssign;
+				default:                       return Op::None;
 			}
 		}
 
-		static const char* relationalOpText(TokenKind kind) {
+		static Op relationalOp(TokenKind kind) {
 			switch (kind) {
-				case TokenKind::Lt: return "<";
-				case TokenKind::Le: return "<=";
-				case TokenKind::Gt: return ">";
-				case TokenKind::Ge: return ">=";
-				case TokenKind::Eq: return "==";
-				case TokenKind::Ne: return "!=";
-				default:            return nullptr;
+				case TokenKind::Lt: return Op::Lt;
+				case TokenKind::Le: return Op::Le;
+				case TokenKind::Gt: return Op::Gt;
+				case TokenKind::Ge: return Op::Ge;
+				case TokenKind::Eq: return Op::Eq;
+				case TokenKind::Ne: return Op::Ne;
+				default:            return Op::None;
 			}
 		}
 
-		static const char* multiplicativeOpText(TokenKind kind) {
+		static Op multiplicativeOp(TokenKind kind) {
 			switch (kind) {
-				case TokenKind::Star:    return "*";
-				case TokenKind::Slash:   return "/";
-				case TokenKind::Percent: return "%";
-				default:                 return nullptr;
+				case TokenKind::Star:    return Op::Mul;
+				case TokenKind::Slash:   return Op::Div;
+				case TokenKind::Percent: return Op::Mod;
+				default:                 return Op::None;
 			}
 		}
 
-		static const char* unaryOpText(TokenKind kind) {
+		static Op unaryOp(TokenKind kind) {
 			switch (kind) {
-				case TokenKind::Not:   return "!";
-				case TokenKind::Minus: return "-";
-				case TokenKind::Plus:  return "+";
-				case TokenKind::Inc:   return "++";
-				case TokenKind::Dec:   return "--";
-				default:               return nullptr;
+				case TokenKind::Not:   return Op::Not;
+				case TokenKind::Minus: return Op::Negate;
+				case TokenKind::Plus:  return Op::UnaryPlus;
+				case TokenKind::Inc:   return Op::PreIncrement;
+				case TokenKind::Dec:   return Op::PreDecrement;
+				default:               return Op::None;
 			}
 		}
 
@@ -171,7 +182,7 @@ namespace wbsh {
 				return expr;
 			}
 
-			Expr* newBinary(const char* op, Expr* left, Expr* right) {
+			Expr* newBinary(Op op, Expr* left, Expr* right) {
 				Expr* expr = newExpr(ExprKind::Binary);
 				expr->op = op;
 				expr->first = left;
@@ -593,7 +604,7 @@ namespace wbsh {
 				return expr;
 			}
 
-			Expr* parseAssignmentTail(Expr* target, const char* op) {
+			Expr* parseAssignmentTail(Expr* target, Op op) {
 				if (!isLvalueKind(target->kind)) {
 					err("assignment to something that is not a variable");
 					return target;
@@ -612,8 +623,8 @@ namespace wbsh {
 				Expr* left = parseLogicOr();
 				if (acceptIf(TokenKind::Question)) return parseTernaryTail(left);
 
-				const char* assign_op = assignOpText(lex.peek().kind);
-				if (assign_op != nullptr) return parseAssignmentTail(left, assign_op);
+				const Op assign_op = assignOp(lex.peek().kind);
+				if (assign_op != Op::None) return parseAssignmentTail(left, assign_op);
 				return left;
 			}
 
@@ -621,7 +632,7 @@ namespace wbsh {
 				Expr* left = parseLogicAnd();
 				while (acceptIf(TokenKind::Or)) {
 					skipNewlines();
-					left = newBinary("||", left, parseLogicAnd());
+					left = newBinary(Op::Or, left, parseLogicAnd());
 				}
 
 				return left;
@@ -631,7 +642,7 @@ namespace wbsh {
 				Expr* left = parseInTest();
 				while (acceptIf(TokenKind::And)) {
 					skipNewlines();
-					left = newBinary("&&", left, parseInTest());
+					left = newBinary(Op::And, left, parseInTest());
 				}
 
 				return left;
@@ -653,7 +664,7 @@ namespace wbsh {
 			Expr* parseMatch() {
 				Expr* left = parseRel();
 				while (peekIs(TokenKind::Match) || peekIs(TokenKind::NoMatch)) {
-					const char* op = peekIs(TokenKind::Match) ? "~" : "!~";
+					const Op op = peekIs(TokenKind::Match) ? Op::Match : Op::NoMatch;
 					lex.next();
 					left = newBinary(op, left, parseRel());
 				}
@@ -664,8 +675,8 @@ namespace wbsh {
 			Expr* parseRel() {
 				Expr* left = parsePipeGetlines(parseConcat());
 				for (;;) {
-					const char* op = relationalOpText(lex.peek().kind);
-					if (op == nullptr) return left;
+					const Op op = relationalOp(lex.peek().kind);
+					if (op == Op::None) return left;
 					if (gt_ends_expr && peekIs(TokenKind::Gt)) return left;
 
 					lex.next();
@@ -693,7 +704,7 @@ namespace wbsh {
 			Expr* parseConcat() {
 				Expr* left = parseAdd();
 				while (startsConcatOperand(lex.peek().kind)) {
-					left = newBinary(" ", left, parseAdd());
+					left = newBinary(Op::Concat, left, parseAdd());
 				}
 
 				return left;
@@ -702,7 +713,7 @@ namespace wbsh {
 			Expr* parseAdd() {
 				Expr* left = parseMul();
 				while (peekIs(TokenKind::Plus) || peekIs(TokenKind::Minus)) {
-					const char* op = peekIs(TokenKind::Plus) ? "+" : "-";
+					const Op op = peekIs(TokenKind::Plus) ? Op::Add : Op::Sub;
 					lex.next();
 					left = newBinary(op, left, parseMul());
 				}
@@ -713,15 +724,15 @@ namespace wbsh {
 			Expr* parseMul() {
 				Expr* left = parseUnary();
 				for (;;) {
-					const char* op = multiplicativeOpText(lex.peek().kind);
-					if (op == nullptr) return left;
+					const Op op = multiplicativeOp(lex.peek().kind);
+					if (op == Op::None) return left;
 
 					lex.next();
 					left = newBinary(op, left, parseUnary());
 				}
 			}
 
-			Expr* newUnary(const char* op, Expr* operand) {
+			Expr* newUnary(Op op, Expr* operand) {
 				Expr* expr = newExpr(ExprKind::Unary);
 				expr->op = op;
 				expr->first = operand;
@@ -731,13 +742,13 @@ namespace wbsh {
 			// Unary minus binds looser than '^': -2^2 is -4.
 			Expr* parseUnary() {
 				const TokenKind kind = lex.peek().kind;
-				const char* op = unaryOpText(kind);
-				if (op == nullptr) return parseExp();
+				const Op op = unaryOp(kind);
+				if (op == Op::None) return parseExp();
 
 				lex.next();
 				if (kind == TokenKind::Inc || kind == TokenKind::Dec) {
 					Expr* target = parsePostfix();
-					if (!isLvalueKind(target->kind)) err(std::string(op) + " needs a variable");
+					if (!isLvalueKind(target->kind)) err("++ and -- need a variable");
 					return newUnary(op, target);
 				}
 
@@ -750,7 +761,7 @@ namespace wbsh {
 
 				Expr* exponent = peekIs(TokenKind::Minus) || peekIs(TokenKind::Plus)
 					|| peekIs(TokenKind::Not) ? parseUnary() : parseExp();
-				return newBinary("^", base, exponent);
+				return newBinary(Op::Pow, base, exponent);
 			}
 
 			Expr* parsePostfix() {
@@ -758,7 +769,7 @@ namespace wbsh {
 				if (operand == nullptr || !isLvalueKind(operand->kind)) return operand;
 
 				while (peekIs(TokenKind::Inc) || peekIs(TokenKind::Dec)) {
-					const char* op = peekIs(TokenKind::Inc) ? "++" : "--";
+					const Op op = peekIs(TokenKind::Inc) ? Op::PostIncrement : Op::PostDecrement;
 					lex.next();
 
 					Expr* expr = newExpr(ExprKind::PostIncDec);
@@ -793,9 +804,15 @@ namespace wbsh {
 				return expr;
 			}
 
-			Expr* parseBuiltinCall(const std::string& name) {
+			Expr* newBuiltinCall(const std::string& name) {
 				Expr* expr = newExpr(ExprKind::Call);
 				expr->name = name;
+				expr->builtin = builtinFunction(name);
+				return expr;
+			}
+
+			Expr* parseBuiltinCall(const std::string& name) {
+				Expr* expr = newBuiltinCall(name);
 				if (!peekIs(TokenKind::RParen)) parseNestedExprList(expr->args);
 				expect(TokenKind::RParen, "expected ')'");
 				return expr;
@@ -837,9 +854,7 @@ namespace wbsh {
 				if (acceptIf(TokenKind::LParen)) return parseBuiltinCall(name);
 
 				if (name != "length") err("'" + name + "' needs an argument list");
-				Expr* expr = newExpr(ExprKind::Call);
-				expr->name = name;
-				return expr;
+				return newBuiltinCall(name);
 			}
 
 			Expr* parseLiteral(ExprKind kind, const Token& token) {
@@ -852,7 +867,7 @@ namespace wbsh {
 			// `$i++` is ($i)++, while `$++i` and `$-1` take a unary operand.
 			Expr* parseFieldRef() {
 				Expr* expr = newExpr(ExprKind::Field);
-				const bool unary_index = unaryOpText(lex.peek().kind) != nullptr;
+				const bool unary_index = unaryOp(lex.peek().kind) != Op::None;
 				expr->first = unary_index ? parseUnary() : parsePrimary();
 				return expr;
 			}

@@ -10,6 +10,8 @@
 #  include <windows.h>
 #endif
 
+#include <io.h>
+
 #include <cctype>
 #include <cstdio>
 #include <string>
@@ -19,27 +21,57 @@
 #include "coreutils_internal.h"
 #include "executor.h"
 #include "pathconv.h"
-#include "regexutil.h"
 
 namespace wbsh {
 
 	namespace awk_detail {
 
-		static const std::size_t kSlurpChunk = 65536;
+		static const std::size_t kBlockSize = 65536;
 
-		static int peekChar(InputStream& stream) {
-			if (stream.start < stream.buffer.size()) {
-				return static_cast<unsigned char>(stream.buffer[stream.start]);
-			}
+		static bool isDiskFile(std::FILE* file) {
+			const intptr_t handle = _get_osfhandle(_fileno(file));
+			if (handle == -1) return false;
+			return ::GetFileType(reinterpret_cast<HANDLE>(handle)) == FILE_TYPE_DISK;
+		}
 
-			if (stream.file == nullptr) return EOF;
+		static std::unique_ptr<InputStream> newInputStream(std::FILE* file) {
+			auto stream = std::make_unique<InputStream>();
+			stream->file = file;
+			stream->owned = file != stdin;
+			stream->block_reads = isDiskFile(file);
+			return stream;
+		}
+
+		// Appends the next block, dropping the consumed prefix of the buffer.
+		static bool fillBlock(InputStream& stream) {
+			if (stream.file == nullptr) return false;
+
+			stream.buffer.erase(0, stream.start);
+			stream.start = 0;
+			const std::size_t old_size = stream.buffer.size();
+			stream.buffer.resize(old_size + kBlockSize);
+			char* destination = &stream.buffer[old_size];
+			const std::size_t got = std::fread(destination, 1, kBlockSize, stream.file);
+			stream.buffer.resize(old_size + got);
+			return got > 0;
+		}
+
+		// Called with the buffer used up.
+		static bool refill(InputStream& stream) {
+			if (stream.block_reads) return fillBlock(stream);
+			if (stream.file == nullptr) return false;
 
 			const int c = std::getc(stream.file);
-			if (c == EOF) return EOF;
+			if (c == EOF) return false;
 
 			stream.buffer.assign(1, static_cast<char>(c));
 			stream.start = 0;
-			return c;
+			return true;
+		}
+
+		static int peekChar(InputStream& stream) {
+			if (stream.start >= stream.buffer.size() && !refill(stream)) return EOF;
+			return static_cast<unsigned char>(stream.buffer[stream.start]);
 		}
 
 		// After a successful takeChar the character is still in the buffer, so
@@ -81,7 +113,31 @@ namespace wbsh {
 			return any;
 		}
 
+		bool Interpreter::readBlockRecord(InputStream& stream, char separator, std::string& out) {
+			std::size_t scan_from = stream.start;
+			for (;;) {
+				const std::size_t found = stream.buffer.find(separator, scan_from);
+				if (found != std::string::npos) {
+					out.assign(stream.buffer, stream.start, found - stream.start);
+					stream.start = found + 1;
+					return true;
+				}
+
+				const std::size_t scanned = stream.buffer.size() - stream.start;
+				if (!fillBlock(stream)) break;
+				scan_from = scanned;
+			}
+
+			if (stream.start >= stream.buffer.size()) return false;
+
+			out.assign(stream.buffer, stream.start, std::string::npos);
+			stream.start = stream.buffer.size();
+			return true;
+		}
+
 		bool Interpreter::readCharRecord(InputStream& stream, char separator, std::string& out) {
+			if (stream.block_reads) return readBlockRecord(stream, separator, out);
+
 			out.clear();
 			const bool had_buffered = stream.start < stream.buffer.size();
 			if (had_buffered && takeBufferedUntil(stream, separator, out)) return true;
@@ -118,25 +174,25 @@ namespace wbsh {
 		}
 
 		static void slurpRemaining(InputStream& stream) {
-			stream.buffer.erase(0, stream.start);
-			stream.start = 0;
 			if (stream.file == nullptr) return;
 
-			std::vector<char> chunk(kSlurpChunk);
+			std::vector<char> chunk(kBlockSize);
 			std::size_t got = 0;
 			while ((got = std::fread(chunk.data(), 1, chunk.size(), stream.file)) > 0) {
 				stream.buffer.append(chunk.data(), got);
 			}
 		}
 
-		static bool findSeparator(const InputStream& stream, const std::regex& re,
-				std::smatch& match) {
-			const auto first = stream.buffer.cbegin() + static_cast<std::ptrdiff_t>(stream.start);
-			const auto flags = stream.start == 0
-				? std::regex_constants::match_default
-				: std::regex_constants::match_prev_avail;
-			if (!searchRegexFlags(first, stream.buffer.cend(), re, match, flags)) return false;
-			return match.length(0) > 0;
+		// The first non-empty match at or after stream.start.
+		static bool findSeparator(const InputStream& stream, const AwkRegex& re, std::size_t& pos,
+				std::size_t& length) {
+			std::size_t from = stream.start;
+			while (awkRegexFind(re, stream.buffer, from, pos, length)) {
+				if (length > 0) return true;
+				from = pos + 1;
+			}
+
+			return false;
 		}
 
 		// Any other RS is a regular expression (a gawk extension).
@@ -144,17 +200,17 @@ namespace wbsh {
 			slurpRemaining(stream);
 			if (stream.start >= stream.buffer.size()) return false;
 
-			const std::regex* re = cachedRegex(rs_regex, RS);
-			std::smatch match;
-			if (re == nullptr || !findSeparator(stream, *re, match)) {
+			const AwkRegex* re = separatorRegex(rs_regex, RS);
+			std::size_t pos = 0;
+			std::size_t length = 0;
+			if (re == nullptr || !findSeparator(stream, *re, pos, length)) {
 				out = stream.buffer.substr(stream.start);
 				stream.start = stream.buffer.size();
 				return true;
 			}
 
-			const auto offset = static_cast<std::size_t>(match.position(0));
-			out = stream.buffer.substr(stream.start, offset);
-			stream.start += offset + static_cast<std::size_t>(match.length(0));
+			out = stream.buffer.substr(stream.start, pos - stream.start);
+			stream.start = pos + length;
 			return true;
 		}
 
@@ -200,9 +256,7 @@ namespace wbsh {
 				return false;
 			}
 
-			main_input = std::make_unique<InputStream>();
-			main_input->file = file;
-			main_input->owned = file != stdin;
+			main_input = newInputStream(file);
 			setGlobal(kFILENAME, AwkValue::str(operand));
 			FNR = 0;
 			return true;
@@ -230,8 +284,7 @@ namespace wbsh {
 			if (opened_operand) return false;
 
 			opened_operand = true;
-			main_input = std::make_unique<InputStream>();
-			main_input->file = stdin;
+			main_input = newInputStream(stdin);
 			FNR = 0;
 			return true;
 		}
@@ -252,9 +305,7 @@ namespace wbsh {
 			std::FILE* file = isStdinName(path) ? stdin : fopenNative(exec, path, "rb");
 			if (file == nullptr) return nullptr;
 
-			auto stream = std::make_unique<InputStream>();
-			stream->file = file;
-			stream->owned = file != stdin;
+			std::unique_ptr<InputStream> stream = newInputStream(file);
 			InputStream* raw = stream.get();
 			input_files[path] = std::move(stream);
 			return raw;
