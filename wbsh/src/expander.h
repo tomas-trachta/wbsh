@@ -94,6 +94,17 @@ namespace wbsh {
 		std::string expandStringValue(const Word& w);
 
 		/**
+		 * @brief expandStringValue() for pattern contexts.
+		 *
+		 * Used for `case` patterns and the right side of `[[ == ]]`.
+		 * Returns an fnmatch pattern in which quoted and backslash-
+		 * escaped characters are escaped, so only unquoted glob
+		 * characters (including those from unquoted expansions) match
+		 * as wildcards.
+		 */
+		std::string expandPattern(const Word& w);
+
+		/**
 		 * @brief Expand a heredoc body.
 		 *
 		 * @param body   The captured heredoc text.
@@ -284,6 +295,15 @@ namespace wbsh {
 		                                           const std::string& arg);
 		std::vector<std::string> mapListOp(char op, bool doubled, const std::string& arg,
 		                                   std::vector<std::string> elems);
+		// `/pat/rep`, `/#pat/rep` or `/%pat/rep` after the `/` operator,
+		// with the pattern and replacement already expanded.
+		struct ReplaceArgs {
+			std::string pat;
+			std::string rep;
+			bool anchor_start = false;
+			bool anchor_end = false;
+		};
+		ReplaceArgs parseReplaceArgs(const std::string& args);
 		std::string evalParamReplace(const std::string& cur,
 		                             const std::string& args, bool all);
 		struct ParamOpCtx {
@@ -333,6 +353,9 @@ namespace wbsh {
 		std::string applyCaseConv(const std::string& val, char op, bool all,
 		                          const std::string& pat);
 		std::string expandParamWordArg(const std::string& body);
+		std::string expandPatternArg(const std::string& body);
+		void appendPatternExpansion(const std::string& body, std::size_t& i, bool in_dq,
+		                            std::string& out);
 		std::string replacePattern(const std::string& val, const std::string& pat,
 		                           const std::string& rep, bool all,
 		                           bool anchor_start, bool anchor_end);

@@ -776,6 +776,77 @@ namespace wbsh {
 		return out;
 	}
 
+	static void appendPatternSingleQuoted(const std::string& body, std::size_t& i,
+			std::string& out) {
+		std::string text;
+		copySingleQuotedRun(body, i, text);
+		appendFnmatchLiteral(out, text);
+	}
+
+	// Inside double quotes only `\\`, `\$`, `` \` `` and `\"` escape;
+	// any other backslash there is a literal character of its own.
+	static void appendPatternBackslash(const std::string& body, std::size_t& i, bool in_dq,
+			std::string& out) {
+		const char next = body[i + 1];
+		if (next == '\n') {
+			i += 2;
+			return;
+		}
+
+		const bool escapes = !in_dq || next == '\\' || next == '$' || next == '`' || next == '"';
+		if (!escapes) {
+			appendFnmatchLiteral(out, '\\');
+			++i;
+			return;
+		}
+
+		appendFnmatchLiteral(out, next);
+		i += 2;
+	}
+
+	void Expander::appendPatternExpansion(const std::string& body, std::size_t& i, bool in_dq,
+			std::string& out) {
+		std::string piece;
+		if (body[i] == '$' && i + 1 < body.size()) expandHeredocDollar(body, i, piece);
+		else if (body[i] == '`') expandHeredocBackquote(body, i, piece);
+		else piece.push_back(body[i++]);
+
+		if (in_dq) appendFnmatchLiteral(out, piece);
+		else out += piece;
+	}
+
+	// The pattern of `${name#pat}`, `${name/pat/rep}` and friends: like
+	// expandParamWordArg, but quoted text comes out escaped, so only
+	// unquoted glob characters (also those from unquoted expansions)
+	// act as wildcards.
+	std::string Expander::expandPatternArg(const std::string& body) {
+		std::string out;
+		bool in_dq = false;
+		std::size_t i = 0;
+		while (i < body.size() && !aborting()) {
+			const char c = body[i];
+			if (c == '"') {
+				in_dq = !in_dq;
+				++i;
+				continue;
+			}
+
+			if (c == '\'' && !in_dq) {
+				appendPatternSingleQuoted(body, i, out);
+				continue;
+			}
+
+			if (c == '\\' && i + 1 < body.size()) {
+				appendPatternBackslash(body, i, in_dq, out);
+				continue;
+			}
+
+			appendPatternExpansion(body, i, in_dq, out);
+		}
+
+		return out;
+	}
+
 	std::string Expander::runCmdSubst(const std::string& body) {
 		if (sub_ != nullptr) return sub_->run(body);
 		return {};
@@ -1196,16 +1267,7 @@ namespace wbsh {
 		length_text.clear();
 	}
 
-	// `/pat/rep`, `/#pat/rep` or `/%pat/rep` after the `/` operator,
-	// with the pattern and replacement already expanded.
-	struct ReplaceArgs {
-		std::string pat;
-		std::string rep;
-		bool anchor_start = false;
-		bool anchor_end = false;
-	};
-
-	static ReplaceArgs parseReplaceArgs(Expander& expander, const std::string& args) {
+	Expander::ReplaceArgs Expander::parseReplaceArgs(const std::string& args) {
 		ReplaceArgs out;
 		std::string body = args;
 		out.anchor_start = !body.empty() && body[0] == '#';
@@ -1216,14 +1278,14 @@ namespace wbsh {
 		const std::string pat = (slash == std::string::npos) ? body : body.substr(0, slash);
 		const std::string rep = (slash == std::string::npos) ? std::string()
 			: body.substr(slash + 1);
-		out.pat = expander.expandHeredoc(pat, false);
-		out.rep = expander.expandHeredoc(rep, false);
+		out.pat = expandPatternArg(pat);
+		out.rep = expandParamWordArg(rep);
 		return out;
 	}
 
 	std::string Expander::evalParamReplace(const std::string& cur, const std::string& args,
 			bool all) {
-		const ReplaceArgs r = parseReplaceArgs(*this, args);
+		const ReplaceArgs r = parseReplaceArgs(args);
 		return replacePattern(cur, r.pat, r.rep, all, r.anchor_start, r.anchor_end);
 	}
 
@@ -1248,14 +1310,14 @@ namespace wbsh {
 		case ':':
 			return substringExpand(ctx.named_value, argument);
 		case '#':
-			return stripPrefix(ctx.named_value, expandHeredoc(argument, false), doubled);
+			return stripPrefix(ctx.named_value, expandPatternArg(argument), doubled);
 		case '%':
-			return stripSuffix(ctx.named_value, expandHeredoc(argument, false), doubled);
+			return stripSuffix(ctx.named_value, expandPatternArg(argument), doubled);
 		case '/':
 			return evalParamReplace(ctx.named_value, argument, doubled);
 		case '^':
 		case ',':
-			return applyCaseConv(ctx.named_value, op, doubled, expandHeredoc(argument, false));
+			return applyCaseConv(ctx.named_value, op, doubled, expandPatternArg(argument));
 		default:
 			return ctx.named_value;
 		}
@@ -1405,7 +1467,7 @@ namespace wbsh {
 	std::vector<std::string> Expander::mapListOp(char op, bool doubled,
 			const std::string& arg, std::vector<std::string> elems) {
 		if (op == '/') {
-			const ReplaceArgs r = parseReplaceArgs(*this, arg);
+			const ReplaceArgs r = parseReplaceArgs(arg);
 			for (std::string& elem : elems) {
 				elem = replacePattern(elem, r.pat, r.rep, doubled, r.anchor_start, r.anchor_end);
 			}
@@ -1413,7 +1475,7 @@ namespace wbsh {
 			return elems;
 		}
 
-		const std::string pat = expandHeredoc(arg, false);
+		const std::string pat = expandPatternArg(arg);
 		for (std::string& elem : elems) {
 			if (op == '#') elem = stripPrefix(elem, pat, doubled);
 			else if (op == '%') elem = stripSuffix(elem, pat, doubled);
@@ -1960,9 +2022,8 @@ namespace wbsh {
 			std::string asPattern() const {
 				std::string pattern;
 				for (std::size_t i = 0; i < text.size(); ++i) {
-					const char c = text[i];
-					if (quoted[i] != 0 && (isGlobMeta(c) || c == '\\')) pattern.push_back('\\');
-					pattern.push_back(c);
+					if (quoted[i] != 0) appendFnmatchLiteral(pattern, text[i]);
+					else pattern.push_back(text[i]);
 				}
 
 				return pattern;
@@ -2410,6 +2471,22 @@ namespace wbsh {
 	std::string Expander::expandStringValue(const Word& w) {
 		const Word tilded = applyTildeExpansion(w);
 		return quoteRemove(renderWord(tilded));
+	}
+
+	static std::string taggedAsPattern(const Expander::Tagged& t) {
+		std::string pattern;
+		pattern.reserve(t.size());
+		for (std::size_t i = 0; i < t.size(); ++i) {
+			if (quotedAt(t, i)) appendFnmatchLiteral(pattern, t.text[i]);
+			else pattern.push_back(t.text[i]);
+		}
+
+		return pattern;
+	}
+
+	std::string Expander::expandPattern(const Word& w) {
+		const Word tilded = applyTildeExpansion(w);
+		return taggedAsPattern(renderWord(tilded));
 	}
 
 }  // namespace wbsh

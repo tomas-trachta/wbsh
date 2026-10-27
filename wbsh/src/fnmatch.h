@@ -4,8 +4,9 @@
  * @file fnmatch.h
  * @brief fnmatch-like glob pattern matcher: `*`, `?`, `[...]`, `\x`.
  *
- * Shared by pathname expansion, `${var#pat}`-family operators, and
- * `case` patterns. The range form matches against a substring of the
+ * Shared by pathname expansion, `${var#pat}`-family operators, `case`
+ * patterns, and `[[ == ]]`. Quoted pattern text reaches the matcher
+ * backslash-escaped via appendFnmatchLiteral(). The range form matches against a substring of the
  * subject without copying it out, which keeps the probe-every-length
  * loops in the expander free of per-probe allocations.
  */
@@ -112,6 +113,22 @@ namespace wbsh {
 	inline bool fnmatchRange(const std::string& p, const std::string& s,
 	                         std::size_t start, std::size_t len) {
 		return fnmatch_detail::matchHere(p, 0, s, start, start + len);
+	}
+
+	// Includes the characters that are only special inside `[...]`, so
+	// quoted text spliced into a bracket expression stays literal too.
+	inline bool isFnmatchSpecial(char c) {
+		return c == '*' || c == '?' || c == '[' || c == ']' || c == '\\'
+		    || c == '-' || c == '!' || c == '^';
+	}
+
+	inline void appendFnmatchLiteral(std::string& pattern, char c) {
+		if (isFnmatchSpecial(c)) pattern.push_back('\\');
+		pattern.push_back(c);
+	}
+
+	inline void appendFnmatchLiteral(std::string& pattern, const std::string& text) {
+		for (const char c : text) appendFnmatchLiteral(pattern, c);
 	}
 
 }  // namespace wbsh
