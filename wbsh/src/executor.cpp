@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "devices.h"
+#include "exitstatus.h"
 #include "fnmatch.h"
 #include "lexer.h"
 #include "numparse.h"
@@ -387,7 +388,7 @@ namespace wbsh {
 		DWORD exit_code = 0;
 		::GetExitCodeProcess(process, &exit_code);
 		::CloseHandle(process);
-		return static_cast<int>(exit_code);
+		return shellStatusFromExitCode(exit_code);
 	}
 
 	static LPPROC_THREAD_ATTRIBUTE_LIST allocAttrList() {
@@ -2755,7 +2756,7 @@ namespace wbsh {
 			if (exit_code == STILL_ACTIVE) continue;
 
 			job.running = false;
-			job.exit_code = static_cast<int>(exit_code);
+			job.exit_code = shellStatusFromExitCode(exit_code);
 			::CloseHandle(job.handle);
 			job.handle = nullptr;
 			changed = true;
