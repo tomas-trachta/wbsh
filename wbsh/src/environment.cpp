@@ -95,6 +95,32 @@ namespace wbsh {
 		return nullptr;
 	}
 
+	const std::vector<ShoptSpec>& shoptTable() {
+		static const std::vector<ShoptSpec> table = {
+			{ "nullglob",       &ShoptFlags::nullglob },
+			{ "dotglob",        &ShoptFlags::dotglob },
+			{ "extglob",        &ShoptFlags::extglob },
+			{ "nocaseglob",     &ShoptFlags::nocaseglob },
+			{ "nocasematch",    &ShoptFlags::nocasematch },
+			{ "globstar",       &ShoptFlags::globstar },
+			{ "lastpipe",       &ShoptFlags::lastpipe },
+			{ "huponexit",      &ShoptFlags::huponexit },
+			{ "expand_aliases", &ShoptFlags::expand_aliases },
+			{ "autocd",         &ShoptFlags::autocd },
+			{ "checkwinsize",   &ShoptFlags::checkwinsize },
+		};
+
+		return table;
+	}
+
+	const ShoptSpec* findShopt(const std::string& name) {
+		for (const ShoptSpec& spec : shoptTable()) {
+			if (name == spec.name) return &spec;
+		}
+
+		return nullptr;
+	}
+
 	std::string Environment::shellOptions() const {
 		static const char* const kDollarDashOrder = "abefhikmnptuvxBCEHPT";
 

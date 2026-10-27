@@ -71,6 +71,15 @@ namespace wbsh {
 		bool checkwinsize   = true;
 	};
 
+	struct ShoptSpec {
+		const char* name;
+		bool ShoptFlags::* flag;
+	};
+
+	/// Every `shopt` flag, in the order `shopt` lists them.
+	const std::vector<ShoptSpec>& shoptTable();
+	const ShoptSpec* findShopt(const std::string& name);
+
 	struct SetOptionSpec {
 		const char* name;
 		char        letter;
@@ -168,6 +177,8 @@ namespace wbsh {
 		long long lastBgPid() const      { return last_bg_pid_; }
 
 		long long shellPid() const { return shell_pid_; }
+		/// A self-spawned pipeline stage reports its parent shell's `$$`.
+		void setShellPid(long long pid) { shell_pid_ = pid; }
 
 		/// `$-`: the single-letter options that are on, in bash's order.
 		std::string shellOptions() const;
@@ -196,6 +207,8 @@ namespace wbsh {
 
 		/// `shopt` flags. Defaults match bash's interactive defaults where
 		/// they line up with POSIX expectations.
+		ShoptFlags&       shopts()       { return shopt_; }
+		const ShoptFlags& shopts() const { return shopt_; }
 		bool nullglob()    const { return shopt_.nullglob; }
 		void setNullglob(bool b) { shopt_.nullglob = b; }
 		bool dotglob()     const { return shopt_.dotglob; }

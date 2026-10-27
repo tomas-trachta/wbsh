@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "numparse.h"
 #include "pathconv.h"
 
 namespace wbsh {
@@ -249,8 +250,13 @@ namespace wbsh {
 	static void applyInheritedOption(Environment& env, const std::string& word) {
 		if (word.size() < 2) return;
 
-		const SetOptionSpec* spec = findSetOption(word.substr(1));
-		if (spec != nullptr) env.options().*(spec->flag) = word[0] == '-';
+		const std::string name = word.substr(1);
+		const bool on = word[0] == '-';
+		const SetOptionSpec* set_spec = findSetOption(name);
+		if (set_spec != nullptr) env.options().*(set_spec->flag) = on;
+
+		const ShoptSpec* shopt_spec = findShopt(name);
+		if (shopt_spec != nullptr) env.shopts().*(shopt_spec->flag) = on;
 	}
 
 	static void applyInheritedOptions(Environment& env) {
@@ -268,6 +274,16 @@ namespace wbsh {
 		}
 	}
 
+	static void applyInheritedShellParameters(Environment& env, Executor& exec) {
+		long long pid = 0;
+		if (parseLL(env.get("WBSH_SHELL_PID"), pid)) env.setShellPid(pid);
+		env.unset("WBSH_SHELL_PID");
+
+		int status = 0;
+		if (parseInt(env.get("WBSH_STATUS"), status)) exec.setLastStatus(status);
+		env.unset("WBSH_STATUS");
+	}
+
 	void absorbInheritedState(Environment& env, Executor& exec) {
 		const std::string local_names = env.get("WBSH_LOCAL_NAMES");
 		if (!local_names.empty()) {
@@ -279,6 +295,7 @@ namespace wbsh {
 		replayInheritedText(env, exec, "WBSH_ALIASES",   "<inherited aliases>");
 		replayInheritedText(env, exec, "WBSH_ARRAYS",    "<inherited arrays>");
 		applyInheritedOptions(env);
+		applyInheritedShellParameters(env, exec);
 	}
 
 }  // namespace wbsh

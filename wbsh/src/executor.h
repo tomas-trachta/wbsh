@@ -661,8 +661,8 @@ namespace wbsh {
 		int execPipelineMultiCmd(const Pipeline& p);
 
 		// `cmd &` — spawn a detached child sharing our std{in,out,err} fds,
-		// register it as a job, announce `[id] pid` to stderr. Returns 0 on
-		// success, 1 if the spawn failed.
+		// register it as a job, announce `[id] pid` to stderr when interactive.
+		// Returns 0 on success, 1 if the spawn failed.
 		int launchBackgroundCommand(const Node& cmd);
 
 		// Pipeline element launch. Returns a process HANDLE the parent waits
