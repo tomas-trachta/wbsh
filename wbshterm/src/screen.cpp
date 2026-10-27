@@ -712,42 +712,75 @@ namespace wbshterm {
 		trimScrollback();
 	}
 
-	void Screen::scrollUp(int count) {
-		const int lines = std::max(1, count);
-		for (int step = 0; step < lines; ++step) {
-			pushToScrollback(scroll_top_);
+	std::vector<Cell>::iterator Screen::rowStart(int row) {
+		return cells_.begin()
+			+ static_cast<std::ptrdiff_t>(row) * static_cast<std::ptrdiff_t>(columns_);
+	}
 
-			for (int row = scroll_top_; row < scroll_bottom_; ++row) {
-				for (int column = 0; column < columns_; ++column) {
-					at(row, column) = cell(row + 1, column);
-				}
+	static int clampedLineCount(int count, int top, int bottom) {
+		return std::min(std::max(1, count), bottom - top + 1);
+	}
 
-				row_breaks_[static_cast<std::size_t>(row)] =
-					row_breaks_[static_cast<std::size_t>(row) + 1];
-				markDirty(row);
-			}
-
-			clearRow(scroll_bottom_, 0, columns_ - 1);
-			row_breaks_[static_cast<std::size_t>(scroll_bottom_)] = LineBreak::kUnknown;
+	void Screen::blankRows(int first, int last) {
+		for (int row = first; row <= last; ++row) {
+			clearRow(row, 0, columns_ - 1);
+			row_breaks_[static_cast<std::size_t>(row)] = LineBreak::kUnknown;
 		}
 	}
 
+	void Screen::markRowsDirty(int first, int last) {
+		for (int row = first; row <= last; ++row) markDirty(row);
+	}
+
+	void Screen::shiftRowsUp(int top, int bottom, int count) {
+		const int lines = clampedLineCount(count, top, bottom);
+		std::copy(rowStart(top + lines), rowStart(bottom + 1), rowStart(top));
+		std::copy(row_breaks_.begin() + top + lines, row_breaks_.begin() + bottom + 1,
+			row_breaks_.begin() + top);
+
+		blankRows(bottom - lines + 1, bottom);
+		markRowsDirty(top, bottom);
+	}
+
+	void Screen::shiftRowsDown(int top, int bottom, int count) {
+		const int lines = clampedLineCount(count, top, bottom);
+		std::copy_backward(rowStart(top), rowStart(bottom + 1 - lines), rowStart(bottom + 1));
+		std::copy_backward(row_breaks_.begin() + top, row_breaks_.begin() + bottom + 1 - lines,
+			row_breaks_.begin() + bottom + 1);
+
+		blankRows(top, top + lines - 1);
+		markRowsDirty(top, bottom);
+	}
+
+	// LF and SU are the only scrolls whose top lines go to history; IL,
+	// DL and SD move rows inside the screen.
+	void Screen::scrollUp(int count) {
+		const int lines = clampedLineCount(count, scroll_top_, scroll_bottom_);
+		for (int line = 0; line < lines; ++line) pushToScrollback(scroll_top_ + line);
+
+		shiftRowsUp(scroll_top_, scroll_bottom_, lines);
+	}
+
 	void Screen::scrollDown(int count) {
-		const int lines = std::max(1, count);
-		for (int step = 0; step < lines; ++step) {
-			for (int row = scroll_bottom_; row > scroll_top_; --row) {
-				for (int column = 0; column < columns_; ++column) {
-					at(row, column) = cell(row - 1, column);
-				}
+		shiftRowsDown(scroll_top_, scroll_bottom_, count);
+	}
 
-				row_breaks_[static_cast<std::size_t>(row)] =
-					row_breaks_[static_cast<std::size_t>(row) - 1];
-				markDirty(row);
-			}
+	bool Screen::cursorInScrollRegion() const {
+		return cursor_.row >= scroll_top_ && cursor_.row <= scroll_bottom_;
+	}
 
-			clearRow(scroll_top_, 0, columns_ - 1);
-			row_breaks_[static_cast<std::size_t>(scroll_top_)] = LineBreak::kUnknown;
-		}
+	void Screen::insertLines(int count) {
+		if (!cursorInScrollRegion()) return;
+
+		shiftRowsDown(cursor_.row, scroll_bottom_, count);
+		carriageReturn();
+	}
+
+	void Screen::deleteLines(int count) {
+		if (!cursorInScrollRegion()) return;
+
+		shiftRowsUp(cursor_.row, scroll_bottom_, count);
+		carriageReturn();
 	}
 
 	void Screen::moveCursor(int row, int column) {
@@ -1050,9 +1083,9 @@ namespace wbshterm {
 		case 'T': scrollDown(sequence.param(0, 1)); break;
 		case '@':
 		case 'P':
-		case 'L':
-		case 'M':
 		case 'X': applyInsertDelete(sequence); break;
+		case 'L': insertLines(sequence.param(0, 1)); break;
+		case 'M': deleteLines(sequence.param(0, 1)); break;
 		case 'd': moveCursorInOrigin(sequence.param(0, 1) - 1, cursor_.column); break;
 		case 'c': answerDeviceAttributes(false); break;
 		case 'm': applySgr(sequence); break;
@@ -1112,7 +1145,7 @@ namespace wbshterm {
 	}
 
 	void Screen::applyInsertDelete(const VtSequence& sequence) {
-		const int count = std::max(1, sequence.param(0, 1));
+		const int count = std::min(std::max(1, sequence.param(0, 1)), columns_);
 
 		switch (sequence.final_byte) {
 		case '@':
@@ -1136,15 +1169,6 @@ namespace wbshterm {
 		case 'X':
 			clearRow(cursor_.row, cursor_.column, cursor_.column + count - 1);
 			break;
-		case 'L':
-		case 'M': {
-			const int saved_top = scroll_top_;
-			scroll_top_ = cursor_.row;
-			if (sequence.final_byte == 'L') scrollDown(count);
-			else scrollUp(count);
-			scroll_top_ = saved_top;
-			break;
-		}
 		default:
 			break;
 		}
