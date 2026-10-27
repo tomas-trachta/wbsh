@@ -726,16 +726,33 @@ namespace wbsh {
 		return 0;
 	}
 
+	namespace set_detail {
+
+		struct SetOperands {
+			std::size_t first = 0;
+			bool        replace_positional = false;
+		};
+
+	}  // namespace set_detail
+
+	using set_detail::SetOperands;
+
+	static void endSetOptions(Environment& env, const std::string& marker, std::size_t next,
+			std::size_t argc, SetOperands& out) {
+		if (marker == "-") env.setXtrace(false);
+
+		out.first = next;
+		out.replace_positional = marker == "--" || next < argc;
+	}
+
 	static int parseSetFlags(Executor& exec, const std::vector<std::string>& args,
-			std::size_t& out_index, bool& out_consumed) {
+			SetOperands& out) {
 		std::size_t i = 0;
-		bool consumed = false;
 		while (i < args.size()) {
 			const std::string& arg = args[i];
 			if (arg == "--" || arg == "-") {
-				++i;
-				consumed = true;
-				break;
+				endSetOptions(exec.env(), arg, i + 1, args.size(), out);
+				return 0;
 			}
 
 			if (arg.empty() || (arg[0] != '-' && arg[0] != '+')) break;
@@ -745,30 +762,27 @@ namespace wbsh {
 				const int status = applyLongSetArg(exec, args, i, on);
 				if (status != 0) return status;
 
-				consumed = true;
 				continue;
 			}
 
 			for (std::size_t k = 1; k < arg.size(); ++k) applyShortSetFlag(exec.env(), arg[k], on);
 			++i;
-			consumed = true;
 		}
 
-		out_index = i;
-		out_consumed = consumed;
+		out.first = i;
+		out.replace_positional = i < args.size();
 		return 0;
 	}
 
 	static int builtin_set(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) return dumpAllShellVars(exec);
 
-		std::size_t first = 0;
-		bool consumed_flags = false;
-		const int status = parseSetFlags(exec, args, first, consumed_flags);
+		SetOperands operands;
+		const int status = parseSetFlags(exec, args, operands);
 		if (status != 0) return status;
 
-		if (first < args.size() || !consumed_flags) {
-			std::vector<std::string> positional(args.begin() + first, args.end());
+		if (operands.replace_positional) {
+			std::vector<std::string> positional(args.begin() + operands.first, args.end());
 			exec.env().setPositional(std::move(positional));
 		}
 

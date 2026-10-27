@@ -1,0 +1,21 @@
+=== 1. set -- with no operands clears the positionals
+n=0 all=[]
+=== 2. set -- replaces them
+n=2 1=x 2=y z
+=== 3. options alone leave them alone
+n=2 all=[keep me]
+=== 4. options then -- clears
+n=0
+=== 5. options then operands
+n=2 all=[p q]
+=== 6. - alone keeps them, - with operands replaces them
+n=2 1=one
+n=1 1=three
+=== 7. - turns xtrace off
++ set - four five
+n=2 all=[four five] xtrace=off
+=== 8. operands that look like options after --
+n=3 all=[-x +f --] xtrace=off
+=== 9. in a function the caller's positionals come back
+inside n=0
+after n=2 all=[outer args]
