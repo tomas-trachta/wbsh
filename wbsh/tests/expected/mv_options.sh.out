@@ -1,0 +1,59 @@
+=== into itself
+wbsh: mv: cannot move 'm' to a subdirectory of itself, 'm/sub'
+mv m m/sub: 1
+wbsh: mv: cannot move 'm' to a subdirectory of itself, 'm/sub/m'
+mv m m/sub (existing): 1
+wbsh: mv: cannot move 'm' to a subdirectory of itself, './m/sub/deeper'
+mv m ./m/sub/deeper: 1
+m still: m/a m/sub
+wbsh: mv: cannot move 'm' to a subdirectory of itself, 'm/m'
+mv m m: 1
+wbsh: mv: 'm' and './m' are the same file
+mv m .: 1
+=== plain moves
+mv a b: 0 -> a
+into dir: 0 -> dir/b
+several into dir: 0 -> dir/b dir/c dir/e
+case-only rename: 0 -> S
+rename dir: 0 -> new/x
+=== -n -i -f -u
+mv -n: 0 src=src dst=dst
+prompt: mv: overwrite 'dst'? 
+mv -i no: 0 src=src dst=dst
+prompt: mv: overwrite 'dst'? 
+mv -i yes: 0 dst=src
+mv -i -f: 0 dst=src (no prompt)
+mv -f -n: 0 kept src: src
+mv -u older: 0 src=src dst=newer
+mv -u newer: 0 dst=newest
+onto read-only: 0 -> new
+=== -v -t -T --
+renamed 'v' -> 't/v'
+renamed 't/v' -> './v'
+mv -T: 0 -> tdir
+wbsh: mv: cannot move 'tdir' to 'full': Directory not empty
+mv -T onto non-empty dir: 1
+renamed 'tdir' -> 'empty'
+mv -T onto empty dir: 0
+mv --: 0 -> dash
+=== errors
+wbsh: mv: missing file operand
+no operands: 1
+wbsh: mv: missing destination file operand after 'a'
+one operand: 1
+wbsh: mv: cannot stat 'nope': No such file or directory
+missing source: 1
+wbsh: mv: target 'nofile' is not a directory
+several into a non-directory: 1
+wbsh: mv: cannot overwrite non-directory 'dash' with directory 'sub'
+dir onto file: 1
+wbsh: mv: cannot overwrite directory 'g/v' with non-directory
+file onto dir: 1
+wbsh: mv: extra operand 'y'
+mv -T extra operand: 1
+wbsh: mv: target 'nodir' is not a directory
+mv -t missing dir: 1
+wbsh: mv: cannot combine --target-directory (-t) and --no-target-directory (-T)
+mv -t with -T: 1
+wbsh: mv: unrecognized option '--bogus'
+unknown option: 1
