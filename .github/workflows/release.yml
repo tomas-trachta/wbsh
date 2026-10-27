@@ -1,15 +1,20 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: write
 
 jobs:
   release:
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
 
     steps:
@@ -36,7 +41,23 @@ jobs:
           }
           $vMajor = [int]$versionGroup.WbshVersionMajor.Trim()
           $vMinor = [int]$versionGroup.WbshVersionMinor.Trim()
-          $vPatch = [int]$versionGroup.WbshVersionPatch.Trim() + 1
+          $vPatch = [int]$versionGroup.WbshVersionPatch.Trim()
+
+          switch ('${{ inputs.bump }}') {
+              'major' {
+                  $vMajor++
+                  $vMinor = 0
+                  $vPatch = 0
+              }
+              'minor' {
+                  $vMinor++
+                  $vPatch = 0
+              }
+              'patch' {
+                  $vPatch++
+              }
+          }
+
           $newVersion = "$vMajor.$vMinor.$vPatch"
 
           $raw = Get-Content $propsPath -Raw
