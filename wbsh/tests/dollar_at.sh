@@ -107,3 +107,14 @@ defaults() {
 defaults " a " "b"
 forward() { show "$@"; }
 forward "one two" "" three
+
+echo "=== 7. unset IFS acts as default"
+unset IFS
+x="1 2	3"
+show $x
+unset_ifs() {
+    show "$*"
+    show $*
+}
+unset_ifs p "q r"
+show "${a[*]}"
