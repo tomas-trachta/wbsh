@@ -35,6 +35,10 @@
     <ClInclude Include="src\optscan.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\regexutil.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\strscan.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\awk.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\awk_internal.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\awk_interp.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\awk_lexer.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -54,6 +58,14 @@
     <ClCompile Include="src\coreutils_grep.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_sed.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\posixregex.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk_builtins.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk_fields.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk_interp.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk_io.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk_lexer.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk_parser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\awk_value.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_cpio.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_misc.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_wget.cpp"><Filter>Source Files</Filter></ClCompile>

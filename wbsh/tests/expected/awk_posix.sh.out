@@ -1,0 +1,152 @@
+=== user functions
+42
+3628800
+6765
+b a
+1
+4 9
+6 5
+[] 0
+1
+abab
+17
+small big
+3
+one
+three
+awk: parse error: function 'f' is not defined (line 1)
+awk: parse error: function 'f' defined twice (line 1)
+=== command pipes, system, close
+got hello
+3 c
+first 1
+first
+a
+b
+c
+after
+end-before-flush
+2 y
+1 x
+status 3
+before inside
+after
+x
+0
+-1
+read 2
+[]
+flushed ok
+=== ENVIRON
+bar
+with space
+1
+prefix
+FOO after: [unset]
+=== ARGV and ARGC
+3 awk foo bar
+awk|a|b c|
+_awk_posix_tmp/pairs.txt: x 1
+_awk_posix_tmp/pairs.txt: y 2
+x 1
+y 2
+stdin: from stdin
+x 1
+y 2
+1 x 1
+1 y 2
+2 x 1
+2 y 2
+a:x 1
+a:y 2
+end z
+set piped
+1 1 x 1
+2 2 y 2
+1 3 x 1
+2 4 y 2
+awk: cannot open: _awk_posix_tmp/missing.txt
+x 1
+y 2
+status 2
+=== RS
+1: a
+2: c
+1 2 name1 line1
+2 2 name2 line2
+4
+[a][b][c][d]
+2
+[e][f]
+1 a
+2 b
+3 c
+1<one>
+2<two>
+3<three>
+x
+y
+z
+2
+=== OFMT and CONVFMT
+3.14
+3.14 3.14159 10
+3.14
+3.14
+0
+1000000 1e-05 123456789012 0.1
+=== -v and operand escapes
+a	b
+line1
+line2
+q"x\y
+10 1
+x	y
+b
+awk: invalid -v argument: bad-name=1
+status 2
+=== getline forms
+after getline: two 2 2
+3
+one / two 2
+3
+3 0
+one 1 0
+-1
+begin read: one
+main: two
+main: three
+x 1
+=== exit runs END
+end ran
+status 3
+end after 1
+status 4
+=== misc
+hello world
+11
+1 0
+   42|ab  |3.14
+he hello ello
+1 3
+-4 512 8
+Hi
+0 0
+3 a c
+no 3
+now 1
+1 2 3  x
+5
+1 2
+4
+a  c
+3
+r2
+r3
+r4
+1: start
+2: x
+3: end
+4: start end
+0
+empty if ok

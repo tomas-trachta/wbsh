@@ -1640,8 +1640,11 @@ namespace wbsh {
 			std::string name;
 			bool existed;
 			std::string value;
+			bool exported;
 		};
 
+		// Prefix assignments are in the command's environment, so they are
+		// exported while it runs (awk's ENVIRON, env, printenv see them).
 		struct EnvAssignsGuard {
 			Environment& env;
 			std::vector<PriorValue> prior;
@@ -1649,15 +1652,22 @@ namespace wbsh {
 			EnvAssignsGuard(Environment& owner, const NameValueList& assigns) : env(owner) {
 				prior.reserve(assigns.size());
 				for (const auto& assign : assigns) {
-					prior.push_back({ assign.first, env.has(assign.first), env.get(assign.first) });
-					env.set(assign.first, assign.second);
+					const std::string& name = assign.first;
+					prior.push_back({ name, env.has(name), env.get(name), env.isExported(name) });
+					env.set(name, assign.second);
+					env.exportVar(name);
 				}
 			}
 
 			~EnvAssignsGuard() {
 				for (auto it = prior.rbegin(); it != prior.rend(); ++it) {
-					if (it->existed) env.set(it->name, it->value);
-					else             env.unset(it->name);
+					if (!it->existed) {
+						env.unset(it->name);
+						continue;
+					}
+
+					env.set(it->name, it->value);
+					if (!it->exported) env.unexportVar(it->name);
 				}
 			}
 		};
