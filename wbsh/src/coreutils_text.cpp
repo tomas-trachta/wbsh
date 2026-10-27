@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -23,6 +24,7 @@
 #include "executor.h"
 #include "numparse.h"
 #include "optscan.h"
+#include "posixregex.h"
 #include "regexutil.h"
 
 namespace wbsh {
@@ -67,14 +69,6 @@ namespace wbsh {
 
 	static bool readsStdin(const std::vector<std::string>& files) {
 		return files.empty() || files[0] == kStdinPath;
-	}
-
-	static bool loadLines(Executor& exec, const char* tool, const std::string& file,
-			std::vector<std::string>& lines) {
-		if (readAllLines(exec, file, lines)) return true;
-
-		perr(tool, file);
-		return false;
 	}
 
 	static bool loadLinesWithErrno(Executor& exec, const char* tool, const std::string& file,
@@ -1083,86 +1077,196 @@ namespace wbsh {
 		return 0;
 	}
 
+	static bool readRecord(FILE* stream, char terminator, std::string& record, bool& terminated) {
+		record.clear();
+		int c = EOF;
+		_lock_file(stream);
+		while ((c = _fgetc_nolock(stream)) != EOF && c != static_cast<unsigned char>(terminator)) {
+			record.push_back(static_cast<char>(c));
+		}
+
+		_unlock_file(stream);
+		terminated = c != EOF;
+		return terminated || !record.empty();
+	}
+
+	static bool openAllInputs(Executor& exec, const char* tool,
+			const std::vector<std::string>& files, std::vector<FILE*>& streams) {
+		for (const auto& path : files) {
+			FILE* stream = openInputStream(exec, tool, path);
+			if (stream == nullptr) {
+				for (FILE* opened : streams) closeInputStream(opened);
+				streams.clear();
+				return false;
+			}
+
+			streams.push_back(stream);
+		}
+
+		return true;
+	}
+
 	struct PasteOptions {
-		std::string delims = "\t";
+		std::vector<std::string> delims;
 		bool serial = false;
+		char terminator = '\n';
 		std::vector<std::string> files;
 	};
 
-	static PasteOptions parsePasteArgs(const std::vector<std::string>& args) {
-		PasteOptions options;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "-d" && i + 1 < args.size()) {
-				options.delims = args[++i];
-			} else if (hasAttachedValue(arg, "-d")) {
-				options.delims = arg.substr(2);
-			} else if (arg == "-s") {
-				options.serial = true;
-			} else if (arg == "--") {
-				for (++i; i < args.size(); ++i) options.files.push_back(args[i]);
-			} else if (!arg.empty() && arg[0] != '-') {
-				options.files.push_back(arg);
-			}
+	enum PasteOptionId { kPasteDelimiters, kPasteSerial, kPasteZero };
+
+	static const std::vector<OptDef> kPasteOptionDefs = {
+		{ kPasteDelimiters, 'd', "delimiters",      OptArg::Required },
+		{ kPasteSerial,     's', "serial",          OptArg::None     },
+		{ kPasteZero,       'z', "zero-terminated", OptArg::None     },
+	};
+
+	static std::string pasteEscape(char escaped) {
+		switch (escaped) {
+		case 'n':
+			return "\n";
+		case 't':
+			return "\t";
+		case 'b':
+			return "\b";
+		case 'f':
+			return "\f";
+		case 'r':
+			return "\r";
+		case 'v':
+			return "\v";
+		case '0':
+			return std::string();
+		default:
+			return std::string(1, escaped);
 		}
-
-		defaultToStdin(options.files);
-		return options;
 	}
 
-	static char pasteDelimiter(const std::string& delims, std::size_t index) {
-		return delims.empty() ? '\t' : delims[index % delims.size()];
-	}
-
-	static int pasteSerial(Executor& exec, const PasteOptions& options) {
-		int status = 0;
-		for (const auto& file : options.files) {
-			std::vector<std::string> lines;
-			if (!loadLines(exec, "paste", file, lines)) {
-				status = 1;
+	// Each list entry is one delimiter; `\0` is the empty one.
+	static bool parsePasteDelimiters(const std::string& spec, std::vector<std::string>& delims) {
+		delims.clear();
+		for (std::size_t i = 0; i < spec.size(); ++i) {
+			if (spec[i] != '\\') {
+				delims.emplace_back(1, spec[i]);
 				continue;
 			}
 
-			for (std::size_t k = 0; k < lines.size(); ++k) {
-				if (k != 0) std::fputc(pasteDelimiter(options.delims, k), stdout);
-				std::fputs(lines[k].c_str(), stdout);
+			if (i + 1 == spec.size()) {
+				perr("paste", "delimiter list ends with an unescaped backslash: " + spec);
+				return false;
 			}
 
-			std::fputc('\n', stdout);
+			delims.push_back(pasteEscape(spec[++i]));
 		}
 
-		std::fflush(stdout);
-		return status;
+		if (delims.empty()) delims.emplace_back();
+		return true;
 	}
 
-	static int pasteParallel(Executor& exec, const PasteOptions& options) {
-		std::vector<std::vector<std::string>> columns;
-		std::size_t longest = 0;
-		for (const auto& file : options.files) {
-			std::vector<std::string> lines;
-			if (!loadLines(exec, "paste", file, lines)) return 1;
+	static bool applyPasteHit(const OptHit& hit, PasteOptions& options) {
+		switch (hit.id) {
+		case kPasteDelimiters:
+			return parsePasteDelimiters(hit.value, options.delims);
+		case kPasteSerial:
+			options.serial = true;
+			return true;
+		case kPasteZero:
+			options.terminator = '\0';
+			return true;
+		default:
+			return false;
+		}
+	}
 
-			longest = (std::max)(longest, lines.size());
-			columns.push_back(std::move(lines));
+	static bool parsePasteArgs(const std::vector<std::string>& args, PasteOptions& options) {
+		options.delims.assign(1, "\t");
+
+		OptScanResult scan;
+		if (!scanOptions("paste", args, kPasteOptionDefs, scan)) return false;
+
+		for (const OptHit& hit : scan.hits) {
+			if (!applyPasteHit(hit, options)) return false;
 		}
 
-		for (std::size_t row = 0; row < longest; ++row) {
-			for (std::size_t col = 0; col < columns.size(); ++col) {
-				if (col != 0) std::fputc(pasteDelimiter(options.delims, col - 1), stdout);
-				if (row < columns[col].size()) std::fputs(columns[col][row].c_str(), stdout);
+		options.files = scan.operands;
+		defaultToStdin(options.files);
+		return true;
+	}
+
+	static const std::string& pasteDelimiter(const PasteOptions& options, std::size_t index) {
+		return options.delims[index % options.delims.size()];
+	}
+
+	static bool pasteSerialLine(const PasteOptions& options, std::size_t& count,
+			const std::string& line) {
+		if (count != 0) std::fputs(pasteDelimiter(options, count - 1).c_str(), stdout);
+		std::fwrite(line.data(), 1, line.size(), stdout);
+		++count;
+		return outputOk(stdout);
+	}
+
+	static bool pasteSerialStream(FILE* stream, const PasteOptions& options) {
+		std::size_t count = 0;
+		const bool finished = forEachRecord(stream, options.terminator,
+			[&](const std::string& line) { return pasteSerialLine(options, count, line); });
+
+		std::fputc(options.terminator, stdout);
+		return finished && outputOk(stdout);
+	}
+
+	static int pasteSerial(const std::vector<FILE*>& streams, const PasteOptions& options) {
+		for (FILE* stream : streams) {
+			if (!pasteSerialStream(stream, options)) break;
+		}
+
+		return 0;
+	}
+
+	static bool pasteBuildRow(const std::vector<FILE*>& streams, std::vector<bool>& live,
+			const PasteOptions& options, std::string& row) {
+		bool any = false;
+		bool terminated = false;
+		std::string record;
+		row.clear();
+		for (std::size_t col = 0; col < streams.size(); ++col) {
+			if (col != 0) row += pasteDelimiter(options, col - 1);
+			if (!live[col]) continue;
+
+			if (readRecord(streams[col], options.terminator, record, terminated)) {
+				row += record;
+				any = true;
+			} else {
+				live[col] = false;
 			}
-
-			std::fputc('\n', stdout);
 		}
 
-		std::fflush(stdout);
+		return any;
+	}
+
+	static int pasteParallel(const std::vector<FILE*>& streams, const PasteOptions& options) {
+		std::vector<bool> live(streams.size(), true);
+		std::string row;
+		while (pasteBuildRow(streams, live, options, row)) {
+			writeRecord(stdout, row, options.terminator);
+			if (!outputOk(stdout)) break;
+		}
+
 		return 0;
 	}
 
 	static int builtin_paste(Executor& exec, const std::vector<std::string>& args) {
-		const PasteOptions options = parsePasteArgs(args);
-		if (options.serial) return pasteSerial(exec, options);
-		return pasteParallel(exec, options);
+		PasteOptions options;
+		if (!parsePasteArgs(args, options)) return 1;
+
+		std::vector<FILE*> streams;
+		if (!openAllInputs(exec, "paste", options.files, streams)) return 1;
+
+		const int status = options.serial
+			? pasteSerial(streams, options)
+			: pasteParallel(streams, options);
+		for (FILE* stream : streams) closeInputStream(stream);
+		std::fflush(stdout);
+		return status;
 	}
 
 	static int builtin_tac(Executor& exec, const std::vector<std::string>& args) {
@@ -1172,73 +1276,349 @@ namespace wbsh {
 		int status = 0;
 		for (const auto& file : files) {
 			std::vector<std::string> lines;
-			if (!loadLines(exec, "tac", file, lines)) {
+			if (!loadLinesWithErrno(exec, "tac", file, lines)) {
 				status = 1;
 				continue;
 			}
 
-			for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
-				std::fputs(it->c_str(), stdout);
-				std::fputc('\n', stdout);
-			}
+			for (auto it = lines.rbegin(); it != lines.rend(); ++it) writeRecord(stdout, *it, '\n');
 		}
 
 		std::fflush(stdout);
 		return status;
+	}
+
+	static std::size_t utf8SequenceLength(const std::string& text, std::size_t at) {
+		const unsigned char lead = static_cast<unsigned char>(text[at]);
+		const std::size_t wanted = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+
+		std::size_t length = 1;
+		while (length < wanted && at + length < text.size()
+				&& (static_cast<unsigned char>(text[at + length]) & 0xC0) == 0x80) ++length;
+		return length;
+	}
+
+	static std::string reverseCharacters(const std::string& line) {
+		std::string out(line.size(), '\0');
+		std::size_t end = line.size();
+		std::size_t at = 0;
+		while (at < line.size()) {
+			const std::size_t length = utf8SequenceLength(line, at);
+			end -= length;
+			out.replace(end, length, line, at, length);
+			at += length;
+		}
+
+		return out;
+	}
+
+	static const std::vector<OptDef> kRevOptionDefs = {
+		{ 0, '0', "zero", OptArg::None },
+	};
+
+	static void revStream(FILE* stream, char terminator) {
+		std::string line;
+		bool terminated = false;
+		while (readRecord(stream, terminator, line, terminated)) {
+			const std::string reversed = reverseCharacters(line);
+			std::fwrite(reversed.data(), 1, reversed.size(), stdout);
+			if (terminated) std::fputc(terminator, stdout);
+			if (!outputOk(stdout)) return;
+		}
 	}
 
 	static int builtin_rev(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> files = nonOptionArgs(args);
+		OptScanResult scan;
+		if (!scanOptions("rev", args, kRevOptionDefs, scan)) return 1;
+
+		const char terminator = scan.hits.empty() ? '\n' : '\0';
+		std::vector<std::string> files = scan.operands;
 		defaultToStdin(files);
 
 		int status = 0;
 		for (const auto& file : files) {
-			std::vector<std::string> lines;
-			if (!loadLines(exec, "rev", file, lines)) {
+			FILE* stream = openInputStream(exec, "rev", file);
+			if (stream == nullptr) {
 				status = 1;
 				continue;
 			}
 
-			for (auto& line : lines) {
-				std::reverse(line.begin(), line.end());
-				std::fputs(line.c_str(), stdout);
-				std::fputc('\n', stdout);
-			}
+			revStream(stream, terminator);
+			closeInputStream(stream);
 		}
 
 		std::fflush(stdout);
 		return status;
 	}
 
-	static int builtin_nl(Executor& exec, const std::vector<std::string>& args) {
-		bool number_blank = false;
-		std::vector<std::string> files;
-		for (const auto& arg : args) {
-			if (arg == "-ba") number_blank = true;
-			else if (arg == "-bt") number_blank = false;
-			else if (!arg.empty() && arg[0] != '-') files.push_back(arg);
+	namespace nl_detail {
+
+		enum class Style { All, NonEmpty, None, Regex };
+
+		enum class Section { Header, Body, Footer, Text };
+
+		struct SectionStyle {
+			Style style = Style::None;
+			std::regex regex;
+		};
+
+		struct Options {
+			SectionStyle header;
+			SectionStyle body;
+			SectionStyle footer;
+			std::string format = "rn";
+			int width = 6;
+			std::string separator = "\t";
+			long long start = 1;
+			long long increment = 1;
+			long long join_blank = 1;
+			bool renumber = true;
+			std::string delimiter = "\\:";
+			std::vector<std::string> files;
+		};
+
+		struct State {
+			const SectionStyle* current = nullptr;
+			long long line_no = 1;
+			long long blank_run = 0;
+		};
+
+		enum OptionId {
+			kBody, kDelimiter, kFooter, kHeader, kIncrement, kJoinBlank, kFormat,
+			kNoRenumber, kSeparator, kStart, kWidth
+		};
+
+	}  // namespace nl_detail
+
+	static const std::vector<OptDef> kNlOptionDefs = {
+		{ nl_detail::kBody,       'b', "body-numbering",       OptArg::Required },
+		{ nl_detail::kDelimiter,  'd', "section-delimiter",    OptArg::Required },
+		{ nl_detail::kFooter,     'f', "footer-numbering",     OptArg::Required },
+		{ nl_detail::kHeader,     'h', "header-numbering",     OptArg::Required },
+		{ nl_detail::kIncrement,  'i', "line-increment",       OptArg::Required },
+		{ nl_detail::kJoinBlank,  'l', "join-blank-lines",     OptArg::Required },
+		{ nl_detail::kFormat,     'n', "number-format",        OptArg::Required },
+		{ nl_detail::kNoRenumber, 'p', "no-renumber",          OptArg::None     },
+		{ nl_detail::kSeparator,  's', "number-separator",     OptArg::Required },
+		{ nl_detail::kStart,      'v', "starting-line-number", OptArg::Required },
+		{ nl_detail::kWidth,      'w', "number-width",         OptArg::Required },
+	};
+
+	static bool parseNlStyle(const std::string& value, const char* section,
+			nl_detail::SectionStyle& out) {
+		using nl_detail::Style;
+		if (value == "a") {
+			out.style = Style::All;
+		} else if (value == "t") {
+			out.style = Style::NonEmpty;
+		} else if (value == "n") {
+			out.style = Style::None;
+		} else if (!value.empty() && value[0] == 'p'
+				&& compilePosixRegex(out.regex, value.substr(1), false, false)) {
+			out.style = Style::Regex;
+		} else {
+			perr("nl", std::string("invalid ") + section + " numbering style: '" + value + "'");
+			return false;
 		}
 
-		defaultToStdin(files);
+		return true;
+	}
+
+	static bool parseNlNumber(const std::string& value, const char* what, long long& out) {
+		std::size_t consumed = 0;
+		if (!value.empty() && parseLL(value, out, 10, &consumed) && consumed == value.size()) {
+			return true;
+		}
+
+		perr("nl", std::string("invalid ") + what + ": '" + value + "'");
+		return false;
+	}
+
+	static bool parseNlWidth(const std::string& value, int& out) {
+		long long width = 0;
+		if (!parseNlNumber(value, "line number field width", width)) return false;
+		if (width < 1 || width > INT_MAX) {
+			perr("nl", "invalid line number field width: '" + value
+				+ "': Numerical result out of range");
+			return false;
+		}
+
+		out = static_cast<int>(width);
+		return true;
+	}
+
+	static bool parseNlFormat(const std::string& value, std::string& out) {
+		if (value == "ln" || value == "rn" || value == "rz") {
+			out = value;
+			return true;
+		}
+
+		perr("nl", "invalid line numbering format: '" + value + "'");
+		return false;
+	}
+
+	static bool parseNlJoinBlank(const std::string& value, long long& out) {
+		if (!parseNlNumber(value, "line number of blank lines", out)) return false;
+		if (out >= 1) return true;
+
+		perr("nl", "invalid line number of blank lines: '" + value
+			+ "': Numerical result out of range");
+		return false;
+	}
+
+	// A one-character delimiter implies ':' as its second character.
+	static std::string nlDelimiter(const std::string& value) {
+		return value.size() == 1 ? value + ":" : value;
+	}
+
+	static bool applyNlHit(const OptHit& hit, nl_detail::Options& options) {
+		switch (hit.id) {
+		case nl_detail::kBody:
+			return parseNlStyle(hit.value, "body", options.body);
+		case nl_detail::kHeader:
+			return parseNlStyle(hit.value, "header", options.header);
+		case nl_detail::kFooter:
+			return parseNlStyle(hit.value, "footer", options.footer);
+		case nl_detail::kDelimiter:
+			options.delimiter = nlDelimiter(hit.value);
+			return true;
+		case nl_detail::kIncrement:
+			return parseNlNumber(hit.value, "line number increment", options.increment);
+		case nl_detail::kJoinBlank:
+			return parseNlJoinBlank(hit.value, options.join_blank);
+		case nl_detail::kFormat:
+			return parseNlFormat(hit.value, options.format);
+		case nl_detail::kNoRenumber:
+			options.renumber = false;
+			return true;
+		case nl_detail::kSeparator:
+			options.separator = hit.value;
+			return true;
+		case nl_detail::kStart:
+			return parseNlNumber(hit.value, "starting line number", options.start);
+		case nl_detail::kWidth:
+			return parseNlWidth(hit.value, options.width);
+		default:
+			return false;
+		}
+	}
+
+	static bool parseNlArgs(const std::vector<std::string>& args, nl_detail::Options& options) {
+		options.body.style = nl_detail::Style::NonEmpty;
+
+		OptScanResult scan;
+		if (!scanOptions("nl", args, kNlOptionDefs, scan)) return false;
+
+		for (const OptHit& hit : scan.hits) {
+			if (!applyNlHit(hit, options)) return false;
+		}
+
+		options.files = scan.operands;
+		defaultToStdin(options.files);
+		return true;
+	}
+
+	static nl_detail::Section nlSectionOf(const std::string& line, const std::string& delimiter) {
+		using nl_detail::Section;
+		if (delimiter.empty() || line.empty() || line.size() % delimiter.size() != 0) {
+			return Section::Text;
+		}
+
+		const std::size_t repeats = line.size() / delimiter.size();
+		if (repeats > 3) return Section::Text;
+		for (std::size_t k = 0; k < repeats; ++k) {
+			if (line.compare(k * delimiter.size(), delimiter.size(), delimiter) != 0) {
+				return Section::Text;
+			}
+		}
+
+		if (repeats == 3) return Section::Header;
+		return repeats == 2 ? Section::Body : Section::Footer;
+	}
+
+	static void nlEnterSection(nl_detail::State& state, const nl_detail::Options& options,
+			nl_detail::Section section) {
+		using nl_detail::Section;
+		if (section == Section::Header)    state.current = &options.header;
+		else if (section == Section::Body) state.current = &options.body;
+		else                               state.current = &options.footer;
+
+		if (options.renumber) state.line_no = options.start;
+		std::fputc('\n', stdout);
+	}
+
+	// GNU's -l: under style `a`, only every Nth consecutive empty line is numbered.
+	static bool nlNumbersLine(nl_detail::State& state, const nl_detail::Options& options,
+			const std::string& line) {
+		using nl_detail::Style;
+		switch (state.current->style) {
+		case Style::All:
+			if (!line.empty() || ++state.blank_run == options.join_blank) {
+				state.blank_run = 0;
+				return true;
+			}
+
+			return false;
+		case Style::NonEmpty:
+			return !line.empty();
+		case Style::Regex:
+			return searchRegex(line, state.current->regex);
+		case Style::None:
+			return false;
+		default:
+			return false;
+		}
+	}
+
+	static void nlPrintNumber(const nl_detail::Options& options, long long number) {
+		const char* format = options.format == "ln" ? "%-*lld"
+			: options.format == "rz" ? "%0*lld"
+			: "%*lld";
+		std::fprintf(stdout, format, options.width, number);
+		std::fputs(options.separator.c_str(), stdout);
+	}
+
+	static bool nlProcessLine(nl_detail::State& state, const nl_detail::Options& options,
+			const std::string& line) {
+		const nl_detail::Section section = nlSectionOf(line, options.delimiter);
+		if (section != nl_detail::Section::Text) {
+			nlEnterSection(state, options, section);
+			return outputOk(stdout);
+		}
+
+		if (nlNumbersLine(state, options, line)) {
+			nlPrintNumber(options, state.line_no);
+			state.line_no += options.increment;
+		} else {
+			const std::size_t pad =
+				static_cast<std::size_t>(options.width) + options.separator.size();
+			std::fprintf(stdout, "%*s", static_cast<int>(pad), "");
+		}
+
+		writeRecord(stdout, line, '\n');
+		return outputOk(stdout);
+	}
+
+	static int builtin_nl(Executor& exec, const std::vector<std::string>& args) {
+		nl_detail::Options options;
+		if (!parseNlArgs(args, options)) return 1;
+
+		nl_detail::State state;
+		state.current = &options.body;
+		state.line_no = options.start;
 
 		int status = 0;
-		int number = 0;
-		for (const auto& file : files) {
-			std::vector<std::string> lines;
-			if (!loadLines(exec, "nl", file, lines)) {
+		for (const auto& file : options.files) {
+			FILE* stream = openInputStream(exec, "nl", file);
+			if (stream == nullptr) {
 				status = 1;
 				continue;
 			}
 
-			for (const auto& line : lines) {
-				if (line.empty() && !number_blank) {
-					std::fputc('\n', stdout);
-					continue;
-				}
-
-				++number;
-				std::fprintf(stdout, "%6d\t%s\n", number, line.c_str());
-			}
+			const bool finished = forEachRecord(stream, '\n',
+				[&](const std::string& line) { return nlProcessLine(state, options, line); });
+			closeInputStream(stream);
+			if (!finished) break;
 		}
 
 		std::fflush(stdout);
