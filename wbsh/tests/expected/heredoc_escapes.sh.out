@@ -1,0 +1,15 @@
+=== 1. unquoted body: backslash escapes only $ ` \ and newline
+\"quoted\" \'single\' \a \n \t
+$v `echo no` \ val
+joined line
+=== 2. generated JSON / C keeps its escaped quotes
+{"name": "val", "text": "say \"hi\""}
+printf("%s\n", "\"val\"");
+=== 3. <<- strips tabs, escapes unchanged
+\"tab\" $v
+=== 4. quoted delimiter: body verbatim
+\" \$v \\ \
+=== 5. heredoc inside command substitution
+\"in subst\" $v
+=== 6. double quotes still escape " (unchanged)
+a"b " "
