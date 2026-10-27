@@ -1,0 +1,53 @@
+=== 1. IFS= keeps the line, the last name keeps the raw rest
+[  a  b  ]
+[a b c][]
+[b:c]
+[b]
+[b::]
+[b]
+[a][b  c]
+[k][v=w]
+3 [] [b]
+=== 2. REPLY and backslashes
+[ a  b  c  ]
+[x y][z]
+[xy][z]
+[a:b][c]
+[x\][y z]
+=== 3. EOF clears the variables and fails
+rc=1 [last]
+rc=1 []
+n=2
+=== 4. -n / -N / -d
+[a]
+[x][]
+[ab
+c]
+[x y][]
+rc=0 [one]
+rc=0 [a]
+wbsh: read: x: invalid number
+rc=1
+=== 5. -u fd, -p, -s
+[p][q]
+[from three]
+wbsh: read: 9: invalid file descriptor: Bad file descriptor
+rc=1
+[a b]
+[secret]
+=== 6. -t
+t0 rc=0
+timeout rc=142 []
+t0 pipe rc=1
+rc=1 [ab]
+wbsh: read: abc: invalid timeout specification
+rc=1
+=== 7. bad options and names
+wbsh: read: -z: invalid option
+read: usage: read [-ers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] [-p prompt] [-t timeout] [-u fd] [name ...]
+rc=2
+wbsh: read: `1x': not a valid identifier
+rc=1
+wbsh: read: -a: option requires an argument
+read: usage: read [-ers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] [-p prompt] [-t timeout] [-u fd] [name ...]
+rc=2

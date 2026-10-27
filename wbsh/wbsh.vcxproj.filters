@@ -52,6 +52,7 @@
     <ClCompile Include="src\executor.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins_declare.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\builtins_read.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_text.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_xargs.cpp"><Filter>Source Files</Filter></ClCompile>

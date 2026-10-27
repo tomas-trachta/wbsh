@@ -215,6 +215,7 @@
     <ClCompile Include="src\executor.cpp" />
     <ClCompile Include="src\builtins.cpp" />
     <ClCompile Include="src\builtins_declare.cpp" />
+    <ClCompile Include="src\builtins_read.cpp" />
     <ClCompile Include="src\coreutils.cpp" />
     <ClCompile Include="src\coreutils_archive.cpp" />
     <ClCompile Include="src\coreutils_bc.cpp" />
