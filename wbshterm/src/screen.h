@@ -233,6 +233,7 @@ namespace wbshterm {
 		const std::string* linkAt(int absolute_row, int column) const;
 
 		bool rowDirty(int row) const;
+		bool hasDirtyRows() const;
 		void clearDirty();
 
 		/** The grid as text, one line per row, trailing blanks trimmed. */

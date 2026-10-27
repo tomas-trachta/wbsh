@@ -490,7 +490,7 @@ namespace wbshterm {
 		if (now == shown_system_) return;
 
 		shown_system_ = now;
-		if (!anyPaneMidFrame()) ::InvalidateRect(window_, nullptr, FALSE);
+		if (!anyPaneHoldingPaint()) ::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 
@@ -1169,20 +1169,25 @@ namespace wbshterm {
 		onBlinkTick();
 	}
 
-	// A frame mid-update is left alone even by the blink: the next paint
-	// comes when the update ends, and the cursor with it.
+	// The blink and the clock keep time while a frame is mid-update; only
+	// their paint waits, and the grace timer brings it soon enough.
 	void TerminalWindow::onBlinkTick() {
-		if (anyPaneMidFrame()) return;
-		if (statusClockChanged()) ::InvalidateRect(window_, nullptr, FALSE);
+		const bool clock_changed = statusClockChanged();
+		const bool cursor_changed = advanceCursorBlink();
+		if (!clock_changed && !cursor_changed) return;
 
+		if (!anyPaneHoldingPaint()) ::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	bool TerminalWindow::advanceCursorBlink() {
 		if (!config_.cursor.blink) {
 			cursor_phase_ = true;
-			return;
+			return false;
 		}
 
 		cursor_phase_ = !cursor_phase_;
 		renderer_.setCursorVisible(cursor_phase_);
-		::InvalidateRect(window_, nullptr, FALSE);
+		return true;
 	}
 
 	// Typing shows a solid cursor for a whole period before it blinks
@@ -1193,12 +1198,16 @@ namespace wbshterm {
 		::SetTimer(window_, kTimerBlink, kBlinkMs, nullptr);
 	}
 
-	bool TerminalWindow::anyPaneMidFrame() const {
+	// Every pane is asked, with no early exit, so each one notices when
+	// its frame began and its limit runs from there.
+	bool TerminalWindow::anyPaneHoldingPaint() {
+		const unsigned long long now = ::GetTickCount64();
+		bool holding = false;
 		for (PaneNode* leaf : panes_.leaves()) {
-			if (leaf->pane()->screen().synchronizedOutput()) return true;
+			if (leaf->pane()->holdsPaint(now)) holding = true;
 		}
 
-		return false;
+		return holding;
 	}
 
 	// A program that asked for synchronized output gets its frame painted
@@ -1206,9 +1215,11 @@ namespace wbshterm {
 	// forget to, the grace timer paints anyway, so a stray sequence can
 	// never freeze the window. The timer is armed once and left to run:
 	// re-arming it on every read would let a program that never closes
-	// its frame keep pushing the paint away.
+	// its frame keep pushing the paint away. A pane whose frame has drawn
+	// nothing since the last paint holds no one back, and neither does
+	// one whose frame has stayed open past its limit.
 	void TerminalWindow::repaintAfterOutput() {
-		if (!anyPaneMidFrame()) {
+		if (!anyPaneHoldingPaint()) {
 			disarmSyncGrace();
 			::InvalidateRect(window_, nullptr, FALSE);
 			return;
@@ -2189,7 +2200,7 @@ namespace wbshterm {
 		Config shown = config_;
 		shown.palette = frame;
 		renderer_.applyConfig(shown);
-		if (!anyPaneMidFrame()) ::InvalidateRect(window_, nullptr, FALSE);
+		if (!anyPaneHoldingPaint()) ::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	// wbsh runs WBSH_INIT_COMMAND once its interactive session is up, which

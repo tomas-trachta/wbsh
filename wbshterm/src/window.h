@@ -89,8 +89,9 @@ namespace wbshterm {
 		void reloadConfigIfChanged();
 		void onTimer(WPARAM timer);
 		void onBlinkTick();
+		bool advanceCursorBlink();
 		void showCursorSolid();
-		bool anyPaneMidFrame() const;
+		bool anyPaneHoldingPaint();
 		void repaintAfterOutput();
 		void disarmSyncGrace();
 

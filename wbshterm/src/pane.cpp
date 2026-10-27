@@ -37,6 +37,24 @@ namespace wbshterm {
 		view_.followOutput(screen());
 	}
 
+	bool SyncHold::holds(bool synchronized, bool drawn, unsigned long long now_ms) {
+		if (!synchronized) {
+			frame_open_ = false;
+			return false;
+		}
+
+		if (!frame_open_) {
+			frame_open_ = true;
+			opened_at_  = now_ms;
+		}
+
+		return drawn && now_ms - opened_at_ < kSyncFrameLimitMs;
+	}
+
+	bool Pane::holdsPaint(unsigned long long now_ms) {
+		return sync_hold_.holds(screen().synchronizedOutput(), screen().hasDirtyRows(), now_ms);
+	}
+
 	// A pick arrives while the pty bytes that carried it are being parsed,
 	// and that drain repaints the window, so none of these ask for one.
 	void Pane::pickBegin(const std::string& prompt) {

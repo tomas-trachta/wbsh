@@ -7,6 +7,7 @@
 
 #include "charwidth.h"
 #include "font.h"
+#include "pane.h"
 #include "vtparse.h"
 
 #include <string>
@@ -349,11 +350,53 @@ namespace wbshterm {
 					&& motion.cell(2, 3).code == U'C', motion.toText());
 		}
 
+		static void checkSynchronizedOutputEnds(Report& report) {
+			Screen alt(10, 4);
+			feedToScreen(alt, "\x1b[?1049h\x1b[?2026hframe\x1b[?1049l");
+			report.check("leaving the alt screen ends synchronized output",
+				!alt.synchronizedOutput(), "");
+
+			Screen prompt(10, 4);
+			feedToScreen(prompt, "\x1b[?2026h\x1b]633;D;0\x07");
+			const bool finished_ends = !prompt.synchronizedOutput();
+			feedToScreen(prompt, "\x1b[?2026h\x1b]633;A\x07$ ");
+			report.check("a finished command or a new prompt ends synchronized output",
+				finished_ends && !prompt.synchronizedOutput(), "");
+		}
+
+		static void checkSyncHoldOnlyWhileDrawing(Report& report) {
+			SyncHold hold;
+			const bool idle = !hold.holds(false, true, 0);
+			const bool drawing = hold.holds(true, true, 10);
+			const bool painted = !hold.holds(true, false, 20);
+
+			report.check("no synchronized frame holds nothing", idle, "");
+			report.check("a frame that is drawing holds the paint", drawing, "");
+			report.check("a frame with nothing new since the paint holds no one back", painted, "");
+		}
+
+		static void checkSyncHoldTimesOut(Report& report) {
+			SyncHold hold;
+			hold.holds(true, true, 1000);
+			const bool within = hold.holds(true, true, 1000 + kSyncFrameLimitMs - 1);
+			const bool expired = !hold.holds(true, true, 1000 + kSyncFrameLimitMs);
+
+			hold.holds(false, false, 5000);
+			const bool next_frame = hold.holds(true, true, 5001);
+
+			report.check("a synchronized frame holds until its limit", within, "");
+			report.check("a frame left open past its limit stops holding", expired, "");
+			report.check("the next frame starts the limit again", next_frame, "");
+		}
+
 		static void runModeChecks(Report& report) {
 			checkCursorShapes(report);
 			checkTabStops(report);
 			checkAutowrapMode(report);
 			checkRepeatAndMotion(report);
+			checkSynchronizedOutputEnds(report);
+			checkSyncHoldOnlyWhileDrawing(report);
+			checkSyncHoldTimesOut(report);
 		}
 
 		static void checkHyperlinks(Report& report) {
