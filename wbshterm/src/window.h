@@ -154,6 +154,22 @@ namespace wbshterm {
 		void onMouseMove(WPARAM wparam, LPARAM lparam);
 		void onMouseUp(LPARAM lparam);
 		void onCaptureLost();
+		bool onMouseMessage(UINT message, WPARAM wparam, LPARAM lparam);
+		void onMouseTilt(WPARAM wparam, LPARAM lparam);
+		void onMiddleClick(LPARAM lparam);
+		bool mouseReportsTo(const Pane& pane) const;
+		PaneNode* reportingLeafAt(D2D1_POINT_2F point) const;
+		bool mouseLeafAlive() const;
+		GridPoint cellAtDips(const PaneNode& leaf, D2D1_POINT_2F mouse) const;
+		MouseReport mouseReportAt(const PaneNode& leaf, D2D1_POINT_2F mouse,
+			MouseAction action, MouseButton button) const;
+		void sendMouseReport(const PaneNode& leaf, const MouseReport& report);
+		bool reportMousePress(MouseButton button, LPARAM lparam);
+		bool reportMouseRelease(MouseButton button, LPARAM lparam);
+		bool reportMouseMotion(WPARAM wparam, LPARAM lparam);
+		bool reportWheel(const PaneNode& leaf, D2D1_POINT_2F point, int delta, bool tilt);
+		bool alternateScrollTakes(Pane& pane, int lines);
+		void forgetMouseReporting();
 		bool beginDividerDrag(LPARAM lparam);
 		void continueDividerDrag(LPARAM lparam);
 		ScrollbarShape scrollbarOf(const PaneNode& leaf) const;
@@ -212,6 +228,11 @@ namespace wbshterm {
 		SurrogateJoiner surrogates_;
 		WheelAccumulator wheel_;
 		const Pane*  wheel_pane_ = nullptr;
+		WheelAccumulator tilt_;
+		PaneNode*    mouse_leaf_ = nullptr;
+		int          mouse_buttons_ = 0;
+		const PaneNode* motion_leaf_ = nullptr;
+		GridPoint    motion_cell_;
 		PaneNode*    dragging_ = nullptr;
 		PaneNode*    scrolling_ = nullptr;
 		PaneNode*    scrollbar_hover_ = nullptr;

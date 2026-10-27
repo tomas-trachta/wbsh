@@ -949,21 +949,22 @@ namespace wbshterm {
 		return panes_.leafAt(point.x, point.y);
 	}
 
-	GridPoint TerminalWindow::pointInLeaf(const PaneNode& leaf, LPARAM lparam) const {
+	GridPoint TerminalWindow::cellAtDips(const PaneNode& leaf, D2D1_POINT_2F mouse) const {
 		const CellMetrics& cell = renderer_.metrics();
 		const Screen& screen = leaf.pane()->screen();
-		const D2D1_POINT_2F mouse = mouseDips(lparam);
 		const float x = mouse.x - leaf.bounds().left - renderer_.padding();
 		const float y = mouse.y - leaf.bounds().top - renderer_.padding();
 
-		const int column = std::min(std::max(static_cast<int>(x / cell.width), 0),
-			screen.columns() - 1);
-		const int viewport_row = std::min(std::max(static_cast<int>(y / cell.height), 0),
-			screen.rows() - 1);
-
 		GridPoint point;
-		point.row    = leaf.pane()->view().topRow(screen) + viewport_row;
-		point.column = column;
+		point.column = std::min(std::max(static_cast<int>(x / cell.width), 0),
+			screen.columns() - 1);
+		point.row = std::min(std::max(static_cast<int>(y / cell.height), 0), screen.rows() - 1);
+		return point;
+	}
+
+	GridPoint TerminalWindow::pointInLeaf(const PaneNode& leaf, LPARAM lparam) const {
+		GridPoint point = cellAtDips(leaf, mouseDips(lparam));
+		point.row += leaf.pane()->view().topRow(leaf.pane()->screen());
 		return point;
 	}
 
@@ -1041,6 +1042,15 @@ namespace wbshterm {
 		return leaf != nullptr && scrollbarHolds(scrollbarOf(*leaf), x, y);
 	}
 
+	PaneNode* TerminalWindow::reportingLeafAt(D2D1_POINT_2F point) const {
+		if (pointerOverScrollbar(point.x, point.y)) return nullptr;
+		if (panes_.dividerAt(point.x, point.y, kDividerSlop) != nullptr) return nullptr;
+
+		PaneNode* leaf = panes_.leafAt(point.x, point.y);
+		if (leaf == nullptr || !mouseReportsTo(*leaf->pane())) return nullptr;
+		return leaf;
+	}
+
 	// The window class asks for an I-beam; over a divider it has to become
 	// a sizing cursor or there is nothing telling the hands it can move.
 	bool TerminalWindow::onSetCursor() {
@@ -1049,7 +1059,7 @@ namespace wbshterm {
 
 		const D2D1_POINT_2F point = dipsOf(where);
 		if (title_bar_.holdsPoint(point.x, point.y) || point.y >= status_bounds_.top
-			|| pointerOverScrollbar(point.x, point.y)) {
+			|| pointerOverScrollbar(point.x, point.y) || reportingLeafAt(point) != nullptr) {
 			::SetCursor(::LoadCursorW(nullptr, IDC_ARROW));
 			return true;
 		}
@@ -1393,7 +1403,47 @@ namespace wbshterm {
 		return self->handleMessage(message, wparam, lparam);
 	}
 
+	// The right button left to Windows comes back as WM_CONTEXTMENU, which
+	// is how the menu opens when no program took the mouse.
+	bool TerminalWindow::onMouseMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+		switch (message) {
+		case WM_MOUSEMOVE:
+			onMouseMove(wparam, lparam);
+			return true;
+		case WM_MOUSEWHEEL:
+			onMouseWheel(wparam, lparam);
+			return true;
+		case WM_MOUSEHWHEEL:
+			onMouseTilt(wparam, lparam);
+			return true;
+		case WM_LBUTTONDOWN:
+		case WM_LBUTTONDBLCLK:
+			if (!reportMousePress(MouseButton::kLeft, lparam)) onMouseDown(lparam);
+			return true;
+		case WM_LBUTTONUP:
+			if (!reportMouseRelease(MouseButton::kLeft, lparam)) onMouseUp(lparam);
+			return true;
+		case WM_MBUTTONDOWN:
+		case WM_MBUTTONDBLCLK:
+			if (!reportMousePress(MouseButton::kMiddle, lparam)) onMiddleClick(lparam);
+			return true;
+		case WM_MBUTTONUP:
+			reportMouseRelease(MouseButton::kMiddle, lparam);
+			return true;
+		case WM_RBUTTONDOWN:
+		case WM_RBUTTONDBLCLK:
+			return reportMousePress(MouseButton::kRight, lparam);
+		case WM_RBUTTONUP:
+			return reportMouseRelease(MouseButton::kRight, lparam);
+		default:
+			return false;
+		}
+	}
+
 	LRESULT TerminalWindow::handleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+		const bool mouse = message >= WM_MOUSEFIRST && message <= WM_MOUSELAST;
+		if (mouse && onMouseMessage(message, wparam, lparam)) return 0;
+
 		switch (message) {
 		case WM_PAINT:       onPaint(); return 0;
 		case WM_SIZE:
@@ -1406,15 +1456,10 @@ namespace wbshterm {
 			if (onKeyDown(wparam)) return 0;
 			break;
 		case WM_DPICHANGED:  onDpiChanged(wparam, lparam); return 0;
-		case WM_MOUSEWHEEL:  onMouseWheel(wparam, lparam); return 0;
 		case WM_EXITSIZEMOVE: commitGridSizes(); return 0;
 		case WM_SETCURSOR:
 			if (LOWORD(lparam) == HTCLIENT && onSetCursor()) return TRUE;
 			break;
-		case WM_LBUTTONDOWN:
-		case WM_LBUTTONDBLCLK: onMouseDown(lparam); return 0;
-		case WM_MOUSEMOVE:   onMouseMove(wparam, lparam); return 0;
-		case WM_LBUTTONUP:   onMouseUp(lparam); return 0;
 		case WM_NCCALCSIZE:
 			if (customFrame()) return onCalcSize(wparam, lparam);
 			break;
@@ -1504,6 +1549,7 @@ namespace wbshterm {
 		trackTitleHover(lparam);
 		trackScrollbarHover(lparam);
 
+		if (reportMouseMotion(wparam, lparam)) return;
 		if ((wparam & MK_LBUTTON) == 0) return;
 		if (title_bar_.pressed() != TitleButton::None) return;
 
@@ -1538,6 +1584,7 @@ namespace wbshterm {
 	// something else mid-drag; either way the drag has to end here or
 	// the divider keeps following the pointer and no pty is resized.
 	void TerminalWindow::onCaptureLost() {
+		forgetMouseReporting();
 		endScrollbarDrag();
 		if (dragging_ == nullptr) return;
 
@@ -1567,9 +1614,12 @@ namespace wbshterm {
 		if (&pane != wheel_pane_) wheel_.reset();
 		wheel_pane_ = &pane;
 
-		const int lines = wheel_.linesFor(GET_WHEEL_DELTA_WPARAM(wparam),
-			wheelLinesPerNotch(pane.screen().rows()));
+		const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+		if (leaf != nullptr && reportWheel(*leaf, point, delta, false)) return;
+
+		const int lines = wheel_.linesFor(delta, wheelLinesPerNotch(pane.screen().rows()));
 		if (lines == 0) return;
+		if (alternateScrollTakes(pane, lines)) return;
 
 		pane.view().scrollBy(lines, pane.screen());
 		settleHistory(pane);

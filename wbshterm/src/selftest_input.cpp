@@ -197,6 +197,92 @@ namespace wbshterm {
 				std::to_string(unknown));
 		}
 
+		static MouseReport mouseAt(MouseAction action, MouseButton button, int column, int row) {
+			MouseReport report;
+			report.action = action;
+			report.button = button;
+			report.column = column;
+			report.row    = row;
+			return report;
+		}
+
+		static MouseModes modesOf(MouseTracking tracking, MouseEncoding encoding) {
+			MouseModes modes;
+			modes.tracking = tracking;
+			modes.encoding = encoding;
+			return modes;
+		}
+
+		static void checkSgrMouseReports(Report& report) {
+			const MouseModes sgr = modesOf(MouseTracking::kDrags, MouseEncoding::kSgr);
+			MouseReport press = mouseAt(MouseAction::kPress, MouseButton::kRight, 4, 9);
+			press.control = true;
+
+			const std::string pressed = encodeMouseReport(sgr, press);
+			const std::string released = encodeMouseReport(sgr,
+				mouseAt(MouseAction::kRelease, MouseButton::kRight, 4, 9));
+			const std::string dragged = encodeMouseReport(sgr,
+				mouseAt(MouseAction::kMotion, MouseButton::kLeft, 300, 0));
+			const std::string wheel = encodeMouseReport(sgr,
+				mouseAt(MouseAction::kPress, MouseButton::kWheelDown, 0, 0));
+
+			report.check("SGR reports name the button, its cell and Ctrl",
+				pressed == "\x1b[<18;5;10M", pressed);
+			report.check("an SGR release keeps its button and ends in m",
+				released == "\x1b[<2;5;10m", released);
+			report.check("SGR drags add 32 and reach any column",
+				dragged == "\x1b[<32;301;1M", dragged);
+			report.check("the wheel is buttons 64 and 65", wheel == "\x1b[<65;1;1M", wheel);
+		}
+
+		static void checkLegacyMouseReports(Report& report) {
+			const MouseModes x10 = modesOf(MouseTracking::kClicks, MouseEncoding::kDefault);
+			const std::string pressed = encodeMouseReport(x10,
+				mouseAt(MouseAction::kPress, MouseButton::kMiddle, 0, 2));
+			const std::string released = encodeMouseReport(x10,
+				mouseAt(MouseAction::kRelease, MouseButton::kMiddle, 0, 2));
+			const std::string far_off = encodeMouseReport(x10,
+				mouseAt(MouseAction::kPress, MouseButton::kLeft, 223, 0));
+
+			report.check("X10 bytes offset everything by 32", pressed == "\x1b[M!!#", pressed);
+			report.check("an X10 release says only that a button came up",
+				released == "\x1b[M#!#", released);
+			report.check("a column X10 bytes cannot spell sends nothing", far_off.empty(), far_off);
+
+			const MouseModes utf8 = modesOf(MouseTracking::kClicks, MouseEncoding::kUtf8);
+			const std::string wide = encodeMouseReport(utf8,
+				mouseAt(MouseAction::kPress, MouseButton::kLeft, 223, 0));
+			report.check("UTF-8 encoding reaches past column 223",
+				wide == "\x1b[M \xC4\x80!", wide);
+		}
+
+		static void checkTrackingModesFilterEvents(Report& report) {
+			const MouseReport hover = mouseAt(MouseAction::kMotion, MouseButton::kNone, 1, 1);
+			const MouseReport drag = mouseAt(MouseAction::kMotion, MouseButton::kLeft, 1, 1);
+			const MouseReport release = mouseAt(MouseAction::kRelease, MouseButton::kLeft, 1, 1);
+			const MouseReport wheel_up = mouseAt(MouseAction::kRelease, MouseButton::kWheelUp,
+				1, 1);
+
+			report.check("1000 reports clicks but no motion",
+				mouseTrackingWants(MouseTracking::kClicks, release)
+					&& !mouseTrackingWants(MouseTracking::kClicks, drag), "");
+			report.check("1002 adds drags, 1003 adds plain motion",
+				mouseTrackingWants(MouseTracking::kDrags, drag)
+					&& !mouseTrackingWants(MouseTracking::kDrags, hover)
+					&& mouseTrackingWants(MouseTracking::kMotion, hover), "");
+			report.check("X10 mode reports presses only, and off reports nothing",
+				!mouseTrackingWants(MouseTracking::kX10, release)
+					&& !mouseTrackingWants(MouseTracking::kOff, release), "");
+			report.check("the wheel never releases",
+				!mouseTrackingWants(MouseTracking::kMotion, wheel_up), "");
+
+			MouseReport modified = mouseAt(MouseAction::kPress, MouseButton::kLeft, 0, 0);
+			modified.alt = true;
+			const std::string plain = encodeMouseReport(
+				modesOf(MouseTracking::kX10, MouseEncoding::kSgr), modified);
+			report.check("X10 mode leaves the modifiers out", plain == "\x1b[<0;1;1M", plain);
+		}
+
 	} /* namespace test */
 
 	void runInputChecks(test::Report& report) {
@@ -211,6 +297,9 @@ namespace wbshterm {
 		test::checkWheelNotchesScrollWholeLines(report);
 		test::checkTouchpadDeltasAccumulate(report);
 		test::checkMousePixelsBecomeDips(report);
+		test::checkSgrMouseReports(report);
+		test::checkLegacyMouseReports(report);
+		test::checkTrackingModesFilterEvents(report);
 	}
 
 } /* namespace wbshterm */
