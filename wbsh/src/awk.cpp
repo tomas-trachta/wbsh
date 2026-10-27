@@ -546,6 +546,24 @@ namespace wbsh {
 				pushback.clear();
 				pos = source.size();
 			}
+
+			struct Mark {
+				std::size_t pos;
+				int line;
+				std::vector<Token> pushback;
+				bool prev_was_value;
+			};
+
+			Mark mark() const {
+				return Mark{ pos, line, pushback, prev_was_value };
+			}
+
+			void rewind(const Mark& saved) {
+				pos = saved.pos;
+				line = saved.line;
+				pushback = saved.pushback;
+				prev_was_value = saved.prev_was_value;
+			}
 		};
 
 		static const char* assignOpText(TokenKind kind) {
@@ -609,6 +627,8 @@ namespace wbsh {
 			Lexer lex;
 			std::string error_msg;
 			Arena* arena = nullptr;
+			// In a print argument list an unparenthesised '>' is a redirection.
+			bool gt_ends_expr = false;
 
 			explicit Parser(const std::string& text) : lex(text) {}
 
@@ -749,6 +769,20 @@ namespace wbsh {
 				while (acceptIf(TokenKind::Comma)) out.push_back(parseExpr());
 			}
 
+			void parseNestedExprList(std::vector<Expr*>& out) {
+				const bool outer_gt_ends_expr = gt_ends_expr;
+				gt_ends_expr = false;
+				parseExprList(out);
+				gt_ends_expr = outer_gt_ends_expr;
+			}
+
+			Expr* parseRedirectTarget() {
+				gt_ends_expr = true;
+				Expr* target = parseConcat();
+				gt_ends_expr = false;
+				return target;
+			}
+
 			void parsePrintRedirect(Stmt& stmt) {
 				if (acceptIf(TokenKind::Gt)) {
 					stmt.redirect = Redirect::Truncate;
@@ -760,14 +794,41 @@ namespace wbsh {
 					return;
 				}
 
-				stmt.redirect_target = parseExpr();
+				stmt.redirect_target = parseRedirectTarget();
+			}
+
+			// `print (a, b) > f` lists its arguments in parentheses; `print (a)(b)`
+			// merely starts with a group, so the list form is only a guess
+			// that is undone unless the print ends right after the ')'.
+			bool tryParenthesisedPrintArgs(std::vector<Expr*>& out) {
+				const Lexer::Mark start = lex.mark();
+				lex.next();
+
+				std::vector<Expr*> args;
+				parseNestedExprList(args);
+				if (!failed() && acceptIf(TokenKind::RParen) && atPrintEnd()) {
+					out = std::move(args);
+					return true;
+				}
+
+				lex.rewind(start);
+				error_msg.clear();
+				return false;
+			}
+
+			void parsePrintArgs(std::vector<Expr*>& out) {
+				if (peekIs(TokenKind::LParen) && tryParenthesisedPrintArgs(out)) return;
+
+				gt_ends_expr = true;
+				parseExprList(out);
+				gt_ends_expr = false;
 			}
 
 			Stmt* parsePrintStmt(TokenKind keyword) {
 				lex.next();
 				const bool formatted = keyword == TokenKind::KwPrintf;
 				Stmt* stmt = newStmt(formatted ? StmtKind::Printf : StmtKind::Print);
-				if (!atPrintEnd()) parseExprList(stmt->exprs);
+				if (!atPrintEnd()) parsePrintArgs(stmt->exprs);
 				parsePrintRedirect(*stmt);
 				return stmt;
 			}
@@ -1001,6 +1062,7 @@ namespace wbsh {
 				for (;;) {
 					const char* op = relationalOpText(lex.peek().kind);
 					if (op == nullptr) return left;
+					if (gt_ends_expr && peekIs(TokenKind::Gt)) return left;
 
 					lex.next();
 					left = newBinary(op, left, parseConcat());
@@ -1082,14 +1144,14 @@ namespace wbsh {
 			Expr* parseCall(const std::string& name) {
 				Expr* expr = newExpr(ExprKind::Call);
 				expr->name = name;
-				if (!peekIs(TokenKind::RParen)) parseExprList(expr->args);
+				if (!peekIs(TokenKind::RParen)) parseNestedExprList(expr->args);
 				expect(TokenKind::RParen, "expected ')'");
 				return expr;
 			}
 
 			Expr* parseArrayRef(const std::string& name) {
 				std::vector<Expr*> subscripts;
-				parseExprList(subscripts);
+				parseNestedExprList(subscripts);
 				expect(TokenKind::RBracket, "expected ']'");
 
 				Expr* expr = newExpr(ExprKind::ArrayRef);
@@ -1121,12 +1183,25 @@ namespace wbsh {
 				return expr;
 			}
 
+			Expr* parseMultiSubscriptInTest(std::vector<Expr*> subscripts) {
+				expect(TokenKind::KwIn, "expected 'in' after subscript list");
+				if (!peekIs(TokenKind::Identifier)) err("expected array name after 'in'");
+				const Token array_name = lex.next();
+
+				Expr* expr = newExpr(ExprKind::ArrayInTest);
+				expr->args = std::move(subscripts);
+				expr->name = array_name.text;
+				return expr;
+			}
+
 			Expr* parseGroup() {
-				Expr* inner = parseExpr();
+				std::vector<Expr*> inner;
+				parseNestedExprList(inner);
 				expect(TokenKind::RParen, "expected ')'");
+				if (inner.size() > 1) return parseMultiSubscriptInTest(std::move(inner));
 
 				Expr* expr = newExpr(ExprKind::Group);
-				expr->first = inner;
+				expr->first = inner[0];
 				return expr;
 			}
 
@@ -1521,6 +1596,7 @@ namespace wbsh {
 			enum class Flow { None, Break, Continue, Next };
 
 			AwkProgram& program;
+			Executor* exec = nullptr;
 			std::unordered_map<std::string, AwkValue> variables;
 			std::unordered_map<std::string, std::map<std::string, AwkValue>> arrays;
 			std::vector<std::string> fields;
@@ -1777,13 +1853,13 @@ namespace wbsh {
 
 			AwkValue evalArrayRef(Expr& expr) {
 				const std::string key = buildSubscript(expr.args);
-				auto& array = arrays[expr.name];
-				const auto it = array.find(key);
-				return it == array.end() ? AwkValue::str("") : it->second;
+				return arrays[expr.name][key];
 			}
 
 			AwkValue evalArrayInTest(Expr& expr) {
-				const std::string key = eval(*expr.first).asString();
+				const std::string key = expr.args.empty()
+					? eval(*expr.first).asString()
+					: buildSubscript(expr.args);
 				auto& array = arrays[expr.name];
 				return boolValue(array.count(key) != 0);
 			}
@@ -2159,11 +2235,25 @@ namespace wbsh {
 				}
 			}
 
+			std::string nativePath(const std::string& path) const {
+				if (exec == nullptr) return path;
+				return exec->pathConv().toWin32(path);
+			}
+
+			static FILE* standardStream(const std::string& path) {
+				if (path == "/dev/stdout") return stdout;
+				if (path == "/dev/stderr") return stderr;
+				return nullptr;
+			}
+
 			FILE* outputFile(const std::string& path, bool truncate) {
+				FILE* standard = standardStream(path);
+				if (standard != nullptr) return standard;
+
 				const auto it = output_files.find(path);
 				if (it != output_files.end()) return it->second;
 
-				FILE* file = std::fopen(path.c_str(), truncate ? "wb" : "ab");
+				FILE* file = std::fopen(nativePath(path).c_str(), truncate ? "wb" : "ab");
 				if (file == nullptr) return nullptr;
 
 				output_files[path] = file;
@@ -2196,6 +2286,7 @@ namespace wbsh {
 				FILE* destination = emitDestination(stmt);
 				if (destination == nullptr) return;
 
+				if (destination == stderr) std::fflush(stdout);
 				std::fwrite(out.data(), 1, out.size(), destination);
 			}
 
@@ -2203,7 +2294,9 @@ namespace wbsh {
 				const auto it = input_files.find(path);
 				if (it != input_files.end()) return it->second;
 
-				FILE* file = std::fopen(path.c_str(), "rb");
+				if (path == "-" || path == "/dev/stdin") return stdin;
+
+				FILE* file = std::fopen(nativePath(path).c_str(), "rb");
 				if (file == nullptr) return nullptr;
 
 				input_files[path] = file;
@@ -2454,6 +2547,7 @@ namespace wbsh {
 		}
 
 		Interpreter interp(program);
+		interp.exec = &exec;
 		applyInvocation(invocation, interp);
 
 		interp.runBegins();
