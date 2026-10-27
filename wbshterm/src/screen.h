@@ -206,6 +206,18 @@ namespace wbshterm {
 
 		CursorShape cursorShape() const { return cursor_shape_; }
 
+		/**
+		 * @brief A cell's whole grapheme cluster, or null for a lone code point.
+		 *
+		 * A cell whose code carries kClusterCode holds a base character
+		 * with marks, joiners or selectors after it; the renderer shapes
+		 * them together and everything else reads baseCodeOf().
+		 */
+		const std::u32string* clusterOf(const Cell& cell) const;
+
+		/** The code point a cell starts with, cluster or not. */
+		char32_t baseCodeOf(const Cell& cell) const;
+
 		/** The OSC 8 target under a cell, or null when it is not a link. */
 		const std::string* linkAt(int absolute_row, int column) const;
 
@@ -257,7 +269,30 @@ namespace wbshterm {
 		void markDirty(int row);
 		void markAllDirty();
 
-		void writeChar(char32_t code);
+		struct GridPlace {
+			int row    = 0;
+			int column = 0;
+		};
+
+		/** The cluster still taking marks: where its lead sits and how wide it is. */
+		struct OpenCluster {
+			bool open       = false;
+			int  row        = 0;
+			int  column     = 0;
+			int  width      = 0;
+			int  join_state = 0;
+			int  last_class = 0;
+		};
+
+		bool writeChar(char32_t code);
+		GridPlace placeGlyph(char32_t code, int width);
+		bool joinsOpenCluster(int properties);
+		bool startCluster(char32_t code, int properties);
+		void extendCluster(char32_t code, int properties);
+		void appendToClusterCell(char32_t code);
+		void widenCluster();
+		void closeCluster() { cluster_.open = false; }
+		std::uint32_t internCluster(const std::u32string& text);
 		void wrapToNextRow();
 		void makeRoomForWide();
 		void advanceCursor();
@@ -396,6 +431,9 @@ namespace wbshterm {
 		bool              autowrap_     = true;
 		char32_t          last_printed_ = 0;
 		CursorShape       cursor_shape_ = CursorShape::kDefault;
+		OpenCluster       cluster_;
+		std::vector<std::u32string> clusters_;
+		std::unordered_map<std::u32string, std::uint32_t> cluster_ids_;
 		std::vector<std::string> links_;
 		std::unordered_map<std::string, std::uint16_t> link_ids_;
 	};

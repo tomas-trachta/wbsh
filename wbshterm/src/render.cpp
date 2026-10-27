@@ -38,6 +38,16 @@ namespace wbshterm {
 		text.push_back(static_cast<wchar_t>(0xDC00 + (offset & 0x3FF)));
 	}
 
+	static void appendCellText(std::wstring& text, const Screen& screen, const Cell& cell) {
+		const std::u32string* cluster = screen.clusterOf(cell);
+		if (cluster == nullptr) {
+			appendUtf16(text, screen.baseCodeOf(cell));
+			return;
+		}
+
+		for (const char32_t code : *cluster) appendUtf16(text, code);
+	}
+
 	bool Renderer::create(const Config& config, std::string& out_error) {
 		config_ = config;
 
@@ -659,7 +669,7 @@ namespace wbshterm {
 			}
 
 			if (run.empty()) run_start = column;
-			appendUtf16(run, cell.code);
+			appendCellText(run, screen, cell);
 		}
 
 		if (!run.empty()) {
@@ -829,7 +839,7 @@ namespace wbshterm {
 		if (cell.code == U' ') return;
 
 		std::wstring text;
-		appendUtf16(text, cell.code);
+		appendCellText(text, *canvas.screen, cell);
 		setBrushColor(resolveBackground(cell), 1.0f);
 
 		IDWriteTextFormat* format = font_.format((cell.attributes & kAttrBold) != 0, false);

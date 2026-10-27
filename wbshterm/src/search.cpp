@@ -25,7 +25,7 @@ namespace wbshterm {
 		for (int column = 0; column < screen.columns(); ++column) {
 			const Cell& cell = screen.cellAt(row, column);
 			if ((cell.attributes & kAttrWideTail) != 0) continue;
-			glyphs.push_back({ column, folded(cell.code) });
+			glyphs.push_back({ column, folded(screen.baseCodeOf(cell)) });
 		}
 
 		return glyphs;

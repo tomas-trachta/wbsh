@@ -34,6 +34,12 @@ namespace wbshterm {
 		kAttrUnderlineDashed = 1 << 11,
 	};
 
+	/**
+	 * Set in a cell's code when the rest is a cluster number in its Screen
+	 * rather than a code point: no code point reaches this bit.
+	 */
+	static const char32_t kClusterCode = 0x80000000u;
+
 	static const std::uint16_t kAttrUnderlineShapes = kAttrUnderlineDouble | kAttrUnderlineCurly
 		| kAttrUnderlineDotted | kAttrUnderlineDashed;
 

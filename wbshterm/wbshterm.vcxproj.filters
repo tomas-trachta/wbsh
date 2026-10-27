@@ -53,6 +53,9 @@
     <ClInclude Include="src\charwidth.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\charwidth_ucd.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\keymap.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -127,6 +130,9 @@
     <ClCompile Include="src\charwidth.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\charwidth_ucd.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\keymap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -146,6 +152,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\screen_vt.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\screen_cluster.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\selftest.cpp">

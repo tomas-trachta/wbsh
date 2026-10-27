@@ -5,8 +5,6 @@
 
 #include "screen.h"
 
-#include "charwidth.h"
-
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -215,6 +213,8 @@ namespace wbshterm {
 	// as a plain line break -- so a row filled to its last cell is taken
 	// to continue on the next.
 	void Screen::resize(int columns, int rows) {
+		closeCluster();
+
 		const int new_columns = std::max(1, columns);
 		const int new_rows    = std::max(1, rows);
 
@@ -576,8 +576,7 @@ namespace wbshterm {
 	}
 
 	void Screen::vtPrint(char32_t code) {
-		writeChar(code);
-		last_printed_ = code;
+		if (writeChar(code)) last_printed_ = code;
 	}
 
 	void Screen::wrapToNextRow() {
@@ -602,13 +601,11 @@ namespace wbshterm {
 		lineFeed();
 	}
 
-	void Screen::writeChar(char32_t code) {
-		const int width = characterWidth(code);
-		if (width == 0) return;
-
+	Screen::GridPlace Screen::placeGlyph(char32_t code, int width) {
 		if (wrap_pending_) wrapToNextRow();
 		if (width == 2) makeRoomForWide();
 
+		const GridPlace place = { cursor_.row, cursor_.column };
 		Cell glyph = pen_;
 		glyph.code = code;
 		if (width == 2) glyph.attributes |= kAttrWide;
@@ -624,6 +621,7 @@ namespace wbshterm {
 		}
 
 		advanceCursor();
+		return place;
 	}
 
 	void Screen::advanceCursor() {
@@ -652,6 +650,8 @@ namespace wbshterm {
 	}
 
 	void Screen::vtExecute(unsigned char control) {
+		closeCluster();
+
 		switch (control) {
 		case 0x07: break;
 		case 0x08: backspace(); break;
@@ -872,6 +872,8 @@ namespace wbshterm {
 	}
 
 	void Screen::vtEsc(const VtSequence& sequence) {
+		closeCluster();
+
 		if (!sequence.intermediates.empty()) return;
 
 		switch (sequence.final_byte) {
@@ -1026,6 +1028,8 @@ namespace wbshterm {
 	}
 
 	void Screen::vtOsc(const std::string& text) {
+		closeCluster();
+
 		const std::size_t separator = text.find(';');
 		if (separator == std::string::npos) return;
 
@@ -1084,6 +1088,8 @@ namespace wbshterm {
 	}
 
 	void Screen::vtCsi(const VtSequence& sequence) {
+		closeCluster();
+
 		if (sequence.private_byte != 0) {
 			applyPrivateCsi(sequence);
 			return;

@@ -17,6 +17,10 @@ namespace wbshterm {
 		return code == U'_' || code == U'-' || code == U'.' || code == U'/' || code >= 0x80;
 	}
 
+	static bool isWordCell(const Screen& screen, int row, int column) {
+		return isWordCharacter(screen.baseCodeOf(screen.cellAt(row, column)));
+	}
+
 	static bool pointBefore(const GridPoint& left, const GridPoint& right) {
 		if (left.row != right.row) return left.row < right.row;
 		return left.column < right.column;
@@ -128,16 +132,16 @@ namespace wbshterm {
 		int first = point.column;
 		int last  = point.column;
 
-		while (first > 0 && isWordCharacter(screen.cellAt(point.row, first - 1).code)) --first;
+		while (first > 0 && isWordCell(screen, point.row, first - 1)) --first;
 		while (last + 1 < screen.columns()
-			&& isWordCharacter(screen.cellAt(point.row, last + 1).code)) {
+			&& isWordCell(screen, point.row, last + 1)) {
 			++last;
 		}
 
 		anchor_        = { point.row, first };
 		focus_         = { point.row, last };
 		selecting_     = false;
-		has_selection_ = isWordCharacter(screen.cellAt(point.row, point.column).code);
+		has_selection_ = isWordCell(screen, point.row, point.column);
 	}
 
 	void TerminalView::selectLine(GridPoint point, const Screen& screen) {
