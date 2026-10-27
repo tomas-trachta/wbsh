@@ -54,6 +54,11 @@ namespace wbsh {
 	                                 const std::vector<int>& history_status,
 	                                 const std::string& prefix);
 
+	// `__lineedit KEY...`: replays keys through a fresh LineEditor. A KEY is
+	// literal text or one of <LEFT> <RIGHT> <UP> <DOWN> <HOME> <END> <BS>
+	// <DEL> <TAB> <ENTER> <ESC> <C-x> <M-x> <M-BS>.
+	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args);
+
 	// One instance per REPL session: keeps the edit buffer, cursor, history
 	// scroll position, and Tab state across readLine() calls.
 	class LineEditor {
@@ -64,7 +69,12 @@ namespace wbsh {
 		// newline), false on EOF (Ctrl-D on an empty line, or stdin closed).
 		bool readLine(const std::string& prompt, std::string& out);
 
+		// Test hook behind `__lineedit`: types `keys` into an empty line
+		// with the console left alone, and describes the line it ends with.
+		std::string replayKeys(const std::vector<std::string>& keys);
+
 	private:
+		void resetLine(const std::string& prompt);
 		bool readLineRaw(const std::string& prompt, std::string& out);
 		bool readLineCooked(std::string& out);
 
@@ -77,6 +87,8 @@ namespace wbsh {
 		bool handleNavigationKey(const ::KEY_EVENT_RECORD& key,
 		                         std::string& out, bool& done, bool& was_tab);
 		void insertReceivedChar(wchar_t ch);
+		void replayKey(const std::string& key, std::string& out, bool& done, bool& eof);
+		void replayText(const std::string& text, std::string& out, bool& done, bool& eof);
 		void handleInterrupt();
 		void handleEofOrDelete(bool& done, bool& eof);
 		void moveCursorBack();
@@ -186,6 +198,7 @@ namespace wbsh {
 
 		Environment& env_;
 		Executor& exec_;
+		bool headless_ = false;
 
 		std::size_t history_pos_ = 0;        // 0 = current edit, 1 = last entry, ...
 		std::string saved_partial_;          // buffer at the moment user started scrolling

@@ -27,6 +27,7 @@
     <ClInclude Include="src\pathconv.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\consolekeys.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\lineedit.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\textcells.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\setup.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\repl.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\script.h"><Filter>Header Files</Filter></ClInclude>
@@ -93,6 +94,9 @@
     <ClCompile Include="src\pathconv.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\consolekeys.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\textcells.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\wbshterm\src\charwidth.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\wbshterm\src\charwidth_ucd.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\setup.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\repl.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\script.cpp"><Filter>Source Files</Filter></ClCompile>
