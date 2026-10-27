@@ -114,6 +114,8 @@ apart from a parsing bug by replaying the same bytes.
 | `font.h/.cpp` | DirectWrite faces and the measured cell box. |
 | `render.h/.cpp` | Direct2D painting of a grid onto any render target. |
 | `window.h/.cpp` | The Win32 window and its frame, message handlers, key encoding, pane commands, and the status bar. |
+| `window_mouse.cpp`, `window_keys.cpp`, `window_uia.cpp` | The window's mouse reports, win32-input-mode keys, focus reports and IME placement, and its answers to the accessibility provider. |
+| `uia.h/.cpp`, `uia_range.cpp`, `uia_text.h/.cpp` | The UI Automation element with its text pattern and ranges, over a pure model of the text's units. |
 | `status.h/.cpp` | A status bar segment: a label, a value, and the colour it takes. |
 | `sysinfo.h/.cpp` | The machine's readings for the status bar: load, memory, disk, battery. |
 | `snapshot.h/.cpp` | Off-screen WIC target and PNG encode. |
@@ -168,6 +170,21 @@ Focus changes are reported too when asked for (`CSI ?1004h`): `CSI I`
 when the window gains the focus or a pane is focused, `CSI O` when either
 loses it. An IME opens its composition and candidate windows at the
 cursor, in the terminal's font.
+
+### Screen readers
+
+The window is a UI Automation element with the text pattern, so Narrator,
+NVDA and other UIA clients can read the terminal. The text is the focused
+pane's, from the oldest line of history to the live grid. Rows end in a line
+break unless they wrap, and the trailing blanks of a row are dropped. A
+client can move by character (a wide character is one), word, line, paragraph
+(rows a soft wrap joins), page (a screenful) and document. It can search,
+get each row's box on screen, select text and scroll a range into view.
+With nothing selected, the selection is the cursor, which is how a screen
+reader follows the caret. New output raises the text-changed and
+selection-changed events, but only while a client is listening. A request
+for all of the text is capped at a million characters, so a deep history
+can't stall the window.
 
 ### The right Alt key
 

@@ -229,6 +229,9 @@
     <ClInclude Include="src\vtparse.h" />
     <ClInclude Include="src\utf8.h" />
     <ClInclude Include="src\mouse.h" />
+    <ClInclude Include="src\uia.h" />
+    <ClInclude Include="src\uia_host.h" />
+    <ClInclude Include="src\uia_text.h" />
     <ClInclude Include="src\view.h" />
     <ClInclude Include="src\window.h" />
     <ClInclude Include="src\script.h" />
@@ -272,6 +275,11 @@
     <ClCompile Include="src\window.cpp" />
     <ClCompile Include="src\window_mouse.cpp" />
     <ClCompile Include="src\window_keys.cpp" />
+    <ClCompile Include="src\window_uia.cpp" />
+    <ClCompile Include="src\uia.cpp" />
+    <ClCompile Include="src\uia_range.cpp" />
+    <ClCompile Include="src\uia_text.cpp" />
+    <ClCompile Include="src\selftest_uia.cpp" />
     <ClCompile Include="src\script.cpp" />
     <ClCompile Include="src\script_actions.cpp" />
     <ClCompile Include="src\script_config.cpp" />

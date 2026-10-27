@@ -92,6 +92,15 @@
     <ClInclude Include="src\mouse.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\uia.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\uia_host.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\uia_text.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\view.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -200,6 +209,21 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\window_keys.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\window_uia.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\uia.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\uia_range.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\uia_text.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\selftest_uia.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
