@@ -1,0 +1,52 @@
+=== --output-delimiter
+a:c
+a::c
+ab:cd
+abcde
+a:ef
+=== --complement
+a,c
+a:c:ef
+bc
+=== list syntax
+ac
+abc
+def
+b
+b
+b
+nodelim
+0000000   b  \n
+0000002
+=== -z
+0000000   a  \0   b  \0
+0000004
+=== errors
+wbsh: cut: byte/character positions are numbered from 1
+status 1
+wbsh: cut: fields are numbered from 1
+status 1
+wbsh: cut: invalid decreasing range
+status 1
+wbsh: cut: invalid range with no endpoint: -
+status 1
+wbsh: cut: invalid byte/character position 'x'
+status 1
+wbsh: cut: invalid field value 'x'
+status 1
+wbsh: cut: byte/character positions are numbered from 1
+status 1
+wbsh: cut: only one type of list may be specified
+status 1
+wbsh: cut: an input delimiter may be specified only when operating on fields
+status 1
+wbsh: cut: suppressing non-delimited lines makes sense only when operating on fields
+status 1
+wbsh: cut: the delimiter must be a single character
+status 1
+wbsh: cut: you must specify a list of bytes, characters, or fields
+status 1
+wbsh: cut: invalid option -- 'x'
+status 1
+wbsh: cut: unrecognized option '--bogus'
+status 1

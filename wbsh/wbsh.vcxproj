@@ -195,6 +195,7 @@
     <ClInclude Include="src\coreutils_internal.h" />
     <ClInclude Include="src\arena.h" />
     <ClInclude Include="src\numparse.h" />
+    <ClInclude Include="src\optscan.h" />
     <ClInclude Include="src\regexutil.h" />
     <ClInclude Include="src\strscan.h" />
   </ItemGroup>

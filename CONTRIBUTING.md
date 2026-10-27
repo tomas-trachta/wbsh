@@ -55,7 +55,7 @@ get the shape of the codebase:
 | REPL | `wbsh/src/repl.cpp`, `wbsh/src/lineedit.cpp` | Interactive loop: console / VT mode setup, prompt expansion, raw-mode line editor (history, completion, `Ctrl-R`, inline predictions). |
 | Setup | `wbsh/src/setup.cpp` | Startup environment seeding: registry PATH merge, git / docker install discovery, `WBSH_*` state inheritance from a parent wbsh. |
 | Debug | `wbsh/src/printer.cpp` | Token / AST pretty-printer for the `-t` and default (no-`-r`) dump modes. |
-| Support | `wbsh/src/fnmatch.h`, `wbsh/src/numparse.h`, `wbsh/src/regexutil.h`, `wbsh/src/source.h` | Leaf headers: glob matcher, error-as-value numeric parsing, error-as-value regex adapters, source locations. |
+| Support | `wbsh/src/fnmatch.h`, `wbsh/src/numparse.h`, `wbsh/src/optscan.h`, `wbsh/src/regexutil.h`, `wbsh/src/source.h` | Leaf headers: glob matcher, error-as-value numeric parsing, getopt_long-style option scanning, error-as-value regex adapters, source locations. |
 
 Two cross-cutting interfaces are worth knowing about up-front:
 

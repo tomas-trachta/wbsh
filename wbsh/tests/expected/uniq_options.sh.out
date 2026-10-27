@@ -1,0 +1,61 @@
+=== OUTPUT operand
+x
+y
+      2 x
+      1 y
+=== -f / -s / -w
+1 a
+      2 a  1 x
+      1 c 3 y
+      2 aXb
+      2 xaa
+xaa
+yab
+=== -i / -d / -u / -c
+      2 A
+      2 b
+      1 c
+c
+A
+b
+=== -D / --all-repeated
+a
+a
+c
+c
+c
+--
+a
+a
+
+c
+c
+c
+--
+
+a
+a
+
+c
+c
+=== -z
+0000000   a  \0   b  \0
+0000004
+=== unterminated last line
+a
+b
+=== errors
+wbsh: uniq: invalid option -- 'x'
+status 1
+wbsh: uniq: unrecognized option '--bogus'
+status 1
+wbsh: uniq: printing all duplicated lines and repeat counts is meaningless
+status 1
+wbsh: uniq: extra operand 'c'
+status 1
+wbsh: uniq: x: invalid number of fields to skip
+status 1
+wbsh: uniq: invalid argument 'foo' for '--all-repeated'
+status 1
+wbsh: uniq: _uniq_missing.txt: No such file or directory
+status 1
