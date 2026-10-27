@@ -14,6 +14,7 @@
 #include "search.h"
 #include "scrollbar.h"
 #include "sysinfo.h"
+#include "utf8.h"
 #include "view.h"
 
 #include <memory>
@@ -101,8 +102,8 @@ namespace wbshterm {
 		void focusNextPane();
 		void toggleZoom();
 		bool paneKeyTaken(const KeyPress& press);
-		bool paneCharacterTaken(wchar_t character);
-		void runPaneCommand(wchar_t character);
+		bool paneCharacterTaken(char32_t character);
+		void runPaneCommand(char32_t character);
 		float statusHeight() const;
 		bool tmuxBarShown() const;
 		std::vector<StatusSegment> statusLeft();
@@ -131,7 +132,8 @@ namespace wbshterm {
 		void onResize();
 		void onPtyData();
 		void closeExitedPanes();
-		void onText(wchar_t character);
+		void onText(wchar_t unit);
+		void onCharacter(char32_t character);
 		bool onKeyDown(WPARAM key);
 		bool rightAltTakesKey(const KeyPress& press);
 		bool pickerTakesKey(WPARAM key);
@@ -198,6 +200,7 @@ namespace wbshterm {
 		DWORD        last_click_time_ = 0;
 		int          click_count_     = 0;
 		bool         swallow_next_char_ = false;
+		SurrogateJoiner surrogates_;
 		PaneNode*    dragging_ = nullptr;
 		PaneNode*    scrolling_ = nullptr;
 		PaneNode*    scrollbar_hover_ = nullptr;

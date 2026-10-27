@@ -31,7 +31,7 @@ namespace wbshterm {
 		void close();
 		bool active() const { return active_; }
 
-		void typeCharacter(wchar_t character);
+		void typeCharacter(char32_t character);
 		void backspace();
 
 		/** What the box shows: the query, and whether the last find failed. */
