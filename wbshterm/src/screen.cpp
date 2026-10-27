@@ -239,7 +239,7 @@ namespace wbshterm {
 		wrap_pending_  = false;
 
 		clampCursor(cursor_);
-		clampCursor(saved_cursor_);
+		clampSavedCursor(saved_cursor_);
 	}
 
 	void Screen::swapWithPrimary() {
@@ -251,6 +251,12 @@ namespace wbshterm {
 	void Screen::clampCursor(CursorState& cursor) const {
 		cursor.row    = std::min(std::max(cursor.row, 0), rows_ - 1);
 		cursor.column = std::min(std::max(cursor.column, 0), columns_ - 1);
+	}
+
+	void Screen::clampSavedCursor(SavedCursor& saved) const {
+		saved.row          = std::min(std::max(saved.row, 0), rows_ - 1);
+		saved.column       = std::min(std::max(saved.column, 0), columns_ - 1);
+		saved.wrap_pending = false;
 	}
 
 	void Screen::reflowPrimary(int new_columns, int new_rows) {
@@ -754,21 +760,89 @@ namespace wbshterm {
 		moveCursor(cursor_.row + rows, cursor_.column + columns);
 	}
 
+	// Under DECOM a row is counted from the top margin and cannot leave
+	// the scroll region.
+	void Screen::moveCursorInOrigin(int row, int column) {
+		if (!origin_mode_) {
+			moveCursor(row, column);
+			return;
+		}
+
+		moveCursor(std::min(scroll_top_ + std::max(row, 0), scroll_bottom_), column);
+	}
+
+	void Screen::saveCursor() {
+		saved_cursor_.row          = cursor_.row;
+		saved_cursor_.column       = cursor_.column;
+		saved_cursor_.pen          = pen_;
+		saved_cursor_.wrap_pending = wrap_pending_;
+		saved_cursor_.origin_mode  = origin_mode_;
+	}
+
+	void Screen::restoreCursor() {
+		moveCursor(saved_cursor_.row, saved_cursor_.column);
+		pen_          = saved_cursor_.pen;
+		origin_mode_  = saved_cursor_.origin_mode;
+		wrap_pending_ = saved_cursor_.wrap_pending;
+	}
+
+	void Screen::setOriginMode(bool enable) {
+		origin_mode_ = enable;
+		moveCursorInOrigin(0, 0);
+	}
+
+	void Screen::resetModes() {
+		pen_                = Cell();
+		saved_cursor_       = SavedCursor();
+		wrap_pending_       = false;
+		origin_mode_        = false;
+		scroll_top_         = 0;
+		scroll_bottom_      = rows_ - 1;
+		application_cursor_ = false;
+		cursor_.visible     = true;
+	}
+
+	// DECSTR: the modes go back to their power-on values; the text and
+	// the cursor's place stay.
+	void Screen::softReset() {
+		resetModes();
+	}
+
+	void Screen::dropAltScreen() {
+		if (!alt_screen_) return;
+
+		alt_screen_ = false;
+		primary_cells_.clear();
+		primary_breaks_.clear();
+	}
+
+	// RIS: everything a crashed program could have left switched on goes,
+	// so `reset` brings the terminal back. Scrollback is the user's, not
+	// the program's, and stays.
+	void Screen::hardReset() {
+		dropAltScreen();
+		resetModes();
+		bracketed_paste_     = false;
+		synchronized_output_ = false;
+		title_.clear();
+
+		clearAll();
+		moveCursor(0, 0);
+	}
+
 	void Screen::vtEsc(const VtSequence& sequence) {
+		if (!sequence.intermediates.empty()) return;
+
 		switch (sequence.final_byte) {
-		case '7': saved_cursor_ = cursor_; break;
-		case '8': moveCursor(saved_cursor_.row, saved_cursor_.column); break;
+		case '7': saveCursor(); break;
+		case '8': restoreCursor(); break;
 		case 'D': lineFeed(); break;
 		case 'E': carriageReturn(); lineFeed(); break;
 		case 'M':
 			if (cursor_.row == scroll_top_) scrollDown(1);
 			else moveCursorBy(-1, 0);
 			break;
-		case 'c':
-			pen_ = Cell();
-			clearAll();
-			moveCursor(0, 0);
-			break;
+		case 'c': hardReset(); break;
 		default: break;
 		}
 	}
@@ -933,7 +1007,7 @@ namespace wbshterm {
 		if (sequence.param(0, 0) != 6) return;
 
 		std::string reply = "\x1b[";
-		reply += std::to_string(cursor_.row + 1);
+		reply += std::to_string(cursor_.row - (origin_mode_ ? scroll_top_ : 0) + 1);
 		reply += ";";
 		reply += std::to_string(cursor_.column + 1);
 		reply += "R";
@@ -955,6 +1029,11 @@ namespace wbshterm {
 			return;
 		}
 
+		if (!sequence.intermediates.empty()) {
+			applyIntermediateCsi(sequence);
+			return;
+		}
+
 		switch (sequence.final_byte) {
 		case 'A': moveCursorBy(-sequence.param(0, 1), 0); break;
 		case 'B': moveCursorBy(sequence.param(0, 1), 0); break;
@@ -964,7 +1043,7 @@ namespace wbshterm {
 		case 'F': moveCursor(cursor_.row - sequence.param(0, 1), 0); break;
 		case 'G': moveCursor(cursor_.row, sequence.param(0, 1) - 1); break;
 		case 'H':
-		case 'f': moveCursor(sequence.param(0, 1) - 1, sequence.param(1, 1) - 1); break;
+		case 'f': moveCursorInOrigin(sequence.param(0, 1) - 1, sequence.param(1, 1) - 1); break;
 		case 'J': applyEraseInDisplay(sequence); break;
 		case 'K': applyEraseInLine(sequence); break;
 		case 'S': scrollUp(sequence.param(0, 1)); break;
@@ -974,15 +1053,22 @@ namespace wbshterm {
 		case 'L':
 		case 'M':
 		case 'X': applyInsertDelete(sequence); break;
-		case 'd': moveCursor(sequence.param(0, 1) - 1, cursor_.column); break;
+		case 'd': moveCursorInOrigin(sequence.param(0, 1) - 1, cursor_.column); break;
 		case 'c': answerDeviceAttributes(false); break;
 		case 'm': applySgr(sequence); break;
 		case 'n': answerStatusReport(sequence); break;
 		case 'r': applyScrollRegion(sequence); break;
-		case 's': saved_cursor_ = cursor_; break;
-		case 'u': moveCursor(saved_cursor_.row, saved_cursor_.column); break;
+		case 's': saveCursor(); break;
+		case 'u': restoreCursor(); break;
 		default:  break;
 		}
+	}
+
+	// A sequence with intermediates is a different command from the same
+	// final byte without them; one not known here is dropped, not run as
+	// its plain namesake.
+	void Screen::applyIntermediateCsi(const VtSequence& sequence) {
+		if (sequence.intermediates == "!" && sequence.final_byte == 'p') softReset();
 	}
 
 	void Screen::applyScrollRegion(const VtSequence& sequence) {
@@ -992,7 +1078,7 @@ namespace wbshterm {
 
 		scroll_top_    = top;
 		scroll_bottom_ = bottom;
-		moveCursor(0, 0);
+		moveCursorInOrigin(0, 0);
 	}
 
 	void Screen::applyEraseInDisplay(const VtSequence& sequence) {
@@ -1097,6 +1183,7 @@ namespace wbshterm {
 		for (std::size_t i = 0; i < sequence.params.size(); ++i) {
 			switch (sequence.param(i, 0)) {
 			case 1:    application_cursor_ = enable; break;
+			case 6:    setOriginMode(enable); break;
 			case 25:   cursor_.visible = enable; break;
 			case 47:
 			case 1047:
@@ -1117,6 +1204,7 @@ namespace wbshterm {
 	int Screen::privateModeState(int mode) const {
 		switch (mode) {
 		case 1:    return application_cursor_ ? 1 : 2;
+		case 6:    return origin_mode_ ? 1 : 2;
 		case 25:   return cursor_.visible ? 1 : 2;
 		case 47:
 		case 1047:

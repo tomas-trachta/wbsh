@@ -36,6 +36,15 @@ namespace wbshterm {
 		bool visible = true;
 	};
 
+	/** What DECSC keeps and DECRC brings back: the place and the pen. */
+	struct SavedCursor {
+		int  row          = 0;
+		int  column       = 0;
+		Cell pen;
+		bool wrap_pending = false;
+		bool origin_mode  = false;
+	};
+
 	/**
 	 * @brief Whether a row's line goes on in the row below.
 	 *
@@ -227,6 +236,7 @@ namespace wbshterm {
 		void reflowPrimary(int new_columns, int new_rows);
 		void swapWithPrimary();
 		void clampCursor(CursorState& cursor) const;
+		void clampSavedCursor(SavedCursor& saved) const;
 		std::vector<reflow::SourceRow> reflowSources() const;
 		void remapBlocks(const std::vector<int>& row_map, int new_total);
 		void placeReflowedRows(std::deque<HistoryLine>& rows, int grid_top, int new_columns,
@@ -238,6 +248,15 @@ namespace wbshterm {
 
 		void moveCursor(int row, int column);
 		void moveCursorBy(int rows, int columns);
+		void moveCursorInOrigin(int row, int column);
+		void saveCursor();
+		void restoreCursor();
+		void setOriginMode(bool enable);
+		void resetModes();
+		void softReset();
+		void hardReset();
+		void dropAltScreen();
+		void applyIntermediateCsi(const VtSequence& sequence);
 
 		void applySgr(const VtSequence& sequence);
 		bool applyExtendedColor(const VtSequence& sequence, std::size_t& index,
@@ -270,9 +289,10 @@ namespace wbshterm {
 		std::vector<bool> dirty_;
 
 		CursorState cursor_;
-		CursorState saved_cursor_;
+		SavedCursor saved_cursor_;
 		Cell        pen_;
 		bool        wrap_pending_ = false;
+		bool        origin_mode_  = false;
 
 		int scroll_top_    = 0;
 		int scroll_bottom_ = 0;

@@ -5,6 +5,8 @@
 
 #include "selftest.h"
 
+#include "selftest_internal.h"
+
 #include "charwidth.h"
 #include "config.h"
 #include "fetch.h"
@@ -35,17 +37,6 @@ namespace wbshterm {
 
 	namespace test {
 
-		class Report {
-		public:
-			void check(const std::string& name, bool passed, const std::string& detail);
-			bool passed() const { return failures_ == 0; }
-			const std::string& text() const { return text_; }
-
-		private:
-			std::string text_;
-			int         failures_ = 0;
-		};
-
 		void Report::check(const std::string& name, bool passed, const std::string& detail) {
 			text_ += passed ? "ok   " : "FAIL ";
 			text_ += name;
@@ -61,7 +52,7 @@ namespace wbshterm {
 			text_ += "\n";
 		}
 
-		static std::string feedToScreen(Screen& screen, const std::string& bytes) {
+		std::string feedToScreen(Screen& screen, const std::string& bytes) {
 			VtParser parser(screen);
 			parser.consume(bytes.data(), bytes.size());
 			return screen.toText();
@@ -78,7 +69,7 @@ namespace wbshterm {
 			return count;
 		}
 
-		static std::string firstLine(const std::string& text) {
+		std::string firstLine(const std::string& text) {
 			const std::size_t end = text.find('\n');
 			return end == std::string::npos ? text : text.substr(0, end);
 		}
@@ -3139,6 +3130,7 @@ namespace wbshterm {
 		const std::wstring directory = reportDirectory(report_path);
 
 		runGridChecks(report);
+		runVtChecks(report);
 		runPickerChecks(report, directory);
 		runViewChecks(report);
 		runLayoutChecks(report);
