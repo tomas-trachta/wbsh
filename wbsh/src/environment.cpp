@@ -24,6 +24,8 @@ extern char** environ;
 
 namespace wbsh {
 
+	static const char* const kDefaultIfs = " \t\n";
+
 	// Classic LCG; the high half masked to 0..32767 to match bash.
 	static const unsigned int kRandomMultiplier = 1103515245u;
 	static const unsigned int kRandomIncrement  = 12345u;
@@ -36,7 +38,7 @@ namespace wbsh {
 #else
 		shell_pid_ = static_cast<long long>(::getpid());
 #endif
-		vars_["IFS"] = " \t\n";
+		vars_["IFS"] = kDefaultIfs;
 		const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
 		random_state_ = static_cast<unsigned int>(shell_pid_) ^ static_cast<unsigned int>(ticks);
 	}
@@ -172,6 +174,10 @@ namespace wbsh {
 		if (indexed_.count(name) != 0) return true;
 		if (assoc_.count(name) != 0) return true;
 		return false;
+	}
+
+	std::string Environment::ifs() const {
+		return has("IFS") ? get("IFS") : std::string(kDefaultIfs);
 	}
 
 	std::string Environment::get(const std::string& name) const {

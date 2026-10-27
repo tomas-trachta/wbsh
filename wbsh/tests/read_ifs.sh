@@ -44,4 +44,9 @@ echo "=== 8. IFS= read -r preserves leading/trailing whitespace"
 IFS= read -r raw <<< "  preserved  "
 echo "raw=[$raw]"
 
+echo "=== 9. unset IFS splits like the default"
+unset IFS
+read a b <<< "  x   y z  "
+echo "a=[$a] b=[$b]"
+
 echo "=== done"

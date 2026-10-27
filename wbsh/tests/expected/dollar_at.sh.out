@@ -61,3 +61,8 @@ n=2 [ a ] [b]
 n=2 [a] [b]
 n=3 [x] [a] [b]
 n=3 [one two] [] [three]
+=== 7. unset IFS acts as default
+n=3 [1] [2] [3]
+n=1 [p q r]
+n=3 [p] [q] [r]
+n=1 [p q r s]

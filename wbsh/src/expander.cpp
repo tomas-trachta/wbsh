@@ -989,7 +989,7 @@ namespace wbsh {
 	std::string Expander::starSeparator(bool star_join_ifs) const {
 		if (!star_join_ifs) return " ";
 
-		const std::string ifs = env_.get("IFS");
+		const std::string ifs = env_.ifs();
 		return ifs.empty() ? std::string() : std::string(1, ifs[0]);
 	}
 
@@ -1758,7 +1758,7 @@ namespace wbsh {
 	// A quoted `"$@"`, or any `$@` when IFS is empty, cuts a hard field
 	// boundary instead.
 	std::vector<Expander::Tagged> Expander::splitWords(const Tagged& t) {
-		const std::string ifs = env_.get("IFS");
+		const std::string ifs = env_.ifs();
 		std::vector<Tagged> out;
 		if (!hasFieldEnd(t)) {
 			splitOnIfs(t, ifs, out);

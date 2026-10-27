@@ -44,6 +44,9 @@ namespace wbsh {
 		void   unsetElement(const std::string& name, long long idx, const std::string& key);
 		bool   has(const std::string& name) const;
 		std::string get(const std::string& name) const;
+		/// The field separators: `$IFS`, or `<space><tab><newline>` when
+		/// IFS is unset (POSIX). A set but empty IFS stays empty.
+		std::string ifs() const;
 
 		void   exportVar(const std::string& name);
 		void   unexportVar(const std::string& name);

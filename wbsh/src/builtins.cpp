@@ -36,7 +36,6 @@
 
 namespace wbsh {
 
-	static const char* const kDefaultIfs      = " \t\n";
 	static const char* const kDefaultUmask    = "0022";
 	static const char* const kHistoryFileName = "/.wbsh_history";
 	static const std::size_t kHelpColumns     = 5;
@@ -1041,8 +1040,7 @@ namespace wbsh {
 		std::string line;
 		if (!readOneLineFromStdin(options.raw, line)) return 1;
 
-		std::string ifs = exec.env().get("IFS");
-		if (ifs.empty()) ifs = kDefaultIfs;
+		const std::string ifs = exec.env().ifs();
 		std::vector<std::string> fields = splitReadLine(line, ifs);
 
 		if (!options.array_name.empty()) {
