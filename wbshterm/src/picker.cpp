@@ -5,6 +5,8 @@
 
 #include "picker.h"
 
+#include "utf8.h"
+
 #include <algorithm>
 
 namespace wbshterm {
@@ -163,16 +165,14 @@ namespace wbshterm {
 	void Picker::typeCharacter(char32_t code) {
 		if (code < 0x20 || code == 0x7F) return;
 
-		if (code < 0x80) query_.push_back(static_cast<char>(code));
-		else query_.push_back('?');
-
+		appendUtf8(query_, code);
 		refilter(true);
 	}
 
 	void Picker::backspace() {
 		if (query_.empty()) return;
 
-		query_.pop_back();
+		popLastUtf8(query_);
 		refilter(false);
 	}
 

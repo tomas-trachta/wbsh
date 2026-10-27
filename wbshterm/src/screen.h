@@ -184,6 +184,14 @@ namespace wbshterm {
 		/** Addresses scrollback and grid alike; row 0 is the oldest line kept. */
 		const Cell& cellAt(int absolute_row, int column) const;
 
+		/**
+		 * @brief Whether an absolute row's line goes on in the row below.
+		 *
+		 * A row the console painted carries no such knowledge and is
+		 * guessed from its last cell, the way a reflow guesses it.
+		 */
+		bool rowWraps(int absolute_row) const;
+
 		bool onAltScreen() const { return alt_screen_; }
 
 		/** Grid rows down to the last one with text or the cursor, whichever is lower. */
@@ -217,6 +225,9 @@ namespace wbshterm {
 
 		/** The code point a cell starts with, cluster or not. */
 		char32_t baseCodeOf(const Cell& cell) const;
+
+		/** Appends a cell's text as UTF-8; the second cell of a wide character adds nothing. */
+		void appendCellText(std::string& out, const Cell& cell) const;
 
 		/** The OSC 8 target under a cell, or null when it is not a link. */
 		const std::string* linkAt(int absolute_row, int column) const;
@@ -321,6 +332,8 @@ namespace wbshterm {
 		std::size_t physicalRow(int row) const;
 		LineBreak& breakAt(int row);
 		LineBreak breakAt(int row) const;
+		bool coldRowWraps(int row) const;
+		bool gridRowWraps(int row) const;
 		void linearize();
 		void copyRow(int from, int to);
 		bool wholeScreen(int top, int bottom) const;

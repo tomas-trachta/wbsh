@@ -227,6 +227,7 @@
     <ClInclude Include="src\session.h" />
     <ClInclude Include="src\snapshot.h" />
     <ClInclude Include="src\vtparse.h" />
+    <ClInclude Include="src\utf8.h" />
     <ClInclude Include="src\view.h" />
     <ClInclude Include="src\window.h" />
     <ClInclude Include="src\script.h" />
@@ -263,6 +264,8 @@
     <ClCompile Include="src\session.cpp" />
     <ClCompile Include="src\snapshot.cpp" />
     <ClCompile Include="src\vtparse.cpp" />
+    <ClCompile Include="src\selftest_input.cpp" />
+    <ClCompile Include="src\utf8.cpp" />
     <ClCompile Include="src\view.cpp" />
     <ClCompile Include="src\window.cpp" />
     <ClCompile Include="src\script.cpp" />

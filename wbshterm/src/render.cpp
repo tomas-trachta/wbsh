@@ -5,6 +5,8 @@
 
 #include "render.h"
 
+#include "utf8.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -323,12 +325,6 @@ namespace wbshterm {
 		return resolveBackground(canvas.screen->cellAt(absolute_row, column));
 	}
 
-	static std::wstring widenAscii(const std::string& text) {
-		std::wstring wide;
-		for (unsigned char letter : text) wide.push_back(static_cast<wchar_t>(letter));
-		return wide;
-	}
-
 	// A plus on the total says the shell offered more than the list took,
 	// so an absent entry reads as cut off rather than missing.
 	static std::string pickerHeader(const Picker& picker) {
@@ -368,7 +364,7 @@ namespace wbshterm {
 			const bool current = match == picker.selected();
 			const std::string line = (current ? "> " : "  ")
 				+ picker.item(picker.matches()[static_cast<std::size_t>(match)]);
-			drawPickerRow(canvas, widenAscii(line),
+			drawPickerRow(canvas, widenUtf8(line),
 				top + static_cast<float>(row + 1) * cell.height, width, current);
 		}
 	}
@@ -397,7 +393,7 @@ namespace wbshterm {
 		canvas.target->DrawLine(D2D1::Point2F(origin.x, top),
 			D2D1::Point2F(origin.x + width, top), brush_.Get(), 1.0f);
 
-		drawPickerRow(canvas, widenAscii(pickerHeader(picker)), top, width, false);
+		drawPickerRow(canvas, widenUtf8(pickerHeader(picker)), top, width, false);
 		drawPickerMatches(canvas, picker, top, width, visible_rows);
 
 		canvas.target->PopAxisAlignedClip();
@@ -591,7 +587,7 @@ namespace wbshterm {
 
 	float Renderer::drawStatusRun(const StatusBarCanvas& canvas, const std::string& text,
 			float left) {
-		const std::wstring wide = widenAscii(text);
+		const std::wstring wide = widenUtf8(text);
 		const CellMetrics& cell = font_.metrics();
 		const float width = static_cast<float>(wide.size()) * cell.width;
 
