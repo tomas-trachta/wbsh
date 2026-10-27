@@ -39,6 +39,49 @@ namespace wbshterm {
 				widenUtf8("\xc5\xbe\xf0\x9f\x98\x80") == L"ž\U0001F600", "");
 		}
 
+		static const wchar_t kGrinningHigh = static_cast<wchar_t>(0xD83D);
+		static const wchar_t kGrinningLow  = static_cast<wchar_t>(0xDE00);
+
+		static void checkSurrogatePairsJoin(Report& report) {
+			SurrogateJoiner joiner;
+			char32_t code = 0;
+			const bool high_waits = !joiner.take(kGrinningHigh, code);
+			const bool low_completes = joiner.take(kGrinningLow, code) && code == 0x1F600;
+
+			std::string bytes;
+			appendUtf8(bytes, code);
+			report.check("a high surrogate waits for its low half", high_waits, "");
+			report.check("an emoji typed as two WM_CHARs is sent as one UTF-8 character",
+				low_completes && bytes == "\xf0\x9f\x98\x80", bytes);
+
+			char32_t letter = 0;
+			const bool bmp_passes = joiner.take(static_cast<wchar_t>(0x017E), letter)
+				&& letter == 0x017E;
+			report.check("a BMP character passes straight through", bmp_passes, "");
+		}
+
+		static void checkLoneSurrogatesAreDropped(Report& report) {
+			SurrogateJoiner joiner;
+			char32_t code = 0;
+			const bool lone_low_dropped = !joiner.take(kGrinningLow, code);
+
+			joiner.take(kGrinningHigh, code);
+			const bool next_letter_kept = joiner.take(L'a', code) && code == U'a';
+			const bool stale_high_gone = !joiner.take(kGrinningLow, code);
+
+			report.check("a low surrogate with no high half is dropped", lone_low_dropped, "");
+			report.check("a high surrogate left alone does not eat the next character",
+				next_letter_kept && stale_high_gone, "");
+		}
+
+		static void checkWholeStringsNarrowAsOne(Report& report) {
+			const std::wstring path = std::wstring(L"C:\\")
+				+ kGrinningHigh + kGrinningLow + L".txt";
+			const std::string narrowed = narrowUtf16(path);
+			report.check("a dropped path with an emoji narrows to proper UTF-8",
+				narrowed == "C:\\\xf0\x9f\x98\x80.txt", narrowed);
+		}
+
 		static std::string selectRows(const Screen& screen, int first_row, int last_row) {
 			TerminalView view;
 			view.beginSelection({ first_row, 0 });
@@ -111,6 +154,9 @@ namespace wbshterm {
 
 	void runInputChecks(test::Report& report) {
 		test::checkUtf8Encoding(report);
+		test::checkSurrogatePairsJoin(report);
+		test::checkLoneSurrogatesAreDropped(report);
+		test::checkWholeStringsNarrowAsOne(report);
 		test::checkCopiedTextIsUtf8(report);
 		test::checkCopiedWideAndClusteredCells(report);
 		test::checkCopiedWrappedLines(report);

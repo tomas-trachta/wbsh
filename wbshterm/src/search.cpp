@@ -41,9 +41,9 @@ namespace wbshterm {
 		active_ = false;
 	}
 
-	void SearchBox::typeCharacter(wchar_t character) {
+	void SearchBox::typeCharacter(char32_t character) {
 		if (character < 0x20) return;
-		query_.push_back(folded(static_cast<char32_t>(character)));
+		query_.push_back(folded(character));
 		missed_   = false;
 		have_hit_ = false;
 	}

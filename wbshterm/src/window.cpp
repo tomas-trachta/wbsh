@@ -6,6 +6,7 @@
 #include "window.h"
 
 #include "font.h"
+#include "utf8.h"
 #include "utils.h"
 
 #include <dwmapi.h>
@@ -41,19 +42,6 @@ namespace wbshterm {
 	static const int     kWheelLines = 3;
 	static const float   kDividerSlop = 3.0f;
 	static const std::string kImagePasteKey = "\x1bv";
-
-	static std::string encodeUtf8(wchar_t character) {
-		char bytes[8] = {};
-		const int length = ::WideCharToMultiByte(CP_UTF8, 0, &character, 1, bytes,
-			static_cast<int>(sizeof(bytes)), nullptr, nullptr);
-		return length > 0 ? std::string(bytes, static_cast<std::size_t>(length)) : std::string();
-	}
-
-	static std::string encodeUtf8(const std::wstring& text) {
-		std::string bytes;
-		for (wchar_t letter : text) bytes += encodeUtf8(letter);
-		return bytes;
-	}
 
 	static bool keyIsDown(int virtual_key) {
 		return (::GetKeyState(virtual_key) & 0x8000) != 0;
@@ -829,7 +817,7 @@ namespace wbshterm {
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
-	void TerminalWindow::runPaneCommand(wchar_t character) {
+	void TerminalWindow::runPaneCommand(char32_t character) {
 		switch (character) {
 		case L'|':
 		case L'%':
@@ -881,7 +869,7 @@ namespace wbshterm {
 		return true;
 	}
 
-	bool TerminalWindow::paneCharacterTaken(wchar_t character) {
+	bool TerminalWindow::paneCharacterTaken(char32_t character) {
 		if (!tmux_mode_ || !prefix_pending_) return false;
 
 		prefix_pending_ = false;
@@ -1420,17 +1408,6 @@ namespace wbshterm {
 		return click_count_;
 	}
 
-	static std::wstring widenUtf8(const std::string& text) {
-		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(),
-			static_cast<int>(text.size()), nullptr, 0);
-		if (needed <= 0) return std::wstring();
-
-		std::wstring wide(static_cast<std::size_t>(needed), L'\0');
-		::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
-			wide.data(), needed);
-		return wide;
-	}
-
 	// Ctrl+click follows an OSC 8 hyperlink; a plain click still selects.
 	static bool openLinkAt(const Screen& screen, const GridPoint& point) {
 		if ((::GetKeyState(VK_CONTROL) & 0x8000) == 0) return false;
@@ -1912,15 +1889,20 @@ namespace wbshterm {
 		return modes;
 	}
 
-	// Alt-held characters arrive as WM_SYSCHAR and go out ESC-prefixed,
-	// which is how a terminal spells Meta. A character AltGr produced is
-	// the layout's own and goes out as it is.
-	void TerminalWindow::onText(wchar_t character) {
+	void TerminalWindow::onText(wchar_t unit) {
 		if (swallow_next_char_) {
 			swallow_next_char_ = false;
 			return;
 		}
 
+		char32_t character = 0;
+		if (surrogates_.take(unit, character)) onCharacter(character);
+	}
+
+	// Alt-held characters arrive as WM_SYSCHAR and go out ESC-prefixed,
+	// which is how a terminal spells Meta. A character AltGr produced is
+	// the layout's own and goes out as it is.
+	void TerminalWindow::onCharacter(char32_t character) {
 		if (paneCharacterTaken(character)) return;
 
 		if (focused().picker().active()) {
@@ -1935,8 +1917,8 @@ namespace wbshterm {
 			return;
 		}
 
-		std::string bytes = encodeUtf8(character);
-		if (bytes.empty()) return;
+		std::string bytes;
+		appendUtf8(bytes, character);
 
 		if (keyIsDown(VK_MENU) && !altGrIsDown()) bytes.insert(bytes.begin(), '\x1b');
 		sendBytes(bytes.data(), bytes.size());
@@ -1985,7 +1967,7 @@ namespace wbshterm {
 		const std::wstring plain = layoutTextFor(press.virtual_key, false);
 		if (plain.empty()) return false;
 
-		const std::string bytes = "\x1b" + encodeUtf8(plain);
+		const std::string bytes = "\x1b" + narrowUtf16(plain);
 		sendBytes(bytes.data(), bytes.size());
 		swallow_next_char_ = !typed.empty();
 		return true;
@@ -2096,7 +2078,7 @@ namespace wbshterm {
 			std::wstring path(static_cast<std::size_t>(length) + 1, L'\0');
 			::DragQueryFileW(drop, i, path.data(), length + 1);
 			path.resize(length);
-			paths.push_back(encodeUtf8(path));
+			paths.push_back(narrowUtf16(path));
 		}
 
 		return paths;
