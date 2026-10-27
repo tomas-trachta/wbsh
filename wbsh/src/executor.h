@@ -205,8 +205,9 @@ namespace wbsh {
 
 		/// Install the trap action for @p sig. Replaces any prior action.
 		///
-		/// Only `EXIT` is currently fired by the REPL; signal-driven
-		/// traps need real signal plumbing on Windows (deferred).
+		/// Only `EXIT` is fired (when a script, `-c` string, subshell,
+		/// command substitution or the REPL ends); signal-driven traps
+		/// need real signal plumbing on Windows (deferred).
 		void setTrap(const std::string& sig, std::string cmd) {
 			trap_handlers_[sig] = std::move(cmd);
 		}
@@ -221,8 +222,15 @@ namespace wbsh {
 		const std::unordered_map<std::string, std::string>& trapHandlers() const {
 			return trap_handlers_;
 		}
-		// Fire (and clear so it doesn't loop) the EXIT trap, if any.
-		void fireExitTrap();
+		// Run (and clear, so it fires once) the EXIT trap for a shell that
+		// is exiting with @p status. Returns the status to exit with: the
+		// trap's own `exit N`, otherwise @p status.
+		int  fireExitTrap(int status);
+		// `exit` without an operand: inside the EXIT trap that is the status
+		// the shell was exiting with, not the trap's last command.
+		int  defaultExitStatus() const {
+			return in_exit_trap_ ? exit_trap_status_ : last_status_;
+		}
 
 		// Internal getopts state: we keep the per-arg subindex across calls.
 		int& getoptsSubindex() { return getopts_subindex_; }
@@ -563,6 +571,7 @@ namespace wbsh {
 			std::vector<std::string> saved_pos;
 			std::string saved_name;
 			std::unordered_map<std::string, const FunctionDef*> saved_funcs;
+			std::unordered_map<std::string, std::string> saved_traps;
 			SetOptions saved_options;
 			std::filesystem::path saved_cwd;
 		};
@@ -579,6 +588,9 @@ namespace wbsh {
 			std::filesystem::path saved_cwd;
 		};
 		SubshellScope snapshotSubshellScope() const;
+		std::unordered_map<std::string, std::string> enterSubshellTraps();
+		int runExitTrapAction(const std::string& action, int status);
+		void runCommandSubstitutionBody(const std::string& body);
 		void restoreSubshellScope(SubshellScope& snap);
 
 #ifdef _WIN32
@@ -690,6 +702,8 @@ namespace wbsh {
 		std::vector<int>         history_status_;
 		std::vector<std::string> dir_stack_;
 		std::unordered_map<std::string, std::string> trap_handlers_;
+		bool in_exit_trap_ = false;
+		int  exit_trap_status_ = 0;
 		std::unordered_map<std::string, CompletionSpec> completion_specs_;
 		// findExecutable() memoizes name -> resolved path here (bash-style
 		// command hash) so repeated invocations of the same command skip

@@ -1,0 +1,50 @@
+=== 1. -c string: trap fires when the string ends
+hi
+bye
+rc=0
+=== 2. exit N: $? in the trap is N and the shell exits with N
+bye 3
+rc=3
+=== 3. exit inside the trap overrides; bare exit keeps the status
+in-trap
+rc=7
+rc=3
+one
+rc=0
+=== 4. set -e exit runs the trap
+a
+cleanup 1
+rc=1
+=== 5. exit from a function
+trap 4
+rc=4
+=== 6. the latest trap wins; trap - and trap '' disable it
+second
+none
+ignored
+z
+zero
+=== 7. the trap sees the final state and positionals
+late a1 n1
+trap -- 'trap -p' EXIT
+=== 8. script file
+child
+child-bye 6
+rc=6
+=== 9. subshells keep their own EXIT trap
+sub
+sub2
+sub-bye
+sub rc=9
+=== 10. command substitution runs its own trap into the capture
+x=[cs
+cs-bye]
+y=[plain]
+=== 11. exec replaces the shell: no trap
+replaced
+rc=0
+rc=1
+=== 12. stdout redirected away, trap output on stderr
+bye
+=== end (parent trap follows)
+parent-bye

@@ -358,7 +358,7 @@ namespace wbsh {
 
 		int status = exec.executeInput(*root, run.source);
 		exec.consumeFlow(FlowSignal::Kind::Exit, &status);
-		return status;
+		return exec.fireExitTrap(status);
 	}
 
 	int runScript(const ScriptRun& run) {
