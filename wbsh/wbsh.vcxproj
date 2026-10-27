@@ -212,6 +212,7 @@
     <ClCompile Include="src\coreutils_bc.cpp" />
     <ClCompile Include="src\coreutils_encoding.cpp" />
     <ClCompile Include="src\coreutils_text.cpp" />
+    <ClCompile Include="src\coreutils_tr.cpp" />
     <ClCompile Include="src\coreutils_curl.cpp" />
     <ClCompile Include="src\coreutils_hash.cpp" />
     <ClCompile Include="src\coreutils_grep.cpp" />

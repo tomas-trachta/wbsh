@@ -3293,6 +3293,7 @@ namespace wbsh {
 		registerFileBuiltins(exec);
 		registerHeadTailBuiltins(exec);
 		registerTextBuiltins(exec);
+		registerTrBuiltin(exec);
 		registerEncodingBuiltins(exec);
 		registerDumpBuiltins(exec);
 		registerArchiveBuiltins(exec);
