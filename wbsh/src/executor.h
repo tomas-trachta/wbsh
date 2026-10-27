@@ -580,21 +580,21 @@ namespace wbsh {
 		ShellScriptScope snapshotShellScriptScope() const;
 		void restoreShellScriptScope(ShellScriptScope& snap, bool force_set);
 
-		// State snapshotted at the start of a `( ... )` subshell. Restored
-		// before returning. Trap handlers are included because POSIX
-		// requires a subshell's trap installs to be local to it.
+		// A `( ... )`, `$(...)` or `<(...)` body runs in this process, so
+		// everything it can change is snapshotted on entry and put back on
+		// the way out, as if it had been a forked child.
 		struct SubshellScope {
-			std::unordered_map<std::string, std::string> saved_vars;
-			SetOptions options;
+			Environment env;
+			std::unordered_map<std::string, const FunctionDef*> functions;
 			std::unordered_map<std::string, std::string> traps;
-			std::filesystem::path saved_cwd;
+			std::filesystem::path cwd;
 		};
-		SubshellScope snapshotSubshellScope() const;
-		std::unordered_map<std::string, std::string> enterSubshellTraps();
+		SubshellScope enterSubshell();
+		void leaveSubshell(SubshellScope& snap);
+		int runSubshellBody(const Node* body);
 		int runExitTrapAction(const std::string& action, int status);
 		int runCommandSubstitutionBody(const std::string& body);
 		std::string captureSubstitution(const std::string& body, int& status);
-		void restoreSubshellScope(SubshellScope& snap);
 
 #ifdef _WIN32
 		// Build the argv passed to CreateProcess: replaces argv[0] with the

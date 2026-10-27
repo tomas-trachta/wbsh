@@ -1,0 +1,35 @@
+=== 1. variables and cwd
+x=hi y=[] same-dir=yes
+v=keep
+back in start: yes
+=== 2. functions
+f stays inside
+x=inner now=outer
+outer
+outer
+=== 3. set options and shopt
+noglob off
+pipefail       	off
+nullglob off
+=== 4. arrays and attributes
+arr=[] as=[]
+b=1 2 3
+ZZZ=[] exported=0
+ro=2
+n=1+1
+=== 5. positional parameters
+inner=3 outer=2 a b
+after shift: a
+=== 6. process substitution
+procsub
+z=[] same-dir=yes
+read one
+read two
+w=[]
+=== 7. $RANDOM in a substitution does not replay the parent's sequence
+parent sequence kept
+child reseeded
+=== 8. the value and status still come back
+x=out rc=4
+x=[body
+from-trap]

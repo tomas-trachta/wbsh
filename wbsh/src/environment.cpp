@@ -296,6 +296,49 @@ namespace wbsh {
 		return (random_state_ / kRandomDivisor) % kRandomRange;
 	}
 
+	void Environment::reseedRandom() {
+		const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+		random_state_ = randomNext() ^ static_cast<unsigned int>(ticks);
+	}
+
+	template <typename Map>
+	static void dropEntriesNotIn(Map& current, const Map& snapshot) {
+		for (auto it = current.begin(); it != current.end(); ) {
+			if (snapshot.count(it->first) == 0) it = current.erase(it);
+			else ++it;
+		}
+	}
+
+	template <typename Map>
+	static void restoreEntries(Map& current, const Map& snapshot) {
+		dropEntriesNotIn(current, snapshot);
+
+		for (const auto& entry : snapshot) {
+			auto found = current.find(entry.first);
+			if (found == current.end()) current.emplace(entry.first, entry.second);
+			else if (found->second != entry.second) found->second = entry.second;
+		}
+	}
+
+	void Environment::restoreFrom(const Environment& snapshot) {
+		restoreEntries(vars_, snapshot.vars_);
+		restoreEntries(indexed_, snapshot.indexed_);
+		restoreEntries(assoc_, snapshot.assoc_);
+
+		exported_     = snapshot.exported_;
+		readonly_     = snapshot.readonly_;
+		positional_   = snapshot.positional_;
+		last_bg_pid_  = snapshot.last_bg_pid_;
+		shell_name_   = snapshot.shell_name_;
+		options_      = snapshot.options_;
+		interactive_  = snapshot.interactive_;
+		shopt_        = snapshot.shopt_;
+
+		seconds_offset_ = snapshot.seconds_offset_;
+		random_state_   = snapshot.random_state_;
+		current_lineno_ = snapshot.current_lineno_;
+	}
+
 	long long Environment::elapsedSeconds() const {
 		const auto now = std::chrono::steady_clock::now();
 		const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(now - start_time_);
