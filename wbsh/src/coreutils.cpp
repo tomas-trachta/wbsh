@@ -3169,8 +3169,19 @@ namespace wbsh {
 			"13) PIPE 14) ALRM 15) TERM\n");
 	}
 
+	static bool killProbeOneProcess(int pid) {
+		const ProcessProbe probe = probeProcess(static_cast<unsigned long>(pid));
+		if (probe == ProcessProbe::Alive) return true;
+
+		const char* reason = probe == ProcessProbe::Denied ? "operation not permitted" : "no such process";
+		std::fprintf(stderr, "wbsh: kill: %d: %s\n", pid, reason);
+		return false;
+	}
+
 	static bool killOneProcess(int pid, int signum) {
 #ifdef _WIN32
+		if (signum == 0) return killProbeOneProcess(pid);
+
 		const HANDLE process = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
 		if (process == nullptr) {
 			std::fprintf(stderr, "wbsh: kill: %d: no such process\n", pid);

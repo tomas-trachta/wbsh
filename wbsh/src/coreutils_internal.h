@@ -58,6 +58,11 @@ namespace wbsh {
 	/// `sleep`-style interval: a number with an optional s / m / h / d unit.
 	bool parseDurationSeconds(const std::string& arg, double& seconds);
 
+	enum class ProcessProbe { Alive, Missing, Denied };
+
+	/// The `kill -0` check: whether @p pid names a process that is still running.
+	ProcessProbe probeProcess(unsigned long pid);
+
 	void registerHeadTailBuiltins(Executor& exec);
 
 	void registerTextBuiltins(Executor& exec);
