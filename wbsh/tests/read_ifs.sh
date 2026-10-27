@@ -38,7 +38,7 @@ while IFS= read -r line; do
     last=$line
 done < _run_tmp/lines.txt
 echo "count=$count last=$last (bash expects 3 / three)"
-rm -rf _run_tmp
+rm -f _run_tmp/lines.txt
 
 echo "=== 8. IFS= read -r preserves leading/trailing whitespace"
 IFS= read -r raw <<< "  preserved  "

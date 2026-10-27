@@ -62,6 +62,12 @@ namespace wbsh {
 			cmd.c_str(), path.c_str(), ec.message().c_str());
 	}
 
+	std::string posixErrorText(const std::error_code& ec) {
+		const std::error_condition condition = ec.default_error_condition();
+		if (condition.category() != std::generic_category()) return ec.message();
+		return std::strerror(condition.value());
+	}
+
 	void perr(const std::string& cmd, const std::string& msg) {
 		std::fprintf(stderr, "wbsh: %s: %s\n", cmd.c_str(), msg.c_str());
 	}
@@ -885,79 +891,6 @@ namespace wbsh {
 		int status = 0;
 		for (const auto& path : args) {
 			if (!removeDirectory(exec, path)) status = 1;
-		}
-
-		return status;
-	}
-
-	struct RmOptions {
-		bool recursive = false;
-		bool force = false;
-		std::vector<std::string> paths;
-	};
-
-	static RmOptions parseRmArgs(const std::vector<std::string>& args) {
-		RmOptions opts;
-		for (const auto& arg : args) {
-			if (arg == "--recursive") {
-				opts.recursive = true;
-				continue;
-			}
-
-			if (arg == "--force") {
-				opts.force = true;
-				continue;
-			}
-
-			if (isShortFlagCluster(arg)) {
-				if (hasShortFlag(arg, 'r') || hasShortFlag(arg, 'R')) opts.recursive = true;
-				if (hasShortFlag(arg, 'f')) opts.force = true;
-				continue;
-			}
-
-			opts.paths.push_back(arg);
-		}
-
-		return opts;
-	}
-
-	static bool removePath(Executor& exec, const std::string& path, const RmOptions& opts) {
-		std::error_code ec;
-		const fs::path native = toNative(exec, path);
-		if (!fs::exists(native, ec)) {
-			if (opts.force) return true;
-			perr("rm", path + ": no such file or directory");
-			return false;
-		}
-
-		if (opts.recursive) {
-			fs::remove_all(native, ec);
-			if (!ec || opts.force) return true;
-			perr("rm", path, ec);
-			return false;
-		}
-
-		if (fs::is_directory(native, ec)) {
-			perr("rm", path + ": is a directory");
-			return false;
-		}
-
-		if (fs::remove(native, ec) || opts.force) return true;
-		perr("rm", path, ec);
-		return false;
-	}
-
-	static int builtin_rm(Executor& exec, const std::vector<std::string>& args) {
-		const RmOptions opts = parseRmArgs(args);
-		if (opts.paths.empty()) {
-			if (opts.force) return 0;
-			perr("rm", "missing operand");
-			return 1;
-		}
-
-		int status = 0;
-		for (const auto& path : opts.paths) {
-			if (!removePath(exec, path, opts)) status = 1;
 		}
 
 		return status;
@@ -3264,7 +3197,6 @@ namespace wbsh {
 		exec.registerBuiltin("which",    builtin_which);
 		exec.registerBuiltin("mkdir",    builtin_mkdir);
 		exec.registerBuiltin("rmdir",    builtin_rmdir);
-		exec.registerBuiltin("rm",       builtin_rm);
 		exec.registerBuiltin("cp",       builtin_cp);
 		exec.registerBuiltin("mv",       builtin_mv);
 		exec.registerBuiltin("touch",    builtin_touch);
@@ -3325,6 +3257,7 @@ namespace wbsh {
 		registerProcessBuiltins(exec);
 		registerSystemExtraBuiltins(exec);
 		registerFileOpsBuiltins(exec);
+		registerRemoveBuiltin(exec);
 		registerFilterBuiltins(exec);
 		registerBcBuiltin(exec);
 		registerHashBuiltins(exec);

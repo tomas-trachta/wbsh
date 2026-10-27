@@ -242,6 +242,7 @@
     <ClCompile Include="src\coreutils_filter.cpp" />
     <ClCompile Include="src\coreutils_dump.cpp" />
     <ClCompile Include="src\coreutils_fileops.cpp" />
+    <ClCompile Include="src\coreutils_remove.cpp" />
     <ClCompile Include="src\coreutils_headtail.cpp" />
     <ClCompile Include="src\devices.cpp" />
     <ClCompile Include="src\coreutils_system.cpp" />

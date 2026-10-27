@@ -57,6 +57,6 @@ cat > _run_tmp/h.txt <<EOF
 saved $NAME
 EOF
 cat _run_tmp/h.txt
-rm -rf _run_tmp
+rm -f _run_tmp/h.txt
 
 echo "=== done"
