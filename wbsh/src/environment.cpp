@@ -43,6 +43,81 @@ namespace wbsh {
 		random_state_ = static_cast<unsigned int>(shell_pid_) ^ static_cast<unsigned int>(ticks);
 	}
 
+	const std::vector<SetOptionSpec>& setOptionTable() {
+		static const std::vector<SetOptionSpec> table = {
+			{ "allexport",            'a', &SetOptions::allexport },
+			{ "braceexpand",          'B', &SetOptions::braceexpand },
+			{ "emacs",                0,   &SetOptions::emacs },
+			{ "errexit",              'e', &SetOptions::errexit },
+			{ "errtrace",             'E', &SetOptions::errtrace },
+			{ "functrace",            'T', &SetOptions::functrace },
+			{ "hashall",              'h', &SetOptions::hashall },
+			{ "histexpand",           'H', &SetOptions::histexpand },
+			{ "history",              0,   &SetOptions::history },
+			{ "ignoreeof",            0,   &SetOptions::ignoreeof },
+			{ "interactive-comments", 0,   &SetOptions::interactive_comments },
+			{ "keyword",              'k', &SetOptions::keyword },
+			{ "monitor",              'm', &SetOptions::monitor },
+			{ "noclobber",            'C', &SetOptions::noclobber },
+			{ "noexec",               'n', &SetOptions::noexec },
+			{ "noglob",               'f', &SetOptions::noglob },
+			{ "nolog",                0,   &SetOptions::nolog },
+			{ "notify",               'b', &SetOptions::notify },
+			{ "nounset",              'u', &SetOptions::nounset },
+			{ "onecmd",               't', &SetOptions::onecmd },
+			{ "physical",             'P', &SetOptions::physical },
+			{ "pipefail",             0,   &SetOptions::pipefail },
+			{ "posix",                0,   &SetOptions::posix },
+			{ "privileged",           'p', &SetOptions::privileged },
+			{ "verbose",              'v', &SetOptions::verbose },
+			{ "vi",                   0,   &SetOptions::vi },
+			{ "xtrace",               'x', &SetOptions::xtrace },
+		};
+
+		return table;
+	}
+
+	const SetOptionSpec* findSetOption(const std::string& name) {
+		for (const SetOptionSpec& spec : setOptionTable()) {
+			if (name == spec.name) return &spec;
+		}
+
+		return nullptr;
+	}
+
+	const SetOptionSpec* findSetFlag(char letter) {
+		if (letter == 0) return nullptr;
+
+		for (const SetOptionSpec& spec : setOptionTable()) {
+			if (spec.letter == letter) return &spec;
+		}
+
+		return nullptr;
+	}
+
+	std::string Environment::shellOptions() const {
+		static const char* const kDollarDashOrder = "abefhikmnptuvxBCEHPT";
+
+		std::string letters;
+		for (const char* c = kDollarDashOrder; *c != '\0'; ++c) {
+			if (*c == 'i') {
+				if (interactive_) letters += 'i';
+				continue;
+			}
+
+			const SetOptionSpec* spec = findSetFlag(*c);
+			if (spec != nullptr && options_.*(spec->flag)) letters += *c;
+		}
+
+		return letters;
+	}
+
+	void Environment::setInteractive(bool b) {
+		interactive_ = b;
+		options_.emacs = b;
+		options_.history = b;
+	}
+
 	bool Environment::rejectIfReadonly(const std::string& name) const {
 		if (readonly_.count(name) == 0) return false;
 
@@ -76,6 +151,7 @@ namespace wbsh {
 
 		assoc_.erase(name);
 		vars_[name] = std::move(value);
+		if (options_.allexport) exported_.insert(name);
 	}
 
 	void Environment::setIndexedArrayFromList(const std::string& name,

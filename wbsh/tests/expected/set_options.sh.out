@@ -1,0 +1,142 @@
+=== 1. strict-mode header: -o inside a cluster takes the next word
+args=0
+set -o errexit
+set -o nounset
+set -o pipefail
+rc=1
+=== 2. each o in a cluster takes one word, in order
+set -o errexit
+set +o nounset
+set -o pipefail
+n=2 1=x
+set -o errexit
+set -o nounset
+set -o pipefail
+=== 3. +o in a cluster
+set +o errexit
+set +o nounset
+set +o pipefail
+=== 4. set -o / set +o without a name list the options
+allexport      	off
+braceexpand    	on
+emacs          	off
+errexit        	off
+errtrace       	off
+functrace      	off
+hashall        	on
+histexpand     	off
+history        	off
+ignoreeof      	off
+interactive-comments	on
+keyword        	off
+monitor        	off
+noclobber      	off
+noexec         	off
+noglob         	off
+nolog          	off
+notify         	off
+nounset        	off
+onecmd         	off
+physical       	off
+pipefail       	off
+posix          	off
+privileged     	off
+verbose        	off
+vi             	off
+xtrace         	off
+set +o allexport
+set -o braceexpand
+set +o emacs
+set +o errexit
+set +o errtrace
+set +o functrace
+set -o hashall
+set +o histexpand
+set +o history
+set +o ignoreeof
+set -o interactive-comments
+set +o keyword
+set +o monitor
+set +o noclobber
+set +o noexec
+set +o noglob
+set +o nolog
+set +o notify
+set +o nounset
+set +o onecmd
+set +o physical
+set +o pipefail
+set +o posix
+set +o privileged
+set +o verbose
+set +o vi
+set +o xtrace
+pipefail       	on
+=== 5. invalid names and letters fail with status 2
+wbsh: set: bogus: invalid option name
+rc=2 n=1 1=keep
+wbsh: set: -q: invalid option
+set: usage: set [-abefhkmnptuvxBCHP] [-o option-name] [--] [arg ...]
+rc=2 n=1 1=keep
+wbsh: set: -Z: invalid option
+set: usage: set [-abefhkmnptuvxBCHP] [-o option-name] [--] [arg ...]
+rc=2 n=1 1=keep
+=== 6. $- shows the single-letter options
+hB
+ahBC
+fhuB
+=== 7. -C / noclobber
+new file rc=0
+wbsh: _nc.txt: cannot overwrite existing file
+overwrite rc=1
+>| rc=0
+>> rc=0
+wbsh: _nc.txt: cannot overwrite existing file
+&> rc=1
+/dev/null rc=0
+three
+four
+seven
+=== 8. -a / allexport
+exported_decl=2
+exported_plain=1
+exported_read=hi
+=== 9. -n / noexec stops running commands
+before
+after rc=0
+=== 10. +B / braceexpand
+{a,b} x{1..3}
+a b x1 x2 x3
+=== 11. vi and emacs exclude each other
+set +o emacs
+set -o vi
+set -o emacs
+set +o vi
+=== 12. -v / verbose echoes input lines as they are read
+# a comment line
+echo a; echo b
+a
+b
+if true; then
+	echo in-if
+fi
+in-if
+cat <<E
+heredoc body
+E
+heredoc body
+eval 'echo from-eval'
+echo from-eval
+from-eval
+x=$(echo not-echoed)
+. ./_verbose_src.sh
+echo sourced
+sourced
+set +v
+quiet
+=== 13. set - turns verbose and xtrace off
+set - a
+n=1 1=a
+=== 14. functions in a pipeline see the options
+in pipeline: huB
+in pipeline: hB

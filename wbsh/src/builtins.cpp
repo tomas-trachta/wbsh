@@ -690,42 +690,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	static void applyShortSetFlag(Environment& env, char ch, bool on) {
-		switch (ch) {
-		case 'e': env.setErrexit(on); break;
-		case 'u': env.setNounset(on); break;
-		case 'x': env.setXtrace(on);  break;
-		case 'f': env.setNoglob(on);  break;
-		default: break;
-		}
-	}
-
-	static bool applyLongSetOption(Environment& env, const std::string& name, bool on) {
-		if (name == "errexit")  { env.setErrexit(on);  return true; }
-		if (name == "nounset")  { env.setNounset(on);  return true; }
-		if (name == "xtrace")   { env.setXtrace(on);   return true; }
-		if (name == "noglob")   { env.setNoglob(on);   return true; }
-		if (name == "pipefail") { env.setPipefail(on); return true; }
-		return false;
-	}
-
-	static int applyLongSetArg(Executor& exec, const std::vector<std::string>& args,
-			std::size_t& i, bool on) {
-		if (i + 1 >= args.size()) {
-			++i;
-			return 0;
-		}
-
-		const std::string& name = args[i + 1];
-		if (!applyLongSetOption(exec.env(), name, on)) {
-			std::fprintf(stderr, "wbsh: set: unknown option: %s\n", name.c_str());
-			return 2;
-		}
-
-		i += 2;
-		return 0;
-	}
-
 	namespace set_detail {
 
 		struct SetOperands {
@@ -737,16 +701,131 @@ namespace wbsh {
 
 	using set_detail::SetOperands;
 
+	static void applySetOption(Environment& env, const SetOptionSpec& spec, bool on) {
+		SetOptions& options = env.options();
+		options.*(spec.flag) = on;
+
+		if (on && spec.flag == &SetOptions::vi)    options.emacs = false;
+		if (on && spec.flag == &SetOptions::emacs) options.vi = false;
+	}
+
+	static void listSetOptions(const Environment& env, bool as_commands) {
+		for (const SetOptionSpec& spec : setOptionTable()) {
+			const bool on = env.options().*(spec.flag);
+			if (as_commands) std::printf("set %co %s\n", on ? '-' : '+', spec.name);
+			else             std::printf("%-15s\t%s\n", spec.name, on ? "on" : "off");
+		}
+	}
+
+	static int applyNamedSetOption(Environment& env, const std::string& name, bool on) {
+		const SetOptionSpec* spec = findSetOption(name);
+		if (spec == nullptr) {
+			std::fprintf(stderr, "wbsh: set: %s: invalid option name\n", name.c_str());
+			return 2;
+		}
+
+		applySetOption(env, *spec, on);
+		return 0;
+	}
+
+	// Each `o` in a cluster takes the next unused word as its option name;
+	// with no word left it lists the options instead, as bash does.
+	static int applySetOptionWord(Environment& env, const std::vector<std::string>& args,
+			std::size_t& next, bool on) {
+		if (next >= args.size()) {
+			listSetOptions(env, !on);
+			return 0;
+		}
+
+		return applyNamedSetOption(env, args[next++], on);
+	}
+
+	static int reportInvalidSetFlag(char sign, char letter) {
+		std::fprintf(stderr, "wbsh: set: %c%c: invalid option\n", sign, letter);
+		std::fprintf(stderr,
+			"set: usage: set [-abefhkmnptuvxBCHP] [-o option-name] [--] [arg ...]\n");
+		return 2;
+	}
+
+	static int applySetCluster(Environment& env, const std::vector<std::string>& args,
+			std::size_t& i) {
+		const std::string& cluster = args[i];
+		const bool on = cluster[0] == '-';
+		std::size_t next = i + 1;
+
+		for (std::size_t k = 1; k < cluster.size(); ++k) {
+			const char letter = cluster[k];
+			if (letter == 'o') {
+				const int status = applySetOptionWord(env, args, next, on);
+				if (status != 0) return status;
+
+				continue;
+			}
+
+			const SetOptionSpec* spec = findSetFlag(letter);
+			if (spec == nullptr) return reportInvalidSetFlag(cluster[0], letter);
+
+			applySetOption(env, *spec, on);
+		}
+
+		i = next;
+		return 0;
+	}
+
 	static void endSetOptions(Environment& env, const std::string& marker, std::size_t next,
 			std::size_t argc, SetOperands& out) {
-		if (marker == "-") env.setXtrace(false);
+		if (marker == "-") {
+			env.options().xtrace = false;
+			env.options().verbose = false;
+		}
 
 		out.first = next;
 		out.replace_positional = marker == "--" || next < argc;
 	}
 
+	static bool isSetOptionWord(const std::string& arg) {
+		return !arg.empty() && (arg[0] == '-' || arg[0] == '+');
+	}
+
+	static bool endsSetOptions(const std::string& arg) {
+		return arg == "--" || arg == "-" || !isSetOptionWord(arg);
+	}
+
+	// Like bash, an unknown letter anywhere rejects the whole command before
+	// any option changes; an unknown `-o` name only stops it where it occurs.
+	static int validateSetCluster(const std::string& cluster, std::size_t& out_option_names) {
+		out_option_names = 0;
+		for (std::size_t k = 1; k < cluster.size(); ++k) {
+			const char letter = cluster[k];
+			if (letter == 'o') {
+				++out_option_names;
+				continue;
+			}
+
+			if (findSetFlag(letter) == nullptr) return reportInvalidSetFlag(cluster[0], letter);
+		}
+
+		return 0;
+	}
+
+	static int validateSetFlags(const std::vector<std::string>& args) {
+		std::size_t i = 0;
+		while (i < args.size() && !endsSetOptions(args[i])) {
+			std::size_t option_names = 0;
+			const int status = validateSetCluster(args[i], option_names);
+			if (status != 0) return status;
+
+			i += 1 + option_names;
+		}
+
+		return 0;
+	}
+
 	static int parseSetFlags(Executor& exec, const std::vector<std::string>& args,
 			SetOperands& out) {
+		const int invalid = validateSetFlags(args);
+		if (invalid != 0) return invalid;
+
 		std::size_t i = 0;
 		while (i < args.size()) {
 			const std::string& arg = args[i];
@@ -755,18 +834,10 @@ namespace wbsh {
 				return 0;
 			}
 
-			if (arg.empty() || (arg[0] != '-' && arg[0] != '+')) break;
+			if (!isSetOptionWord(arg)) break;
 
-			const bool on = arg[0] == '-';
-			if (arg.size() > 1 && arg[1] == 'o') {
-				const int status = applyLongSetArg(exec, args, i, on);
-				if (status != 0) return status;
-
-				continue;
-			}
-
-			for (std::size_t k = 1; k < arg.size(); ++k) applyShortSetFlag(exec.env(), arg[k], on);
-			++i;
+			const int status = applySetCluster(exec.env(), args, i);
+			if (status != 0) return status;
 		}
 
 		out.first = i;
@@ -843,7 +914,7 @@ namespace wbsh {
 		const std::string joined = joinWithSpaces(args.begin(), args.end());
 		if (joined.empty()) return 0;
 
-		return exec.executeText(joined, "eval");
+		return exec.executeInputText(joined, "eval");
 	}
 
 	static bool readScriptFile(const std::filesystem::path& path, std::string& out_body) {
@@ -873,7 +944,7 @@ namespace wbsh {
 		std::vector<std::string> saved = exec.env().positional();
 		if (args.size() > 1) exec.env().setPositional({ args.begin() + 1, args.end() });
 
-		int status = exec.executeText(body, args[0]);
+		int status = exec.executeInputText(body, args[0]);
 		exec.consumeFlow(FlowSignal::Kind::Return, &status);
 		exec.env().setPositional(std::move(saved));
 		return status;

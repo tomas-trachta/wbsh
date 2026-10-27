@@ -2599,6 +2599,8 @@ namespace wbsh {
 	}
 
 	std::vector<std::string> Expander::expandWord(const Word& w) {
+		if (!env_.braceexpand()) return expandWordPostBrace(w);
+
 		const std::vector<std::string> braced = braceExpandAll(w.raw);
 		if (braced.size() <= 1) return expandWordPostBrace(w);
 

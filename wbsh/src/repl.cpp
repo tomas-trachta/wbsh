@@ -807,7 +807,7 @@ namespace wbsh {
 		if (root && parser.errors().empty() && lex.errors().empty()) {
 			exec.adoptArena(parser.takeArena());
 			exec.setSourceText(state.buffer);
-			exec.execute(*root);
+			exec.executeInput(*root, state.buffer);
 		}
 
 		state.buffer.clear();
@@ -857,6 +857,7 @@ namespace wbsh {
 	int runInteractive() {
 		Environment env;
 		prepareEnv(env);
+		env.setInteractive(true);
 		Executor exec(env);
 		absorbInheritedState(env, exec);
 
