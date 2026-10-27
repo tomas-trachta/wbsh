@@ -4,7 +4,7 @@
 ; Drives the build via installer\build.ps1, which stages payload into stage\.
 
 #ifndef AppVersion
-#define AppVersion "1.0.29"
+#define AppVersion "1.0.30"
 #endif
 
 [Setup]
