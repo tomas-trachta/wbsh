@@ -534,9 +534,61 @@ namespace wbshterm {
 			checkFontCoverageDecidesGridRuns(report);
 		}
 
+		static const char* const kFiveLines = "a\r\nb\r\nc\r\nd\r\ne";
+
+		static void checkRingScrollKeepsOrder(Report& report) {
+			Screen screen(4, 3);
+			const std::string grid = feedToScreen(screen, kFiveLines);
+			report.check("full-screen scrolling keeps rows in order",
+				grid == "c\nd\ne\n" && screen.scrollbackRows() == 2
+					&& screen.cellAt(0, 0).code == U'a' && screen.cellAt(1, 0).code == U'b', grid);
+
+			Screen region(4, 4);
+			feedToScreen(region, kFiveLines);
+			const std::string inserted = feedToScreen(region, "\x1b[2;3r\x1b[2H\x1b[L");
+			report.check("margins still apply once the grid has scrolled",
+				inserted == "b\n\nc\ne\n", inserted);
+		}
+
+		static void checkRingSurvivesResizeAndAltScreen(Report& report) {
+			Screen screen(4, 3);
+			feedToScreen(screen, kFiveLines);
+			screen.resize(6, 3);
+			report.check("a resize after scrolling keeps the text in place",
+				screen.toText() == "c\nd\ne\n", screen.toText());
+
+			Screen alt(4, 3);
+			feedToScreen(alt, kFiveLines);
+			const std::string restored = feedToScreen(alt, "\x1b[?1049hzz\x1b[?1049l");
+			report.check("the alt screen round trip after scrolling restores the grid",
+				restored == "c\nd\ne\n", restored);
+
+			Screen down(4, 3);
+			feedToScreen(down, kFiveLines);
+			const std::string scrolled = feedToScreen(down, "\x1b[T");
+			report.check("SD after scrolling opens a blank top row",
+				scrolled == "\nc\nd\n", scrolled);
+		}
+
+		static void checkOnlyTouchedRowsAreDirty(Report& report) {
+			Screen screen(4, 3);
+			feedToScreen(screen, "ab");
+			screen.clearDirty();
+			feedToScreen(screen, "\x1b[3;1Hx");
+			report.check("writing a character damages only its row",
+				screen.rowDirty(2) && !screen.rowDirty(0) && !screen.rowDirty(1), "");
+		}
+
+		static void runScrollRingChecks(Report& report) {
+			checkRingScrollKeepsOrder(report);
+			checkRingSurvivesResizeAndAltScreen(report);
+			checkOnlyTouchedRowsAreDirty(report);
+		}
+
 	} /* namespace vt_test */
 
 	void runVtChecks(test::Report& report) {
+		vt_test::runScrollRingChecks(report);
 		vt_test::runClusterChecks(report);
 		vt_test::runSaveRestoreAndResetChecks(report);
 		vt_test::runLineScrollingChecks(report);
