@@ -34,7 +34,7 @@ namespace wbshterm {
 	/** The escape-sequence checks: modes, resets, scrolling and SGR. */
 	void runVtChecks(test::Report& report);
 
-	/** Text in and out of the window: UTF-8, copying the selection, the picker. */
+	/** Input to the window and text out of it: typing, the wheel, copying, the picker. */
 	void runInputChecks(test::Report& report);
 
 } /* namespace wbshterm */
