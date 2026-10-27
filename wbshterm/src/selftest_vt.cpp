@@ -120,10 +120,71 @@ namespace wbshterm {
 			checkUnknownIntermediatesAreIgnored(report);
 		}
 
+		static const char* const kFiveRows = "1\r\n2\r\n3\r\n4\r\n5";
+
+		static void checkLineEditsOutsideTheMarginsDoNothing(Report& report) {
+			Screen screen(4, 6);
+			feedToScreen(screen, kFiveRows);
+			const std::string before = screen.toText();
+
+			const std::string inserted = feedToScreen(screen, "\x1b[1;3r\x1b[5H\x1b[L");
+			report.check("IL below the scroll region does nothing", inserted == before, inserted);
+
+			const std::string deleted = feedToScreen(screen, "\x1b[5H\x1b[2M");
+			report.check("DL below the scroll region does nothing", deleted == before, deleted);
+		}
+
+		static void checkLineEditsStayInsideTheMargins(Report& report) {
+			Screen screen(4, 6);
+			const std::string inserted = feedToScreen(screen,
+				std::string(kFiveRows) + "\x1b[2;4r\x1b[3;3H\x1b[LX");
+			report.check("IL pushes rows down only to the bottom margin and homes the column",
+				inserted == "1\n2\nX\n3\n5\n\n", inserted);
+
+			Screen deleting(4, 6);
+			const std::string deleted = feedToScreen(deleting,
+				std::string(kFiveRows) + "\x1b[2;4r\x1b[2;3H\x1b[MX");
+			report.check("DL pulls rows up only from the bottom margin and homes the column",
+				deleted == "1\nX\n4\n\n5\n\n", deleted);
+		}
+
+		static void checkDeleteLineKeepsHistoryAlone(Report& report) {
+			Screen screen(4, 3);
+			feedToScreen(screen, "top\r\nmid\x1b[H\x1b[M");
+			report.check("DL on the top row does not push it into scrollback",
+				screen.scrollbackRows() == 0 && firstLine(screen.toText()) == "mid",
+				screen.toText());
+
+			Screen scrolling(4, 3);
+			feedToScreen(scrolling, "top\r\nmid\x1b[S");
+			report.check("SU still sends the top row to scrollback",
+				scrolling.scrollbackRows() == 1 && scrolling.cellAt(0, 0).code == U't', "");
+		}
+
+		static void checkHugeScrollCountsAreClamped(Report& report) {
+			Screen screen(4, 3);
+			feedToScreen(screen, "a\r\nb\r\nc\x1b[999999S");
+			report.check("a huge SU scrolls one screenful at most",
+				screen.scrollbackRows() == 3 && screen.toText() == "\n\n\n", screen.toText());
+
+			Screen down(4, 3);
+			const std::string grid = feedToScreen(down, "a\r\nb\x1b[999999T\x1b[999999L");
+			report.check("huge SD and IL counts clear the region and nothing more",
+				grid == "\n\n\n" && down.scrollbackRows() == 0, grid);
+		}
+
+		static void runLineScrollingChecks(Report& report) {
+			checkLineEditsOutsideTheMarginsDoNothing(report);
+			checkLineEditsStayInsideTheMargins(report);
+			checkDeleteLineKeepsHistoryAlone(report);
+			checkHugeScrollCountsAreClamped(report);
+		}
+
 	} /* namespace vt_test */
 
 	void runVtChecks(test::Report& report) {
 		vt_test::runSaveRestoreAndResetChecks(report);
+		vt_test::runLineScrollingChecks(report);
 	}
 
 } /* namespace wbshterm */

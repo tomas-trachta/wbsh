@@ -218,6 +218,14 @@ namespace wbshterm {
 		void printControlGlyph(unsigned char control);
 
 		void scrollUp(int count);
+		std::vector<Cell>::iterator rowStart(int row);
+		void blankRows(int first, int last);
+		void markRowsDirty(int first, int last);
+		void shiftRowsUp(int top, int bottom, int count);
+		void shiftRowsDown(int top, int bottom, int count);
+		bool cursorInScrollRegion() const;
+		void insertLines(int count);
+		void deleteLines(int count);
 		void pushToScrollback(int row);
 		void noteShellMark(const std::string& body);
 		void noteWorkingDirectory(const std::string& body);
