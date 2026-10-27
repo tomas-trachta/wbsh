@@ -1,0 +1,74 @@
+=== 1. per-element operators on an array
+n=4 [Ab] [Cd] [b] [d]
+n=6 [a] [c] [AB] [CD] [ab] [cd]
+n=8 [aB] [cd] [--] [--] [Ab] [cd] [ab] [cD]
+n=1 [Ab Cd]
+n=2 [Ab] [Cd]
+n=2 [Hello] [HELLO]
+=== 2. per-element operators on the positionals
+n=2 [ 1] [q 2]
+n=1 [ 1 q 2]
+n=2 [p_1] [q_2]
+n=2 [P 1] [Q 2]
+n=2 [p ] [q ]
+n=3 [1] [q] [2]
+=== 3. positional slices
+n=3 [p 1] [q 2] [r]
+n=2 [q 2] [r]
+n=1 [r]
+n=2 [q 2] [r]
+n=1 [p 1]
+n=0
+n=0
+n=1 [p 1 q 2 r]
+n=5 [p] [1] [q] [2] [r]
+n=2 [preq 2] [rpost]
+n=1 [q 2 r]
+  ${@:0:1} is $0
+=== 4. array slices
+n=2 [y z] [w]
+n=1 [w]
+n=1 [y z]
+n=1 [y z w]
+n=2 [b] [c]
+n=1 [a]
+n=1 [c]
+n=2 [b] [c]
+n=0
+n=2 [ello] [lo]
+=== 5. empty lists give zero fields
+n=0
+n=0
+n=1 [x]
+n=1 []
+n=0
+n=0
+n=0
+=== 6. default operators
+-- none
+n=1 [d]
+n=1 [d]
+n=0
+n=0
+-- one empty
+n=1 [d]
+n=1 []
+n=1 []
+n=0
+-- two empty
+n=2 [] []
+n=2 [] []
+n=1 [x y]
+n=2 [x] [y]
+-- two
+n=2 [a b] [c]
+n=2 [a b] [c]
+n=1 [x y]
+n=2 [x] [y]
+n=1 [d]
+=== 7. IFS
+n=1 [:y z:w]
+n=3 [] [y z] [w]
+=== 8. heredoc
+slice: cd ef
+strip: b d f

@@ -1196,47 +1196,35 @@ namespace wbsh {
 		length_text.clear();
 	}
 
-	std::string Expander::evalArraySlice(const std::string& name, const std::string& args) {
-		const std::vector<std::string> elems = arrayValues(name);
-		std::string offset_text;
-		std::string length_text;
-		splitSliceArgs(args, offset_text, length_text);
+	// `/pat/rep`, `/#pat/rep` or `/%pat/rep` after the `/` operator,
+	// with the pattern and replacement already expanded.
+	struct ReplaceArgs {
+		std::string pat;
+		std::string rep;
+		bool anchor_start = false;
+		bool anchor_end = false;
+	};
 
-		const long long count = static_cast<long long>(elems.size());
-		long long offset = 0;
-		if (!tryEvalArith(offset_text, offset)) offset = 0;
-		if (offset < 0) offset = std::max<long long>(0, count + offset);
-		if (offset > count) offset = count;
-
-		long long take = count - offset;
-		if (!length_text.empty()) {
-			if (!tryEvalArith(length_text, take)) take = 0;
-			if (take < 0) take = std::max<long long>(0, count + take - offset);
-			if (take > count - offset) take = count - offset;
-		}
-
-		std::string out;
-		for (long long k = 0; k < take; ++k) {
-			if (k != 0) out.push_back(' ');
-			out += elems[static_cast<std::size_t>(offset + k)];
-		}
-
-		return out;
-	}
-
-	std::string Expander::evalParamReplace(const std::string& cur, const std::string& args,
-			bool all) {
+	static ReplaceArgs parseReplaceArgs(Expander& expander, const std::string& args) {
+		ReplaceArgs out;
 		std::string body = args;
-		const bool anchor_start = !body.empty() && body[0] == '#';
-		const bool anchor_end   = !anchor_start && !body.empty() && body[0] == '%';
-		if (anchor_start || anchor_end) body.erase(0, 1);
+		out.anchor_start = !body.empty() && body[0] == '#';
+		out.anchor_end   = !out.anchor_start && !body.empty() && body[0] == '%';
+		if (out.anchor_start || out.anchor_end) body.erase(0, 1);
 
 		const std::size_t slash = body.find('/');
 		const std::string pat = (slash == std::string::npos) ? body : body.substr(0, slash);
 		const std::string rep = (slash == std::string::npos) ? std::string()
 			: body.substr(slash + 1);
-		return replacePattern(cur, expandHeredoc(pat, false), expandHeredoc(rep, false),
-			all, anchor_start, anchor_end);
+		out.pat = expander.expandHeredoc(pat, false);
+		out.rep = expander.expandHeredoc(rep, false);
+		return out;
+	}
+
+	std::string Expander::evalParamReplace(const std::string& cur, const std::string& args,
+			bool all) {
+		const ReplaceArgs r = parseReplaceArgs(*this, args);
+		return replacePattern(cur, r.pat, r.rep, all, r.anchor_start, r.anchor_end);
 	}
 
 	// `##`, `%%`, `//`, `^^`, `,,` double the operator to mean "greedy"
@@ -1258,9 +1246,6 @@ namespace wbsh {
 		case '?':
 			return evalParamDefaultOp(op, colon, ctx.name, ctx.named_value, argument);
 		case ':':
-			if (ctx.has_subscript && (ctx.subscript == "@" || ctx.subscript == "*")) {
-				return evalArraySlice(ctx.name, argument);
-			}
 			return substringExpand(ctx.named_value, argument);
 		case '#':
 			return stripPrefix(ctx.named_value, expandHeredoc(argument, false), doubled);
@@ -1293,6 +1278,171 @@ namespace wbsh {
 		}
 
 		return out;
+	}
+
+	// `${@=word}` is an error in bash, so `=` keeps the scalar path.
+	static bool isListOp(const std::string& body, std::size_t i) {
+		const char op = body[i];
+		if (op == ':') return i + 1 >= body.size() || body[i + 1] != '=';
+		return op == '-' || op == '+' || op == '?' || op == '#' || op == '%'
+			|| op == '/' || op == '^' || op == ',';
+	}
+
+	// Bare `@` / `name[@]` forms are not list params: they have no
+	// operator, and the caller renders them directly.
+	bool Expander::parseListParam(const std::string& body, ListParam& out) const {
+		if (body.empty()) return false;
+
+		std::size_t end = 1;
+		if (body[0] == '@' || body[0] == '*') {
+			out.name.clear();
+			out.star = body[0] == '*';
+		} else {
+			if (!isNameStart(body[0])) return false;
+
+			const std::size_t open = scanIdentifierEnd(body, 0);
+			if (open + 3 > body.size() || body[open] != '[' || body[open + 2] != ']') return false;
+			if (body[open + 1] != '@' && body[open + 1] != '*') return false;
+
+			out.name = body.substr(0, open);
+			out.star = body[open + 1] == '*';
+			end = open + 3;
+		}
+
+		if (end >= body.size() || !isListOp(body, end)) return false;
+		out.op_pos = end;
+		return true;
+	}
+
+	std::vector<std::string> Expander::listParamValues(const ListParam& p) const {
+		if (p.name.empty()) return env_.positional();
+		return arrayValues(p.name);
+	}
+
+	// The elements a slice picks from, keyed by what its offset counts:
+	// `$0` is key 0 of the positionals, an indexed array keeps its own
+	// (maybe sparse) indices, and an assoc array counts 0..n-1.
+	Expander::KeyedList Expander::sliceCandidates(const ListParam& p) const {
+		KeyedList out;
+		if (const auto* indexed = env_.getIndexedArray(p.name); indexed != nullptr) {
+			for (const auto& entry : *indexed) out.emplace_back(entry.first, entry.second);
+			return out;
+		}
+
+		std::vector<std::string> values = listParamValues(p);
+		if (p.name.empty()) values.insert(values.begin(), env_.shellName());
+		for (std::size_t k = 0; k < values.size(); ++k) {
+			out.emplace_back(static_cast<long long>(k), std::move(values[k]));
+		}
+
+		return out;
+	}
+
+	// A negative offset counts back from one past the highest key. A
+	// negative length is an error for a list, not a count from the end.
+	std::vector<std::string> Expander::sliceListParam(const ListParam& p,
+			const std::string& args) {
+		const bool scalar = !p.name.empty() && env_.getIndexedArray(p.name) == nullptr
+			&& env_.getAssocArray(p.name) == nullptr;
+		if (scalar && !env_.has(p.name)) return {};
+		if (scalar) return { substringExpand(env_.get(p.name), args) };
+
+		const KeyedList items = sliceCandidates(p);
+		std::string offset_text;
+		std::string length_text;
+		splitSliceArgs(args, offset_text, length_text);
+
+		long long offset = 0;
+		if (!tryEvalArith(offset_text, offset)) offset = 0;
+		if (offset < 0 && !items.empty()) offset += items.back().first + 1;
+		if (offset < 0) return {};
+
+		long long take = static_cast<long long>(items.size());
+		if (!length_text.empty() && !tryEvalArith(length_text, take)) take = 0;
+		if (take < 0) {
+			fail(std::to_string(take) + ": substring expression < 0");
+			return {};
+		}
+
+		std::vector<std::string> out;
+		for (const auto& item : items) {
+			if (static_cast<long long>(out.size()) >= take) break;
+			if (item.first >= offset) out.push_back(item.second);
+		}
+
+		return out;
+	}
+
+	// A list is null when it joins to an empty string: no elements, or
+	// one empty element. When `+` drops its word, a list that had
+	// elements still leaves one empty field.
+	std::vector<std::string> Expander::evalListDefaultOp(char op, bool colon,
+			const std::string& subject, std::vector<std::string> elems,
+			const std::string& arg) {
+		const bool unset = elems.empty();
+		const bool null = unset || (elems.size() == 1 && elems[0].empty());
+		const bool missing = colon ? null : unset;
+
+		switch (op) {
+		case '-':
+			if (missing) return { expandParamWordArg(arg) };
+			return elems;
+		case '+':
+			if (!missing) return { expandParamWordArg(arg) };
+			if (unset) return {};
+			return { std::string() };
+		case '?':
+			if (!missing) return elems;
+
+			fail(arg.empty() ? (subject + ": parameter null or not set")
+				: expandParamWordArg(arg));
+			return {};
+		default:
+			return elems;
+		}
+	}
+
+	std::vector<std::string> Expander::mapListOp(char op, bool doubled,
+			const std::string& arg, std::vector<std::string> elems) {
+		if (op == '/') {
+			const ReplaceArgs r = parseReplaceArgs(*this, arg);
+			for (std::string& elem : elems) {
+				elem = replacePattern(elem, r.pat, r.rep, doubled, r.anchor_start, r.anchor_end);
+			}
+
+			return elems;
+		}
+
+		const std::string pat = expandHeredoc(arg, false);
+		for (std::string& elem : elems) {
+			if (op == '#') elem = stripPrefix(elem, pat, doubled);
+			else if (op == '%') elem = stripSuffix(elem, pat, doubled);
+			else elem = applyCaseConv(elem, op, doubled, pat);
+		}
+
+		return elems;
+	}
+
+	std::vector<std::string> Expander::expandListParam(const ListParam& p,
+			const std::string& body) {
+		std::size_t i = p.op_pos;
+		char op = body[i];
+		bool colon = false;
+		if (op == ':' && i + 1 < body.size() && isDefaultOp(body[i + 1])) {
+			colon = true;
+			++i;
+			op = body[i];
+		}
+
+		const bool doubled = isDoublingOp(op) && i + 1 < body.size() && body[i + 1] == op;
+		const std::string argument = body.substr(doubled ? i + 2 : i + 1);
+		if (op == ':') return sliceListParam(p, argument);
+		if (isDefaultOp(op)) {
+			return evalListDefaultOp(op, colon, body.substr(0, p.op_pos), listParamValues(p),
+				argument);
+		}
+
+		return mapListOp(op, doubled, argument, listParamValues(p));
 	}
 
 	// `${!name}` indirection: resolve `name`'s value, then look up a
@@ -1342,6 +1492,11 @@ namespace wbsh {
 
 			std::string indirect;
 			if (tryExpandIndirectParam(body, indirect)) return indirect;
+		}
+
+		ListParam list;
+		if (parseListParam(body, list)) {
+			return joinWith(expandListParam(list, body), starSeparator(list.star));
 		}
 
 		std::string name;
@@ -1534,7 +1689,7 @@ namespace wbsh {
 	// The `*` forms join with the first IFS character, as `$*` does.
 	// The `@` forms separate elements with an F_FIELD_END marker, so
 	// each element stays a field of its own whatever IFS holds.
-	void Expander::renderArrayFields(const std::vector<std::string>& elems, bool star,
+	bool Expander::renderArrayFields(const std::vector<std::string>& elems, bool star,
 			bool inside_dq, Tagged& out) {
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
 		const std::string sep = starSeparator(true);
@@ -1544,55 +1699,45 @@ namespace wbsh {
 			if (k != 0 && !star) out.endField(inside_dq);
 			pushText(out, elems[k], mark);
 		}
+
+		return !star && elems.empty();
 	}
 
-	// True for an `@` expansion that has no elements. Inside double
-	// quotes it removes the quoted null too, as in bash: with no
-	// positionals, `"$@"` and `"$x$@"` (x empty) both give zero fields.
-	bool Expander::isEmptyAtExpansion(const WordSegment& s) const {
-		if (s.kind != WordSegment::Kind::SimpleVar && s.kind != WordSegment::Kind::ParamExp) {
-			return false;
-		}
-
-		if (s.text == "@") return env_.positional().empty();
-		if (s.kind != WordSegment::Kind::ParamExp) return false;
-
-		const std::string array_name = fieldAwareArrayName(s.text);
-		if (array_name.empty() || s.text[s.text.size() - 2] != '@') return false;
-		return arrayLength(array_name) == 0;
-	}
-
+	// An empty `@` list inside the quotes removes the quoted null too,
+	// as in bash: with no positionals, `"$@"` and `"$x$@"` (x empty)
+	// both give zero fields.
 	void Expander::renderDoubleQuoted(const WordSegment& s, Tagged& out) {
 		bool quoted_null = true;
 		for (const WordSegment& nested : s.nested) {
-			if (isEmptyAtExpansion(nested)) quoted_null = false;
+			if (aborting()) break;
+			if (renderSegment(nested, out, /*inside_dq=*/true)) quoted_null = false;
 		}
 
 		if (quoted_null) out.had_quote = true;
-		for (const WordSegment& nested : s.nested) {
-			if (aborting()) break;
-			renderSegment(nested, out, /*inside_dq=*/true);
-		}
 	}
 
-	void Expander::renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
+	bool Expander::renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
 		if (s.text == "@") {
-			renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
-			return;
+			return renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
+		}
+
+		ListParam list;
+		if (parseListParam(s.text, list)) {
+			return renderArrayFields(expandListParam(list, s.text), list.star, inside_dq, out);
 		}
 
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
 		const std::string array_name = fieldAwareArrayName(s.text);
 		if (array_name.empty()) {
 			pushText(out, expandParam(s.text, inside_dq), mark);
-			return;
+			return false;
 		}
 
 		const bool indices = s.text[0] == '!';
 		const bool star    = s.text.find('*') != std::string::npos;
 		const std::vector<std::string> elems = indices ? arrayKeys(array_name)
 			: arrayValues(array_name);
-		renderArrayFields(elems, star, inside_dq, out);
+		return renderArrayFields(elems, star, inside_dq, out);
 	}
 
 #ifdef _WIN32
@@ -1634,7 +1779,7 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
-	void Expander::renderSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
+	bool Expander::renderSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
 		using K = WordSegment::Kind;
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
 		switch (s.kind) {
@@ -1654,12 +1799,14 @@ namespace wbsh {
 			out.had_quote = true;
 			break;
 		case K::SimpleVar:
-			if (s.text == "@") renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
-			else pushText(out, lookupParam(s.text), mark);
+			if (s.text == "@") {
+				return renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
+			}
+
+			pushText(out, lookupParam(s.text), mark);
 			break;
 		case K::ParamExp:
-			renderParamExpSegment(s, out, inside_dq);
-			break;
+			return renderParamExpSegment(s, out, inside_dq);
 		case K::CmdSubst: {
 			std::string output = runCmdSubst(s.text);
 			stripTrailingNewlines(output);
@@ -1673,6 +1820,8 @@ namespace wbsh {
 			renderProcSubstSegment(s, out);
 			break;
 		}
+
+		return false;
 	}
 
 	static bool isIfsChar(const std::string& ifs, char c) {
