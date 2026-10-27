@@ -24,7 +24,7 @@ echo a 5>lk2.txt 6>&5; rm lk2.txt && echo "removed after 5> 6>&5"
 { :; } 4>lk.txt; mv lk.txt lk2.txt && echo "moved after { } 4>"
 (:) 7>>lk2.txt; rm lk2.txt && echo "removed after ( ) 7>>"
 f() { :; }; f 8<>lk.txt; mv lk.txt lk2.txt && echo "moved after f 8<>"; rm -f lk2.txt
-cat 3<<<here >/dev/null; echo "here-string on 3 rc=$?"
+cat 3<<<here </dev/null >/dev/null; echo "here-string on 3 rc=$?"
 exec 3>lk.txt; echo to3 >&3; exec 3>&-; cat lk.txt; mv lk.txt lk2.txt && echo "moved after exec 3>&-"
 rm -f lk2.txt
 
