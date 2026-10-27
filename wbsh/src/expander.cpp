@@ -1374,37 +1374,60 @@ namespace wbsh {
 
 	// A negative subscript counts back from the highest index in use.
 	static std::string indexedArrayElement(Expander& expander,
-			const Environment::IndexedArray& items, const std::string& subscript) {
-		long long index = 0;
-		if (!expander.tryEvalArith(subscript, index)) return {};
-		if (index < 0 && !items.empty()) index = items.rbegin()->first + index + 1;
+			const Environment::IndexedArray& items, const std::string& subscript,
+			Expander::ElementSlot& slot) {
+		if (!expander.tryEvalArith(subscript, slot.index)) return {};
+		if (slot.index < 0 && !items.empty()) slot.index += items.rbegin()->first + 1;
+		slot.resolved = true;
 
-		const auto it = items.find(index);
-		return it == items.end() ? std::string() : it->second;
+		const auto it = items.find(slot.index);
+		if (it == items.end()) return {};
+
+		slot.is_set = true;
+		return it->second;
 	}
 
-	std::string Expander::lookupSubscripted(const std::string& name,
-			const std::string& subscript_in, bool star_join_ifs) {
-		const std::string subscript = resolveSubscript(subscript_in);
-		const bool whole_array = (subscript == "@" || subscript == "*");
-		if (whole_array) {
-			const std::string sep = (subscript == "*") ? starSeparator(star_join_ifs)
-				: std::string(" ");
-			return joinWholeArray(name, sep);
-		}
+	static std::string assocArrayElement(const Environment::AssocArray& items,
+			const std::string& key, Expander::ElementSlot& slot) {
+		slot.assoc = true;
+		slot.key = key;
+		slot.resolved = true;
 
+		const auto it = items.find(key);
+		if (it == items.end()) return {};
+
+		slot.is_set = true;
+		return it->second;
+	}
+
+	std::string Expander::lookupElement(const std::string& name, const std::string& subscript,
+			ElementSlot& slot) {
 		if (const auto* indexed = env_.getIndexedArray(name); indexed != nullptr) {
-			return indexedArrayElement(*this, *indexed, subscript);
+			return indexedArrayElement(*this, *indexed, subscript, slot);
 		}
 
 		if (const auto* assoc = env_.getAssocArray(name); assoc != nullptr) {
-			const auto it = assoc->find(subscript);
-			return it == assoc->end() ? std::string() : it->second;
+			return assocArrayElement(*assoc, subscript, slot);
 		}
 
-		long long index = 0;
-		if (!tryEvalArith(subscript, index)) return {};
-		return index == 0 ? lookupParam(name) : std::string();
+		if (!tryEvalArith(subscript, slot.index)) return {};
+		slot.resolved = true;
+		slot.is_set = slot.index == 0 && env_.has(name);
+		return slot.is_set ? lookupParam(name) : std::string();
+	}
+
+	std::string Expander::lookupSubscripted(const std::string& name,
+			const std::string& subscript_in, bool star_join_ifs, ElementSlot* slot) {
+		ElementSlot local;
+		ElementSlot& out = (slot != nullptr) ? *slot : local;
+		const std::string subscript = resolveSubscript(subscript_in);
+		const bool whole_array = (subscript == "@" || subscript == "*");
+		if (!whole_array) return lookupElement(name, subscript, out);
+
+		const std::string sep = (subscript == "*") ? starSeparator(star_join_ifs)
+			: std::string(" ");
+		out.is_set = arrayLength(name) != 0;
+		return joinWholeArray(name, sep);
 	}
 
 	std::size_t Expander::arrayLength(const std::string& name) const {
@@ -1473,17 +1496,6 @@ namespace wbsh {
 		return std::to_string(lookupSubscripted(name, subscript, false).size());
 	}
 
-	std::string Expander::expandParamIndicesForm(const std::string& body) {
-		if (body.size() <= 4) return {};
-
-		std::string name;
-		std::string subscript;
-		if (!splitSubscriptForm(body.substr(1), name, subscript)) return {};
-		if (subscript != "@" && subscript != "*") return {};
-
-		return joinWith(arrayKeys(name), " ");
-	}
-
 	// Length of the parameter name at the start of `body`, or npos when
 	// it does not begin with one.
 	static std::size_t scanParamName(const std::string& body, std::string& out_name,
@@ -1504,9 +1516,12 @@ namespace wbsh {
 		return op == '-' || op == '+' || op == '=' || op == '?';
 	}
 
-	std::string Expander::evalParamDefaultOp(char op, bool colon, const std::string& name,
-			const std::string& cur, const std::string& arg) {
-		const bool unset = !env_.has(name) && !isDigit(name[0]) && !isSpecialParam1(name[0]);
+	std::string Expander::evalParamDefaultOp(char op, bool colon, const ParamOpCtx& ctx,
+			const std::string& arg) {
+		const std::string& name = ctx.name;
+		const std::string& cur = ctx.named_value;
+		const bool unset = ctx.has_subscript ? !ctx.slot.is_set
+			: !env_.has(name) && !isDigit(name[0]) && !isSpecialParam1(name[0]);
 		const bool empty_or_unset = colon ? (unset || cur.empty()) : unset;
 
 		switch (op) {
@@ -1518,14 +1533,14 @@ namespace wbsh {
 			if (!empty_or_unset) return cur;
 
 			const std::string value = expandParamWordArg(arg);
-			env_.set(name, value);
+			assignParamDefault(ctx, value);
 			return value;
 		}
 		case '?': {
 			if (!empty_or_unset) return cur;
 
 			std::string message = arg.empty()
-				? (name + ": parameter null or not set")
+				? (ctx.label + ": parameter null or not set")
 				: expandParamWordArg(arg);
 			fail(std::move(message));
 			return {};
@@ -1533,6 +1548,18 @@ namespace wbsh {
 		default:
 			return cur;
 		}
+	}
+
+	void Expander::assignParamDefault(const ParamOpCtx& ctx, const std::string& value) {
+		if (!ctx.has_subscript) {
+			env_.set(ctx.name, value);
+			return;
+		}
+
+		const ElementSlot& slot = ctx.slot;
+		if (!slot.resolved) return;
+		if (slot.assoc) env_.setAssocElement(ctx.name, slot.key, value);
+		else if (slot.index >= 0) env_.setIndexedElement(ctx.name, slot.index, value);
 	}
 
 	// `OFFSET:LENGTH` split at the first colon outside parentheses, so a
@@ -1594,7 +1621,7 @@ namespace wbsh {
 		case '+':
 		case '=':
 		case '?':
-			return evalParamDefaultOp(op, colon, ctx.name, ctx.named_value, argument);
+			return evalParamDefaultOp(op, colon, ctx, argument);
 		case ':':
 			return substringExpand(ctx.named_value, argument);
 		case '#':
@@ -1788,24 +1815,11 @@ namespace wbsh {
 		const std::string argument = body.substr(doubled ? i + 2 : i + 1);
 		if (op == ':') return sliceListParam(p, argument);
 		if (isDefaultOp(op)) {
-			return evalListDefaultOp(op, colon, body.substr(0, p.op_pos), listParamValues(p),
-				argument);
+			const std::string subject = p.label.empty() ? body.substr(0, p.op_pos) : p.label;
+			return evalListDefaultOp(op, colon, subject, listParamValues(p), argument);
 		}
 
 		return mapListOp(op, doubled, argument, listParamValues(p));
-	}
-
-	// `${!name}` indirection: resolve `name`'s value, then look up a
-	// parameter by that value. Returns false when `body` isn't a plain
-	// `!name` form (e.g. it's the `${!name[@]}` indices form instead).
-	bool Expander::tryExpandIndirectParam(const std::string& body, std::string& out) {
-		const std::string ref_name = body.substr(1);
-		if (!isPlainName(ref_name)) return false;
-
-		const std::string target = lookupParam(ref_name);
-		out.clear();
-		if (!aborting() && !target.empty()) out = lookupParam(target);
-		return true;
 	}
 
 	// Peeks past `body[i]`'s operator (skipping a leading `:` for the
@@ -1830,22 +1844,163 @@ namespace wbsh {
 		return true;
 	}
 
+	static const char* const kDynamicSpecials[] = { "BASHPID", "LINENO", "RANDOM", "SECONDS" };
+
+	static bool isDynamicSpecialName(const std::string& name) {
+		for (const char* special : kDynamicSpecials) {
+			if (name == special) return true;
+		}
+
+		return false;
+	}
+
+	bool Expander::isVariableSet(const std::string& name) const {
+		return env_.has(name) || isDynamicSpecialName(name);
+	}
+
+	static void addPrefixedName(std::set<std::string>& names, const std::string& name,
+			const std::string& prefix) {
+		if (name.compare(0, prefix.size(), prefix) == 0 && isPlainName(name)) names.insert(name);
+	}
+
+	std::vector<std::string> Expander::namesWithPrefix(const std::string& prefix) const {
+		std::set<std::string> names;
+		for (const auto& entry : env_.vars()) addPrefixedName(names, entry.first, prefix);
+		for (const auto& entry : env_.indexedArrays()) addPrefixedName(names, entry.first, prefix);
+		for (const auto& entry : env_.assocArrays()) addPrefixedName(names, entry.first, prefix);
+		for (const char* special : kDynamicSpecials) addPrefixedName(names, special, prefix);
+		return std::vector<std::string>(names.begin(), names.end());
+	}
+
+	// `${!prefix*}` / `${!prefix@}`: the names of the set variables
+	// that start with `prefix`.
+	static bool parsePrefixNamesForm(const std::string& body, std::string& prefix, bool& star) {
+		if (body.size() < 3 || body[0] != '!') return false;
+		if (body.back() != '*' && body.back() != '@') return false;
+
+		prefix = body.substr(1, body.size() - 2);
+		star = body.back() == '*';
+		return isPlainName(prefix);
+	}
+
+	// The array name of a `name[@]`, `name[*]`, `!name[@]` or `!name[*]`
+	// body — the forms that expand to separate fields — else empty.
+	static std::string fieldAwareArrayName(const std::string& body) {
+		if (body.size() < 4) return {};
+		if (body[0] == '#') return {};
+
+		const std::size_t start = (body[0] == '!') ? 1 : 0;
+		const std::size_t open = body.find('[', start);
+		if (open == std::string::npos) return {};
+		if (open + 2 >= body.size()) return {};
+		if (body[open + 1] != '@' && body[open + 1] != '*') return {};
+		if (body[open + 2] != ']') return {};
+		if (open + 3 != body.size()) return {};
+		return body.substr(start, open - start);
+	}
+
+	static bool isIndirectBody(const std::string& body) {
+		return body.size() > 1 && body[0] == '!' && fieldAwareArrayName(body).empty();
+	}
+
+	// What an indirect reference may name: a variable, optionally
+	// subscripted, a positional parameter, or a special parameter.
+	static bool isParamSpec(const std::string& text, const Expander& expander) {
+		std::string name;
+		const std::size_t end = scanParamName(text, name, expander);
+		if (end == std::string::npos) return false;
+		if (end == text.size()) return true;
+		return isNameStart(text[0]) && text[end] == '[' && text.back() == ']';
+	}
+
+	static bool assignsDefault(const std::string& rest) {
+		if (!rest.empty() && rest[0] == '=') return true;
+		return rest.size() > 1 && rest[0] == ':' && rest[1] == '=';
+	}
+
+	// An unset reference leaves its own (unset) spelling as the subject.
+	bool Expander::resolveUnsetIndirect(const std::string& spec, const std::string& rest,
+			const std::string& label, std::string& out_body) {
+		if (env_.nounset() && !paramOpHandlesUnset(rest, 0)) {
+			fail(label + ": unbound variable");
+			return true;
+		}
+
+		if (assignsDefault(rest)) {
+			fail(label + ": invalid indirect expansion");
+			return true;
+		}
+
+		out_body = spec;
+		return true;
+	}
+
+	bool Expander::resolveIndirectBody(const std::string& body, std::string& out_body,
+			std::string& out_label) {
+		const std::string spec = body.substr(1);
+		std::string ref;
+		std::size_t i = scanParamName(spec, ref, *this);
+		if (i == std::string::npos) return false;
+
+		std::string subscript;
+		const bool has_subscript = takeSubscript(spec, i, subscript);
+		const std::string rest = spec.substr(i);
+		out_label = "!" + spec.substr(0, i);
+
+		ElementSlot slot;
+		const std::string target = has_subscript ? lookupSubscripted(ref, subscript, true, &slot)
+			: lookupParam(ref, true);
+		if (aborting()) return true;
+
+		bool ref_set = !target.empty();
+		if (has_subscript) ref_set = slot.is_set;
+		else if (isPlainName(ref)) ref_set = isVariableSet(ref);
+		if (!ref_set) return resolveUnsetIndirect(spec, rest, out_label, out_body);
+
+		if (!isParamSpec(target, *this)) {
+			fail(target + ": bad substitution");
+			return true;
+		}
+
+		if (env_.nounset() && !paramOpHandlesUnset(rest, 0) && isPlainName(target)
+		    && !isVariableSet(target)) {
+			fail(out_label + ": unbound variable");
+			return true;
+		}
+
+		out_body = target + rest;
+		return true;
+	}
+
+	std::string Expander::expandBangParam(const std::string& body) {
+		std::string prefix;
+		bool star = false;
+		if (parsePrefixNamesForm(body, prefix, star)) {
+			return joinWith(namesWithPrefix(prefix), starSeparator(star));
+		}
+
+		const std::string keys_of = fieldAwareArrayName(body);
+		if (!keys_of.empty()) return joinWith(arrayKeys(keys_of), " ");
+
+		std::string resolved;
+		std::string label;
+		if (!resolveIndirectBody(body, resolved, label)) return expandDirectParam(body, {});
+		if (aborting()) return {};
+		return expandDirectParam(resolved, label);
+	}
+
 	std::string Expander::expandParam(const std::string& body, bool /*quoted_ctx*/) {
 		if (body.empty()) return {};
 
 		if (body[0] == '#' && body.size() > 1) return expandParamLengthForm(body);
-		if (body[0] == '!' && body.size() > 1) {
-			if (body.size() > 4) {
-				const std::string indices = expandParamIndicesForm(body);
-				if (!indices.empty()) return indices;
-			}
+		if (body[0] == '!' && body.size() > 1) return expandBangParam(body);
+		return expandDirectParam(body, {});
+	}
 
-			std::string indirect;
-			if (tryExpandIndirectParam(body, indirect)) return indirect;
-		}
-
+	std::string Expander::expandDirectParam(const std::string& body, const std::string& label) {
 		ListParam list;
 		if (parseListParam(body, list)) {
+			list.label = label;
 			return joinWith(expandListParam(list, body), starSeparator(list.star));
 		}
 
@@ -1859,11 +2014,14 @@ namespace wbsh {
 		// `${name:-…}`, `${name-…}`, `${name:=…}`, `${name:?…}` (and their
 		// colon-less siblings) handle an unset `name` themselves, so the
 		// lookup here must not raise `set -u`'s unbound-variable error.
+		ElementSlot slot;
 		const std::string named = has_subscript
-			? lookupSubscripted(name, subscript, true)
+			? lookupSubscripted(name, subscript, true, &slot)
 			: lookupParam(name, paramOpHandlesUnset(body, i));
 		if (i >= body.size()) return named;
 
+		ParamOpCtx ctx{ name, subscript, has_subscript, body, named,
+			label.empty() ? body.substr(0, i) : label, slot };
 		char op = body[i];
 		bool colon = false;
 		if (op == ':' && i + 1 < body.size() && isDefaultOp(body[i + 1])) {
@@ -1872,7 +2030,6 @@ namespace wbsh {
 			op = body[i];
 		}
 
-		ParamOpCtx ctx{ name, subscript, has_subscript, body, named };
 		return expandParamApplyOp(op, colon, i, ctx);
 	}
 
@@ -2020,22 +2177,6 @@ namespace wbsh {
 		return out;
 	}
 
-	// The array name of a `name[@]`, `name[*]`, `!name[@]` or `!name[*]`
-	// body — the forms that expand to separate fields — else empty.
-	static std::string fieldAwareArrayName(const std::string& body) {
-		if (body.size() < 4) return {};
-		if (body[0] == '#') return {};
-
-		const std::size_t start = (body[0] == '!') ? 1 : 0;
-		const std::size_t open = body.find('[', start);
-		if (open == std::string::npos) return {};
-		if (open + 2 >= body.size()) return {};
-		if (body[open + 1] != '@' && body[open + 1] != '*') return {};
-		if (body[open + 2] != ']') return {};
-		if (open + 3 != body.size()) return {};
-		return body.substr(start, open - start);
-	}
-
 	// The `*` forms join with the first IFS character, as `$*` does.
 	// The `@` forms separate elements with an F_FIELD_END marker, so
 	// each element stays a field of its own whatever IFS holds.
@@ -2067,24 +2208,47 @@ namespace wbsh {
 	}
 
 	bool Expander::renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
-		if (s.text == "@") {
+		std::string prefix;
+		bool star = false;
+		if (parsePrefixNamesForm(s.text, prefix, star)) {
+			return renderArrayFields(namesWithPrefix(prefix), star, inside_dq, out);
+		}
+
+		std::string resolved;
+		std::string label;
+		if (isIndirectBody(s.text) && resolveIndirectBody(s.text, resolved, label)) {
+			if (aborting()) return false;
+			return renderParamBody(resolved, label, inside_dq, out);
+		}
+
+		return renderParamBody(s.text, {}, inside_dq, out);
+	}
+
+	// A body reached through `${!ref}` has a label and is never read as
+	// another `!` or `#` form.
+	bool Expander::renderParamBody(const std::string& body, const std::string& label,
+			bool inside_dq, Tagged& out) {
+		if (body == "@") {
 			return renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
 		}
 
 		ListParam list;
-		if (parseListParam(s.text, list)) {
-			return renderArrayFields(expandListParam(list, s.text), list.star, inside_dq, out);
+		if (parseListParam(body, list)) {
+			list.label = label;
+			return renderArrayFields(expandListParam(list, body), list.star, inside_dq, out);
 		}
 
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
-		const std::string array_name = fieldAwareArrayName(s.text);
+		const std::string array_name = fieldAwareArrayName(body);
 		if (array_name.empty()) {
-			pushText(out, expandParam(s.text, inside_dq), mark);
+			const std::string value = label.empty() ? expandParam(body, inside_dq)
+				: expandDirectParam(body, label);
+			pushText(out, value, mark);
 			return false;
 		}
 
-		const bool indices = s.text[0] == '!';
-		const bool star    = s.text.find('*') != std::string::npos;
+		const bool indices = body[0] == '!';
+		const bool star    = body.find('*') != std::string::npos;
 		const std::vector<std::string> elems = indices ? arrayKeys(array_name)
 			: arrayValues(array_name);
 		return renderArrayFields(elems, star, inside_dq, out);
