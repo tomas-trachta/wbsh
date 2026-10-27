@@ -1,11 +1,12 @@
 /**
  * @file selftest_vt.cpp
- * @brief Grid checks for escape sequences: what each one leaves behind.
+ * @brief Grid checks for escape sequences and the text they leave in cells.
  */
 
 #include "selftest_internal.h"
 
 #include "charwidth.h"
+#include "font.h"
 #include "vtparse.h"
 
 #include <string>
@@ -511,10 +512,26 @@ namespace wbshterm {
 					&& edge.cell(1, 2).code == U'X', edge.toText());
 		}
 
+		// The renderer shapes a run in one go only where every cell is in
+		// the configured face; everything else is placed cell by cell.
+		static void checkFontCoverageDecidesGridRuns(Report& report) {
+			FontSettings settings;
+			settings.family = L"Consolas";
+
+			FontSet font;
+			std::string error;
+			const bool created = font.create(settings, error);
+			report.check("the configured face covers its own text",
+				created && font.coversCharacter(U'A') && font.coversCharacter(0x00E9), error);
+			report.check("CJK and emoji are left to the fallback faces",
+				created && !font.coversCharacter(0x4E2D) && !font.coversCharacter(0x1F680), "");
+		}
+
 		static void runClusterChecks(Report& report) {
 			checkCombiningMarksJoinTheirBase(report);
 			checkEmojiWidthsMatchTheConsole(report);
 			checkSequencesAreOneCluster(report);
+			checkFontCoverageDecidesGridRuns(report);
 		}
 
 	} /* namespace vt_test */

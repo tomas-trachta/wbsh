@@ -101,6 +101,7 @@ namespace wbshterm {
 		if (!createFormats(settings.family, size_dip, out_error)) return false;
 
 		applyFallback(settings.fallback);
+		findPrimaryFont(settings.family);
 		createCaptionFormat();
 		if (!measureCell(out_error)) return false;
 
@@ -227,6 +228,37 @@ namespace wbshterm {
 		metrics_.height = line.height;
 		metrics_.ascent = line.baseline;
 		return true;
+	}
+
+	void FontSet::findPrimaryFont(const std::wstring& family) {
+		primary_font_.Reset();
+		coverage_.clear();
+
+		Microsoft::WRL::ComPtr<IDWriteFontCollection> collection;
+		if (FAILED(factory_->GetSystemFontCollection(collection.GetAddressOf(), FALSE))) return;
+
+		UINT32 index = 0;
+		BOOL exists = FALSE;
+		if (FAILED(collection->FindFamilyName(family.c_str(), &index, &exists)) || !exists) return;
+
+		Microsoft::WRL::ComPtr<IDWriteFontFamily> found;
+		if (FAILED(collection->GetFontFamily(index, found.GetAddressOf()))) return;
+
+		found->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+			DWRITE_FONT_STYLE_NORMAL, primary_font_.GetAddressOf());
+	}
+
+	bool FontSet::coversCharacter(char32_t code) const {
+		if (code >= 0x20 && code < 0x7F) return true;
+		if (!primary_font_) return false;
+
+		const auto known = coverage_.find(code);
+		if (known != coverage_.end()) return known->second;
+
+		BOOL exists = FALSE;
+		const bool covered = SUCCEEDED(primary_font_->HasCharacter(code, &exists)) && exists;
+		coverage_.emplace(code, covered);
+		return covered;
 	}
 
 	IDWriteTextFormat* FontSet::format(bool bold, bool italic) const {
