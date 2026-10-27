@@ -592,7 +592,8 @@ namespace wbsh {
 		SubshellScope snapshotSubshellScope() const;
 		std::unordered_map<std::string, std::string> enterSubshellTraps();
 		int runExitTrapAction(const std::string& action, int status);
-		void runCommandSubstitutionBody(const std::string& body);
+		int runCommandSubstitutionBody(const std::string& body);
+		std::string captureSubstitution(const std::string& body, int& status);
 		void restoreSubshellScope(SubshellScope& snap);
 
 #ifdef _WIN32
@@ -723,6 +724,10 @@ namespace wbsh {
 		std::vector<Arena> owned_arenas_;
 		std::vector<std::vector<ScopeEntry>> scope_stack_;
 		int  last_status_ = 0;
+		// The status of the last `$(...)` since the current simple command
+		// started expanding; a command with no name returns it.
+		bool cmdsubst_ran_ = false;
+		int  cmdsubst_status_ = 0;
 		int  loop_depth_ = 0;
 		int  func_depth_ = 0;
 		int  errexit_suppress_ = 0;

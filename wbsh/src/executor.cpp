@@ -1660,7 +1660,7 @@ namespace wbsh {
 
 		applyBareAssignmentsToShell(assigns_data);
 		undoRedirections(state);
-		return 0;
+		return cmdsubst_ran_ ? cmdsubst_status_ : 0;
 	}
 
 	int Executor::runResolvedCommand(const std::vector<std::string>& argv,
@@ -1679,15 +1679,17 @@ namespace wbsh {
 		return runExternal(argv, assigns);
 	}
 
+	// As POSIX orders it, the words expand before the assignment values.
 	int Executor::execSimpleCommand(const SimpleCommand& sc) {
 		const std::size_t proc_subst_watermark = expander_.pendingTempFileWatermark();
+		cmdsubst_ran_ = false;
+
+		std::vector<std::string> argv;
+		if (!expandSimpleCmdArgv(sc, argv)) return 1;
 
 		SimpleCmdAssigns assigns_data;
 		if (!expandSimpleCmdAssigns(sc, assigns_data)) return 1;
 		const NameValueList assigns = assigns_data.scalarPairs();
-
-		std::vector<std::string> argv;
-		if (!expandSimpleCmdArgv(sc, argv)) return 1;
 		aliasExpandArgvHead(argv);
 
 		if (argv.size() == 1 && argv[0] == "exec") return execBareRedirsForExec(sc.redirs);
@@ -3183,25 +3185,40 @@ namespace wbsh {
 		echo.cursor = end;
 	}
 
+	// `$?` takes the status at once, so `a=$(exit 3) b=$?` sets b to 3.
 	std::string Executor::run(const std::string& body) {
-		std::string out = runRaw(body);
+		int status = 0;
+		std::string out = captureSubstitution(body, status);
+		if (!flowPending()) {
+			cmdsubst_ran_ = true;
+			cmdsubst_status_ = status;
+			setLastStatus(status);
+		}
+
 		// `\r` is stripped along with `\n`: the child's CRT text mode may
 		// have written `\r\n`, and a stray CR corrupts captured values.
 		while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
 		return out;
 	}
 
-	void Executor::runCommandSubstitutionBody(const std::string& body) {
+	int Executor::runCommandSubstitutionBody(const std::string& body) {
 		std::unordered_map<std::string, std::string> saved_traps = enterSubshellTraps();
 
 		int status = executeText(body, "<command-substitution>");
 		consumeFlow(FlowSignal::Kind::Exit, &status);
-		if (!flowPending() && hasTrap("EXIT")) setLastStatus(fireExitTrap(status));
+		if (!flowPending() && hasTrap("EXIT")) status = fireExitTrap(status);
 
 		trap_handlers_ = std::move(saved_traps);
+		return status;
 	}
 
 	std::string Executor::runRaw(const std::string& body) {
+		int status = 0;
+		return captureSubstitution(body, status);
+	}
+
+	std::string Executor::captureSubstitution(const std::string& body, int& status) {
+		status = 1;
 		const std::string capture_path = makeTempFile();
 		if (capture_path.empty()) return {};
 
@@ -3216,7 +3233,7 @@ namespace wbsh {
 		const int saved_stdout = _dup(1);
 		_dup2(capture_fd, 1);
 		_close(capture_fd);
-		runCommandSubstitutionBody(body);
+		status = runCommandSubstitutionBody(body);
 		std::fflush(stdout);
 		_dup2(saved_stdout, 1);
 		_close(saved_stdout);
