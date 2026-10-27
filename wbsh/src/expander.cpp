@@ -117,14 +117,48 @@ namespace wbsh {
 			return condition ? 1 : 0;
 		}
 
+		static const char* const kDivisionByZero = "division by 0";
+		static const char* const kTooGreatForBase = "value too great for base";
+		static const char* const kInvalidBase = "invalid arithmetic base";
+		static const char* const kOperandExpected = "syntax error: operand expected";
+		static const int kMaxBase = 64;
+
+		static bool isDivision(char op) {
+			return op == '/' || op == '%';
+		}
+
+		static long long wrappingNegate(long long value) {
+			return static_cast<long long>(0ULL - static_cast<unsigned long long>(value));
+		}
+
+		// LLONG_MIN / -1 traps on x86; bash wraps it like negation.
+		static long long divide(char op, long long lhs, long long rhs) {
+			if (rhs == 0) return 0;
+			if (rhs == -1 && op == '%') return 0;
+			if (rhs == -1) return wrappingNegate(lhs);
+			return op == '/' ? lhs / rhs : lhs % rhs;
+		}
+
+		static long long power(long long base, long long exponent) {
+			unsigned long long result = 1;
+			unsigned long long factor = static_cast<unsigned long long>(base);
+			while (exponent > 0) {
+				if ((exponent & 1) != 0) result *= factor;
+				factor *= factor;
+				exponent >>= 1;
+			}
+
+			return static_cast<long long>(result);
+		}
+
 		static long long combineAssign(char op, long long lhs, long long rhs) {
 			switch (op) {
 			case '=': return rhs;
 			case '+': return lhs + rhs;
 			case '-': return lhs - rhs;
 			case '*': return lhs * rhs;
-			case '/': return rhs != 0 ? lhs / rhs : 0;
-			case '%': return rhs != 0 ? lhs % rhs : 0;
+			case '/': return divide(op, lhs, rhs);
+			case '%': return divide(op, lhs, rhs);
 			case '&': return lhs & rhs;
 			case '^': return lhs ^ rhs;
 			case '|': return lhs | rhs;
@@ -146,6 +180,63 @@ namespace wbsh {
 			return -1;
 		}
 
+		static bool isAlnumChar(char c) {
+			return std::isalnum(static_cast<unsigned char>(c)) != 0;
+		}
+
+		static bool isSpaceChar(char c) {
+			return std::isspace(static_cast<unsigned char>(c)) != 0;
+		}
+
+		static bool isConstantChar(char c) {
+			return isAlnumChar(c) || c == '#' || c == '@' || c == '_';
+		}
+
+		// Overflow wraps, as in bash.
+		static const char* parseDigits(const std::string& digits, int base, long long& value) {
+			unsigned long long accumulated = 0;
+			for (const char c : digits) {
+				const int digit = basedDigitValue(c, base);
+				if (digit < 0 || digit >= base) return kTooGreatForBase;
+				accumulated = accumulated * static_cast<unsigned long long>(base)
+					+ static_cast<unsigned long long>(digit);
+			}
+
+			value = static_cast<long long>(accumulated);
+			return nullptr;
+		}
+
+		static const char* parseBasedConstant(const std::string& text, std::size_t hash,
+				long long& value) {
+			long long base = 0;
+			const char* problem = parseDigits(text.substr(0, hash), 10, base);
+			if (problem != nullptr) return problem;
+			if (base < 2 || base > kMaxBase) return kInvalidBase;
+
+			return parseDigits(text.substr(hash + 1), static_cast<int>(base), value);
+		}
+
+		// Returns the diagnostic for a malformed constant, or nullptr.
+		static const char* parseConstant(const std::string& text, long long& value) {
+			value = 0;
+			const std::size_t hash = text.find('#');
+			if (hash != std::string::npos) return parseBasedConstant(text, hash, value);
+
+			const bool leading_zero = text.size() >= 2 && text[0] == '0';
+			const bool hex = leading_zero && (text[1] == 'x' || text[1] == 'X');
+			if (hex) return parseDigits(text.substr(2), 16, value);
+			if (leading_zero) return parseDigits(text.substr(1), 8, value);
+			return parseDigits(text, 10, value);
+		}
+
+		static std::string trimSpace(const std::string& text) {
+			std::size_t start = 0;
+			std::size_t end = text.size();
+			while (start < end && isSpaceChar(text[start])) ++start;
+			while (end > start && isSpaceChar(text[end - 1])) --end;
+			return text.substr(start, end - start);
+		}
+
 		// Recursive-descent evaluator for `$(( ... ))`. Precedence climbs
 		// from parseComma() down to parsePrimary(), one method per level.
 		class ArithEval {
@@ -156,10 +247,52 @@ namespace wbsh {
 			long long run() {
 				skipWs();
 				if (eof()) return 0;
-				return parseComma();
+
+				const long long value = parseComma();
+				skipWs();
+				if (!eof()) failOnLeftover();
+				return failed() ? 0 : value;
+			}
+
+			bool failed() const {
+				return !error_.empty();
+			}
+
+			const std::string& error() const {
+				return error_;
 			}
 
 		private:
+			// The first error wins; jumping to the end makes every parse
+			// level unwind without consuming anything further.
+			void fail(const std::string& what, std::size_t token_at) {
+				if (failed()) return;
+
+				error_ = trimSpace(src_) + ": " + what;
+				const std::string token = trimSpace(src_.substr(std::min(token_at, src_.size())));
+				if (!token.empty()) error_ += " (error token is \"" + token + "\")";
+				pos_ = src_.size();
+			}
+
+			void adoptError(const std::string& message) {
+				if (failed()) return;
+
+				error_ = message;
+				pos_ = src_.size();
+			}
+
+			void failOnLeftover() {
+				const char c = peek();
+				if (c == '=') {
+					fail("attempted assignment to non-variable", pos_);
+					return;
+				}
+
+				const bool operand = isAlnumChar(c) || c == '_' || c == '$' || c == '(';
+				fail(operand ? "syntax error in expression"
+					: "syntax error: invalid arithmetic operator", pos_);
+			}
+
 			long long parseComma() {
 				long long result = parseAssign();
 				while (consume(',')) result = parseAssign();
@@ -195,8 +328,16 @@ namespace wbsh {
 			}
 
 			long long applyAssignment(const std::string& name, const AssignOp& op) {
+				skipWs();
+				const std::size_t rhs_at = pos_;
 				const long long rhs = parseAssign();
 				const long long lhs = (op.length == 1) ? 0 : variableValue(name);
+				if (isDivision(op.spelling[0]) && rhs == 0) {
+					fail(kDivisionByZero, rhs_at);
+				}
+
+				if (failed()) return 0;
+
 				const long long value = combineAssign(op.spelling[0], lhs, rhs);
 				env_.set(name, std::to_string(value));
 				return value;
@@ -207,7 +348,7 @@ namespace wbsh {
 				if (!consume('?')) return condition;
 
 				const long long when_true = parseAssign();
-				consume(':');
+				if (!consume(':')) fail("`:' expected for conditional expression", pos_);
 				const long long when_false = parseAssign();
 				return condition != 0 ? when_true : when_false;
 			}
@@ -335,15 +476,21 @@ namespace wbsh {
 						const long long right = parsePow();
 						left = left * right;
 					} else if (consumeOperator("/", "=")) {
-						const long long right = parsePow();
-						left = right != 0 ? left / right : 0;
+						left = divide('/', left, parseDivisor());
 					} else if (consumeOperator("%", "=")) {
-						const long long right = parsePow();
-						left = right != 0 ? left % right : 0;
+						left = divide('%', left, parseDivisor());
 					} else {
 						return left;
 					}
 				}
+			}
+
+			long long parseDivisor() {
+				skipWs();
+				const std::size_t divisor_at = pos_;
+				const long long divisor = parsePow();
+				if (divisor == 0) fail(kDivisionByZero, divisor_at);
+				return divisor;
 			}
 
 			long long parsePow() {
@@ -351,18 +498,17 @@ namespace wbsh {
 				skipWs();
 				if (!consume("**")) return base;
 
+				skipWs();
+				const std::size_t exponent_at = pos_;
 				const long long exponent = parsePow();
-				if (exponent < 0) return 0;
-
-				long long result = 1;
-				for (long long k = 0; k < exponent; ++k) result *= base;
-				return result;
+				if (exponent < 0) fail("exponent less than 0", exponent_at);
+				return power(base, exponent);
 			}
 
 			long long parseUnary() {
 				skipWs();
-				if (consume("++")) return prefixStep(+1);
-				if (consume("--")) return prefixStep(-1);
+				if (consumeStep("++")) return prefixStep(+1);
+				if (consumeStep("--")) return prefixStep(-1);
 				if (consume('+')) return parseUnary();
 				if (consume('-')) return -parseUnary();
 				if (consume('!')) return truth(parseUnary() == 0);
@@ -385,10 +531,9 @@ namespace wbsh {
 
 			long long parsePrimary() {
 				skipWs();
-				if (eof()) return 0;
 				if (consume('(')) {
 					const long long value = parseComma();
-					consume(')');
+					if (!consume(')')) fail("missing `)'", pos_);
 					return value;
 				}
 
@@ -396,7 +541,7 @@ namespace wbsh {
 				if (isNameStart(peek())) return parseVariable();
 				if (consume('$')) return parseDollar();
 
-				++pos_;
+				fail(kOperandExpected, eof() ? last_operator_at_ : pos_);
 				return 0;
 			}
 
@@ -425,57 +570,28 @@ namespace wbsh {
 				long long value = 0;
 				std::size_t consumed = 0;
 				if (parseLL(text, value, 0, &consumed) && consumed == text.size()) return value;
-				if (depth_ > kArithNestingLimit) return 0;
+				if (depth_ > kArithNestingLimit) {
+					adoptError(name + ": expression recursion level exceeded (error token is \""
+						+ name + "\")");
+					return 0;
+				}
 
 				ArithEval inner(text, env_, depth_ + 1);
-				return inner.run();
+				value = inner.run();
+				if (inner.failed()) adoptError(inner.error());
+				return value;
 			}
 
+			// The constant runs to the end of its alphanumeric spelling,
+			// so `08`, `2#2` and `12ab` are rejected whole, not read in part.
 			long long readNumber() {
-				if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'X')) {
-					pos_ += 2;
-					return readHexDigits();
-				}
-
-				if (peek() == '0' && isDigit(peek(1))) {
-					++pos_;
-					return readOctalDigits();
-				}
+				const std::size_t start = pos_;
+				while (!eof() && isConstantChar(peek())) ++pos_;
 
 				long long value = 0;
-				while (isDigit(peek())) value = value * 10 + (advance() - '0');
-				if (peek() != '#') return value;
-
-				++pos_;
-				int base = static_cast<int>(value);
-				if (base < 2) base = 10;
-				return readBasedDigits(base);
-			}
-
-			long long readHexDigits() {
-				long long value = 0;
-				while (std::isxdigit(static_cast<unsigned char>(peek()))) {
-					value = value * 16 + hexDigitValue(advance());
-				}
-
+				const char* problem = parseConstant(src_.substr(start, pos_ - start), value);
+				if (problem != nullptr) fail(problem, start);
 				return value;
-			}
-
-			long long readOctalDigits() {
-				long long value = 0;
-				while (peek() >= '0' && peek() <= '7') value = value * 8 + (advance() - '0');
-				return value;
-			}
-
-			long long readBasedDigits(int base) {
-				long long value = 0;
-				for (;;) {
-					const int digit = basedDigitValue(peek(), base);
-					if (digit < 0 || digit >= base) return value;
-
-					value = value * base + digit;
-					advance();
-				}
 			}
 
 			std::string readIdent() {
@@ -505,6 +621,7 @@ namespace wbsh {
 				skipWs();
 				if (peek() != c) return false;
 
+				last_operator_at_ = pos_;
 				++pos_;
 				return true;
 			}
@@ -515,8 +632,23 @@ namespace wbsh {
 				if (pos_ + length > src_.size()) return false;
 				if (src_.compare(pos_, length, text) != 0) return false;
 
+				last_operator_at_ = pos_;
 				pos_ += length;
 				return true;
+			}
+
+			// `++` / `--` only step a variable; before anything else they
+			// are two signs, so `++5` is 5 as in bash.
+			bool consumeStep(const char* op) {
+				skipWs();
+				const std::size_t save = pos_;
+				if (!consume(op)) return false;
+
+				skipWs();
+				if (!eof() && isNameStart(peek())) return true;
+
+				pos_ = save;
+				return false;
 			}
 
 			// Takes `op` unless the character after it turns it into a
@@ -530,12 +662,15 @@ namespace wbsh {
 				const char after = peek(length);
 				if (after != '\0' && std::strchr(not_followed_by, after) != nullptr) return false;
 
+				last_operator_at_ = pos_;
 				pos_ += length;
 				return true;
 			}
 
 			const std::string& src_;
 			std::size_t pos_ = 0;
+			std::size_t last_operator_at_ = 0;
+			std::string error_;
 			Environment& env_;
 			int depth_;
 		};
@@ -550,7 +685,9 @@ namespace wbsh {
 		if (aborting()) return 0;
 
 		arith_detail::ArithEval evaluator(expanded, env_, 0);
-		return evaluator.run();
+		const long long value = evaluator.run();
+		if (evaluator.failed()) fail(evaluator.error());
+		return value;
 	}
 
 	// Index of the bracket that closes the group already `depth` deep at

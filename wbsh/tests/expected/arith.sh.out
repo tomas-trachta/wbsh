@@ -29,4 +29,43 @@ n=30
 6
 2
 6
+=== arithmetic errors fail the command
+wbsh: 1/0: division by 0 (error token is "0")
+  status 1
+wbsh: 5 % 0: division by 0 (error token is "0")
+  status 1
+wbsh: 08: value too great for base (error token is "08")
+  status 1
+wbsh: 2#2: value too great for base (error token is "2#2")
+  status 1
+wbsh: 65#1: invalid arithmetic base (error token is "65#1")
+  status 1
+wbsh: 12ab: value too great for base (error token is "12ab")
+  status 1
+wbsh: 1 +: syntax error: operand expected (error token is "+")
+  status 1
+wbsh: 1 2: syntax error in expression (error token is "2")
+  status 1
+wbsh: 1 @ 2: syntax error: invalid arithmetic operator (error token is "@ 2")
+  status 1
+wbsh: 1 = 2: attempted assignment to non-variable (error token is "= 2")
+  status 1
+wbsh: 2 ** -1: exponent less than 0 (error token is "-1")
+  status 1
+wbsh: 1 ? 2: `:' expected for conditional expression
+  status 1
+wbsh: 1/0: division by 0 (error token is "0")
+(( 1/0 )) status 1
+wbsh: let: x = 1/0: division by 0 (error token is "0")
+let status 1
+wbsh: 1/0: division by 0 (error token is "0")
+nested status 1
+wbsh: x = 1/0: division by 0 (error token is "0")
+x after failed assignment: 5
+wbsh: x /= 0: division by 0 (error token is "0")
+x after failed /=: 3
+=== arithmetic edge cases
+0 0 9428927 31 15 8
+5 5 4611686018427387904 -6289078614652622815
+-9223372036854775808 0
 === done
