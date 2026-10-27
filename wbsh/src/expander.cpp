@@ -1124,35 +1124,153 @@ namespace wbsh {
 		return out;
 	}
 
-	static std::size_t tildePrefixEnd(const std::string& text) {
-		std::size_t end = 1;
+	// Where tilde prefixes may start. A command word only expands a
+	// leading `~`; an assignment value also expands one after each
+	// unquoted `:`, and a word spelled like an assignment does so from
+	// the character after its first `=`.
+	struct TildeScope {
+		std::size_t start = 0;
+		bool after_colons = false;
+	};
+
+	struct TildeWalk {
+		const Environment& env;
+		bool after_colons;
+		bool eligible = true;
+		bool last_segment = false;
+		std::vector<WordSegment> out;
+		std::string literal;
+	};
+
+	static bool hasLiteralTilde(const Word& w) {
+		for (const WordSegment& segment : w.segments) {
+			if (segment.kind != WordSegment::Kind::Literal) continue;
+			if (segment.text.find('~') != std::string::npos) return true;
+		}
+
+		return false;
+	}
+
+	// npos when the prefix runs on into a quoted or expanded segment:
+	// a prefix with any quoted character is not expanded.
+	static std::size_t tildePrefixEnd(const std::string& text, std::size_t tilde,
+	                                  bool last_segment) {
+		std::size_t end = tilde + 1;
 		while (end < text.size() && text[end] != '/' && text[end] != ':') ++end;
+		if (end == text.size() && !last_segment) return std::string::npos;
 		return end;
 	}
 
-	// Empty when the prefix names nothing this shell expands: `~user`
+	// False when the prefix names nothing this shell expands: `~user`
 	// is not implemented, and an unset HOME leaves the word alone.
-	static std::string tildeReplacement(const Environment& env, const std::string& name) {
-		if (name.empty()) return env.get("HOME");
-		if (name == "+")   return env.get("PWD");
-		if (name == "-")   return env.get("OLDPWD");
-		return {};
+	static bool tildeReplacement(const Environment& env, const std::string& name,
+	                             std::string& out) {
+		const char* variable = nullptr;
+		if (name.empty())    variable = "HOME";
+		else if (name == "+") variable = "PWD";
+		else if (name == "-") variable = "OLDPWD";
+		if (variable == nullptr || !env.has(variable)) return false;
+
+		out = env.get(variable);
+		return true;
+	}
+
+	static void flushTildeLiteral(TildeWalk& walk) {
+		if (walk.literal.empty()) return;
+
+		WordSegment segment;
+		segment.kind = WordSegment::Kind::Literal;
+		segment.text = std::move(walk.literal);
+		walk.out.push_back(std::move(segment));
+		walk.literal.clear();
+	}
+
+	static bool tryReplaceTilde(TildeWalk& walk, const std::string& text, std::size_t& i) {
+		const std::size_t end = tildePrefixEnd(text, i, walk.last_segment);
+		if (end == std::string::npos) return false;
+
+		const std::string name = text.substr(i + 1, end - i - 1);
+		WordSegment replacement;
+		replacement.kind = WordSegment::Kind::SingleQuoted;
+		if (!tildeReplacement(walk.env, name, replacement.text)) return false;
+
+		flushTildeLiteral(walk);
+		walk.out.push_back(std::move(replacement));
+		i = end;
+		return true;
+	}
+
+	static void walkTildeLiteral(TildeWalk& walk, const std::string& text, std::size_t from) {
+		std::size_t i = from;
+		while (i < text.size()) {
+			if (walk.eligible && text[i] == '~' && tryReplaceTilde(walk, text, i)) {
+				walk.eligible = false;
+				continue;
+			}
+
+			walk.eligible = walk.after_colons && text[i] == ':';
+			walk.literal.push_back(text[i]);
+			++i;
+		}
+	}
+
+	static void walkTildeSegment(TildeWalk& walk, const WordSegment& segment,
+	                             std::size_t from) {
+		if (segment.kind != WordSegment::Kind::Literal) {
+			flushTildeLiteral(walk);
+			walk.out.push_back(segment);
+			walk.eligible = false;
+			return;
+		}
+
+		walk.literal.append(segment.text, 0, from);
+		walkTildeLiteral(walk, segment.text, from);
+	}
+
+	static Word expandTildePrefixes(const Environment& env, const Word& w, TildeScope scope) {
+		if (!hasLiteralTilde(w)) return w;
+
+		TildeWalk walk{env, scope.after_colons};
+		for (std::size_t k = 0; k < w.segments.size(); ++k) {
+			walk.last_segment = k + 1 == w.segments.size();
+			walkTildeSegment(walk, w.segments[k], k == 0 ? scope.start : 0);
+		}
+
+		flushTildeLiteral(walk);
+
+		Word out;
+		out.segments = std::move(walk.out);
+		out.raw = w.raw;
+		out.loc = w.loc;
+		return out;
+	}
+
+	// Offset just past the first `=` of a word spelled like an
+	// assignment (`name=`, `name+=`, `name[sub]=`); 0 for other words.
+	static std::size_t assignmentWordValueStart(const Word& w) {
+		if (w.segments.empty() || w.segments[0].kind != WordSegment::Kind::Literal) return 0;
+
+		const std::string& text = w.segments[0].text;
+		if (text.empty() || !isNameStart(text[0])) return 0;
+
+		std::size_t i = 1;
+		while (i < text.size() && isNameCont(text[i])) ++i;
+		if (i < text.size() && text[i] == '[') {
+			i = text.find(']', i);
+			if (i == std::string::npos) return 0;
+			++i;
+		}
+
+		if (i < text.size() && text[i] == '+') ++i;
+		if (i < text.size() && text[i] == '=') return i + 1;
+		return 0;
 	}
 
 	Word Expander::applyTildeExpansion(const Word& w) {
-		Word out = w;
-		if (out.segments.empty()) return out;
-
-		WordSegment& first = out.segments[0];
-		if (first.kind != WordSegment::Kind::Literal) return out;
-		if (first.text.empty() || first.text[0] != '~') return out;
-
-		const std::size_t end = tildePrefixEnd(first.text);
-		const std::string replacement = tildeReplacement(env_, first.text.substr(1, end - 1));
-		if (replacement.empty()) return out;
-
-		first.text = replacement + first.text.substr(end);
-		return out;
+		TildeScope scope;
+		scope.start = assignmentWordValueStart(w);
+		scope.after_colons = scope.start != 0;
+		return expandTildePrefixes(env_, w, scope);
 	}
 
 	bool Expander::isSpecialParam1(char c) const {
@@ -2642,6 +2760,13 @@ namespace wbsh {
 
 	std::string Expander::expandStringValue(const Word& w) {
 		const Word tilded = applyTildeExpansion(w);
+		return quoteRemove(renderWord(tilded));
+	}
+
+	std::string Expander::expandAssignmentValue(const Word& w) {
+		TildeScope scope;
+		scope.after_colons = true;
+		const Word tilded = expandTildePrefixes(env_, w, scope);
 		return quoteRemove(renderWord(tilded));
 	}
 
