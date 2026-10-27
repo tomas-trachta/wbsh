@@ -6,6 +6,7 @@
  * Windows has no signals to deliver, so every "signal" a user names is
  * accepted for compatibility and ends the target the only way Windows
  * can: TerminateProcess, with 128 + the signal number as its exit code.
+ * Signal 0 delivers nothing and only checks that the target is running.
  */
 
 #include "coreutils_internal.h"
@@ -162,7 +163,23 @@ namespace wbsh {
 		return processes;
 	}
 
+	ProcessProbe probeProcess(unsigned long pid) {
+		const HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+			static_cast<DWORD>(pid));
+		if (process == nullptr) {
+			const bool denied = ::GetLastError() == ERROR_ACCESS_DENIED;
+			return denied ? ProcessProbe::Denied : ProcessProbe::Missing;
+		}
+
+		DWORD code = 0;
+		const bool alive = ::GetExitCodeProcess(process, &code) != 0 && code == STILL_ACTIVE;
+		::CloseHandle(process);
+		return alive ? ProcessProbe::Alive : ProcessProbe::Missing;
+	}
+
 	static bool terminateProcessId(DWORD pid, int signum) {
+		if (signum == 0) return probeProcess(pid) == ProcessProbe::Alive;
+
 		const HANDLE process = ::OpenProcess(PROCESS_TERMINATE, FALSE, pid);
 		if (process == nullptr) return false;
 
