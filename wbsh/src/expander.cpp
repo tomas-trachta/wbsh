@@ -274,6 +274,30 @@ namespace wbsh {
 				pos_ = src_.size();
 			}
 
+			// Runtime errors (not syntax errors) in an operand that is
+			// not evaluated, like the `1/0` in `0 && 1/0`, are ignored.
+			void failEvaluation(const std::string& what, std::size_t token_at) {
+				if (skipping()) return;
+				fail(what, token_at);
+			}
+
+			bool skipping() const {
+				return skip_depth_ > 0;
+			}
+
+			// Parses an operand that `&&`, `||` or `?:` does not need:
+			// syntax is still checked, but nothing is assigned or evaluated.
+			long long parseOperand(bool skip, long long (ArithEval::*parse)()) {
+				if (skip) ++skip_depth_;
+				const long long value = (this->*parse)();
+				if (skip) --skip_depth_;
+				return value;
+			}
+
+			void assignVariable(const std::string& name, long long value) {
+				if (!skipping()) env_.set(name, std::to_string(value));
+			}
+
 			void adoptError(const std::string& message) {
 				if (failed()) return;
 
@@ -333,13 +357,13 @@ namespace wbsh {
 				const long long rhs = parseAssign();
 				const long long lhs = (op.length == 1) ? 0 : variableValue(name);
 				if (isDivision(op.spelling[0]) && rhs == 0) {
-					fail(kDivisionByZero, rhs_at);
+					failEvaluation(kDivisionByZero, rhs_at);
 				}
 
 				if (failed()) return 0;
 
 				const long long value = combineAssign(op.spelling[0], lhs, rhs);
-				env_.set(name, std::to_string(value));
+				assignVariable(name, value);
 				return value;
 			}
 
@@ -347,16 +371,16 @@ namespace wbsh {
 				const long long condition = parseLogOr();
 				if (!consume('?')) return condition;
 
-				const long long when_true = parseAssign();
+				const long long when_true = parseOperand(condition == 0, &ArithEval::parseAssign);
 				if (!consume(':')) fail("`:' expected for conditional expression", pos_);
-				const long long when_false = parseAssign();
+				const long long when_false = parseOperand(condition != 0, &ArithEval::parseAssign);
 				return condition != 0 ? when_true : when_false;
 			}
 
 			long long parseLogOr() {
 				long long left = parseLogAnd();
 				while (consume("||")) {
-					const long long right = parseLogAnd();
+					const long long right = parseOperand(left != 0, &ArithEval::parseLogAnd);
 					left = truth(left != 0 || right != 0);
 				}
 
@@ -366,7 +390,7 @@ namespace wbsh {
 			long long parseLogAnd() {
 				long long left = parseBitOr();
 				while (consume("&&")) {
-					const long long right = parseBitOr();
+					const long long right = parseOperand(left == 0, &ArithEval::parseBitOr);
 					left = truth(left != 0 && right != 0);
 				}
 
@@ -489,7 +513,7 @@ namespace wbsh {
 				skipWs();
 				const std::size_t divisor_at = pos_;
 				const long long divisor = parsePow();
-				if (divisor == 0) fail(kDivisionByZero, divisor_at);
+				if (divisor == 0) failEvaluation(kDivisionByZero, divisor_at);
 				return divisor;
 			}
 
@@ -501,7 +525,7 @@ namespace wbsh {
 				skipWs();
 				const std::size_t exponent_at = pos_;
 				const long long exponent = parsePow();
-				if (exponent < 0) fail("exponent less than 0", exponent_at);
+				if (exponent < 0) failEvaluation("exponent less than 0", exponent_at);
 				return power(base, exponent);
 			}
 
@@ -519,13 +543,13 @@ namespace wbsh {
 			long long prefixStep(long long delta) {
 				const std::string name = readIdent();
 				const long long value = variableValue(name) + delta;
-				env_.set(name, std::to_string(value));
+				assignVariable(name, value);
 				return value;
 			}
 
 			long long postfixStep(const std::string& name, long long delta) {
 				const long long value = variableValue(name);
-				env_.set(name, std::to_string(value + delta));
+				assignVariable(name, value + delta);
 				return value;
 			}
 
@@ -563,7 +587,7 @@ namespace wbsh {
 			}
 
 			long long variableValue(const std::string& name) {
-				if (name.empty()) return 0;
+				if (name.empty() || skipping()) return 0;
 				const std::string text = env_.get(name);
 				if (text.empty()) return 0;
 
@@ -671,6 +695,7 @@ namespace wbsh {
 			std::size_t pos_ = 0;
 			std::size_t last_operator_at_ = 0;
 			std::string error_;
+			int skip_depth_ = 0;
 			Environment& env_;
 			int depth_;
 		};

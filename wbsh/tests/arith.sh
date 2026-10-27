@@ -63,4 +63,18 @@ echo $(( (-9223372036854775807 - 1) / -1 )) $(( (-9223372036854775807 - 1) % -1 
 m=-9223372036854775808; (( m /= -1 )); n=-9223372036854775808; (( n %= -1 ))
 echo "INT64_MIN /= -1 -> $m, %= -1 -> $n"
 
+echo "=== && || ?: skip the side effects of unused operands"
+x=0; echo "0 && x++ -> $(( 0 && x++ )), x=$x"
+x=0; echo "1 || x++ -> $(( 1 || x++ )), x=$x"
+x=0; echo "1 && x++ -> $(( 1 && x++ )), x=$x"
+x=0; echo "0 || x++ -> $(( 0 || x++ )), x=$x"
+w=0; echo "0 ? (w=7) : 2 -> $(( 0 ? (w=7) : 2 )), w=$w"
+w=0; echo "1 ? 2 : (w=7) -> $(( 1 ? 2 : (w=7) )), w=$w"
+x=0; echo "nested -> $(( 0 && (x = 5, x++, --x) )), x=$x"
+x=0; echo "0 && 1 || x++ -> $(( 0 && 1 || x++ )), x=$x"
+y=1/0; q='x++'; x=0
+echo "unused 1/0, y, q -> $(( 0 && 1/0 )) $(( 0 && y )) $(( 0 && q )), x=$x"
+echo "$(( 0 && 08 ))"
+echo "  syntax in an unused operand still fails: status $?"
+
 echo "=== done"
