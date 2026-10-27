@@ -594,10 +594,9 @@ namespace wbshterm {
 		const LRESULT edge = frameEdgeAt(where.x, where.y, client);
 		if (edge != HTNOWHERE) return edge;
 
-		const float x = static_cast<float>(where.x);
-		const float y = static_cast<float>(where.y);
-		if (title_bar_.buttonAt(x, y) != TitleButton::None) return HTCLIENT;
-		if (title_bar_.holdsPoint(x, y)) return HTCAPTION;
+		const D2D1_POINT_2F point = dipsOf(where);
+		if (title_bar_.buttonAt(point.x, point.y) != TitleButton::None) return HTCLIENT;
+		if (title_bar_.holdsPoint(point.x, point.y)) return HTCAPTION;
 
 		return HTCLIENT;
 	}
@@ -619,8 +618,8 @@ namespace wbshterm {
 	}
 
 	bool TerminalWindow::titleBarTakesPress(LPARAM lparam) {
-		const TitleButton which = title_bar_.buttonAt(
-			static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
+		const D2D1_POINT_2F point = mouseDips(lparam);
+		const TitleButton which = title_bar_.buttonAt(point.x, point.y);
 		if (which == TitleButton::None) return false;
 
 		title_bar_.setPressed(which);
@@ -639,9 +638,8 @@ namespace wbshterm {
 		if (::GetCapture() == window_) ::ReleaseCapture();
 		::InvalidateRect(window_, nullptr, FALSE);
 
-		const TitleButton under = title_bar_.buttonAt(
-			static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
-		if (under == pressed) runTitleButton(pressed);
+		const D2D1_POINT_2F point = mouseDips(lparam);
+		if (title_bar_.buttonAt(point.x, point.y) == pressed) runTitleButton(pressed);
 
 		return true;
 	}
@@ -655,8 +653,8 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::trackTitleHover(LPARAM lparam) {
-		const TitleButton which = title_bar_.buttonAt(
-			static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
+		const D2D1_POINT_2F point = mouseDips(lparam);
+		const TitleButton which = title_bar_.buttonAt(point.x, point.y);
 		if (!title_bar_.setHovered(which)) return;
 
 		if (which != TitleButton::None) armMouseLeave();
@@ -670,8 +668,9 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::trackScrollbarHover(LPARAM lparam) {
-		const float x = static_cast<float>(GET_X_LPARAM(lparam));
-		const float y = static_cast<float>(GET_Y_LPARAM(lparam));
+		const D2D1_POINT_2F point = mouseDips(lparam);
+		const float x = point.x;
+		const float y = point.y;
 
 		PaneNode* leaf = panes_.leafAt(x, y);
 		if (leaf != nullptr && !scrollbarHolds(scrollbarOf(*leaf), x, y)) leaf = nullptr;
@@ -930,18 +929,28 @@ namespace wbshterm {
 		renderer_.drawTitleBar(caption);
 	}
 
+	D2D1_POINT_2F TerminalWindow::dipsOf(POINT pixels) const {
+		return D2D1::Point2F(pixelsToDips(pixels.x, dpi_), pixelsToDips(pixels.y, dpi_));
+	}
+
+	// Mouse messages carry client pixels; the layout, the cells and the
+	// title bar are all measured in the target's DIPs.
+	D2D1_POINT_2F TerminalWindow::mouseDips(LPARAM lparam) const {
+		const POINT pixels = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+		return dipsOf(pixels);
+	}
+
 	PaneNode* TerminalWindow::leafFromMouse(LPARAM lparam) const {
-		return panes_.leafAt(static_cast<float>(GET_X_LPARAM(lparam)),
-			static_cast<float>(GET_Y_LPARAM(lparam)));
+		const D2D1_POINT_2F point = mouseDips(lparam);
+		return panes_.leafAt(point.x, point.y);
 	}
 
 	GridPoint TerminalWindow::pointInLeaf(const PaneNode& leaf, LPARAM lparam) const {
 		const CellMetrics& cell = renderer_.metrics();
 		const Screen& screen = leaf.pane()->screen();
-		const float x = static_cast<float>(GET_X_LPARAM(lparam)) - leaf.bounds().left
-			- renderer_.padding();
-		const float y = static_cast<float>(GET_Y_LPARAM(lparam)) - leaf.bounds().top
-			- renderer_.padding();
+		const D2D1_POINT_2F mouse = mouseDips(lparam);
+		const float x = mouse.x - leaf.bounds().left - renderer_.padding();
+		const float y = mouse.y - leaf.bounds().top - renderer_.padding();
 
 		const int column = std::min(std::max(static_cast<int>(x / cell.width), 0),
 			screen.columns() - 1);
@@ -955,8 +964,8 @@ namespace wbshterm {
 	}
 
 	bool TerminalWindow::beginDividerDrag(LPARAM lparam) {
-		PaneNode* branch = panes_.dividerAt(static_cast<float>(GET_X_LPARAM(lparam)),
-			static_cast<float>(GET_Y_LPARAM(lparam)), kDividerSlop);
+		const D2D1_POINT_2F point = mouseDips(lparam);
+		PaneNode* branch = panes_.dividerAt(point.x, point.y, kDividerSlop);
 		if (branch == nullptr) return false;
 
 		dragging_ = branch;
@@ -965,8 +974,8 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::continueDividerDrag(LPARAM lparam) {
-		panes_.dragDivider(dragging_, static_cast<float>(GET_X_LPARAM(lparam)),
-			static_cast<float>(GET_Y_LPARAM(lparam)));
+		const D2D1_POINT_2F point = mouseDips(lparam);
+		panes_.dragDivider(dragging_, point.x, point.y);
 		layoutPanes();
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
@@ -988,8 +997,9 @@ namespace wbshterm {
 	// brings the thumb under the pointer first, then the drag goes on
 	// from there as if it had been picked up in the middle.
 	bool TerminalWindow::beginScrollbarDrag(LPARAM lparam) {
-		const float x = static_cast<float>(GET_X_LPARAM(lparam));
-		const float y = static_cast<float>(GET_Y_LPARAM(lparam));
+		const D2D1_POINT_2F point = mouseDips(lparam);
+		const float x = point.x;
+		const float y = point.y;
 
 		PaneNode* leaf = panes_.leafAt(x, y);
 		if (leaf == nullptr) return false;
@@ -1007,7 +1017,7 @@ namespace wbshterm {
 	void TerminalWindow::continueScrollbarDrag(LPARAM lparam) {
 		Pane& pane = *scrolling_->pane();
 		const ScrollbarShape shape = scrollbarOf(*scrolling_);
-		const float thumb_top = static_cast<float>(GET_Y_LPARAM(lparam)) - scroll_grab_;
+		const float thumb_top = mouseDips(lparam).y - scroll_grab_;
 
 		pane.view().scrollToRow(rowForThumbTop(shape, thumb_top, pane.screen()), pane.screen());
 		::InvalidateRect(window_, nullptr, FALSE);
@@ -1033,17 +1043,16 @@ namespace wbshterm {
 		POINT where{};
 		if (::GetCursorPos(&where) == 0 || ::ScreenToClient(window_, &where) == 0) return false;
 
-		if (title_bar_.holdsPoint(static_cast<float>(where.x), static_cast<float>(where.y))
-			|| where.y >= static_cast<int>(status_bounds_.top)
-			|| pointerOverScrollbar(static_cast<float>(where.x), static_cast<float>(where.y))) {
+		const D2D1_POINT_2F point = dipsOf(where);
+		if (title_bar_.holdsPoint(point.x, point.y) || point.y >= status_bounds_.top
+			|| pointerOverScrollbar(point.x, point.y)) {
 			::SetCursor(::LoadCursorW(nullptr, IDC_ARROW));
 			return true;
 		}
 
 		const PaneNode* branch = dragging_ != nullptr
 			? dragging_
-			: panes_.dividerAt(static_cast<float>(where.x), static_cast<float>(where.y),
-				kDividerSlop);
+			: panes_.dividerAt(point.x, point.y, kDividerSlop);
 		if (branch == nullptr) return false;
 
 		::SetCursor(::LoadCursorW(nullptr,
@@ -1261,27 +1270,44 @@ namespace wbshterm {
 	bool TerminalWindow::createWindow(std::string& out_error) {
 		const CellMetrics& cell = renderer_.metrics();
 		const float pad = 2.0f * static_cast<float>(config_.window.padding);
-		RECT wanted = { 0, 0,
+		RECT client_dips = { 0, 0,
 			static_cast<LONG>(cell.width * static_cast<float>(config_.window.columns) + pad),
 			static_cast<LONG>(cell.height * static_cast<float>(config_.window.rows) + pad) };
 
 		// A custom frame puts the caption inside the client area, so the
 		// window has to be that much taller to leave the grid its rows.
-		wanted.bottom += static_cast<LONG>(statusHeight());
-		if (customFrame()) wanted.bottom += static_cast<LONG>(titleHeight());
-		else ::AdjustWindowRect(&wanted, WS_OVERLAPPEDWINDOW, FALSE);
+		client_dips.bottom += static_cast<LONG>(statusHeight());
+		if (customFrame()) client_dips.bottom += static_cast<LONG>(titleHeight());
 
 		window_ = ::CreateWindowExW(0, kClassName, L"wbsh", WS_OVERLAPPEDWINDOW,
-			CW_USEDEFAULT, CW_USEDEFAULT, wanted.right - wanted.left, wanted.bottom - wanted.top,
+			CW_USEDEFAULT, CW_USEDEFAULT, client_dips.right, client_dips.bottom,
 			nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
 		if (window_ == nullptr) {
 			out_error = "CreateWindowEx failed";
 			return false;
 		}
 
+		sizeWindowForDpi(client_dips);
 		applyFrameAppearance();
 		::DragAcceptFiles(window_, TRUE);
 		return true;
+	}
+
+	// The grid's size is worked out in DIPs; the window is sized in the
+	// pixels of the monitor it was placed on, which is known only now.
+	void TerminalWindow::sizeWindowForDpi(const RECT& client_dips) {
+		const UINT dpi = ::GetDpiForWindow(window_);
+		const int scale = dpi != 0 ? static_cast<int>(dpi) : USER_DEFAULT_SCREEN_DPI;
+		RECT wanted = { 0, 0,
+			::MulDiv(client_dips.right, scale, USER_DEFAULT_SCREEN_DPI),
+			::MulDiv(client_dips.bottom, scale, USER_DEFAULT_SCREEN_DPI) };
+		if (!customFrame()) {
+			::AdjustWindowRectExForDpi(&wanted, WS_OVERLAPPEDWINDOW, FALSE, 0,
+				static_cast<UINT>(scale));
+		}
+
+		::SetWindowPos(window_, nullptr, 0, 0, wanted.right - wanted.left,
+			wanted.bottom - wanted.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 	}
 
 	// The border DWM still draws around a custom frame is the one seam
@@ -1331,7 +1357,15 @@ namespace wbshterm {
 			return false;
 		}
 
+		applyWindowDpi(::GetDpiForWindow(window_));
 		return true;
+	}
+
+	// Left to itself the target takes the primary monitor's DPI from when
+	// the process started, not the one of the monitor the window is on.
+	void TerminalWindow::applyWindowDpi(UINT dpi) {
+		dpi_ = dpi != 0 ? dpi : USER_DEFAULT_SCREEN_DPI;
+		if (target_) target_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
 	}
 
 	LRESULT CALLBACK TerminalWindow::windowProc(HWND window, UINT message, WPARAM wparam,
@@ -1518,8 +1552,8 @@ namespace wbshterm {
 		POINT where = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
 		::ScreenToClient(window_, &where);
 
-		PaneNode* leaf = panes_.leafAt(static_cast<float>(where.x),
-			static_cast<float>(where.y));
+		const D2D1_POINT_2F point = dipsOf(where);
+		PaneNode* leaf = panes_.leafAt(point.x, point.y);
 		Pane& pane = leaf != nullptr ? *leaf->pane() : focused();
 		if (&pane != wheel_pane_) wheel_.reset();
 		wheel_pane_ = &pane;
@@ -1651,7 +1685,8 @@ namespace wbshterm {
 		POINT where = { screen_x, screen_y };
 		if (::ScreenToClient(window_, &where) == 0) return false;
 
-		return title_bar_.holdsPoint(static_cast<float>(where.x), static_cast<float>(where.y));
+		const D2D1_POINT_2F point = dipsOf(where);
+		return title_bar_.holdsPoint(point.x, point.y);
 	}
 
 	void TerminalWindow::onContextMenu(LPARAM lparam) {
@@ -1831,8 +1866,7 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::onDpiChanged(WPARAM wparam, LPARAM lparam) {
-		const UINT dpi = LOWORD(wparam);
-		if (target_) target_->SetDpi(static_cast<float>(dpi), static_cast<float>(dpi));
+		applyWindowDpi(LOWORD(wparam));
 
 		const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
 		::SetWindowPos(window_, nullptr, suggested->left, suggested->top,

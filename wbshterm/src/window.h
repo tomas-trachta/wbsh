@@ -174,6 +174,10 @@ namespace wbshterm {
 		void copySelection();
 		bool jumpToCommand(bool backwards);
 		void copyLastCommandOutput();
+		D2D1_POINT_2F dipsOf(POINT pixels) const;
+		D2D1_POINT_2F mouseDips(LPARAM lparam) const;
+		void applyWindowDpi(UINT dpi);
+		void sizeWindowForDpi(const RECT& client_dips);
 		PaneNode* leafFromMouse(LPARAM lparam) const;
 		GridPoint pointInLeaf(const PaneNode& leaf, LPARAM lparam) const;
 		int clickCountAt(GridPoint point);
@@ -201,6 +205,7 @@ namespace wbshterm {
 		GridPoint    last_click_;
 		DWORD        last_click_time_ = 0;
 		int          click_count_     = 0;
+		UINT         dpi_ = USER_DEFAULT_SCREEN_DPI;
 		bool         swallow_next_char_ = false;
 		SurrogateJoiner surrogates_;
 		WheelAccumulator wheel_;
