@@ -10,7 +10,7 @@ yes-r: [a\tb\nc]
 === 5. read -a array
 len=4 0=one 3=four
 === 6. read with leading/trailing whitespace
-a=[spaced] b=[out trailing]
+a=[spaced] b=[out   trailing]
 === 7. while read line < file (no subshell, vars survive)
 count=3 last=three (bash expects 3 / three)
 === 8. IFS= read -r preserves leading/trailing whitespace

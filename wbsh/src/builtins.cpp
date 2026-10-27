@@ -1193,135 +1193,6 @@ namespace wbsh {
 		return exec.callBuiltin(args[0], { args.begin() + 1, args.end() });
 	}
 
-	namespace read_detail {
-		struct ReadOptions {
-			bool raw = false;
-			std::string prompt;
-			std::string array_name;
-		};
-	}  // namespace read_detail
-
-	static std::size_t parseReadFlags(const std::vector<std::string>& args,
-			read_detail::ReadOptions& options) {
-		std::size_t i = 0;
-		while (i < args.size() && !args[i].empty() && args[i][0] == '-') {
-			const std::string& flag = args[i];
-			if (flag == "--") return i + 1;
-			if (flag == "-r") {
-				options.raw = true;
-				++i;
-				continue;
-			}
-
-			if (flag != "-p" && flag != "-a") break;
-
-			const bool has_value = i + 1 < args.size();
-			if (has_value && flag == "-p") options.prompt = args[i + 1];
-			if (has_value && flag == "-a") options.array_name = args[i + 1];
-			i += has_value ? 2 : 1;
-		}
-
-		return i;
-	}
-
-	static bool readOneLineFromStdin(bool raw, std::string& line) {
-		for (;;) {
-			const int ch = std::fgetc(stdin);
-			if (ch == EOF) return !line.empty();
-			if (ch == '\n') return true;
-
-			if (!raw && ch == '\\') {
-				const int next = std::fgetc(stdin);
-				if (next == EOF) return true;
-				if (next == '\n') continue;
-
-				line.push_back(static_cast<char>(next));
-				continue;
-			}
-
-			line.push_back(static_cast<char>(ch));
-		}
-	}
-
-	static bool isIfsChar(char c, const std::string& ifs) {
-		return ifs.find(c) != std::string::npos;
-	}
-
-	static bool isIfsWhitespace(char c, const std::string& ifs) {
-		return (c == ' ' || c == '\t' || c == '\n') && isIfsChar(c, ifs);
-	}
-
-	// One non-whitespace IFS character ends a field on its own; the IFS
-	// whitespace around it is swallowed with it, as in bash.
-	static void skipFieldSeparator(const std::string& line, std::size_t& pos,
-			const std::string& ifs) {
-		bool saw_nonws = false;
-		while (pos < line.size() && isIfsChar(line[pos], ifs)) {
-			if (!isIfsWhitespace(line[pos], ifs)) {
-				if (saw_nonws) break;
-				saw_nonws = true;
-			}
-
-			++pos;
-		}
-	}
-
-	static std::vector<std::string> splitReadLine(const std::string& line, const std::string& ifs) {
-		std::vector<std::string> fields;
-		std::size_t pos = 0;
-		while (pos < line.size() && isIfsWhitespace(line[pos], ifs)) ++pos;
-
-		while (pos < line.size()) {
-			std::string field;
-			while (pos < line.size() && !isIfsChar(line[pos], ifs)) field.push_back(line[pos++]);
-			fields.push_back(std::move(field));
-
-			skipFieldSeparator(line, pos, ifs);
-		}
-
-		return fields;
-	}
-
-	static void assignReadFields(Environment& env, const std::vector<std::string>& names,
-			const std::vector<std::string>& fields) {
-		for (std::size_t k = 0; k < names.size(); ++k) {
-			const bool last_name = k + 1 == names.size();
-
-			std::string value;
-			if (k < fields.size()) {
-				value = last_name ? joinWithSpaces(fields.begin() + k, fields.end()) : fields[k];
-			}
-
-			env.set(names[k], value);
-		}
-	}
-
-	static int builtin_read(Executor& exec, const std::vector<std::string>& args) {
-		read_detail::ReadOptions options;
-		const std::size_t first_name = parseReadFlags(args, options);
-
-		if (!options.prompt.empty()) {
-			std::fwrite(options.prompt.data(), 1, options.prompt.size(), stderr);
-			std::fflush(stderr);
-		}
-
-		std::string line;
-		if (!readOneLineFromStdin(options.raw, line)) return 1;
-
-		const std::string ifs = exec.env().ifs();
-		std::vector<std::string> fields = splitReadLine(line, ifs);
-
-		if (!options.array_name.empty()) {
-			exec.env().setIndexedArrayFromList(options.array_name, std::move(fields));
-			return 0;
-		}
-
-		std::vector<std::string> names(args.begin() + first_name, args.end());
-		if (names.empty()) names.push_back("REPLY");
-		assignReadFields(exec.env(), names, fields);
-		return 0;
-	}
-
 	static int evalUnaryFileTest(char op, const std::string& raw_path, const PathConv& pc) {
 		const std::string path = pc.toWin32(raw_path);
 		struct stat info {};
@@ -2665,7 +2536,6 @@ namespace wbsh {
 		exec.registerBuiltin("type",     builtin_type);
 		exec.registerBuiltin("command",  builtin_command);
 		exec.registerBuiltin("builtin",  builtin_builtin);
-		exec.registerBuiltin("read",     builtin_read);
 		exec.registerBuiltin("test",     builtin_test);
 		exec.registerBuiltin("[",        builtin_lbracket);
 		exec.registerBuiltin("alias",    builtin_alias);
@@ -2694,6 +2564,7 @@ namespace wbsh {
 		exec.registerBuiltin("bg",       builtin_bg);
 		exec.registerBuiltin("disown",   builtin_disown);
 		registerDeclarationBuiltins(exec);
+		registerReadBuiltin(exec);
 	}
 
 }  // namespace wbsh
