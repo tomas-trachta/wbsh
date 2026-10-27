@@ -228,13 +228,15 @@ namespace wbsh {
 		std::string pending_error_;
 
 		Tagged renderWord(const Word& w);
-		void   renderSegment(const WordSegment& s, Tagged& out, bool inside_dq);
-		void   renderArrayFields(const std::vector<std::string>& elems,
+		// renderSegment, renderArrayFields and renderParamExpSegment
+		// return true when they rendered an `@` list with no elements,
+		// which removes the quoted null of the enclosing `"..."`.
+		bool   renderSegment(const WordSegment& s, Tagged& out, bool inside_dq);
+		bool   renderArrayFields(const std::vector<std::string>& elems,
 		                         bool star, bool inside_dq, Tagged& out);
 		void   renderDoubleQuoted(const WordSegment& s, Tagged& out);
-		void   renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq);
+		bool   renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq);
 		void   renderProcSubstSegment(const WordSegment& s, Tagged& out);
-		bool   isEmptyAtExpansion(const WordSegment& s) const;
 
 		std::string lookupParam(const std::string& name, bool suppress_nounset = false);
 		std::string lookupPositional(std::size_t index) const;
@@ -262,7 +264,26 @@ namespace wbsh {
 		                               const std::string& name,
 		                               const std::string& cur,
 		                               const std::string& arg);
-		std::string evalArraySlice(const std::string& name, const std::string& args);
+		// A `@`, `*`, `name[@]` or `name[*]` subject with an operator
+		// after it. Bash applies the operator to each element, and the
+		// `@` forms keep the elements as separate fields.
+		struct ListParam {
+			std::string name;        // the array name; empty for `@` / `*`
+			bool star = false;       // a `*` form, joined with IFS[0]
+			std::size_t op_pos = 0;  // index of the operator in the body
+		};
+		using KeyedList = std::vector<std::pair<long long, std::string>>;
+		bool parseListParam(const std::string& body, ListParam& out) const;
+		std::vector<std::string> listParamValues(const ListParam& p) const;
+		KeyedList sliceCandidates(const ListParam& p) const;
+		std::vector<std::string> expandListParam(const ListParam& p, const std::string& body);
+		std::vector<std::string> sliceListParam(const ListParam& p, const std::string& args);
+		std::vector<std::string> evalListDefaultOp(char op, bool colon,
+		                                           const std::string& subject,
+		                                           std::vector<std::string> elems,
+		                                           const std::string& arg);
+		std::vector<std::string> mapListOp(char op, bool doubled, const std::string& arg,
+		                                   std::vector<std::string> elems);
 		std::string evalParamReplace(const std::string& cur,
 		                             const std::string& args, bool all);
 		struct ParamOpCtx {
