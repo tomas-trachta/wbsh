@@ -590,7 +590,7 @@ namespace wbsh {
 	}
 
 	static int builtin_exit(Executor& exec, const std::vector<std::string>& args) {
-		const int status = firstArgAsInt(args, exec.lastStatus());
+		const int status = firstArgAsInt(args, exec.defaultExitStatus());
 		exec.raiseExit(status);
 		return status;
 	}
@@ -897,15 +897,22 @@ namespace wbsh {
 		return joined;
 	}
 
+	static int runExecCommand(Executor& exec, const std::vector<std::string>& args) {
+		const std::string& command = args[0];
+		const std::vector<std::string> rest(args.begin() + 1, args.end());
+		if (exec.isBuiltin(command))  return exec.callBuiltin(command, rest);
+		if (exec.isFunction(command)) return exec.callFunction(command, rest);
+
+		return exec.executeText(joinQuoted(args, quoteSingle), "<exec>");
+	}
+
+	// The command replaces the shell: the shell ends with it, and its EXIT
+	// trap never runs.
 	static int builtin_exec(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) return 0;
 
-		const std::string command = args[0];
-		const std::vector<std::string> rest(args.begin() + 1, args.end());
-		if (exec.isBuiltin(command)) return exec.callBuiltin(command, rest);
-		if (exec.isFunction(command)) return exec.callFunction(command, rest);
-
-		const int status = exec.executeText(joinQuoted(args, quoteSingle), "<exec>");
+		exec.clearTrap("EXIT");
+		const int status = runExecCommand(exec, args);
 		if (!exec.flowPending()) exec.raiseExit(status);
 		return status;
 	}

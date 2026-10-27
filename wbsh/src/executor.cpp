@@ -2022,6 +2022,7 @@ namespace wbsh {
 		snap.saved_pos   = env_.positional();
 		snap.saved_name  = env_.shellName();
 		snap.saved_funcs = functions_;
+		snap.saved_traps = trap_handlers_;
 		snap.saved_options = env_.options();
 
 		std::error_code ec;
@@ -2047,6 +2048,7 @@ namespace wbsh {
 		env_.setShellName(snap.saved_name);
 		env_.options() = snap.saved_options;
 		functions_ = std::move(snap.saved_funcs);
+		trap_handlers_ = std::move(snap.saved_traps);
 
 		std::error_code ec;
 		std::filesystem::current_path(snap.saved_cwd, ec);
@@ -2071,6 +2073,7 @@ namespace wbsh {
 
 		const std::string body = readScriptBody(file);
 		ShellScriptScope snap = snapshotShellScriptScope();
+		trap_handlers_.clear();
 
 		for (const auto& assignment : temp_env) env_.set(assignment.first, assignment.second);
 		env_.setShellName(path);
@@ -2078,6 +2081,7 @@ namespace wbsh {
 
 		int status = executeInputText(body, path);
 		consumeFlow(FlowSignal::Kind::Exit, &status);
+		if (!flowPending()) status = fireExitTrap(status);
 		restoreShellScriptScope(snap, /*force_set=*/flowPending());
 		return status;
 	}
@@ -2114,8 +2118,17 @@ namespace wbsh {
 		std::filesystem::current_path(snap.saved_cwd, ec);
 	}
 
+	// A subshell starts without the parent's EXIT trap: that one belongs to
+	// the parent and fires when the parent exits.
+	std::unordered_map<std::string, std::string> Executor::enterSubshellTraps() {
+		std::unordered_map<std::string, std::string> saved = trap_handlers_;
+		trap_handlers_.erase("EXIT");
+		return saved;
+	}
+
 	int Executor::execSubshell(const Subshell& subshell) {
 		SubshellScope snap = snapshotSubshellScope();
+		enterSubshellTraps();
 
 		RedirState state;
 		if (!applyRedirectionsOrUndo(subshell.redirs, state)) return 1;
@@ -2125,7 +2138,7 @@ namespace wbsh {
 		consumeFlow(FlowSignal::Kind::Exit, &status);
 		undoRedirections(state);
 
-		if (!flowPending()) fireExitTrap();
+		if (!flowPending()) status = fireExitTrap(status);
 		restoreSubshellScope(snap);
 		return status;
 	}
@@ -2777,14 +2790,33 @@ namespace wbsh {
 		}
 	}
 
-	void Executor::fireExitTrap() {
+	int Executor::fireExitTrap(int status) {
 		const auto it = trap_handlers_.find("EXIT");
-		if (it == trap_handlers_.end()) return;
+		if (it == trap_handlers_.end()) return status;
 
-		const std::string cmd = it->second;
-		trap_handlers_.erase(it);
-		executeText(cmd, "<EXIT trap>");
+		const std::string action = it->second;
+		const int final_status = runExitTrapAction(action, status);
+		trap_handlers_.erase("EXIT");
+		return final_status;
+	}
+
+	int Executor::runExitTrapAction(const std::string& action, int status) {
+		const bool outer_in_trap = in_exit_trap_;
+		const int  outer_status  = exit_trap_status_;
+		in_exit_trap_ = true;
+		exit_trap_status_ = status;
+
 		clearFlow();
+		setLastStatus(status);
+		executeText(action, "<EXIT trap>");
+
+		int final_status = status;
+		consumeFlow(FlowSignal::Kind::Exit, &final_status);
+		clearFlow();
+
+		in_exit_trap_ = outer_in_trap;
+		exit_trap_status_ = outer_status;
+		return final_status;
 	}
 
 	static void trimToMaxHistory(std::vector<std::string>& cmds, std::vector<int>& statuses) {
@@ -3131,6 +3163,16 @@ namespace wbsh {
 		return out;
 	}
 
+	void Executor::runCommandSubstitutionBody(const std::string& body) {
+		std::unordered_map<std::string, std::string> saved_traps = enterSubshellTraps();
+
+		int status = executeText(body, "<command-substitution>");
+		consumeFlow(FlowSignal::Kind::Exit, &status);
+		if (!flowPending() && hasTrap("EXIT")) setLastStatus(fireExitTrap(status));
+
+		trap_handlers_ = std::move(saved_traps);
+	}
+
 	std::string Executor::runRaw(const std::string& body) {
 		const std::string capture_path = makeTempFile();
 		if (capture_path.empty()) return {};
@@ -3146,8 +3188,7 @@ namespace wbsh {
 		const int saved_stdout = _dup(1);
 		_dup2(capture_fd, 1);
 		_close(capture_fd);
-		executeText(body, "<command-substitution>");
-		consumeFlow(FlowSignal::Kind::Exit);
+		runCommandSubstitutionBody(body);
 		std::fflush(stdout);
 		_dup2(saved_stdout, 1);
 		_close(saved_stdout);

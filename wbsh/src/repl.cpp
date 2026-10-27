@@ -833,15 +833,15 @@ namespace wbsh {
 
 	static int exitOnEof(Executor& exec, const ReplState& state) {
 		std::fputc('\n', stdout);
-		exec.fireExitTrap();
+		const int status = exec.fireExitTrap(exec.lastStatus());
 		saveHistory(exec, state);
-		return exec.lastStatus();
+		return status;
 	}
 
 	static int exitWithStatus(Executor& exec, const ReplState& state, int exit_status) {
-		exec.fireExitTrap();
+		const int status = exec.fireExitTrap(exit_status);
 		saveHistory(exec, state);
-		return exit_status;
+		return status;
 	}
 
 	static void runLine(Executor& exec, ReplState& state, std::string& line) {
