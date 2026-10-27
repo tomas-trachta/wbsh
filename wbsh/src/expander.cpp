@@ -98,6 +98,20 @@ namespace wbsh {
 		return out;
 	}
 
+	// Index of the bracket that closes the group already `depth` deep at
+	// `after_open`, or body.size() when it is never closed.
+	static std::size_t scanBalanced(const std::string& body, std::size_t after_open,
+			char open, char close, int depth) {
+		std::size_t k = after_open;
+		while (k < body.size() && depth > 0) {
+			if (body[k] == open) ++depth;
+			else if (body[k] == close) --depth;
+			if (depth > 0) ++k;
+		}
+
+		return k;
+	}
+
 	namespace arith_detail {
 
 		struct AssignOp {
@@ -237,6 +251,60 @@ namespace wbsh {
 			return text.substr(start, end - start);
 		}
 
+		// A variable operand as written: `name` or `name[subscript]`. The
+		// subscript is evaluated only when the operand is used.
+		struct VarRef {
+			std::string name;
+			bool has_subscript = false;
+			std::string subscript;
+		};
+
+		// The storage a VarRef resolved to: the plain variable, an
+		// indexed element, or an assoc-array element.
+		struct Slot {
+			std::string name;
+			bool element = false;
+			bool assoc = false;
+			long long index = 0;
+			std::string key;
+		};
+
+		// Not an error in bash: the operand reads as 0 or the assignment
+		// is dropped, and evaluation goes on.
+		static void warnBadSubscript(const std::string& what) {
+			std::fprintf(stderr, "wbsh: %s: bad array subscript\n", what.c_str());
+		}
+
+		// A scalar has no negative indices in bash, so it counts as empty.
+		static long long nextIndexAfterLast(const Environment& env, const std::string& name) {
+			const Environment::IndexedArray* indexed = env.getIndexedArray(name);
+			if (indexed == nullptr || indexed->empty()) return 0;
+			return indexed->rbegin()->first + 1;
+		}
+
+		static std::string elementText(const Environment& env, const Slot& slot) {
+			if (slot.assoc) {
+				const Environment::AssocArray* assoc = env.getAssocArray(slot.name);
+				if (assoc == nullptr) return {};
+
+				const auto it = assoc->find(slot.key);
+				return it == assoc->end() ? std::string() : it->second;
+			}
+
+			const Environment::IndexedArray* indexed = env.getIndexedArray(slot.name);
+			if (indexed == nullptr) return slot.index == 0 ? env.get(slot.name) : std::string();
+
+			const auto it = indexed->find(slot.index);
+			return it == indexed->end() ? std::string() : it->second;
+		}
+
+		static void storeSlot(Environment& env, const Slot& slot, long long value) {
+			std::string text = std::to_string(value);
+			if (!slot.element) env.set(slot.name, std::move(text));
+			else if (slot.assoc) env.setAssocElement(slot.name, slot.key, std::move(text));
+			else env.setIndexedElement(slot.name, slot.index, std::move(text));
+		}
+
 		// Recursive-descent evaluator for `$(( ... ))`. Precedence climbs
 		// from parseComma() down to parsePrimary(), one method per level.
 		class ArithEval {
@@ -294,10 +362,6 @@ namespace wbsh {
 				return value;
 			}
 
-			void assignVariable(const std::string& name, long long value) {
-				if (!skipping()) env_.set(name, std::to_string(value));
-			}
-
 			void adoptError(const std::string& message) {
 				if (failed()) return;
 
@@ -327,10 +391,10 @@ namespace wbsh {
 				const std::size_t save = pos_;
 				skipWs();
 				if (!eof() && isNameStart(peek())) {
-					const std::string name = readIdent();
+					const VarRef ref = readVarRef();
 					skipWs();
 					const AssignOp* op = matchAssignOp();
-					if (op != nullptr) return applyAssignment(name, *op);
+					if (op != nullptr) return applyAssignment(ref, *op);
 				}
 
 				pos_ = save;
@@ -351,11 +415,15 @@ namespace wbsh {
 				return nullptr;
 			}
 
-			long long applyAssignment(const std::string& name, const AssignOp& op) {
+			// The right side is evaluated before the subscript, as in bash.
+			long long applyAssignment(const VarRef& ref, const AssignOp& op) {
 				skipWs();
 				const std::size_t rhs_at = pos_;
 				const long long rhs = parseAssign();
-				const long long lhs = (op.length == 1) ? 0 : variableValue(name);
+
+				Slot slot;
+				const bool resolved = resolveSlot(ref, /*for_write=*/true, slot);
+				const long long lhs = (op.length == 1 || !resolved) ? 0 : slotValue(slot);
 				if (isDivision(op.spelling[0]) && rhs == 0) {
 					failEvaluation(kDivisionByZero, rhs_at);
 				}
@@ -363,7 +431,7 @@ namespace wbsh {
 				if (failed()) return 0;
 
 				const long long value = combineAssign(op.spelling[0], lhs, rhs);
-				assignVariable(name, value);
+				if (resolved) storeSlot(env_, slot, value);
 				return value;
 			}
 
@@ -541,15 +609,21 @@ namespace wbsh {
 			}
 
 			long long prefixStep(long long delta) {
-				const std::string name = readIdent();
-				const long long value = variableValue(name) + delta;
-				assignVariable(name, value);
+				const VarRef ref = readVarRef();
+				Slot slot;
+				if (!resolveSlot(ref, /*for_write=*/true, slot)) return 0;
+
+				const long long value = slotValue(slot) + delta;
+				storeSlot(env_, slot, value);
 				return value;
 			}
 
-			long long postfixStep(const std::string& name, long long delta) {
-				const long long value = variableValue(name);
-				assignVariable(name, value + delta);
+			long long postfixStep(const VarRef& ref, long long delta) {
+				Slot slot;
+				if (!resolveSlot(ref, /*for_write=*/true, slot)) return 0;
+
+				const long long value = slotValue(slot);
+				storeSlot(env_, slot, value + delta);
 				return value;
 			}
 
@@ -570,11 +644,80 @@ namespace wbsh {
 			}
 
 			long long parseVariable() {
-				const std::string name = readIdent();
+				const VarRef ref = readVarRef();
 				skipWs();
-				if (consume("++")) return postfixStep(name, +1);
-				if (consume("--")) return postfixStep(name, -1);
-				return variableValue(name);
+				if (consume("++")) return postfixStep(ref, +1);
+				if (consume("--")) return postfixStep(ref, -1);
+
+				Slot slot;
+				if (!resolveSlot(ref, /*for_write=*/false, slot)) return 0;
+				return slotValue(slot);
+			}
+
+			// The subscript must follow the name directly: `a [1]` is a
+			// syntax error, as in bash.
+			VarRef readVarRef() {
+				VarRef ref;
+				skipWs();
+				const std::size_t start = pos_;
+				ref.name = readIdent();
+				if (peek() != '[') return ref;
+
+				const std::size_t close = scanBalanced(src_, pos_ + 1, '[', ']', 1);
+				if (close >= src_.size()) {
+					fail("bad array subscript", start);
+					return ref;
+				}
+
+				ref.has_subscript = true;
+				ref.subscript = src_.substr(pos_ + 1, close - pos_ - 1);
+				pos_ = close + 1;
+				return ref;
+			}
+
+			// False when nothing may be read or written: the operand is
+			// skipped, an error is pending, or the subscript is bad.
+			bool resolveSlot(const VarRef& ref, bool for_write, Slot& slot) {
+				if (skipping() || failed()) return false;
+
+				slot.name = ref.name;
+				if (!ref.has_subscript) return true;
+
+				slot.element = true;
+				if (env_.isAssocArray(ref.name)) return resolveAssocKey(ref, slot);
+				return resolveIndex(ref, for_write, slot);
+			}
+
+			bool resolveAssocKey(const VarRef& ref, Slot& slot) {
+				if (ref.subscript.empty()) {
+					warnBadSubscript(ref.name + "[]");
+					return false;
+				}
+
+				slot.assoc = true;
+				slot.key = ref.subscript;
+				return true;
+			}
+
+			// A negative index counts back from one past the last element.
+			bool resolveIndex(const VarRef& ref, bool for_write, Slot& slot) {
+				if (trimSpace(ref.subscript).empty()) {
+					warnBadSubscript(ref.name + "[]");
+					return false;
+				}
+
+				slot.index = evaluateNested(ref.subscript, ref.name);
+				if (failed()) return false;
+				if (slot.index < 0) slot.index += nextIndexAfterLast(env_, ref.name);
+				if (slot.index >= 0) return true;
+
+				warnBadSubscript(for_write ? ref.name + "[" + ref.subscript + "]" : ref.name);
+				return false;
+			}
+
+			long long slotValue(const Slot& slot) {
+				if (!slot.element) return variableValue(slot.name);
+				return textValue(elementText(env_, slot), slot.name);
 			}
 
 			long long parseDollar() {
@@ -588,12 +731,20 @@ namespace wbsh {
 
 			long long variableValue(const std::string& name) {
 				if (name.empty() || skipping()) return 0;
-				const std::string text = env_.get(name);
+				return textValue(env_.get(name), name);
+			}
+
+			// A variable's text is an expression in its own right (`x=2+3`).
+			long long textValue(const std::string& text, const std::string& name) {
 				if (text.empty()) return 0;
 
 				long long value = 0;
 				std::size_t consumed = 0;
 				if (parseLL(text, value, 0, &consumed) && consumed == text.size()) return value;
+				return evaluateNested(text, name);
+			}
+
+			long long evaluateNested(const std::string& text, const std::string& name) {
 				if (depth_ > kArithNestingLimit) {
 					adoptError(name + ": expression recursion level exceeded (error token is \""
 						+ name + "\")");
@@ -601,7 +752,7 @@ namespace wbsh {
 				}
 
 				ArithEval inner(text, env_, depth_ + 1);
-				value = inner.run();
+				const long long value = inner.run();
 				if (inner.failed()) adoptError(inner.error());
 				return value;
 			}
@@ -713,20 +864,6 @@ namespace wbsh {
 		const long long value = evaluator.run();
 		if (evaluator.failed()) fail(evaluator.error());
 		return value;
-	}
-
-	// Index of the bracket that closes the group already `depth` deep at
-	// `after_open`, or body.size() when it is never closed.
-	static std::size_t scanBalanced(const std::string& body, std::size_t after_open,
-			char open, char close, int depth) {
-		std::size_t k = after_open;
-		while (k < body.size() && depth > 0) {
-			if (body[k] == open) ++depth;
-			else if (body[k] == close) --depth;
-			if (depth > 0) ++k;
-		}
-
-		return k;
 	}
 
 	static bool heredocEscapes(char c) {
