@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "awk_interp.h"
-#include "regexutil.h"
 
 namespace wbsh {
 
@@ -49,15 +48,6 @@ namespace wbsh {
 			}
 		}
 
-		static bool searchFrom(const std::string& subject, std::size_t pos, const std::regex& re,
-				std::smatch& match) {
-			const auto flags = pos == 0
-				? std::regex_constants::match_default
-				: std::regex_constants::match_prev_avail;
-			return searchRegexFlags(subject.cbegin() + static_cast<std::ptrdiff_t>(pos),
-				subject.cend(), re, match, flags);
-		}
-
 		struct GsubScan {
 			const std::string& subject;
 			std::string out;
@@ -72,10 +62,8 @@ namespace wbsh {
 		}
 
 		// Returns false once the scan has reached the end of the subject.
-		static bool gsubStep(GsubScan& scan, const std::smatch& match,
+		static bool gsubStep(GsubScan& scan, std::size_t start, std::size_t length,
 				const std::string& replacement) {
-			const std::size_t start = scan.pos + static_cast<std::size_t>(match.position(0));
-			const auto length = static_cast<std::size_t>(match.length(0));
 			const bool at_end = start >= scan.subject.size();
 			if (length == 0 && start == scan.last_match_end) {
 				if (at_end) return false;
@@ -84,7 +72,7 @@ namespace wbsh {
 			}
 
 			scan.out.append(scan.subject, scan.pos, start - scan.pos);
-			appendReplacement(scan.out, replacement, match.str(0));
+			appendReplacement(scan.out, replacement, scan.subject.substr(start, length));
 			++scan.count;
 			scan.pos = start + length;
 			if (length != 0) {
@@ -97,13 +85,13 @@ namespace wbsh {
 			return true;
 		}
 
-		static int gsubAll(std::string& subject, const std::regex& re,
+		static int gsubAll(std::string& subject, const AwkRegex& re,
 				const std::string& replacement) {
 			GsubScan scan{ subject };
-			while (scan.pos <= subject.size()) {
-				std::smatch match;
-				if (!searchFrom(subject, scan.pos, re, match)) break;
-				if (!gsubStep(scan, match, replacement)) break;
+			std::size_t start = 0;
+			std::size_t length = 0;
+			while (awkRegexFind(re, subject, scan.pos, start, length)) {
+				if (!gsubStep(scan, start, length, replacement)) break;
 			}
 
 			if (scan.pos < subject.size()) scan.out.append(subject, scan.pos, std::string::npos);
@@ -111,14 +99,15 @@ namespace wbsh {
 			return scan.count;
 		}
 
-		static int subFirst(std::string& subject, const std::regex& re,
+		static int subFirst(std::string& subject, const AwkRegex& re,
 				const std::string& replacement) {
-			std::smatch match;
-			if (!searchRegex(subject, re, &match)) return 0;
+			std::size_t start = 0;
+			std::size_t length = 0;
+			if (!awkRegexFind(re, subject, 0, start, length)) return 0;
 
-			std::string out = match.prefix().str();
-			appendReplacement(out, replacement, match.str(0));
-			out += match.suffix().str();
+			std::string out = subject.substr(0, start);
+			appendReplacement(out, replacement, subject.substr(start, length));
+			out.append(subject, start + length, std::string::npos);
 			subject = std::move(out);
 			return 1;
 		}
@@ -133,14 +122,9 @@ namespace wbsh {
 			return eval(*call.args[index]).asNumber();
 		}
 
-		// A regex literal argument is the regex itself, not a match against $0.
-		const std::regex* Interpreter::regexArg(Expr& call, std::size_t index,
-				std::regex& storage) {
-			if (index >= call.args.size()) return dynamicRegex("", storage);
-
-			Expr& arg = *call.args[index];
-			if (arg.kind == ExprKind::Regex) return literalRegex(arg);
-			return dynamicRegex(text(eval(arg)), storage);
+		std::shared_ptr<const AwkRegex> Interpreter::regexArg(Expr& call, std::size_t index) {
+			if (index >= call.args.size()) return dynamicRegex("");
+			return regexOperand(*call.args[index]);
 		}
 
 		AwkValue Interpreter::callLength(Expr& call) {
@@ -183,7 +167,7 @@ namespace wbsh {
 		}
 
 		AwkValue Interpreter::callCaseConvert(Expr& call) {
-			const bool lower = call.name == "tolower";
+			const bool lower = call.builtin == Builtin::Tolower;
 			std::string converted = argText(call, 0);
 			for (auto& c : converted) {
 				const auto raw = static_cast<unsigned char>(c);
@@ -203,7 +187,7 @@ namespace wbsh {
 
 			if (source.empty()) return {};
 
-			const std::regex* re = literalRegex(separator);
+			const AwkRegex* re = literalRegex(separator);
 			if (re == nullptr) return { source };
 			return splitByRegex(source, *re);
 		}
@@ -226,14 +210,13 @@ namespace wbsh {
 		}
 
 		AwkValue Interpreter::callSubOrGsub(Expr& call) {
-			std::regex storage;
-			const std::regex* re = regexArg(call, 0, storage);
+			const std::shared_ptr<const AwkRegex> re = regexArg(call, 0);
 			const std::string replacement = argText(call, 1);
 			Expr* target = (call.args.size() >= 3) ? call.args[2] : nullptr;
 			std::string subject = target != nullptr ? text(eval(*target)) : record;
-			if (re == nullptr) return AwkValue::num(0);
+			if (!re->ok) return AwkValue::num(0);
 
-			const bool global = call.name == "gsub";
+			const bool global = call.builtin == Builtin::Gsub;
 			const int count = global
 				? gsubAll(subject, *re, replacement)
 				: subFirst(subject, *re, replacement);
@@ -250,19 +233,19 @@ namespace wbsh {
 
 		AwkValue Interpreter::callMatch(Expr& call) {
 			const std::string subject = argText(call, 0);
-			std::regex storage;
-			const std::regex* re = regexArg(call, 1, storage);
+			const std::shared_ptr<const AwkRegex> re = regexArg(call, 1);
 
-			std::smatch match;
-			if (re == nullptr || !searchRegex(subject, *re, &match)) {
+			std::size_t found = 0;
+			std::size_t length = 0;
+			if (!awkRegexFind(*re, subject, 0, found, length)) {
 				setGlobal(kRSTART, AwkValue::num(0));
 				setGlobal(kRLENGTH, AwkValue::num(-1));
 				return AwkValue::num(0);
 			}
 
-			const auto start = static_cast<double>(match.position(0) + 1);
+			const auto start = static_cast<double>(found + 1);
 			setGlobal(kRSTART, AwkValue::num(start));
-			setGlobal(kRLENGTH, AwkValue::num(static_cast<double>(match.length(0))));
+			setGlobal(kRLENGTH, AwkValue::num(static_cast<double>(length)));
 			return AwkValue::num(start);
 		}
 
@@ -302,7 +285,7 @@ namespace wbsh {
 		}
 
 		AwkValue Interpreter::callRandom(Expr& call) {
-			if (call.name == "rand") {
+			if (call.builtin == Builtin::Rand) {
 				const double range = static_cast<double>(RAND_MAX) + 1.0;
 				return AwkValue::num(static_cast<double>(std::rand()) / range);
 			}
@@ -316,35 +299,38 @@ namespace wbsh {
 		}
 
 		AwkValue Interpreter::callMath(Expr& call) {
-			const std::string& name = call.name;
-			if (name == "int")   return AwkValue::num(std::trunc(argNumber(call, 0)));
-			if (name == "sqrt")  return AwkValue::num(std::sqrt(argNumber(call, 0)));
-			if (name == "exp")   return AwkValue::num(std::exp(argNumber(call, 0)));
-			if (name == "log")   return AwkValue::num(std::log(argNumber(call, 0)));
-			if (name == "sin")   return AwkValue::num(std::sin(argNumber(call, 0)));
-			if (name == "cos")   return AwkValue::num(std::cos(argNumber(call, 0)));
-			if (name == "atan2") {
-				const double y = argNumber(call, 0);
-				return AwkValue::num(std::atan2(y, argNumber(call, 1)));
+			const double x = argNumber(call, 0);
+			switch (call.builtin) {
+				case Builtin::Int:   return AwkValue::num(std::trunc(x));
+				case Builtin::Sqrt:  return AwkValue::num(std::sqrt(x));
+				case Builtin::Exp:   return AwkValue::num(std::exp(x));
+				case Builtin::Log:   return AwkValue::num(std::log(x));
+				case Builtin::Sin:   return AwkValue::num(std::sin(x));
+				case Builtin::Cos:   return AwkValue::num(std::cos(x));
+				case Builtin::Atan2: return AwkValue::num(std::atan2(x, argNumber(call, 1)));
+				default:             return AwkValue::num(0);
 			}
-
-			return callRandom(call);
 		}
 
 		AwkValue Interpreter::callBuiltin(Expr& call) {
-			const std::string& name = call.name;
-			if (name == "length")                        return callLength(call);
-			if (name == "substr")                        return callSubstr(call);
-			if (name == "index")                         return callIndex(call);
-			if (name == "tolower" || name == "toupper")  return callCaseConvert(call);
-			if (name == "split")                         return callSplit(call);
-			if (name == "sub" || name == "gsub")         return callSubOrGsub(call);
-			if (name == "match")                         return callMatch(call);
-			if (name == "sprintf")                       return callSprintf(call);
-			if (name == "system")                        return callSystem(call);
-			if (name == "close")                         return callClose(call);
-			if (name == "fflush")                        return callFflush(call);
-			return callMath(call);
+			switch (call.builtin) {
+				case Builtin::Length:  return callLength(call);
+				case Builtin::Substr:  return callSubstr(call);
+				case Builtin::Index:   return callIndex(call);
+				case Builtin::Tolower:
+				case Builtin::Toupper: return callCaseConvert(call);
+				case Builtin::Split:   return callSplit(call);
+				case Builtin::Sub:
+				case Builtin::Gsub:    return callSubOrGsub(call);
+				case Builtin::Match:   return callMatch(call);
+				case Builtin::Sprintf: return callSprintf(call);
+				case Builtin::System:  return callSystem(call);
+				case Builtin::Close:   return callClose(call);
+				case Builtin::Fflush:  return callFflush(call);
+				case Builtin::Rand:
+				case Builtin::Srand:   return callRandom(call);
+				default:               return callMath(call);
+			}
 		}
 
 	}  // namespace awk_detail

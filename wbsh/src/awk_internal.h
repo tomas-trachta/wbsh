@@ -7,12 +7,12 @@
 
 #include <map>
 #include <memory>
-#include <regex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "arena.h"
+#include "awk_regex.h"
 
 namespace wbsh {
 
@@ -38,6 +38,8 @@ namespace wbsh {
 			std::string text;
 			bool is_number = false;
 			bool is_string = false;
+			// A freshly split field: whether it is a strnum is decided on first use.
+			bool strnum_pending = false;
 
 			AwkValue() = default;
 
@@ -61,6 +63,19 @@ namespace wbsh {
 				result.text = std::move(value);
 				result.is_string = true;
 				return result;
+			}
+
+			static AwkValue pendingInput(std::string value) {
+				AwkValue result = str(std::move(value));
+				result.strnum_pending = true;
+				return result;
+			}
+
+			void resolvePending() {
+				if (!strnum_pending) return;
+
+				strnum_pending = false;
+				is_number = looksNumeric(text, number);
 			}
 
 			bool isUninitialised() const {
@@ -127,12 +142,29 @@ namespace wbsh {
 
 		enum class GetlineSource { Main, File, Command };
 
+		enum class Op {
+			None,
+			Add, Sub, Mul, Div, Mod, Pow, Concat,
+			Lt, Le, Gt, Ge, Eq, Ne,
+			And, Or, Match, NoMatch,
+			Not, Negate, UnaryPlus, PreIncrement, PreDecrement, PostIncrement, PostDecrement,
+			Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign, PowAssign,
+		};
+
+		enum class Builtin {
+			None,
+			Length, Substr, Index, Split, Sub, Gsub, Match, Sprintf,
+			Sin, Cos, Atan2, Exp, Log, Sqrt, Int, Rand, Srand,
+			Tolower, Toupper, System, Close, Fflush,
+		};
+
 		struct Expr {
 			ExprKind kind;
 			double number = 0;
 			std::string text;
 			std::string name;
-			std::string op;
+			Op op = Op::None;
+			Builtin builtin = Builtin::None;
 			Expr* first = nullptr;
 			Expr* second = nullptr;
 			Expr* third = nullptr;
@@ -143,8 +175,8 @@ namespace wbsh {
 			bool local = false;
 			GetlineSource source = GetlineSource::Main;
 			FunctionDef* function = nullptr;
-			mutable std::shared_ptr<std::regex> compiled;
-			mutable bool compile_failed = false;
+			// A regex literal, compiled on first use.
+			mutable std::shared_ptr<const AwkRegex> compiled;
 		};
 
 		enum class StmtKind {
@@ -194,6 +226,7 @@ namespace wbsh {
 		/// Parses @p text into @p program; false (with a message in @p error) on a syntax error.
 		bool parseAwkProgram(const std::string& text, AwkProgram& program, std::string& error);
 
+		Builtin builtinFunction(const std::string& name);
 		bool isBuiltinFunction(const std::string& name);
 
 	}  // namespace awk_detail

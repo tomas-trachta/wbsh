@@ -11,8 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "regexutil.h"
-
 namespace wbsh {
 
 	namespace awk_detail {
@@ -20,18 +18,20 @@ namespace wbsh {
 		// Keeps deep awk recursion inside the interpreter thread's stack (see awk.cpp).
 		static const int kMaxCallDepth = 30000;
 
-		template <typename T>
-		static bool compareWith(const T& left, const T& right, const std::string& op) {
-			if (op == "==") return left == right;
-			if (op == "!=") return left != right;
-			if (op == "<")  return left < right;
-			if (op == "<=") return left <= right;
-			if (op == ">")  return left > right;
-			return left >= right;
+		static bool orderSatisfies(int order, Op op) {
+			switch (op) {
+				case Op::Eq: return order == 0;
+				case Op::Ne: return order != 0;
+				case Op::Lt: return order < 0;
+				case Op::Le: return order <= 0;
+				case Op::Gt: return order > 0;
+				default:     return order >= 0;
+			}
 		}
 
-		static bool isRelationalOp(const std::string& op) {
-			return op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=";
+		static bool isRelationalOp(Op op) {
+			return op == Op::Lt || op == Op::Le || op == Op::Gt || op == Op::Ge
+				|| op == Op::Eq || op == Op::Ne;
 		}
 
 		// As in gawk, NaN equals NaN and sorts above every number.
@@ -100,7 +100,9 @@ namespace wbsh {
 
 		AwkValue Interpreter::getGlobal(int slot) {
 			switch (slot) {
-				case kNF:  return AwkValue::num(static_cast<double>(fields.size()));
+				case kNF:
+					ensureFields();
+					return AwkValue::num(static_cast<double>(fields.size()));
 				case kNR:  return AwkValue::num(static_cast<double>(NR));
 				case kFNR: return AwkValue::num(static_cast<double>(FNR));
 				default:   return globals[static_cast<std::size_t>(slot)].value;
@@ -113,10 +115,16 @@ namespace wbsh {
 				case kNF:      setFieldCount(static_cast<int>(value.asNumber())); break;
 				case kNR:      NR = static_cast<long long>(value.asNumber()); break;
 				case kFNR:     FNR = static_cast<long long>(value.asNumber()); break;
-				case kFS:      FS = text(value); break;
+				case kFS:
+					ensureFields();
+					FS = text(value);
+					break;
 				case kOFS:     OFS = text(value); break;
 				case kORS:     ORS = text(value); break;
-				case kRS:      RS = text(value); break;
+				case kRS:
+					ensureFields();
+					RS = text(value);
+					break;
 				case kSUBSEP:  SUBSEP = text(value); break;
 				case kCONVFMT: CONVFMT = text(value); break;
 				case kOFMT:    OFMT = text(value); break;
@@ -139,7 +147,11 @@ namespace wbsh {
 		}
 
 		Cell& Interpreter::cellFor(const Expr& var) {
-			if (var.local) return frames.back()->locals[static_cast<std::size_t>(var.slot)];
+			if (var.local) {
+				Frame& frame = *frames[static_cast<std::size_t>(call_depth) - 1];
+				return frame.locals[static_cast<std::size_t>(var.slot)];
+			}
+
 			return globals[static_cast<std::size_t>(var.slot)];
 		}
 
@@ -171,116 +183,129 @@ namespace wbsh {
 			return key;
 		}
 
-		const std::regex* Interpreter::literalRegex(const Expr& expr) {
-			if (expr.compiled) return expr.compiled.get();
-			if (expr.compile_failed) return nullptr;
-
-			auto re = std::make_shared<std::regex>();
-			if (!compileRegex(*re, expr.text)) {
-				expr.compile_failed = true;
-				return nullptr;
+		const AwkRegex* Interpreter::literalRegex(const Expr& expr) {
+			if (!expr.compiled) {
+				auto compiled = std::make_shared<AwkRegex>();
+				compileAwkRegex(*compiled, expr.text);
+				expr.compiled = std::move(compiled);
 			}
 
-			expr.compiled = std::move(re);
-			return expr.compiled.get();
+			return expr.compiled->ok ? expr.compiled.get() : nullptr;
 		}
 
-		const std::regex* Interpreter::dynamicRegex(const std::string& pattern,
-				std::regex& storage) {
-			if (!compileRegex(storage, pattern)) return nullptr;
-			return &storage;
+		std::shared_ptr<const AwkRegex> Interpreter::dynamicRegex(const std::string& pattern) {
+			return regex_cache.get(pattern);
+		}
+
+		// A regex literal operand is the regex itself; any other value is
+		// compiled from its string.
+		std::shared_ptr<const AwkRegex> Interpreter::regexOperand(Expr& expr) {
+			if (expr.kind != ExprKind::Regex) return dynamicRegex(text(eval(expr)));
+
+			literalRegex(expr);
+			return expr.compiled;
 		}
 
 		AwkValue Interpreter::evalUnary(Expr& expr) {
-			if (expr.op == "++" || expr.op == "--") {
-				const double current = eval(*expr.first).asNumber();
-				const double updated = (expr.op == "++") ? current + 1 : current - 1;
-				assignLValue(*expr.first, AwkValue::num(updated));
-				return AwkValue::num(updated);
+			switch (expr.op) {
+				case Op::PreIncrement: return evalIncDec(*expr.first, 1, false);
+				case Op::PreDecrement: return evalIncDec(*expr.first, -1, false);
+				case Op::Not:          return boolValue(!eval(*expr.first).truthy());
+				case Op::Negate:       return AwkValue::num(-eval(*expr.first).asNumber());
+				default:               return AwkValue::num(eval(*expr.first).asNumber());
 			}
-
-			const AwkValue operand = eval(*expr.first);
-			if (expr.op == "!") return boolValue(!operand.truthy());
-			if (expr.op == "-") return AwkValue::num(-operand.asNumber());
-			return AwkValue::num(operand.asNumber());
 		}
 
-		AwkValue Interpreter::evalPostIncDec(Expr& expr) {
-			const double current = eval(*expr.first).asNumber();
-			const double updated = (expr.op == "++") ? current + 1 : current - 1;
-			assignLValue(*expr.first, AwkValue::num(updated));
-			return AwkValue::num(current);
+		// The target's subscript or field index is evaluated once.
+		AwkValue Interpreter::evalIncDec(Expr& target, double delta, bool post) {
+			if (target.kind == ExprKind::ArrayRef) {
+				const std::string key = buildSubscript(target.args);
+				AwkValue& slot = arrayFor(target)[key];
+				const double current = slot.asNumber();
+				slot = AwkValue::num(current + delta);
+				return AwkValue::num(post ? current : current + delta);
+			}
+
+			if (target.kind == ExprKind::Field) {
+				const int index = fieldIndex(*target.first);
+				const double current = getField(index).asNumber();
+				setField(index, AwkValue::num(current + delta));
+				return AwkValue::num(post ? current : current + delta);
+			}
+
+			const double current = getVariable(target).asNumber();
+			setVariable(target, AwkValue::num(current + delta));
+			return AwkValue::num(post ? current : current + delta);
 		}
 
 		AwkValue Interpreter::evalRegexMatch(const std::string& subject, Expr& pattern,
 				bool positive) {
-			std::regex storage;
-			const std::regex* re = pattern.kind == ExprKind::Regex
-				? literalRegex(pattern)
-				: dynamicRegex(text(eval(pattern)), storage);
-			const bool matched = re != nullptr && searchRegex(subject, *re);
+			const std::shared_ptr<const AwkRegex> re = regexOperand(pattern);
+			const bool matched = awkRegexSearch(*re, subject);
 			return boolValue(positive ? matched : !matched);
 		}
 
 		AwkValue Interpreter::evalRegexLiteral(Expr& expr) {
-			const std::regex* re = literalRegex(expr);
-			return boolValue(re != nullptr && searchRegex(record, *re));
+			const AwkRegex* re = literalRegex(expr);
+			return boolValue(re != nullptr && awkRegexSearch(*re, record));
 		}
 
-		static AwkValue compareValues(const AwkValue& left, const AwkValue& right,
-				const std::string& op, const std::string& convfmt) {
+		static AwkValue compareValues(const AwkValue& left, const AwkValue& right, Op op,
+				const std::string& convfmt) {
 			const bool numeric = left.comparesAsNumber() && right.comparesAsNumber();
 			const int order = numeric
 				? orderNumbers(left.asNumber(), right.asNumber())
 				: orderStrings(left.asString(convfmt), right.asString(convfmt));
-			return boolValue(compareWith(order, 0, op));
+			return boolValue(orderSatisfies(order, op));
 		}
 
-		AwkValue Interpreter::evalArithmetic(const std::string& op, const AwkValue& left,
-				const AwkValue& right) {
-			if (op == "+") return AwkValue::num(left.asNumber() + right.asNumber());
-			if (op == "-") return AwkValue::num(left.asNumber() - right.asNumber());
-			if (op == "*") return AwkValue::num(left.asNumber() * right.asNumber());
-			if (op == "/") {
-				const double divisor = right.asNumber();
-				return AwkValue::num(divisor == 0 ? 0.0 : left.asNumber() / divisor);
-			}
+		static double divide(double left, double right) {
+			return right == 0 ? 0.0 : left / right;
+		}
 
-			if (op == "%") {
-				const double divisor = right.asNumber();
-				return AwkValue::num(divisor == 0 ? 0.0 : std::fmod(left.asNumber(), divisor));
-			}
+		static double modulo(double left, double right) {
+			return right == 0 ? 0.0 : std::fmod(left, right);
+		}
 
-			if (op == "^") return AwkValue::num(std::pow(left.asNumber(), right.asNumber()));
+		AwkValue Interpreter::evalArithmetic(Op op, const AwkValue& left, const AwkValue& right) {
 			if (isRelationalOp(op)) return compareValues(left, right, op, CONVFMT);
-			return AwkValue::str("");
+
+			const double x = left.asNumber();
+			const double y = right.asNumber();
+			switch (op) {
+				case Op::Add: return AwkValue::num(x + y);
+				case Op::Sub: return AwkValue::num(x - y);
+				case Op::Mul: return AwkValue::num(x * y);
+				case Op::Div: return AwkValue::num(divide(x, y));
+				case Op::Mod: return AwkValue::num(modulo(x, y));
+				case Op::Pow: return AwkValue::num(std::pow(x, y));
+				default:      return AwkValue::str("");
+			}
 		}
 
 		AwkValue Interpreter::evalBinary(Expr& expr) {
-			if (expr.op == "&&") {
-				if (!eval(*expr.first).truthy()) return AwkValue::num(0.0);
-				return boolValue(eval(*expr.second).truthy());
+			switch (expr.op) {
+				case Op::And:
+					if (!eval(*expr.first).truthy()) return AwkValue::num(0.0);
+					return boolValue(eval(*expr.second).truthy());
+				case Op::Or:
+					if (eval(*expr.first).truthy()) return AwkValue::num(1.0);
+					return boolValue(eval(*expr.second).truthy());
+				case Op::Match:
+				case Op::NoMatch:
+					return evalRegexMatch(text(eval(*expr.first)), *expr.second,
+						expr.op == Op::Match);
+				case Op::Concat: {
+					std::string joined = text(eval(*expr.first));
+					joined += text(eval(*expr.second));
+					return AwkValue::str(std::move(joined));
+				}
+				default: {
+					const AwkValue left = eval(*expr.first);
+					const AwkValue right = eval(*expr.second);
+					return evalArithmetic(expr.op, left, right);
+				}
 			}
-
-			if (expr.op == "||") {
-				if (eval(*expr.first).truthy()) return AwkValue::num(1.0);
-				return boolValue(eval(*expr.second).truthy());
-			}
-
-			if (expr.op == "~" || expr.op == "!~") {
-				const std::string subject = text(eval(*expr.first));
-				return evalRegexMatch(subject, *expr.second, expr.op == "~");
-			}
-
-			if (expr.op == " ") {
-				std::string joined = text(eval(*expr.first));
-				joined += text(eval(*expr.second));
-				return AwkValue::str(std::move(joined));
-			}
-
-			const AwkValue left = eval(*expr.first);
-			const AwkValue right = eval(*expr.second);
-			return evalArithmetic(expr.op, left, right);
 		}
 
 		int Interpreter::fieldIndex(Expr& index_expr) {
@@ -320,7 +345,8 @@ namespace wbsh {
 				case ExprKind::ArrayInTest: return evalArrayInTest(expr);
 				case ExprKind::Group:       return eval(*expr.first);
 				case ExprKind::Unary:       return evalUnary(expr);
-				case ExprKind::PostIncDec:  return evalPostIncDec(expr);
+				case ExprKind::PostIncDec:
+					return evalIncDec(*expr.first, expr.op == Op::PostIncrement ? 1 : -1, true);
 				case ExprKind::Binary:      return evalBinary(expr);
 				case ExprKind::Ternary:     return evalTernary(expr);
 				case ExprKind::Assign:      return evalAssign(expr);
@@ -331,22 +357,23 @@ namespace wbsh {
 			}
 		}
 
-		AwkValue Interpreter::applyOp(const AwkValue& current, const std::string& op,
-				const AwkValue& rhs) {
-			if (op == "=") return rhs;
+		AwkValue Interpreter::applyOp(const AwkValue& current, Op op, const AwkValue& rhs) {
+			if (op == Op::Assign) return rhs;
 
 			const double left = current.asNumber();
 			const double right = rhs.asNumber();
-			if (op == "+=") return AwkValue::num(left + right);
-			if (op == "-=") return AwkValue::num(left - right);
-			if (op == "*=") return AwkValue::num(left * right);
-			if (op == "/=") return AwkValue::num(right == 0 ? 0 : left / right);
-			if (op == "%=") return AwkValue::num(right == 0 ? 0 : std::fmod(left, right));
-			if (op == "^=") return AwkValue::num(std::pow(left, right));
-			return rhs;
+			switch (op) {
+				case Op::AddAssign: return AwkValue::num(left + right);
+				case Op::SubAssign: return AwkValue::num(left - right);
+				case Op::MulAssign: return AwkValue::num(left * right);
+				case Op::DivAssign: return AwkValue::num(divide(left, right));
+				case Op::ModAssign: return AwkValue::num(modulo(left, right));
+				case Op::PowAssign: return AwkValue::num(std::pow(left, right));
+				default:            return rhs;
+			}
 		}
 
-		AwkValue Interpreter::assignTo(Expr& lhs, const std::string& op, AwkValue rhs) {
+		AwkValue Interpreter::assignTo(Expr& lhs, Op op, AwkValue rhs) {
 			if (lhs.kind == ExprKind::Var) {
 				AwkValue result = applyOp(getVariable(lhs), op, rhs);
 				setVariable(lhs, result);
@@ -371,7 +398,7 @@ namespace wbsh {
 		}
 
 		void Interpreter::assignLValue(Expr& lhs, AwkValue value) {
-			assignTo(lhs, "=", std::move(value));
+			assignTo(lhs, Op::Assign, std::move(value));
 		}
 
 		// A bare variable without a scalar value (an array, or nothing yet) is
@@ -396,6 +423,15 @@ namespace wbsh {
 			param.array = source.array;
 		}
 
+		// Arguments are bound before the frame becomes current: they are
+		// evaluated in the caller's scope.
+		Frame& Interpreter::acquireFrame() {
+			const auto depth = static_cast<std::size_t>(call_depth);
+			if (depth == frames.size()) frames.push_back(std::make_unique<Frame>());
+
+			return *frames[depth];
+		}
+
 		AwkValue Interpreter::callUser(Expr& call) {
 			if (call_depth >= kMaxCallDepth) {
 				runtimeError("function '" + call.name + "': call nesting too deep");
@@ -403,17 +439,17 @@ namespace wbsh {
 			}
 
 			const FunctionDef& function = *call.function;
-			auto frame = std::make_unique<Frame>();
-			frame->locals.resize(std::max(function.params.size(), call.args.size()));
+			std::vector<Cell> locals(std::max(function.params.size(), call.args.size()));
 			for (std::size_t i = 0; i < call.args.size(); ++i) {
-				bindArgument(*call.args[i], frame->locals[i]);
+				bindArgument(*call.args[i], locals[i]);
 			}
 
-			frames.push_back(std::move(frame));
+			Frame& frame = acquireFrame();
+			frame.locals.swap(locals);
 			++call_depth;
 			run(*function.body);
 			--call_depth;
-			frames.pop_back();
+			frame.locals.clear();
 
 			if (flow == Flow::Return) flow = Flow::None;
 			AwkValue result = std::move(return_value);

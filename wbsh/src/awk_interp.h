@@ -36,6 +36,9 @@ namespace wbsh {
 		struct InputStream {
 			std::FILE* file = nullptr;
 			bool owned = false;
+			// Disk files are read in blocks; pipes and consoles a character at a
+			// time so a record is available as soon as its terminator arrives.
+			bool block_reads = false;
 			std::string buffer;
 			std::size_t start = 0;
 
@@ -57,16 +60,15 @@ namespace wbsh {
 			std::string pending;
 		};
 
-		struct CachedRegex {
+		// The regex for a FS / RS value, kept until the variable changes.
+		struct SeparatorRegex {
 			std::string pattern;
-			std::regex regex;
-			bool ok = false;
-			bool valid = false;
+			std::shared_ptr<const AwkRegex> regex;
 		};
 
 		std::vector<std::string> splitOnBlanks(const std::string& text);
 		std::vector<std::string> splitOnChar(const std::string& text, char separator);
-		std::vector<std::string> splitByRegex(const std::string& text, const std::regex& re);
+		std::vector<std::string> splitByRegex(const std::string& text, const AwkRegex& re);
 
 		struct Interpreter {
 			enum class Flow { None, Break, Continue, Next, Return };
@@ -74,9 +76,12 @@ namespace wbsh {
 			AwkProgram& program;
 			Executor& exec;
 			std::vector<Cell> globals;
+			// frames[0, call_depth) are the running calls; the rest are kept for reuse.
 			std::vector<std::unique_ptr<Frame>> frames;
 			std::vector<AwkValue> fields;
 			std::string record;
+			// $0 is split into fields only when a field or NF is used.
+			bool fields_split = true;
 			long long NR = 0;
 			long long FNR = 0;
 			std::string FS = " ";
@@ -94,8 +99,9 @@ namespace wbsh {
 			AwkValue return_value;
 			int call_depth = 0;
 			unsigned random_seed = 0;
-			CachedRegex fs_regex;
-			CachedRegex rs_regex;
+			RegexCache regex_cache;
+			SeparatorRegex fs_regex;
+			SeparatorRegex rs_regex;
 			std::map<std::string, std::unique_ptr<OutputStream>> outputs;
 			std::vector<std::string> output_order;
 			std::map<std::string, std::unique_ptr<InputStream>> input_files;
@@ -125,13 +131,14 @@ namespace wbsh {
 			AwkValue eval(Expr& expr);
 			void assignLValue(Expr& lhs, AwkValue value);
 			std::string buildSubscript(const std::vector<Expr*>& subscripts);
-			const std::regex* literalRegex(const Expr& expr);
-			const std::regex* dynamicRegex(const std::string& pattern, std::regex& storage);
+			const AwkRegex* literalRegex(const Expr& expr);
+			std::shared_ptr<const AwkRegex> dynamicRegex(const std::string& pattern);
+			std::shared_ptr<const AwkRegex> regexOperand(Expr& expr);
 			void run(Stmt& stmt);
 
 			// awk_fields.cpp
 			void setRecord(std::string text);
-			void splitRecord();
+			void ensureFields();
 			AwkValue getField(int index);
 			void setField(int index, AwkValue value);
 			void setFieldCount(int count);
@@ -153,20 +160,20 @@ namespace wbsh {
 			void onSpecialAssigned(int slot);
 			void initSpecialVars();
 			AwkValue evalUnary(Expr& expr);
-			AwkValue evalPostIncDec(Expr& expr);
+			AwkValue evalIncDec(Expr& target, double delta, bool post);
 			AwkValue evalRegexMatch(const std::string& subject, Expr& pattern, bool positive);
-			AwkValue evalArithmetic(const std::string& op, const AwkValue& left,
-				const AwkValue& right);
+			AwkValue evalArithmetic(Op op, const AwkValue& left, const AwkValue& right);
 			AwkValue evalBinary(Expr& expr);
 			AwkValue evalTernary(Expr& expr);
 			AwkValue evalArrayRef(Expr& expr);
 			AwkValue evalArrayInTest(Expr& expr);
 			AwkValue evalAssign(Expr& expr);
 			AwkValue evalRegexLiteral(Expr& expr);
-			AwkValue applyOp(const AwkValue& current, const std::string& op, const AwkValue& rhs);
-			AwkValue assignTo(Expr& lhs, const std::string& op, AwkValue rhs);
+			AwkValue applyOp(const AwkValue& current, Op op, const AwkValue& rhs);
+			AwkValue assignTo(Expr& lhs, Op op, AwkValue rhs);
 			int fieldIndex(Expr& index_expr);
 			AwkValue callUser(Expr& call);
+			Frame& acquireFrame();
 			void bindArgument(Expr& arg, Cell& param);
 			bool passesByReference(const Expr& arg);
 			bool loopBodyDone();
@@ -189,8 +196,9 @@ namespace wbsh {
 			void runSpecialBlocks(AwkPattern::Kind kind);
 
 			// awk_fields.cpp
+			void splitRecord();
 			std::vector<std::string> recordParts();
-			const std::regex* cachedRegex(CachedRegex& cache, const std::string& pattern);
+			const AwkRegex* separatorRegex(SeparatorRegex& cache, const std::string& pattern);
 			std::string paragraphFieldPattern() const;
 			void rebuildRecord();
 			void growFields(std::size_t count);
@@ -198,7 +206,7 @@ namespace wbsh {
 			// awk_builtins.cpp
 			std::string argText(Expr& call, std::size_t index);
 			double argNumber(Expr& call, std::size_t index);
-			const std::regex* regexArg(Expr& call, std::size_t index, std::regex& storage);
+			std::shared_ptr<const AwkRegex> regexArg(Expr& call, std::size_t index);
 			AwkValue callLength(Expr& call);
 			AwkValue callSubstr(Expr& call);
 			AwkValue callIndex(Expr& call);
@@ -219,6 +227,7 @@ namespace wbsh {
 			bool readCharRecord(InputStream& stream, char separator, std::string& out);
 			bool readParagraphRecord(InputStream& stream, std::string& out);
 			bool readRegexRecord(InputStream& stream, std::string& out);
+			bool readBlockRecord(InputStream& stream, char separator, std::string& out);
 			bool readMainRecord(std::string& out);
 			bool openNextMainInput();
 			bool openMainOperand(const std::string& operand);

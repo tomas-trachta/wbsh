@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "awk_interp.h"
-#include "regexutil.h"
 
 namespace wbsh {
 
@@ -54,30 +53,18 @@ namespace wbsh {
 			return parts;
 		}
 
-		static bool searchFrom(const std::string& text, std::size_t pos, const std::regex& re,
-				std::smatch& match) {
-			const auto flags = pos == 0
-				? std::regex_constants::match_default
-				: std::regex_constants::match_prev_avail;
-			return searchRegexFlags(text.cbegin() + static_cast<std::ptrdiff_t>(pos), text.cend(),
-				re, match, flags);
-		}
-
-		std::vector<std::string> splitByRegex(const std::string& text, const std::regex& re) {
+		std::vector<std::string> splitByRegex(const std::string& text, const AwkRegex& re) {
 			std::vector<std::string> parts;
 			std::size_t pos = 0;
-			for (;;) {
-				std::smatch match;
-				if (!searchFrom(text, pos, re, match)) break;
-
-				const auto offset = static_cast<std::size_t>(match.position(0));
-				const auto length = static_cast<std::size_t>(match.length(0));
+			std::size_t found = 0;
+			std::size_t length = 0;
+			while (awkRegexFind(re, text, pos, found, length)) {
 				// A zero-width separator would re-match in place forever; stop and
 				// let the tail below become the final field.
 				if (length == 0) break;
 
-				parts.push_back(text.substr(pos, offset));
-				pos += offset + length;
+				parts.push_back(text.substr(pos, found - pos));
+				pos = found + length;
 			}
 
 			parts.push_back(text.substr(pos));
@@ -98,20 +85,19 @@ namespace wbsh {
 			if (separator.empty()) return splitIntoCharacters(text);
 			if (separator.size() == 1) return splitOnChar(text, separator[0]);
 
-			std::regex storage;
-			const std::regex* re = dynamicRegex(separator, storage);
-			if (re == nullptr) return { text };
+			const std::shared_ptr<const AwkRegex> re = dynamicRegex(separator);
+			if (!re->ok) return { text };
 			return splitByRegex(text, *re);
 		}
 
-		const std::regex* Interpreter::cachedRegex(CachedRegex& cache, const std::string& pattern) {
-			if (!cache.valid || cache.pattern != pattern) {
+		const AwkRegex* Interpreter::separatorRegex(SeparatorRegex& cache,
+				const std::string& pattern) {
+			if (!cache.regex || cache.pattern != pattern) {
 				cache.pattern = pattern;
-				cache.ok = compileRegex(cache.regex, pattern);
-				cache.valid = true;
+				cache.regex = regex_cache.get(pattern);
 			}
 
-			return cache.ok ? &cache.regex : nullptr;
+			return cache.regex->ok ? cache.regex.get() : nullptr;
 		}
 
 		static std::string bracketEscaped(char c) {
@@ -131,7 +117,8 @@ namespace wbsh {
 			if (isWhitespaceSeparator(FS)) return splitOnBlanks(record);
 			if (FS.size() == 1 && !RS.empty()) return splitOnChar(record, FS[0]);
 
-			const std::regex* re = cachedRegex(fs_regex, RS.empty() ? paragraphFieldPattern() : FS);
+			const std::string pattern = RS.empty() ? paragraphFieldPattern() : FS;
+			const AwkRegex* re = separatorRegex(fs_regex, pattern);
 			if (re == nullptr) return { record };
 			return splitByRegex(record, *re);
 		}
@@ -140,12 +127,17 @@ namespace wbsh {
 			std::vector<std::string> parts = recordParts();
 			fields.clear();
 			fields.reserve(parts.size());
-			for (auto& part : parts) fields.push_back(AwkValue::input(std::move(part)));
+			for (auto& part : parts) fields.push_back(AwkValue::pendingInput(std::move(part)));
+			fields_split = true;
+		}
+
+		void Interpreter::ensureFields() {
+			if (!fields_split) splitRecord();
 		}
 
 		void Interpreter::setRecord(std::string text) {
 			record = std::move(text);
-			splitRecord();
+			fields_split = false;
 		}
 
 		void Interpreter::rebuildRecord() {
@@ -159,8 +151,13 @@ namespace wbsh {
 		AwkValue Interpreter::getField(int index) {
 			if (index == 0) return AwkValue::input(record);
 			if (index < 0) return AwkValue::str("");
+
+			ensureFields();
 			if (static_cast<std::size_t>(index) > fields.size()) return AwkValue::str("");
-			return fields[static_cast<std::size_t>(index) - 1];
+
+			AwkValue& field = fields[static_cast<std::size_t>(index) - 1];
+			field.resolvePending();
+			return field;
 		}
 
 		void Interpreter::growFields(std::size_t count) {
@@ -175,6 +172,7 @@ namespace wbsh {
 
 			if (index < 0) return;
 
+			ensureFields();
 			const auto slot = static_cast<std::size_t>(index);
 			growFields(slot);
 			fields[slot - 1] = std::move(value);
@@ -183,6 +181,7 @@ namespace wbsh {
 
 		void Interpreter::setFieldCount(int count) {
 			if (count < 0) count = 0;
+			ensureFields();
 			fields.resize(static_cast<std::size_t>(count), AwkValue::str(""));
 			rebuildRecord();
 		}

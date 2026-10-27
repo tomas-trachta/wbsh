@@ -18,6 +18,9 @@ namespace wbsh {
 
 	namespace awk_detail {
 
+		// Below 2^53 every integral double converts to long long exactly.
+		static const double kExactIntegerLimit = 9007199254740992.0;
+
 		static bool isSpace(char c) {
 			return std::isspace(static_cast<unsigned char>(c)) != 0;
 		}
@@ -124,8 +127,14 @@ namespace wbsh {
 			return number < 0 ? "-inf" : "+inf";
 		}
 
+		static bool isExactInteger(double number) {
+			return number == std::floor(number) && std::fabs(number) < kExactIntegerLimit;
+		}
+
 		std::string numberToString(double number, const std::string& format) {
 			if (!std::isfinite(number)) return specialNumberText(number);
+
+			if (isExactInteger(number)) return std::to_string(static_cast<long long>(number));
 
 			char buffer[400];
 			if (number == std::floor(number)) {
