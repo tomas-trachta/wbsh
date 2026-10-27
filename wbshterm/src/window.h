@@ -141,6 +141,8 @@ namespace wbshterm {
 		bool pickerTakesKey(WPARAM key);
 		bool searchTakesKey(const KeyPress& press);
 		void runSearch(bool backwards);
+		void continueSearch();
+		void showSearchHit(Pane& pane, const SearchHit& hit);
 		void settleHistory(Pane& pane);
 		void answerPick(const std::string& choice);
 		void pasteFromClipboard();
@@ -231,6 +233,7 @@ namespace wbshterm {
 		static bool     hook_key_held_;
 		bool         prefix_pending_ = false;
 		SearchBox    search_;
+		const Pane*  search_pane_ = nullptr;
 
 		Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
 	};
