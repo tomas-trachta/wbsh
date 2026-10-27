@@ -10,13 +10,15 @@
  */
 
 #include <string>
+#include <vector>
 
 namespace wbsh {
 
 	/** One non-interactive run: what to read and which of the stages to show. */
 	struct ScriptRun {
 		std::string source;
-		std::string script_name;
+		std::string script_name;              ///< `$0`; empty keeps the shell's name.
+		std::vector<std::string> positional;  ///< `$1`, `$2`, ...
 		bool show_tokens     = false;
 		bool show_ast        = false;
 		bool show_expansions = false;
