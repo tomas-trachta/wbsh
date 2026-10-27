@@ -3173,7 +3173,9 @@ namespace wbsh {
 		const ProcessProbe probe = probeProcess(static_cast<unsigned long>(pid));
 		if (probe == ProcessProbe::Alive) return true;
 
-		const char* reason = probe == ProcessProbe::Denied ? "operation not permitted" : "no such process";
+		const char* reason = probe == ProcessProbe::Denied
+			? "operation not permitted"
+			: "no such process";
 		std::fprintf(stderr, "wbsh: kill: %d: %s\n", pid, reason);
 		return false;
 	}

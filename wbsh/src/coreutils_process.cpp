@@ -167,7 +167,8 @@ namespace wbsh {
 		const HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
 			static_cast<DWORD>(pid));
 		if (process == nullptr) {
-			return ::GetLastError() == ERROR_ACCESS_DENIED ? ProcessProbe::Denied : ProcessProbe::Missing;
+			const bool denied = ::GetLastError() == ERROR_ACCESS_DENIED;
+			return denied ? ProcessProbe::Denied : ProcessProbe::Missing;
 		}
 
 		DWORD code = 0;
