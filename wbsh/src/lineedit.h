@@ -84,6 +84,7 @@ namespace wbsh {
 		                     std::string& out, bool& done, bool& eof);
 		bool handleCtrlKey(const ::KEY_EVENT_RECORD& key,
 		                   std::string& out, bool& done, bool& eof);
+		bool handleAltKey(const ::KEY_EVENT_RECORD& key);
 		bool handleNavigationKey(const ::KEY_EVENT_RECORD& key,
 		                         std::string& out, bool& done, bool& was_tab);
 		void insertReceivedChar(wchar_t ch);
@@ -119,6 +120,10 @@ namespace wbsh {
 		void handleKillToEnd();
 		void handleKillToStart();
 		void handleKillWordBack();
+		void handleKillAlnumWordBack();
+		void handleKillAlnumWordForward();
+		std::size_t wordStartBefore(std::size_t pos) const;
+		std::size_t wordEndAfter(std::size_t pos) const;
 		void handleClearScreen();
 		void insertChars(const std::string& text);
 

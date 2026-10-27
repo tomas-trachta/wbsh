@@ -85,6 +85,13 @@ namespace wbsh {
 		    || letter == '(' || letter == ')';
 	}
 
+	// readline's word characters: letters and digits, with every byte of
+	// a non-ASCII character counted as a letter.
+	static bool isWordByte(char letter) {
+		const auto byte = static_cast<unsigned char>(letter);
+		return byte >= 0x80 || std::isalnum(byte) != 0;
+	}
+
 	static bool hasPrefix(const std::string& text, const std::string& prefix) {
 		return text.compare(0, prefix.size(), prefix) == 0;
 	}
@@ -417,10 +424,32 @@ namespace wbsh {
 	void LineEditor::handleKillWordBack() {
 		std::size_t start = cursor_;
 		while (start > 0 && isSpaceByte(buffer_[start - 1])) --start;
-		while (start > 0 && !isWordBreak(buffer_[start - 1])) --start;
+		while (start > 0 && !isSpaceByte(buffer_[start - 1])) --start;
 
 		buffer_.erase(start, cursor_ - start);
 		cursor_ = start;
+	}
+
+	std::size_t LineEditor::wordStartBefore(std::size_t pos) const {
+		while (pos > 0 && !isWordByte(buffer_[pos - 1])) --pos;
+		while (pos > 0 && isWordByte(buffer_[pos - 1])) --pos;
+		return pos;
+	}
+
+	std::size_t LineEditor::wordEndAfter(std::size_t pos) const {
+		while (pos < buffer_.size() && !isWordByte(buffer_[pos])) ++pos;
+		while (pos < buffer_.size() && isWordByte(buffer_[pos])) ++pos;
+		return pos;
+	}
+
+	void LineEditor::handleKillAlnumWordBack() {
+		const std::size_t start = wordStartBefore(cursor_);
+		buffer_.erase(start, cursor_ - start);
+		cursor_ = start;
+	}
+
+	void LineEditor::handleKillAlnumWordForward() {
+		buffer_.erase(cursor_, wordEndAfter(cursor_) - cursor_);
 	}
 
 	void LineEditor::handleClearScreen() {
@@ -1348,6 +1377,15 @@ namespace wbsh {
 		return (key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
 	}
 
+	// Alt as a modifier, not as the right half of AltGr (which arrives
+	// with LEFT_CTRL set as well).
+	static bool isAltPressed(const KEY_EVENT_RECORD& key) {
+		const DWORD state = key.dwControlKeyState;
+		if ((state & LEFT_ALT_PRESSED) != 0) return true;
+
+		return (state & RIGHT_ALT_PRESSED) != 0 && (state & LEFT_CTRL_PRESSED) == 0;
+	}
+
 	static bool isPrintableAscii(WCHAR unit) {
 		return unit >= 0x20 && unit < 0x7F;
 	}
@@ -1473,6 +1511,16 @@ namespace wbsh {
 		}
 	}
 
+	bool LineEditor::handleAltKey(const KEY_EVENT_RECORD& key) {
+		switch (key.wVirtualKeyCode) {
+		case VK_BACK: handleKillAlnumWordBack();    redraw(); return true;
+		case 'D':     handleKillAlnumWordForward(); redraw(); return true;
+		case 'B':     cursor_ = wordStartBefore(cursor_); redraw(); return true;
+		case 'F':     cursor_ = wordEndAfter(cursor_);    redraw(); return true;
+		default:      return false;
+		}
+	}
+
 	bool LineEditor::handleNavigationKey(const KEY_EVENT_RECORD& key,
 	                                     std::string& out, bool& done, bool& was_tab) {
 		switch (key.wVirtualKeyCode) {
@@ -1505,7 +1553,8 @@ namespace wbsh {
 	void LineEditor::dispatchKeyDown(const KEY_EVENT_RECORD& key,
 	                                 std::string& out, bool& done, bool& eof) {
 		bool was_tab = false;
-		const bool handled = handleNavigationKey(key, out, done, was_tab)
+		const bool handled = (isAltPressed(key) && handleAltKey(key))
+			|| handleNavigationKey(key, out, done, was_tab)
 			|| (isCtrlPressed(key) && handleCtrlKey(key, out, done, eof));
 		if (!handled) insertReceivedChar(key.uChar.UnicodeChar);
 
@@ -1693,6 +1742,10 @@ namespace wbsh {
 	void LineEditor::handleKillToEnd() {}
 	void LineEditor::handleKillToStart() {}
 	void LineEditor::handleKillWordBack() {}
+	void LineEditor::handleKillAlnumWordBack() {}
+	void LineEditor::handleKillAlnumWordForward() {}
+	std::size_t LineEditor::wordStartBefore(std::size_t pos) const { return pos; }
+	std::size_t LineEditor::wordEndAfter(std::size_t pos) const { return pos; }
 	void LineEditor::handleClearScreen() {}
 	void LineEditor::insertChars(const std::string&) {}
 	LineEditor::Tok LineEditor::currentToken() const { return {0, 0, true}; }
