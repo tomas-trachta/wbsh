@@ -1368,39 +1368,11 @@ namespace wbsh {
 	}
 
 	namespace shopt_detail {
-		struct ShoptFlag {
-			const char* name;
-			bool (Environment::*get)() const;
-			void (Environment::*set)(bool);
-		};
-
 		enum class Mode { ListAll, Set, Unset, Query };
 	}  // namespace shopt_detail
 
-	static const shopt_detail::ShoptFlag kShoptFlags[] = {
-		{ "nullglob",       &Environment::nullglob,       &Environment::setNullglob },
-		{ "dotglob",        &Environment::dotglob,        &Environment::setDotglob },
-		{ "extglob",        &Environment::extglob,        &Environment::setExtglob },
-		{ "nocaseglob",     &Environment::nocaseglob,     &Environment::setNocaseglob },
-		{ "nocasematch",    &Environment::nocasematch,    &Environment::setNocasematch },
-		{ "globstar",       &Environment::globstar,       &Environment::setGlobstar },
-		{ "lastpipe",       &Environment::lastpipe,       &Environment::setLastpipe },
-		{ "huponexit",      &Environment::huponexit,      &Environment::setHuponexit },
-		{ "expand_aliases", &Environment::expand_aliases, &Environment::setExpandAliases },
-		{ "autocd",         &Environment::autocd,         &Environment::setAutocd },
-		{ "checkwinsize",   &Environment::checkwinsize,   &Environment::setCheckwinsize },
-	};
-
-	static const shopt_detail::ShoptFlag* findShoptFlag(const std::string& name) {
-		for (const shopt_detail::ShoptFlag& flag : kShoptFlags) {
-			if (name == flag.name) return &flag;
-		}
-
-		return nullptr;
-	}
-
-	static void printShoptFlag(const Environment& env, const shopt_detail::ShoptFlag& flag) {
-		const bool on = (env.*(flag.get))();
+	static void printShoptFlag(const Environment& env, const ShoptSpec& flag) {
+		const bool on = env.shopts().*(flag.flag);
 		std::printf("%-15s %s\n", flag.name, on ? "on" : "off");
 	}
 
@@ -1428,14 +1400,14 @@ namespace wbsh {
 	static int shoptSetOrUnset(Executor& exec, const std::vector<std::string>& names, bool on) {
 		int status = 0;
 		for (const std::string& name : names) {
-			const shopt_detail::ShoptFlag* flag = findShoptFlag(name);
+			const ShoptSpec* flag = findShopt(name);
 			if (flag == nullptr) {
 				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", name.c_str());
 				status = 1;
 				continue;
 			}
 
-			(exec.env().*(flag->set))(on);
+			exec.env().shopts().*(flag->flag) = on;
 		}
 
 		return status;
@@ -1443,9 +1415,9 @@ namespace wbsh {
 
 	static int shoptQuery(Executor& exec, const std::vector<std::string>& names) {
 		for (const std::string& name : names) {
-			const shopt_detail::ShoptFlag* flag = findShoptFlag(name);
+			const ShoptSpec* flag = findShopt(name);
 			if (flag == nullptr) return 1;
-			if (!(exec.env().*(flag->get))()) return 1;
+			if (!(exec.env().shopts().*(flag->flag))) return 1;
 		}
 
 		return 0;
@@ -1453,7 +1425,7 @@ namespace wbsh {
 
 	static int shoptListMode(Executor& exec, const std::vector<std::string>& names) {
 		if (names.empty()) {
-			for (const shopt_detail::ShoptFlag& flag : kShoptFlags) {
+			for (const ShoptSpec& flag : shoptTable()) {
 				printShoptFlag(exec.env(), flag);
 			}
 
@@ -1462,7 +1434,7 @@ namespace wbsh {
 
 		int status = 0;
 		for (const std::string& name : names) {
-			const shopt_detail::ShoptFlag* flag = findShoptFlag(name);
+			const ShoptSpec* flag = findShopt(name);
 			if (flag == nullptr) {
 				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", name.c_str());
 				status = 1;

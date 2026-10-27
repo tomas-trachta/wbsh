@@ -1,0 +1,24 @@
+=== 1. positional parameters and $0
+in f: hello 2
+b 3
+0=pipeline_stage_state.sh 1=x
+all: a b c
+=== 2. $? of the command before the pipeline
+status 1
+brace 7
+h sees 1 and arg
+after true 0
+bg 1
+=== 3. $$ is the parent shell's pid
+same $$
+own $BASHPID
+=== 4. set options
+pipefail on
+flags=fhB
+default
+=== 5. shopt flags
+nullglob: (none)
+extglob on
+dotglob on
+globstar off
+defaults back

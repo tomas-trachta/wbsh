@@ -581,7 +581,7 @@ namespace wbsh {
 		const long long pid = static_cast<long long>(::GetProcessId(process));
 		const int job_id = registerJob(process, pid, nodeSourceSlice(cmd, std::string()));
 		env_.setLastBgPid(pid);
-		std::fprintf(stderr, "[%d] %lld\n", job_id, pid);
+		if (env_.interactive()) std::fprintf(stderr, "[%d] %lld\n", job_id, pid);
 		return 0;
 	}
 #endif
@@ -866,19 +866,43 @@ namespace wbsh {
 		return spec.flag != &SetOptions::verbose && spec.flag != &SetOptions::noexec;
 	}
 
-	static std::string serializeChangedOptions(const SetOptions& options) {
+	static void appendOptionWord(std::string& words, const char* name, bool on) {
+		if (!words.empty()) words.push_back(' ');
+		words.push_back(on ? '-' : '+');
+		words += name;
+	}
+
+	static void serializeChangedSetOptions(const SetOptions& options, std::string& words) {
 		const SetOptions defaults;
-		std::string words;
 		for (const SetOptionSpec& spec : setOptionTable()) {
 			const bool on = options.*(spec.flag);
-			if (!inheritsSetOption(spec) || on == defaults.*(spec.flag)) continue;
-
-			if (!words.empty()) words.push_back(' ');
-			words.push_back(on ? '-' : '+');
-			words += spec.name;
+			if (inheritsSetOption(spec) && on != defaults.*(spec.flag)) {
+				appendOptionWord(words, spec.name, on);
+			}
 		}
+	}
 
+	static void serializeChangedShopts(const ShoptFlags& shopts, std::string& words) {
+		const ShoptFlags defaults;
+		for (const ShoptSpec& spec : shoptTable()) {
+			const bool on = shopts.*(spec.flag);
+			if (on != defaults.*(spec.flag)) appendOptionWord(words, spec.name, on);
+		}
+	}
+
+	// `set -o` and `shopt` names do not overlap, so one list carries both.
+	static std::string serializeChangedOptions(const Environment& env) {
+		std::string words;
+		serializeChangedSetOptions(env.options(), words);
+		serializeChangedShopts(env.shopts(), words);
 		return words;
+	}
+
+	// A pipeline stage is a subshell of this shell: `$?` and `$$` are ours.
+	static void addShellParameters(NameValueList& overrides, const Environment& env,
+			int last_status) {
+		if (last_status != 0) overrides.emplace_back("WBSH_STATUS", std::to_string(last_status));
+		overrides.emplace_back("WBSH_SHELL_PID", std::to_string(env.shellPid()));
 	}
 
 	NameValueList Executor::buildSelfSpawnOverrides() {
@@ -899,9 +923,10 @@ namespace wbsh {
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
 
-		const std::string options = serializeChangedOptions(env_.options());
+		const std::string options = serializeChangedOptions(env_);
 		if (!options.empty()) overrides.emplace_back("WBSH_OPTIONS", options);
 
+		addShellParameters(overrides, env_, last_status_);
 		return overrides;
 	}
 
