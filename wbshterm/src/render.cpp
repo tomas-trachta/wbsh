@@ -27,12 +27,6 @@ namespace wbshterm {
 		return D2D1::ColorF(red, green, blue, alpha);
 	}
 
-	static bool sameStyle(const Cell& left, const Cell& right) {
-		return left.foreground == right.foreground
-			&& left.background == right.background
-			&& left.attributes == right.attributes;
-	}
-
 	static void appendUtf16(std::wstring& text, char32_t code) {
 		if (code < 0x10000) {
 			text.push_back(static_cast<wchar_t>(code));
@@ -698,9 +692,62 @@ namespace wbshterm {
 
 		if ((style.attributes & kAttrUnderline) == 0) return;
 
-		const float line_y = top + cell_box.ascent + 1.5f;
-		canvas.target->DrawLine(D2D1::Point2F(left, line_y),
-			D2D1::Point2F(left + cell_box.width * static_cast<float>(text.size()), line_y),
+		const float right = left + cell_box.width * static_cast<float>(text.size());
+		if (style.underline != kDefaultColor) {
+			setBrushColor(resolveColor(style.underline, config_.palette.foreground), alpha);
+		}
+
+		drawUnderline(canvas.target, style.attributes,
+			D2D1::RectF(left, top + cell_box.ascent + 1.5f, right, top + cell_box.height));
+	}
+
+	void Renderer::drawCurlyUnderline(ID2D1RenderTarget* target, const D2D1_RECT_F& span) {
+		const float amplitude = std::min(1.5f, (span.bottom - span.top) / 2.0f);
+		const float middle = span.top + amplitude;
+		const float step = 1.0f;
+
+		for (float x = span.left; x < span.right; x += step) {
+			const float next = std::min(x + step, span.right);
+			target->DrawLine(D2D1::Point2F(x, middle - amplitude * std::sin(x * 0.75f)),
+				D2D1::Point2F(next, middle - amplitude * std::sin(next * 0.75f)),
+				brush_.Get(), 1.0f);
+		}
+	}
+
+	void Renderer::drawBrokenUnderline(ID2D1RenderTarget* target, const D2D1_RECT_F& span,
+			float on, float off) {
+		for (float x = span.left; x < span.right; x += on + off) {
+			target->FillRectangle(
+				D2D1::RectF(x, span.top - 0.5f, std::min(x + on, span.right), span.top + 0.5f),
+				brush_.Get());
+		}
+	}
+
+	// span.top is where a plain underline sits; the space below it, down
+	// to the cell's bottom, is what the double and curly shapes may use.
+	void Renderer::drawUnderline(ID2D1RenderTarget* target, std::uint16_t attributes,
+			const D2D1_RECT_F& span) {
+		if ((attributes & kAttrUnderlineCurly) != 0) {
+			drawCurlyUnderline(target, span);
+			return;
+		}
+
+		if ((attributes & kAttrUnderlineDotted) != 0) {
+			drawBrokenUnderline(target, span, 1.0f, 1.0f);
+			return;
+		}
+
+		if ((attributes & kAttrUnderlineDashed) != 0) {
+			drawBrokenUnderline(target, span, 3.0f, 2.0f);
+			return;
+		}
+
+		target->DrawLine(D2D1::Point2F(span.left, span.top), D2D1::Point2F(span.right, span.top),
+			brush_.Get(), 1.0f);
+		if ((attributes & kAttrUnderlineDouble) == 0) return;
+
+		const float second = std::min(span.top + 2.0f, span.bottom - 0.5f);
+		target->DrawLine(D2D1::Point2F(span.left, second), D2D1::Point2F(span.right, second),
 			brush_.Get(), 1.0f);
 	}
 

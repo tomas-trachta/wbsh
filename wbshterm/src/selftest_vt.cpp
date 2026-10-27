@@ -180,11 +180,101 @@ namespace wbshterm {
 			checkHugeScrollCountsAreClamped(report);
 		}
 
+		static Cell penAfter(const std::string& sgr) {
+			Screen screen(4, 1);
+			feedToScreen(screen, sgr + "X");
+			return screen.cell(0, 0);
+		}
+
+		static bool hasAttributes(const Cell& cell, std::uint16_t attributes) {
+			return (cell.attributes & attributes) == attributes;
+		}
+
+		static void checkColonUnderlineStyles(Report& report) {
+			const Cell curly = penAfter("\x1b[1;4:3m");
+			report.check("SGR 4:3 is a curly underline, not italic",
+				hasAttributes(curly, kAttrBold | kAttrUnderline | kAttrUnderlineCurly)
+					&& (curly.attributes & kAttrItalic) == 0, "");
+
+			report.check("SGR 4:2, 4:4 and 4:5 pick double, dotted and dashed",
+				hasAttributes(penAfter("\x1b[4:2m"), kAttrUnderlineDouble)
+					&& hasAttributes(penAfter("\x1b[4:4m"), kAttrUnderlineDotted)
+					&& hasAttributes(penAfter("\x1b[4:5m"), kAttrUnderlineDashed), "");
+
+			const Cell none = penAfter("\x1b[4:3m\x1b[4:0m");
+			const Cell reset = penAfter("\x1b[21m\x1b[24m");
+			report.check("SGR 4:0 and SGR 24 take every underline shape off",
+				(none.attributes & (kAttrUnderline | kAttrUnderlineShapes)) == 0
+					&& (reset.attributes & (kAttrUnderline | kAttrUnderlineShapes)) == 0, "");
+			report.check("SGR 21 is a double underline",
+				hasAttributes(penAfter("\x1b[21m"), kAttrUnderline | kAttrUnderlineDouble), "");
+		}
+
+		static void checkUnderlineColour(Report& report) {
+			const Cell semicolons = penAfter("\x1b[1;31;58;2;255;0;0m");
+			report.check("SGR 58;2 takes its own arguments, not the pen's",
+				hasAttributes(semicolons, kAttrBold) && semicolons.foreground == kRed
+					&& semicolons.underline == 0xFF0000u, "");
+
+			report.check("SGR 58:2::r:g:b and 58:2:r:g:b both set the underline colour",
+				penAfter("\x1b[58:2::10:20:30m").underline == 0x0A141Eu
+					&& penAfter("\x1b[58:2:10:20:30m").underline == 0x0A141Eu, "");
+			report.check("SGR 58;5 indexes the palette",
+				penAfter("\x1b[58;5;1m").underline == kRed, "");
+			report.check("SGR 59 gives the underline the text's colour again",
+				penAfter("\x1b[58;5;1;59m").underline == kDefaultColor, "");
+		}
+
+		static void checkColonColours(Report& report) {
+			const Cell truecolor = penAfter("\x1b[38:2::1:2:3;1m");
+			report.check("SGR 38:2::r:g:b keeps its group and the codes after it",
+				truecolor.foreground == 0x010203u && hasAttributes(truecolor, kAttrBold), "");
+
+			const Cell indexed = penAfter("\x1b[48:5:1;3m");
+			report.check("SGR 48:5:n is an indexed background",
+				indexed.background == kRed && hasAttributes(indexed, kAttrItalic), "");
+
+			const Cell skipped = penAfter("\x1b[1;38:9:9:9m");
+			report.check("an unknown colour group is skipped whole",
+				hasAttributes(skipped, kAttrBold) && skipped.foreground == kDefaultColor, "");
+		}
+
+		static void checkParameterCap(Report& report) {
+			std::string sgr = "\x1b[";
+			for (std::size_t index = 0; index < kMaxParams; ++index) sgr += "0;";
+			const Cell cell = penAfter(sgr + "31m");
+			report.check("parameters past the cap are dropped, not merged",
+				cell.foreground == kDefaultColor, "");
+		}
+
+		static void checkUnderlineSurvivesDiskHistory(Report& report) {
+			Cell styled = penAfter("\x1b[4:3;58;2;1;2;3m");
+			styled.code = U'u';
+
+			HistoryStore store;
+			store.setColumns(4);
+			const bool stored = store.append({ std::vector<Cell>(1, styled) });
+			const Cell back = store.cellAt(0, 0);
+
+			report.check("history on disk keeps the underline shape and colour",
+				stored && back.underline == 0x010203u
+					&& hasAttributes(back, kAttrUnderlineCurly), "");
+		}
+
+		static void runSgrChecks(Report& report) {
+			checkColonUnderlineStyles(report);
+			checkUnderlineColour(report);
+			checkColonColours(report);
+			checkParameterCap(report);
+			checkUnderlineSurvivesDiskHistory(report);
+		}
+
 	} /* namespace vt_test */
 
 	void runVtChecks(test::Report& report) {
 		vt_test::runSaveRestoreAndResetChecks(report);
 		vt_test::runLineScrollingChecks(report);
+		vt_test::runSgrChecks(report);
 	}
 
 } /* namespace wbshterm */
