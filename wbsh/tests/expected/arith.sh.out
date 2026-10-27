@@ -69,4 +69,16 @@ x after failed /=: 3
 5 5 4611686018427387904 -6289078614652622815
 -9223372036854775808 0
 INT64_MIN /= -1 -> -9223372036854775808, %= -1 -> 0
+=== && || ?: skip the side effects of unused operands
+0 && x++ -> 0, x=0
+1 || x++ -> 1, x=0
+1 && x++ -> 0, x=1
+0 || x++ -> 0, x=1
+0 ? (w=7) : 2 -> 2, w=0
+1 ? 2 : (w=7) -> 2, w=0
+nested -> 0, x=0
+0 && 1 || x++ -> 0, x=1
+unused 1/0, y, q -> 0 0 0, x=0
+wbsh: 0 && 08: value too great for base (error token is "08")
+  syntax in an unused operand still fails: status 1
 === done
