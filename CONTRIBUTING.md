@@ -73,7 +73,7 @@ Two cross-cutting interfaces are worth knowing about up-front:
 ## The coreutils split pattern
 
 Bundled utilities live in per-family files: `coreutils.cpp` (file /
-system utilities plus the shared helpers), `coreutils_text.cpp`, `coreutils_tr.cpp`,
+system utilities plus the shared helpers), `coreutils_text.cpp`, `coreutils_tr.cpp`, `coreutils_sort.cpp`,
 `coreutils_grep.cpp`, `coreutils_sed.cpp`, `coreutils_headtail.cpp`,
 `coreutils_filter.cpp`, `coreutils_encoding.cpp`, `coreutils_dump.cpp`,
 `coreutils_hash.cpp`, `coreutils_archive.cpp` (zip), `coreutils_tar.cpp`,

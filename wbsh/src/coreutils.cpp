@@ -3294,6 +3294,7 @@ namespace wbsh {
 		registerHeadTailBuiltins(exec);
 		registerTextBuiltins(exec);
 		registerTrBuiltin(exec);
+		registerSortBuiltin(exec);
 		registerEncodingBuiltins(exec);
 		registerDumpBuiltins(exec);
 		registerArchiveBuiltins(exec);
