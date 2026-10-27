@@ -88,6 +88,7 @@
     <ClCompile Include="src\coreutils_dump.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_fileops.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_remove.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_copy.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_headtail.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\devices.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_system.cpp"><Filter>Source Files</Filter></ClCompile>

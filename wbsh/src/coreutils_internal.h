@@ -115,6 +115,8 @@ namespace wbsh {
 
 	void registerRemoveBuiltin(Executor& exec);
 
+	void registerCopyBuiltins(Executor& exec);
+
 	void registerFilterBuiltins(Executor& exec);
 
 	void registerFzfBuiltin(Executor& exec);

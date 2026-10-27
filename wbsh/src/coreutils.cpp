@@ -949,54 +949,6 @@ namespace wbsh {
 		return status;
 	}
 
-	// A rename that fails (typically across volumes) falls back to a
-	// copy followed by removal of the source.
-	static bool movePath(const std::string& source, const fs::path& src, const fs::path& target) {
-		std::error_code rename_ec;
-		fs::rename(src, target, rename_ec);
-		if (!rename_ec) return true;
-
-		std::error_code copy_ec;
-		fs::copy(src, target, fs::copy_options::overwrite_existing
-			| fs::copy_options::recursive | fs::copy_options::copy_symlinks, copy_ec);
-		if (copy_ec) {
-			perr("mv", source, copy_ec);
-			return false;
-		}
-
-		std::error_code remove_ec;
-		fs::remove_all(src, remove_ec);
-		if (!remove_ec) return true;
-
-		perr("mv", source, remove_ec);
-		return false;
-	}
-
-	static int builtin_mv(Executor& exec, const std::vector<std::string>& args) {
-		std::vector<std::string> paths;
-		for (const auto& arg : args) {
-			if (arg == "--" || isShortFlagCluster(arg)) continue;
-			paths.push_back(arg);
-		}
-
-		if (paths.size() < 2) {
-			perr("mv", "missing source/destination");
-			return 1;
-		}
-
-		const fs::path dst = toNative(exec, paths.back());
-		std::error_code ec;
-		const bool dst_is_dir = fs::is_directory(dst, ec);
-
-		int status = 0;
-		for (std::size_t i = 0; i + 1 < paths.size(); ++i) {
-			const fs::path src = toNative(exec, paths[i]);
-			if (!movePath(paths[i], src, destinationFor(src, dst, dst_is_dir))) status = 1;
-		}
-
-		return status;
-	}
-
 	static bool touchPath(Executor& exec, const std::string& path) {
 		const fs::path native = toNative(exec, path);
 		std::error_code ec;
@@ -3198,7 +3150,6 @@ namespace wbsh {
 		exec.registerBuiltin("mkdir",    builtin_mkdir);
 		exec.registerBuiltin("rmdir",    builtin_rmdir);
 		exec.registerBuiltin("cp",       builtin_cp);
-		exec.registerBuiltin("mv",       builtin_mv);
 		exec.registerBuiltin("touch",    builtin_touch);
 		exec.registerBuiltin("wc",       builtin_wc);
 		exec.registerBuiltin("stat",     builtin_stat);
@@ -3258,6 +3209,7 @@ namespace wbsh {
 		registerSystemExtraBuiltins(exec);
 		registerFileOpsBuiltins(exec);
 		registerRemoveBuiltin(exec);
+		registerCopyBuiltins(exec);
 		registerFilterBuiltins(exec);
 		registerBcBuiltin(exec);
 		registerHashBuiltins(exec);
