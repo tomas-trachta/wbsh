@@ -509,6 +509,21 @@ namespace wbsh {
 		if (env_.noexec() && !env_.interactive()) return 0;
 		if (node.loc.line > 0) env_.setCurrentLineno(static_cast<int>(node.loc.line));
 
+		const int status = dispatchNode(node);
+		exitOnFatalExpansionError();
+		return status;
+	}
+
+	// POSIX: a failed `${name?}` or a `set -u` error ends a
+	// non-interactive shell; a subshell or `$(...)` ends just itself.
+	void Executor::exitOnFatalExpansionError() {
+		if (!expander_.takeFatalError()) return;
+		if (env_.interactive() || flowPending()) return;
+
+		raiseExit(1);
+	}
+
+	int Executor::dispatchNode(const Node& node) {
 		switch (node.kind) {
 		case Node::Kind::List:          return execList(static_cast<const List&>(node));
 		case Node::Kind::AndOr:         return execAndOr(static_cast<const AndOr&>(node));
@@ -945,6 +960,10 @@ namespace wbsh {
 	                                       HANDLE h_in, HANDLE h_out, HANDLE h_err) {
 		bool tried_direct = false;
 		const HANDLE direct = tryDirectExternalLaunch(elem, h_in, h_out, h_err, &tried_direct);
+
+		// The element runs as a process of its own, so an expansion error
+		// met while preparing it here ends only that element.
+		expander_.takeFatalError();
 		if (tried_direct) return direct;
 
 		return selfSpawnPipelineElement(elem, h_in, h_out, h_err);
@@ -1006,7 +1025,7 @@ namespace wbsh {
 		for (const auto& assignment : assignments) {
 			std::string value = expander.expandAssignmentValue(assignment.value);
 			if (expander.failed()) {
-				expander.takeError();
+				reportExpanderError(expander);
 				continue;
 			}
 
@@ -1271,7 +1290,11 @@ namespace wbsh {
 
 	bool Executor::applyHerestringRedir(const Redirection& redir, int target, RedirState& state) {
 		std::string body;
-		if (!expandRedirTarget(redir.target, body)) return false;
+		if (!expandRedirTarget(redir.target, body)) {
+			// bash fails only the command when a here-string hits `set -u`.
+			expander_.takeFatalError();
+			return false;
+		}
 
 		body.push_back('\n');
 		return installRedirFromTempBody(std::move(body), target, state);
@@ -1531,7 +1554,7 @@ namespace wbsh {
 	                                 const Executor::ElemAssign& elem) {
 		std::string subscript = expander.expandStringValue(elem.subscript);
 		if (expander.failed()) {
-			expander.takeError();
+			reportExpanderError(expander);
 			subscript.clear();
 		}
 
@@ -2394,8 +2417,9 @@ namespace wbsh {
 		for (const auto& pattern_word : item.patterns) {
 			const std::string pattern = expander_.expandPattern(pattern_word);
 			if (expander_.failed()) {
-				expander_.takeError();
-				continue;
+				reportExpanderError(expander_);
+				exitOnFatalExpansionError();
+				return false;
 			}
 
 			if (patternMatches(pattern, subject)) return true;
@@ -2410,7 +2434,10 @@ namespace wbsh {
 		int status = 0;
 		for (std::size_t i = 0; i < clause.items.size(); ++i) {
 			const auto& item = clause.items[i];
-			if (!caseItemMatches(item, subject)) continue;
+			if (!caseItemMatches(item, subject)) {
+				if (flowPending()) break;
+				continue;
+			}
 
 			if (item.body != nullptr) runBody(item.body, status);
 			if (flowPending()) break;

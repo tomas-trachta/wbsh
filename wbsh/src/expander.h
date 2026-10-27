@@ -142,20 +142,37 @@ namespace wbsh {
 		}
 
 		/**
+		 * @brief Was the error one that ends a non-interactive shell?
+		 *
+		 * True after a failed `${name?msg}` / `${name:?msg}` or a `set -u`
+		 * unbound-variable error. Unlike the message, the flag outlives
+		 * takeError(): it stays set until this call consumes it, so the
+		 * executor sees it even where the message was handled locally.
+		 */
+		bool fatalErrorPending() const { return fatal_error_; }
+
+		bool takeFatalError() {
+			const bool fatal = fatal_error_;
+			fatal_error_ = false;
+			return fatal;
+		}
+
+		/**
 		 * @brief evalArith() for contexts that swallow arithmetic errors.
 		 *
 		 * Used for array subscripts, slice bounds, and similar places
 		 * where a bad expression falls back to a default instead of
 		 * failing the command. Returns false on failure, consuming the
-		 * error iff THIS evaluation raised it; with an error already
-		 * pending it refuses to evaluate and leaves that error alone.
+		 * error iff THIS evaluation raised it and it is not fatal; with
+		 * an error already pending it refuses to evaluate and leaves
+		 * that error alone.
 		 */
 		bool tryEvalArith(const std::string& body, long long& out) {
 			if (failed()) return false;
 
 			const long long value = evalArith(body);
 			if (failed()) {
-				takeError();
+				if (!fatal_error_) takeError();
 				return false;
 			}
 
@@ -244,6 +261,13 @@ namespace wbsh {
 		void fail(std::string msg) {
 			if (pending_error_.empty()) pending_error_ = std::move(msg);
 		}
+
+		void failFatal(std::string msg) {
+			if (!pending_error_.empty()) return;
+
+			fatal_error_ = true;
+			pending_error_ = std::move(msg);
+		}
 		// True when expansion should stop early: an error is pending or
 		// a command substitution raised shell control flow.
 		bool aborting() const {
@@ -255,6 +279,7 @@ namespace wbsh {
 		PathConv path_conv_;
 		std::vector<std::string> pending_temp_files_;
 		std::string pending_error_;
+		bool fatal_error_ = false;
 
 		Tagged renderWord(const Word& w);
 		// renderSegment, renderArrayFields and renderParamExpSegment
@@ -272,6 +297,10 @@ namespace wbsh {
 		std::string lookupParam(const std::string& name, bool suppress_nounset = false);
 		std::string lookupPositional(std::size_t index) const;
 		bool isVariableSet(const std::string& name) const;
+		bool isUnsetPositional(const std::string& name) const;
+		bool isParamSet(const std::string& name) const;
+		void checkElementBound(const std::string& subject, const std::string& subscript,
+		                       const ElementSlot& slot);
 		std::vector<std::string> namesWithPrefix(const std::string& prefix) const;
 		// `${!ref<rest>}`: rewrites the body to `<target><rest>`, where
 		// the target is the value of `ref`, and sets the `!ref` label
