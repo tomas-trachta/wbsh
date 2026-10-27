@@ -181,6 +181,9 @@ namespace wbshterm {
 		/** Scrollback plus the live grid, the coordinate space the view uses. */
 		int totalRows() const { return scrollbackRows() + rows_; }
 
+		/** Rows ever dropped off the top of history; each one moved every row up by one. */
+		std::uint64_t forgottenRows() const { return forgotten_rows_; }
+
 		/** Addresses scrollback and grid alike; row 0 is the oldest line kept. */
 		const Cell& cellAt(int absolute_row, int column) const;
 
@@ -422,6 +425,7 @@ namespace wbshterm {
 		HistoryStore      cold_;
 		std::size_t       scrollback_limit_ = 10000;
 		std::uint64_t     disk_limit_ = 1024ull * 1024ull * 1024ull;
+		std::uint64_t     forgotten_rows_ = 0;
 		std::vector<Cell> primary_cells_;
 		CursorState       primary_cursor_;
 		std::vector<LineBreak> row_breaks_;

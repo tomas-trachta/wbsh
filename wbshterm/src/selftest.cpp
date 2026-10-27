@@ -23,6 +23,7 @@
 #include "view.h"
 #include "session.h"
 #include "sysinfo.h"
+#include "utf8.h"
 
 #include <algorithm>
 #include <chrono>
@@ -726,7 +727,7 @@ namespace wbshterm {
 			SearchHit hit;
 			const bool found = search.find(screen, view, true, hit);
 			report.check("search finds a line that lives on disk, case aside",
-				found && hit.row == 0 && hit.column == 0 && hit.length == 6,
+				found && hit.row == 0 && hit.column == 0 && hit.end_row == 0 && hit.end_column == 5,
 				std::to_string(hit.row));
 
 			search.backspace();
@@ -743,6 +744,129 @@ namespace wbshterm {
 			const bool missed = !search.find(screen, view, true, hit);
 			report.check("a miss says so in the caption",
 				missed && search.caption().find(L"no match") != std::wstring::npos, "");
+		}
+
+		static void checkSearchCrossesSoftWraps(Report& report) {
+			Screen screen(10, 4);
+			feedToScreen(screen, "abcdefghijklmnop\r\nshort\r\n");
+
+			TerminalView view;
+			view.followOutput(screen);
+
+			SearchBox search;
+			search.open();
+			typeInto(search, "IJKL");
+
+			SearchHit hit;
+			const bool found = search.find(screen, view, true, hit);
+			report.check("a match running across a soft wrap is found",
+				found && hit.row == 0 && hit.column == 8
+					&& hit.end_row == 1 && hit.end_column == 1,
+				std::to_string(hit.row) + ":" + std::to_string(hit.column) + "-"
+					+ std::to_string(hit.end_row) + ":" + std::to_string(hit.end_column));
+
+			search.backspace();
+			search.backspace();
+			search.backspace();
+			search.backspace();
+			typeInto(search, "pshort");
+			report.check("a hard line end stops a match", !search.find(screen, view, true, hit),
+				"");
+		}
+
+		static void checkSearchFoldsCaseBeyondAscii(Report& report) {
+			report.check("case folding covers more than ASCII",
+				foldCase(U'\u010C') == U'\u010D' && foldCase(U'\u0160') == U'\u0161'
+					&& foldCase(U'\u03A3') == U'\u03C3' && foldCase(U'\u03C2') == U'\u03C3'
+					&& foldCase(U'Q') == U'q' && foldCase(U'7') == U'7',
+				std::to_string(static_cast<unsigned>(foldCase(U'\u010C'))));
+
+			Screen screen(20, 2);
+			feedToScreen(screen, "\xC4\x8C" "E\xC5\xA0TINA\r\n");
+
+			TerminalView view;
+			view.followOutput(screen);
+
+			SearchBox search;
+			search.open();
+			search.typeCharacter(U'\u010D');
+			typeInto(search, "e");
+			search.typeCharacter(U'\u0161');
+
+			SearchHit hit;
+			report.check("a search for lowercase Czech finds it in capitals",
+				search.find(screen, view, true, hit) && hit.row == 0 && hit.end_column == 2,
+				std::to_string(hit.end_column));
+		}
+
+		static SearchStep stepUntilDone(SearchBox& search, const Screen& screen,
+				const TerminalView& view, SearchHit& hit) {
+			SearchStep result = SearchStep::kPending;
+			for (int slice = 0; slice < 100000 && result == SearchStep::kPending; ++slice) {
+				result = search.step(screen, view, std::chrono::milliseconds(0), hit);
+			}
+
+			return result;
+		}
+
+		static void checkSearchRunsInSlices(Report& report) {
+			Screen screen(12, 2);
+			feedNumberedLines(screen, 600);
+
+			TerminalView view;
+			view.followOutput(screen);
+
+			SearchBox search;
+			search.open();
+			typeInto(search, "line-3");
+			search.start(screen, view, true);
+
+			SearchHit hit;
+			const SearchStep first = search.step(screen, view, std::chrono::milliseconds(0), hit);
+			const bool says_so = search.caption().find(L"searching") != std::wstring::npos;
+			report.check("a slice with no time left hands back a running search",
+				first == SearchStep::kPending && search.searching() && says_so,
+				narrowUtf16(search.caption()));
+
+			search.cancel();
+			report.check("a cancelled search stops",
+				!search.searching()
+					&& search.step(screen, view, std::chrono::milliseconds(0), hit)
+						== SearchStep::kMissed,
+				"");
+
+			search.start(screen, view, true);
+			report.check("sliced, the search still lands on the newest match",
+				stepUntilDone(search, screen, view, hit) == SearchStep::kFound && hit.row == 399,
+				std::to_string(hit.row));
+		}
+
+		static void checkSearchFollowsForgottenRows(Report& report) {
+			Screen screen(12, 2);
+			screen.setScrollbackLimit(0);
+			screen.setHistoryDiskLimit(1);
+			feedNumberedLines(screen, 1000);
+
+			TerminalView view;
+			view.followOutput(screen);
+
+			SearchBox search;
+			search.open();
+			typeInto(search, "line-1100");
+			search.start(screen, view, false);
+
+			SearchHit hit;
+			search.step(screen, view, std::chrono::milliseconds(0), hit);
+			for (int index = 1000; index < 1200; ++index) {
+				feedToScreen(screen, "line-" + std::to_string(index) + "\r\n");
+			}
+
+			const SearchStep result = stepUntilDone(search, screen, view, hit);
+			report.check("rows dropped from history are counted", screen.forgottenRows() == 1024,
+				std::to_string(screen.forgottenRows()));
+			report.check("a running search follows rows dropped from history",
+				result == SearchStep::kFound && absoluteRowText(screen, hit.row) == "line-1100",
+				std::to_string(hit.row));
 		}
 
 		static void checkResizeRewrapsLongLines(Report& report) {
@@ -3150,6 +3274,10 @@ namespace wbshterm {
 		test::checkOldRowsSwapOutToDisk(report);
 		test::checkCommandBlocksFollowSwappedRows(report);
 		test::checkSearchReachesDiskHistory(report);
+		test::checkSearchCrossesSoftWraps(report);
+		test::checkSearchFoldsCaseBeyondAscii(report);
+		test::checkSearchRunsInSlices(report);
+		test::checkSearchFollowsForgottenRows(report);
 	}
 
 	static void runLayoutChecks(test::Report& report) {

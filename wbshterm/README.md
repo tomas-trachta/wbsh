@@ -652,7 +652,7 @@ on no matter what arrives afterwards.
 | Action | Binding |
 | --- | --- |
 | Scroll | Wheel, Shift+PageUp/PageDown, Ctrl+Shift+Up/Down, or drag the scrollbar |
-| Search the session | Ctrl+Shift+F, then Enter for older, Shift+Enter for newer, Esc to close |
+| Search the session | Ctrl+Shift+F, then Enter for older, Shift+Enter for newer, Esc to stop / close |
 | Select | Drag; double click for a word, triple for the line |
 | Copy | Ctrl+Shift+C, Ctrl+Insert |
 | Paste | Ctrl+V, Shift+Insert; a picture goes out as Alt+V for the program to fetch |
@@ -661,9 +661,12 @@ on no matter what arrives afterwards.
 | Font size | Ctrl+=, Ctrl+-, Ctrl+0 |
 | Return to the bottom | Type anything |
 
-Search is case-insensitive and covers everything from the live grid back to
-the oldest line on disk; each hit scrolls into view and is highlighted as a
-selection, so Ctrl+Shift+C copies it.
+Search is case-insensitive (in any script, not just ASCII) and covers
+everything from the live grid back to the oldest line on disk. It matches
+whole lines, so text that wrapped across rows is still found. A long search
+runs in the background with its progress in the box, the window stays
+responsive meanwhile, and Esc stops it. Each hit scrolls into view and is
+highlighted as a selection, so Ctrl+Shift+C copies it.
 
 A thin scrollbar sits in each pane's right margin once there is history to
 scroll into. It lights up under the pointer, the thumb drags, and a press on

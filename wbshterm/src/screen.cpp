@@ -983,6 +983,8 @@ namespace wbshterm {
 	// Dropping scrollback, a line at a time when it is full or all of it
 	// on a clear, moves every absolute row up; the blocks move with them.
 	void Screen::shiftBlocksUp(int lines) {
+		forgotten_rows_ += static_cast<std::uint64_t>(std::max(0, lines));
+
 		for (CommandBlock& block : blocks_) {
 			block.prompt_row -= lines;
 			if (block.output_row >= 0) block.output_row -= lines;

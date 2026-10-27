@@ -14,6 +14,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iterator>
 
@@ -36,6 +37,9 @@ namespace wbshterm {
 	static const UINT_PTR kTimerSystem = 5;
 	static const UINT_PTR kTimerScript = 6;
 	static const UINT     kScriptTickMs = 33;
+	static const UINT_PTR kTimerSearch = 7;
+	static const UINT     kSearchGapMs = USER_TIMER_MINIMUM;
+	static const std::chrono::milliseconds kSearchSlice(12);
 	static const int      kHotkeyNewWindow = 1;
 	static const int      kSystemRefreshFloorMs = 250;
 	static const float    kDefaultFontSize = 11.0f;
@@ -1175,6 +1179,11 @@ namespace wbshterm {
 			return;
 		}
 
+		if (timer == kTimerSearch) {
+			continueSearch();
+			return;
+		}
+
 		onBlinkTick();
 	}
 
@@ -2031,15 +2040,24 @@ namespace wbshterm {
 		return true;
 	}
 
-	// Enter finds the previous match, Shift+Enter the next, Escape closes.
+	// Enter finds the previous match, Shift+Enter the next. Escape stops
+	// a search still running, and closes the box when none is.
 	bool TerminalWindow::searchTakesKey(const KeyPress& press) {
 		if (!search_.active()) return false;
 
 		switch (press.virtual_key) {
-		case VK_RETURN: runSearch(!press.shift); break;
-		case VK_ESCAPE: search_.close(); break;
-		case VK_BACK:   search_.backspace(); break;
-		default:        return false;
+		case VK_RETURN:
+			runSearch(!press.shift);
+			break;
+		case VK_ESCAPE:
+			if (search_.searching()) search_.cancel();
+			else search_.close();
+			break;
+		case VK_BACK:
+			search_.backspace();
+			break;
+		default:
+			return false;
 		}
 
 		::InvalidateRect(window_, nullptr, FALSE);
@@ -2047,13 +2065,33 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::runSearch(bool backwards) {
+		search_pane_ = &focused();
+		search_.start(focused().screen(), focused().view(), backwards);
+		continueSearch();
+	}
+
+	// The search runs a slice per timer tick. WM_TIMER is the message the
+	// queue hands out last, so keys and paints get through between slices.
+	void TerminalWindow::continueSearch() {
+		if (search_pane_ != &focused()) search_.cancel();
+
 		Pane& pane = focused();
 		SearchHit hit;
-		if (!search_.find(pane.screen(), pane.view(), backwards, hit)) return;
+		const SearchStep result = search_.step(pane.screen(), pane.view(), kSearchSlice, hit);
+		if (result == SearchStep::kPending) {
+			::SetTimer(window_, kTimerSearch, kSearchGapMs, nullptr);
+		} else {
+			::KillTimer(window_, kTimerSearch);
+		}
 
+		if (result == SearchStep::kFound) showSearchHit(pane, hit);
+		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::showSearchHit(Pane& pane, const SearchHit& hit) {
 		pane.view().scrollToRow(hit.row, pane.screen());
 		pane.view().beginSelection({ hit.row, hit.column });
-		pane.view().extendSelection({ hit.row, hit.column + hit.length - 1 });
+		pane.view().extendSelection({ hit.end_row, hit.end_column });
 		pane.view().endSelection();
 	}
 
