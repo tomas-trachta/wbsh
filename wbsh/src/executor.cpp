@@ -1088,9 +1088,33 @@ namespace wbsh {
 		}
 	}
 
+	static const int kFirstSavedFd = 10;
+
+	// Saved copies live at fd 10 and up, as in bash, so a command's own
+	// `>&3` cannot reach one and write past a redirection.
+	static int dupAboveUserFds(int fd) {
+		std::vector<int> low_copies;
+		int copy = _dup(fd);
+		while (copy >= 0 && copy < kFirstSavedFd) {
+			low_copies.push_back(copy);
+			copy = _dup(fd);
+		}
+
+		for (const int low : low_copies) _close(low);
+		return copy;
+	}
+
+	// The opened fd can already be `target` when target was closed.
+	static void moveFdTo(int fd, int target) {
+		if (fd == target) return;
+
+		_dup2(fd, target);
+		_close(fd);
+	}
+
+	// A backup of -1 records that @p fd was closed, so undoing closes it.
 	void Executor::saveFd(RedirState& state, int fd) const {
-		const int backup = _dup(fd);
-		state.saved.push_back({ fd, backup });
+		state.saved.push_back({ fd, dupAboveUserFds(fd) });
 	}
 
 	int Executor::dupSpecialDevFd(const std::string& path) {
@@ -1188,15 +1212,14 @@ namespace wbsh {
 
 	bool Executor::redirectFdFromPath(const std::string& path, int flags,
 	                                  int target, RedirState& state) {
+		saveFd(state, target);
 		const int fd = openRedirSourceFd(path, flags);
 		if (fd < 0) {
 			reportPathError(path);
 			return false;
 		}
 
-		saveFd(state, target);
-		_dup2(fd, target);
-		_close(fd);
+		moveFdTo(fd, target);
 		return true;
 	}
 
@@ -1244,17 +1267,17 @@ namespace wbsh {
 		if (!expandRedirTarget(redir.target, path)) return false;
 		if ((extra_flags & _O_TRUNC) != 0 && refusesClobber(path)) return false;
 
+		saveFd(state, 1);
+		saveFd(state, 2);
 		const int fd = openRedirSourceFd(path, _O_WRONLY | _O_CREAT | extra_flags);
 		if (fd < 0) {
 			reportPathError(path);
 			return false;
 		}
 
-		saveFd(state, 1);
-		_dup2(fd, 1);
-		saveFd(state, 2);
-		_dup2(fd, 2);
-		_close(fd);
+		if (fd != 1) _dup2(fd, 1);
+		if (fd != 2) _dup2(fd, 2);
+		if (fd != 1 && fd != 2) _close(fd);
 		return true;
 	}
 
@@ -1280,9 +1303,14 @@ namespace wbsh {
 			return false;
 		}
 
+		// bash treats `N>&N` as a no-op, even when N is closed.
+		if (from_fd == target) return true;
+
 		saveFd(state, target);
-		_dup2(from_fd, target);
-		return true;
+		if (_dup2(from_fd, target) == 0) return true;
+
+		std::fprintf(stderr, "wbsh: %d: Bad file descriptor\n", from_fd);
+		return false;
 	}
 
 	bool Executor::installRedirFromTempBody(std::string body, int target, RedirState& state) {
@@ -1290,15 +1318,14 @@ namespace wbsh {
 		if (temp_path.empty()) return false;
 		writeAllText(temp_path, body);
 
+		saveFd(state, target);
 		const int fd = openRedirSourceFd(temp_path, _O_RDONLY);
 		if (fd < 0) {
 			removeFile(temp_path);
 			return false;
 		}
 
-		saveFd(state, target);
-		_dup2(fd, target);
-		_close(fd);
+		moveFdTo(fd, target);
 		state.temps.push_back(std::move(temp_path));
 		return true;
 	}
@@ -1354,14 +1381,21 @@ namespace wbsh {
 		return true;
 	}
 
+	static void restoreSavedFd(int fd, int backup) {
+		if (backup < 0) {
+			_close(fd);
+			return;
+		}
+
+		_dup2(backup, fd);
+		_close(backup);
+	}
+
 	void Executor::undoRedirections(RedirState& state) {
 		std::fflush(stdout);
 		std::fflush(stderr);
 		for (auto it = state.saved.rbegin(); it != state.saved.rend(); ++it) {
-			const int fd     = it->first;
-			const int backup = it->second;
-			_dup2(backup, fd);
-			_close(backup);
+			restoreSavedFd(it->first, it->second);
 		}
 
 		state.saved.clear();
@@ -1491,8 +1525,27 @@ namespace wbsh {
 		RedirState state;
 		if (!applyRedirectionsOrUndo(redirs, state)) return 1;
 
-		for (const auto& saved : state.saved) _close(saved.second);
+		keepExecRedirs(state);
 		return 0;
+	}
+
+	void Executor::keepExecRedirs(const RedirState& state) {
+		if (exec_redir_journal_.empty()) {
+			for (const auto& saved : state.saved) {
+				if (saved.second >= 0) _close(saved.second);
+			}
+
+			return;
+		}
+
+		RedirState& journal = exec_redir_journal_.back();
+		journal.saved.insert(journal.saved.end(), state.saved.begin(), state.saved.end());
+		journal.temps.insert(journal.temps.end(), state.temps.begin(), state.temps.end());
+	}
+
+	void Executor::endExecRedirJournal() {
+		undoRedirections(exec_redir_journal_.back());
+		exec_redir_journal_.pop_back();
 	}
 
 	static long long nextIndexedAppendSlot(const Environment& env, const std::string& name) {
@@ -2128,6 +2181,7 @@ namespace wbsh {
 		ShellScriptScope snap = snapshotShellScriptScope();
 		trap_handlers_.clear();
 		lists_inherited_traps_ = false;
+		beginExecRedirJournal();
 
 		for (const auto& assignment : temp_env) env_.set(assignment.first, assignment.second);
 		env_.setShellName(path);
@@ -2136,6 +2190,7 @@ namespace wbsh {
 		int status = executeInputText(body, path);
 		consumeFlow(FlowSignal::Kind::Exit, &status);
 		if (!flowPending()) status = fireExitTrap(status);
+		endExecRedirJournal();
 		restoreShellScriptScope(snap, /*force_set=*/flowPending());
 		return status;
 	}
@@ -2166,6 +2221,7 @@ namespace wbsh {
 
 		resetSubshellTraps();
 		env_.reseedRandom();
+		beginExecRedirJournal();
 		return snap;
 	}
 
@@ -2182,6 +2238,7 @@ namespace wbsh {
 	}
 
 	void Executor::leaveSubshell(SubshellScope& snap) {
+		endExecRedirJournal();
 		env_.restoreFrom(snap.env);
 		functions_ = std::move(snap.functions);
 		aliases_ = std::move(snap.aliases);
@@ -3282,7 +3339,7 @@ namespace wbsh {
 		}
 
 		std::fflush(stdout);
-		const int saved_stdout = _dup(1);
+		const int saved_stdout = dupAboveUserFds(1);
 		_dup2(capture_fd, 1);
 		_close(capture_fd);
 		status = runCommandSubstitutionBody(body);

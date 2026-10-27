@@ -510,13 +510,19 @@ namespace wbsh {
 		int  runCaseItems(const CaseClause& clause, const std::string& subject);
 
 		struct RedirState {
-			// Saved fds: target_fd -> dup'd backup fd
+			// Saved fds: target_fd -> dup'd backup fd, or -1 if target was closed
 			std::vector<std::pair<int, int>> saved;
 			// Temp files to delete after the command finishes.
 			std::vector<std::string> temps;
 		};
 		bool applyRedirections(const std::vector<Redirection>& rs, RedirState& out);
 		void undoRedirections(RedirState& s);
+		// `exec` redirections made inside an in-process subshell or script
+		// are recorded here and undone when it ends, as a child's fds would
+		// close with it.
+		void beginExecRedirJournal() { exec_redir_journal_.emplace_back(); }
+		void endExecRedirJournal();
+		void keepExecRedirs(const RedirState& state);
 		// applyRedirections, but a failure also undoes whatever was
 		// installed so the caller can return at once.
 		bool applyRedirectionsOrUndo(const std::vector<Redirection>& rs, RedirState& out);
@@ -722,6 +728,7 @@ namespace wbsh {
 		std::unordered_map<std::string, std::string> trap_handlers_;
 		std::unordered_map<std::string, std::string> inherited_traps_;
 		bool lists_inherited_traps_ = false;
+		std::vector<RedirState> exec_redir_journal_;
 		bool in_exit_trap_ = false;
 		int  exit_trap_status_ = 0;
 		std::unordered_map<std::string, CompletionSpec> completion_specs_;
