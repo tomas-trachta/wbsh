@@ -1,0 +1,52 @@
+=== junctions
+rm jd: 0
+  jd gone
+  target kept
+rm -r tree with a junction inside: 0
+  target kept
+rm dangling junction: 0
+=== symlinks
+rm dangling symlink: 0
+rm file symlink: 0
+rm directory symlink: 0
+  links gone
+  target kept
+=== --
+rm -- -dash: 0
+  -dash gone
+wbsh: rm: cannot remove '--nope': No such file or directory
+rm -- --nope: 1
+=== -d
+rm -d empty: 0
+wbsh: rm: cannot remove 'full': Directory not empty
+rm -d full: 1
+wbsh: rm: cannot remove 'full': Is a directory
+rm full: 1
+wbsh: rm: refusing to remove '.' or '..' directory: skipping '.'
+rm -d .: 1
+=== -v
+removed 'a1'
+removed 'v/g'
+removed 'v/w/f'
+removed directory 'v/w'
+removed directory 'v'
+rm -rv: 0
+=== -i
+rm: remove regular empty file 'y1'? rm: remove regular empty file 'n1'? rm: remove regular file 'ne'? 
+left: n1
+rm: descend into directory 'd'? rm: descend into directory 'd/e'? rm: remove regular empty file 'd/e/f'? rm: remove directory 'd/e'? rm: remove directory 'd'? 
+left: d
+rm -i -f: 0 (no prompt)
+rm: remove regular empty file 'z'? 
+rm -f -i with no answer kept z: z
+=== -I and --interactive
+rm: remove 4 arguments? 
+after no: z1 z2 z3 z4
+rm -I three files: 0 (no prompt)
+rm -I two files: 0 (no prompt)
+rm: remove 1 argument recursively? 
+after no: r
+rm: remove 1 argument recursively? 
+--interactive=never: 0
+wbsh: rm: invalid argument 'bogus' for '--interactive'
+--interactive=bogus: 1
