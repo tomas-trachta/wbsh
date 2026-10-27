@@ -895,24 +895,52 @@ namespace wbsh {
 		function.body_text = source_->substr(body_start, body_end - body_start);
 	}
 
+	static bool findKeyClose(const Word& word, std::size_t& out_seg, std::size_t& out_pos) {
+		for (std::size_t k = 0; k < word.segments.size(); ++k) {
+			const WordSegment& segment = word.segments[k];
+			if (segment.kind != WordSegment::Kind::Literal) continue;
+
+			const std::size_t close = segment.text.find(']', k == 0 ? 1 : 0);
+			if (close == std::string::npos) continue;
+			if (close + 1 >= segment.text.size() || segment.text[close + 1] != '=') return false;
+
+			out_seg = k;
+			out_pos = close;
+			return true;
+		}
+
+		return false;
+	}
+
+	static void appendKeySegments(const Word& word, std::size_t close_seg, std::size_t close_pos,
+	                              Word& out_key) {
+		for (std::size_t k = 0; k <= close_seg; ++k) {
+			const WordSegment& segment = word.segments[k];
+			if (segment.kind != WordSegment::Kind::Literal) {
+				out_key.segments.push_back(segment);
+				continue;
+			}
+
+			const std::size_t from = (k == 0) ? 1 : 0;
+			const std::size_t to = (k == close_seg) ? close_pos : segment.text.size();
+			if (to > from) appendLiteralSegment(out_key, segment.text.substr(from, to - from));
+		}
+	}
+
 	static bool tryParseKeyedArrayItem(const Word& word, Assignment::Keyed& item) {
 		if (word.raw.empty() || word.raw[0] != '[') return false;
 		if (word.segments.empty()) return false;
 		if (word.segments[0].kind != WordSegment::Kind::Literal) return false;
 
-		const std::string& literal = word.segments[0].text;
-		const std::size_t close = literal.find(']');
-		if (close == std::string::npos) return false;
-		if (close + 1 >= literal.size() || literal[close + 1] != '=') return false;
+		std::size_t close_seg = 0;
+		std::size_t close_pos = 0;
+		if (!findKeyClose(word, close_seg, close_pos)) return false;
 
-		WordSegment key;
-		key.kind = WordSegment::Kind::Literal;
-		key.text = literal.substr(1, close - 1);
-		item.key.segments.push_back(std::move(key));
+		appendKeySegments(word, close_seg, close_pos, item.key);
 		item.has_key = true;
 
-		appendLiteralSegment(item.value, literal.substr(close + 2));
-		for (std::size_t k = 1; k < word.segments.size(); ++k) {
+		appendLiteralSegment(item.value, word.segments[close_seg].text.substr(close_pos + 2));
+		for (std::size_t k = close_seg + 1; k < word.segments.size(); ++k) {
 			item.value.segments.push_back(word.segments[k]);
 		}
 
@@ -973,11 +1001,67 @@ namespace wbsh {
 		return true;
 	}
 
+	bool Parser::parseLoneArrayAssignment(Assignment& out) {
+		SimpleCommand cmd;
+		if (!tryConsumeLeadingAssignment(cmd)) return false;
+		if (!atEnd() || !errors_.empty() || !cmd.assignments[0].is_array) return false;
+
+		out = std::move(cmd.assignments[0]);
+		return true;
+	}
+
+	static bool isDeclarationCommandWord(const Word& word) {
+		static const char* const kDeclarationBuiltins[] = {
+			"local", "declare", "typeset", "export", "readonly",
+		};
+
+		if (word.segments.size() != 1) return false;
+		if (word.segments[0].kind != WordSegment::Kind::Literal) return false;
+
+		for (const char* name : kDeclarationBuiltins) {
+			if (word.segments[0].text == name) return true;
+		}
+
+		return false;
+	}
+
+	std::string Parser::compoundTextFrom(std::size_t first_token) const {
+		std::string text = toks_[first_token].text + "(";
+		bool first_item = true;
+		for (std::size_t k = first_token + 2; k + 1 < pos_; ++k) {
+			if (toks_[k].kind != TokKind::Word) continue;
+
+			if (!first_item) text.push_back(' ');
+			text += toks_[k].text;
+			first_item = false;
+		}
+
+		return text + ")";
+	}
+
+	bool Parser::tryConsumeDeclarationArg(SimpleCommand& cmd) {
+		DeclarationArg arg;
+		if (!tryExtractAssignment(peek(), arg.assignment)) return false;
+
+		const std::size_t first_token = pos_;
+		arg.word_index = cmd.words.size();
+		cmd.words.push_back(tokenToWord(advance()));
+		if (isEmptyScalarAssignmentSlot(arg.assignment) && peek().kind == TokKind::LParen) {
+			advance();
+			parseArrayLiteralBody(arg.assignment);
+			arg.compound_text = compoundTextFrom(first_token);
+		}
+
+		cmd.declaration_args.push_back(std::move(arg));
+		return true;
+	}
+
 	NodePtr Parser::parseSimpleCommand() {
 		const std::size_t start = srcOffsetHere();
 		auto cmd = arena_.make<SimpleCommand>();
 		cmd->loc = peek().loc;
 		bool seen_word = false;
+		bool declaration = false;
 
 		while (!atEnd()) {
 			if (atRedirOp() || peek().kind == TokKind::IoNumber) {
@@ -990,8 +1074,10 @@ namespace wbsh {
 
 			if (peek().kind != TokKind::Word) break;
 			if (!seen_word && tryConsumeLeadingAssignment(*cmd)) continue;
+			if (declaration && tryConsumeDeclarationArg(*cmd)) continue;
 
 			cmd->words.push_back(tokenToWord(advance()));
+			if (!seen_word) declaration = isDeclarationCommandWord(cmd->words.back());
 			seen_word = true;
 		}
 

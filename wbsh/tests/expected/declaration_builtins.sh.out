@@ -1,0 +1,107 @@
+=== 1. command -v / -V
+[echo] [f] [if] []
+missing rc=1
+one found rc=0
+cmd path is posix
+if is a shell keyword
+wbsh: command: nosuch_cmd: not found
+rc=1
+alias zz='echo z'
+command skips the function
+=== 2. type -t / -p / -P / -a / -f
+builtin
+function
+keyword
+keyword
+keyword
+builtin
+rc=1
+ll is aliased to `ls -l'
+alias
+-p of a builtin rc=0
+-P finds cmd on PATH
+-f hides functions rc=1
+f is a function
+wbsh: type: -z: invalid option
+type: usage: type [-afptP] name [name ...]
+rc=2
+builtin runs the builtin
+wbsh: builtin: nosuch_cmd: not a shell builtin
+rc=1
+=== 3. unset -f / -v, export -n
+function
+function
+unset falls back to the function rc=1
+unset -f rc=1
+wbsh: unset: RO: cannot unset: readonly variable
+rc=1
+wbsh: unset: `1x': not a valid identifier
+rc=1
+XN=1 printenv=[]
+declare -x XE="a \"b\" \$c"
+1
+=== 4. return from a sourced file
+before
+rc=3
+rc=4
+before
+function continues rc=3
+wbsh: return: can only `return' from a function or sourced script
+top level rc=1
+=== 5. declare in a function is local, -g is global
+d=out t=out gd=in
+[unset]
+x=global
+wbsh: r: readonly variable
+r=1
+r after=5
+n=8
+n=8
+abcxy ABC
+3 l 2
+arr restored: g1 g2
+c v
+m=[]
+/x
+Q rc=1
+wbsh: local: GR: readonly variable
+rc=1 GR=1
+a=1
+wbsh: local: can only be used in a function
+local at top level rc=1
+wbsh: declare: -z: invalid option
+declare: usage: declare [-aAfFgilnrtux] [-p] [name[=value] ...]
+rc=2
+=== 6. declaration arguments do not word-split
+[a: b]
+[a: b z  y]
+[a: b z  y]
+[a: b] [a: b] [a: b] [a: b]
+[*]
+2
+[(c d)] 2
+=== 7. declare -p output re-evaluates
+declare -- v="it's a \"q\" \$x \`y\` \\z"
+[it's a "q" $x `y` \z]
+declare -a ia=([2]="x" [5]="y z")
+declare -A am=(["a b"]="c d" [k]="v" )
+c d
+declare -ir nr="5"
+declare -xl xl="q"
+wbsh: declare: nosuch_var: not found
+rc=1
+f
+f () 
+pv='a b'
+=== 8. cd -P / -L, pwd -P
+in cdp
+in _run_tmp
+wbsh: cd: -x: invalid option
+cd: usage: cd [-L|[-P [-e]] [-@]] [dir]
+rc=2
+pwd -P agrees
+=== 9. set -x quotes arguments
++ echo 'a b' c '' 'it'\''s' '*' x=y '~' a~ '#a' a#
+a b c  it's * x=y ~ a~ #a a#
+=== 10. exec of a builtin ends the shell
+exec'd

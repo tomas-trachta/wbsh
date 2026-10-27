@@ -117,7 +117,12 @@ namespace wbsh {
 	 * @param[out] err Set to the OS error message on failure.
 	 * @return true on success.
 	 */
-	bool changeDirectory(Executor& exec, const std::string& target, std::string& err);
+	bool changeDirectory(Executor& exec, const std::string& target, std::string& err,
+		bool physical = false);
+
+	/// @p word as bash shows it for re-use (`set -x`, `declare`): bare when
+	/// that is safe, else single-quoted, or `$'...'` with control characters.
+	std::string shellQuoteForReuse(const std::string& word);
 
 	/**
 	 * @brief AST executor and runtime registry.
@@ -335,6 +340,10 @@ namespace wbsh {
 		// drops arrays — only scalars survive the env-block round-trip.
 		std::string serializeArrays() const;
 
+		// `declare -ilur name` lines for the variables with attributes a
+		// value does not carry. Populates WBSH_ATTRIBUTES.
+		std::string serializeAttributes() const;
+
 		int  loopDepth() const  { return loop_depth_; }
 		int  funcDepth() const  { return func_depth_; }
 
@@ -390,7 +399,27 @@ namespace wbsh {
 		// Scoped variable declaration. Used by the `local` builtin: records
 		// the prior state of `name` so it can be restored when the current
 		// function scope is popped, then assigns `value`.
-		void declareLocal(const std::string& name, const std::string& value);
+		/// False outside a function. A new local starts out unset, keeping
+		/// only the export attribute of the variable it shadows.
+		bool makeLocal(const std::string& name);
+		std::vector<std::string> localNames() const;
+
+		/// Assign `name=(...)` or `name+=(...)`, expanding the items.
+		bool assignCompound(const std::string& text);
+		/// Which arguments of the running declaration builtin were written
+		/// as `name=(...)`, by argv index. Taken once, by that builtin.
+		std::vector<bool> takeCompoundArgs() {
+			std::vector<bool> taken;
+			taken.swap(compound_args_);
+			return taken;
+		}
+
+		const FunctionDef* findFunction(const std::string& name) const;
+		bool unsetFunction(const std::string& name);
+
+		int  sourceDepth() const { return source_depth_; }
+		void beginSource() { ++source_depth_; }
+		void endSource()   { --source_depth_; }
 
 		// Run argv as a resolved command (function, builtin, or external) with
 		// `assigns` in its environment only, the way a `NAME=value cmd` prefix does.
@@ -415,6 +444,8 @@ namespace wbsh {
 		// path (UTF-8) or empty if not found. Honours Windows PATHEXT-style
 		// .exe/.cmd/.bat resolution. Used by `type`, `command -v`, etc.
 		std::string findExecutable(const std::string& name);
+		/// Every PATH match for `name`, in PATH order (`type -a`).
+		std::vector<std::string> findAllExecutables(const std::string& name);
 
 		// The PATH walk behind findExecutable(); a hit is memoized.
 		std::string lookupInPathDirs(const std::string& name, const std::string& path);
@@ -565,7 +596,9 @@ namespace wbsh {
 		// recoverable expansion error they print a diagnostic and return false
 		// (or the appropriate non-zero status).
 		bool expandSimpleCmdAssigns(const SimpleCommand& sc, SimpleCmdAssigns& out);
-		bool expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv);
+		bool expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv,
+		                         std::vector<bool>& compound);
+		std::string expandDeclarationArg(const DeclarationArg& arg);
 		void aliasExpandArgvHead(std::vector<std::string>& argv);
 		// `exec` with no command: install the redirections on the current
 		// shell permanently and return the resulting status.
@@ -598,8 +631,7 @@ namespace wbsh {
 		// the way out, as if it had been a forked child.
 		struct ScopeEntry {
 			std::string name;
-			bool had_prev;
-			std::string prev_value;
+			Environment::VarState saved;
 		};
 
 		struct SubshellScope {
@@ -754,12 +786,15 @@ namespace wbsh {
 		int  cmdsubst_status_ = 0;
 		int  loop_depth_ = 0;
 		int  func_depth_ = 0;
+		int  source_depth_ = 0;
+		std::vector<bool> compound_args_;
 		int  errexit_suppress_ = 0;
 		InputEcho input_echo_;
 		FlowSignal flow_;
 	};
 
 	void registerCoreBuiltins(Executor& exec);
+	void registerDeclarationBuiltins(Executor& exec);
 	void registerCoreutils(Executor& exec);
 
 }  // namespace wbsh

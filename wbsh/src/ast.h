@@ -122,10 +122,21 @@ namespace wbsh {
 
 	const char* nodeKindName(Node::Kind k);
 
+	/// A `name=value` operand of `local`, `declare`, `typeset`, `export` or
+	/// `readonly`: it expands like an assignment, with no field splitting
+	/// or globbing, into the single argument at `word_index`.
+	struct DeclarationArg {
+		std::size_t word_index = 0;
+		Assignment assignment;
+		/// `name=(...)` as written; the builtin expands the items itself.
+		std::string compound_text;
+	};
+
 	struct SimpleCommand : Node {
 		SimpleCommand() : Node(Kind::SimpleCommand) {}
 		std::vector<Assignment> assignments;    ///< Pre-command assignments.
 		std::vector<Word> words;                ///< argv[0..N], pre-expansion.
+		std::vector<DeclarationArg> declaration_args;   ///< Sorted by word_index.
 		std::vector<Redirection> redirs;
 	};
 

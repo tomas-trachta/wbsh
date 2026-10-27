@@ -294,6 +294,7 @@ namespace wbsh {
 		replayInheritedText(env, exec, "WBSH_FUNCTIONS", "<inherited functions>");
 		replayInheritedText(env, exec, "WBSH_ALIASES",   "<inherited aliases>");
 		replayInheritedText(env, exec, "WBSH_ARRAYS",    "<inherited arrays>");
+		replayInheritedText(env, exec, "WBSH_ATTRIBUTES", "<inherited attributes>");
 		applyInheritedOptions(env);
 		applyInheritedShellParameters(env, exec);
 	}

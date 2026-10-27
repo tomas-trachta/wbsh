@@ -19,7 +19,7 @@ content
 === readonly / declare
 wbsh: RX: readonly variable
 RX=42
-declare - RX="42"
+declare -r RX="42"
 === getopts
 got a
 got b with arg=VALUE
