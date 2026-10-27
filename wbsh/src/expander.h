@@ -227,6 +227,16 @@ namespace wbsh {
 			}
 		};
 
+		// One element of an array (or of a scalar, as element 0) as a
+		// lookup found it. Public for the file-static lookup helpers.
+		struct ElementSlot {
+			bool resolved = false;   // the subscript evaluated
+			bool is_set = false;
+			bool assoc = false;
+			long long index = 0;
+			std::string key;
+		};
+
 	private:
 
 		// Record an expansion error. First error wins so the diagnostic
@@ -255,11 +265,22 @@ namespace wbsh {
 		                         bool star, bool inside_dq, Tagged& out);
 		void   renderDoubleQuoted(const WordSegment& s, Tagged& out);
 		bool   renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq);
+		bool   renderParamBody(const std::string& body, const std::string& label,
+		                       bool inside_dq, Tagged& out);
 		void   renderProcSubstSegment(const WordSegment& s, Tagged& out);
 
 		std::string lookupParam(const std::string& name, bool suppress_nounset = false);
 		std::string lookupPositional(std::size_t index) const;
-		bool tryExpandIndirectParam(const std::string& body, std::string& out);
+		bool isVariableSet(const std::string& name) const;
+		std::vector<std::string> namesWithPrefix(const std::string& prefix) const;
+		// `${!ref<rest>}`: rewrites the body to `<target><rest>`, where
+		// the target is the value of `ref`, and sets the `!ref` label
+		// that diagnostics name. False when the body has no indirect
+		// reference; errors are raised through fail().
+		bool resolveIndirectBody(const std::string& body, std::string& out_body,
+		                         std::string& out_label);
+		bool resolveUnsetIndirect(const std::string& spec, const std::string& rest,
+		                          const std::string& label, std::string& out_body);
 		std::string joinPositionals(char form) const;
 		bool        lookupSpecialChar(char c, std::string& out);
 		bool        lookupDynamicSpecial(const std::string& name, std::string& out) const;
@@ -269,7 +290,10 @@ namespace wbsh {
 		// keys. Returns empty for unknown names/keys.
 		std::string lookupSubscripted(const std::string& name,
 		                              const std::string& subscript,
-		                              bool star_join_ifs);
+		                              bool star_join_ifs,
+		                              ElementSlot* slot = nullptr);
+		std::string lookupElement(const std::string& name, const std::string& subscript,
+		                          ElementSlot& slot);
 		std::string starSeparator(bool star_join_ifs) const;
 		std::string resolveSubscript(const std::string& subscript);
 		std::string joinWholeArray(const std::string& name, const std::string& sep);
@@ -278,10 +302,12 @@ namespace wbsh {
 		std::vector<std::string> arrayValues(const std::string& name) const;
 		std::string expandParam(const std::string& body, bool quoted_ctx);
 		std::string expandParamLengthForm(const std::string& body);
-		std::string expandParamIndicesForm(const std::string& body);
-		std::string evalParamDefaultOp(char op, bool colon,
-		                               const std::string& name,
-		                               const std::string& cur,
+		std::string expandBangParam(const std::string& body);
+		// @p label names the parameter in diagnostics; empty means the
+		// spelling in @p body.
+		std::string expandDirectParam(const std::string& body, const std::string& label);
+		struct ParamOpCtx;
+		std::string evalParamDefaultOp(char op, bool colon, const ParamOpCtx& ctx,
 		                               const std::string& arg);
 		// A `@`, `*`, `name[@]` or `name[*]` subject with an operator
 		// after it. Bash applies the operator to each element, and the
@@ -290,6 +316,7 @@ namespace wbsh {
 			std::string name;        // the array name; empty for `@` / `*`
 			bool star = false;       // a `*` form, joined with IFS[0]
 			std::size_t op_pos = 0;  // index of the operator in the body
+			std::string label;       // diagnostics name; empty for the body's spelling
 		};
 		using KeyedList = std::vector<std::pair<long long, std::string>>;
 		bool parseListParam(const std::string& body, ListParam& out) const;
@@ -320,7 +347,10 @@ namespace wbsh {
 			bool has_subscript;
 			const std::string& body;       // for ${name:OFF:LEN} / pattern args
 			std::string named_value;       // resolved scalar value
+			std::string label;             // the parameter as diagnostics name it
+			ElementSlot slot;              // the element named by the subscript
 		};
+		void assignParamDefault(const ParamOpCtx& ctx, const std::string& value);
 		std::string expandParamApplyOp(char op, bool colon, std::size_t op_pos,
 		                               ParamOpCtx& ctx);
 

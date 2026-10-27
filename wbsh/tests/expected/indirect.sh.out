@@ -1,0 +1,76 @@
+=== 1. indirection with operators
+val Val
+hello hello hello alt alt llo hel
+heLlo heLLo Hello HELLO ello el h
+[] def def []
+nope=assigned
+[d] []
+unset ref: [] [d] [d] []
+=== 2. positional and special targets
+c u
+b
+p P
+2
+[1 2] [X 2]
+<1><2>
+=== 3. array targets
+q
+p []
+p q r
+<p><q><r>
+<p q r>
+[P q] q
+r R
+q
+v
+p []
+[d] [one]
+split: 2
+quoted: 1
+=== 4. names with a prefix
+myvar1 myvar2 myvarx
+myvar1 myvar2 myvarx
+<myvar1><myvar2><myvarx>
+<myvar1 myvar2 myvarx>
+<myvar1,myvar2,myvarx>
+<myvar1><myvar2><myvarx>
+myarr myassoc myvar1 myvar2 myvarx
+[] []
+<>|
+v=myvar1
+v=myvar2
+v=myvarx
+RANDOM SECONDS LINENO
+in $(): myvar1 myvar2 myvarx
+=== 5. errors
+wbsh: a b: bad substitution
+rc=1
+wbsh: 1a: bad substitution
+rc=1
+wbsh: : bad substitution
+rc=1
+wbsh: a[1: bad substitution
+rc=1
+wbsh: $y: bad substitution
+rc=1
+wbsh: y:-q: bad substitution
+rc=1
+wbsh: !x: invalid indirect expansion
+x=[]
+rc=0
+wbsh: !x: parameter null or not set
+rc=1
+wbsh: !x: unbound variable
+rc=1
+wbsh: !x: unbound variable
+rc=1
+ok
+=== 6. default operators on array elements
+[d] [a] [d] []
+[] [d] [d] [] [s]
+[v] [d] []
+p  q seven
+new
+p i=1
+wbsh: a[9]: parameter null or not set
+rc=1
