@@ -2483,7 +2483,8 @@ namespace wbsh {
 		for (const std::string& expression : args) {
 			last = expander.evalArith(expression);
 			if (expander.failed()) {
-				std::fprintf(stderr, "wbsh: let: %s\n", expander.takeError().c_str());
+				const char* label = expander.fatalErrorPending() ? "" : "let: ";
+				std::fprintf(stderr, "wbsh: %s%s\n", label, expander.takeError().c_str());
 				return 1;
 			}
 		}

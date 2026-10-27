@@ -468,6 +468,8 @@ namespace wbsh {
 		void  echoInputUpTo(std::size_t end);
 
 		int execNode(const Node& n);
+		int dispatchNode(const Node& n);
+		void exitOnFatalExpansionError();
 		int execList(const List& l);
 		int execAndOr(const AndOr& a);
 		int execPipeline(const Pipeline& p);

@@ -20,7 +20,7 @@ orside ok
 wbsh: undefined_var_xyz: unbound variable
 after nounset
 === ${x:?msg} ===
-wbsh: custom message
+wbsh: undefined_var_xyz: custom message
 after qmark
 === awk flow ===
 got a

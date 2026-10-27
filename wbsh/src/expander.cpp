@@ -98,6 +98,16 @@ namespace wbsh {
 		return out;
 	}
 
+	static const char* const kDynamicSpecials[] = { "BASHPID", "LINENO", "RANDOM", "SECONDS" };
+
+	static bool isDynamicSpecialName(const std::string& name) {
+		for (const char* special : kDynamicSpecials) {
+			if (name == special) return true;
+		}
+
+		return false;
+	}
+
 	// Index of the bracket that closes the group already `depth` deep at
 	// `after_open`, or body.size() when it is never closed.
 	static std::size_t scanBalanced(const std::string& body, std::size_t after_open,
@@ -326,6 +336,11 @@ namespace wbsh {
 				return !error_.empty();
 			}
 
+			// The error is `set -u` meeting an unset variable.
+			bool unbound() const {
+				return unbound_;
+			}
+
 			const std::string& error() const {
 				return error_;
 			}
@@ -367,6 +382,20 @@ namespace wbsh {
 
 				error_ = message;
 				pos_ = src_.size();
+			}
+
+			void adoptInnerError(const ArithEval& inner) {
+				if (failed()) return;
+
+				adoptError(inner.error());
+				unbound_ = inner.unbound();
+			}
+
+			void failUnbound(const std::string& name) {
+				if (failed()) return;
+
+				adoptError(name + ": unbound variable");
+				unbound_ = true;
 			}
 
 			void failOnLeftover() {
@@ -731,6 +760,11 @@ namespace wbsh {
 
 			long long variableValue(const std::string& name) {
 				if (name.empty() || skipping()) return 0;
+				if (env_.nounset() && !env_.has(name) && !isDynamicSpecialName(name)) {
+					failUnbound(name);
+					return 0;
+				}
+
 				return textValue(env_.get(name), name);
 			}
 
@@ -753,7 +787,7 @@ namespace wbsh {
 
 				ArithEval inner(text, env_, depth_ + 1);
 				const long long value = inner.run();
-				if (inner.failed()) adoptError(inner.error());
+				if (inner.failed()) adoptInnerError(inner);
 				return value;
 			}
 
@@ -846,6 +880,7 @@ namespace wbsh {
 			std::size_t pos_ = 0;
 			std::size_t last_operator_at_ = 0;
 			std::string error_;
+			bool unbound_ = false;
 			int skip_depth_ = 0;
 			Environment& env_;
 			int depth_;
@@ -862,7 +897,8 @@ namespace wbsh {
 
 		arith_detail::ArithEval evaluator(expanded, env_, 0);
 		const long long value = evaluator.run();
-		if (evaluator.failed()) fail(evaluator.error());
+		if (evaluator.unbound()) failFatal(evaluator.error());
+		else if (evaluator.failed()) fail(evaluator.error());
 		return value;
 	}
 
@@ -1460,8 +1496,27 @@ namespace wbsh {
 		return false;
 	}
 
+	bool Expander::isParamSet(const std::string& name) const {
+		if (isDigit(name[0])) return !isUnsetPositional(name);
+		if (name.size() == 1 && isSpecialParam1(name[0])) return true;
+		return isVariableSet(name);
+	}
+
+	bool Expander::isUnsetPositional(const std::string& name) const {
+		if (name.empty() || scanDigitsEnd(name, 0) != name.size()) return false;
+
+		unsigned long index = 0;
+		if (!parseUL(name, index)) return true;
+		return index > env_.positional().size();
+	}
+
 	std::string Expander::lookupParam(const std::string& name, bool suppress_nounset) {
 		if (name.empty()) return {};
+
+		if (env_.nounset() && !suppress_nounset && isUnsetPositional(name)) {
+			failFatal(name + ": unbound variable");
+			return {};
+		}
 
 		if (name.size() == 1) {
 			std::string out;
@@ -1478,7 +1533,7 @@ namespace wbsh {
 		if (lookupDynamicSpecial(name, dynamic)) return dynamic;
 
 		if (env_.has(name)) return env_.get(name);
-		if (env_.nounset() && !suppress_nounset) fail(name + ": unbound variable");
+		if (env_.nounset() && !suppress_nounset) failFatal(name + ": unbound variable");
 		return {};
 	}
 
@@ -1630,7 +1685,11 @@ namespace wbsh {
 		}
 
 		if (subscript == "@" || subscript == "*") return std::to_string(arrayLength(name));
-		return std::to_string(lookupSubscripted(name, subscript, false).size());
+
+		ElementSlot slot;
+		const std::string element = lookupSubscripted(name, subscript, false, &slot);
+		if (env_.nounset() && !slot.is_set) failFatal(name + ": unbound variable");
+		return std::to_string(element.size());
 	}
 
 	// Length of the parameter name at the start of `body`, or npos when
@@ -1655,10 +1714,8 @@ namespace wbsh {
 
 	std::string Expander::evalParamDefaultOp(char op, bool colon, const ParamOpCtx& ctx,
 			const std::string& arg) {
-		const std::string& name = ctx.name;
 		const std::string& cur = ctx.named_value;
-		const bool unset = ctx.has_subscript ? !ctx.slot.is_set
-			: !env_.has(name) && !isDigit(name[0]) && !isSpecialParam1(name[0]);
+		const bool unset = ctx.has_subscript ? !ctx.slot.is_set : !isParamSet(ctx.name);
 		const bool empty_or_unset = colon ? (unset || cur.empty()) : unset;
 
 		switch (op) {
@@ -1676,10 +1733,9 @@ namespace wbsh {
 		case '?': {
 			if (!empty_or_unset) return cur;
 
-			std::string message = arg.empty()
-				? (ctx.label + ": parameter null or not set")
+			const std::string message = arg.empty() ? std::string("parameter null or not set")
 				: expandParamWordArg(arg);
-			fail(std::move(message));
+			failFatal(ctx.label + ": " + message);
 			return {};
 		}
 		default:
@@ -1908,8 +1964,8 @@ namespace wbsh {
 		case '?':
 			if (!missing) return elems;
 
-			fail(arg.empty() ? (subject + ": parameter null or not set")
-				: expandParamWordArg(arg));
+			failFatal(subject + ": " + (arg.empty() ? std::string("parameter null or not set")
+				: expandParamWordArg(arg)));
 			return {};
 		default:
 			return elems;
@@ -1981,16 +2037,6 @@ namespace wbsh {
 		return true;
 	}
 
-	static const char* const kDynamicSpecials[] = { "BASHPID", "LINENO", "RANDOM", "SECONDS" };
-
-	static bool isDynamicSpecialName(const std::string& name) {
-		for (const char* special : kDynamicSpecials) {
-			if (name == special) return true;
-		}
-
-		return false;
-	}
-
 	bool Expander::isVariableSet(const std::string& name) const {
 		return env_.has(name) || isDynamicSpecialName(name);
 	}
@@ -2059,7 +2105,7 @@ namespace wbsh {
 	bool Expander::resolveUnsetIndirect(const std::string& spec, const std::string& rest,
 			const std::string& label, std::string& out_body) {
 		if (env_.nounset() && !paramOpHandlesUnset(rest, 0)) {
-			fail(label + ": unbound variable");
+			failFatal(label + ": unbound variable");
 			return true;
 		}
 
@@ -2101,12 +2147,21 @@ namespace wbsh {
 
 		if (env_.nounset() && !paramOpHandlesUnset(rest, 0) && isPlainName(target)
 		    && !isVariableSet(target)) {
-			fail(out_label + ": unbound variable");
+			failFatal(out_label + ": unbound variable");
 			return true;
 		}
 
 		out_body = target + rest;
 		return true;
+	}
+
+	// `${a[@]}` and `${a[*]}` are exempt from `set -u`, as in bash.
+	void Expander::checkElementBound(const std::string& subject, const std::string& subscript,
+			const ElementSlot& slot) {
+		if (!env_.nounset() || slot.is_set) return;
+		if (subscript == "@" || subscript == "*") return;
+
+		failFatal(subject + ": unbound variable");
 	}
 
 	std::string Expander::expandBangParam(const std::string& body) {
@@ -2151,14 +2206,16 @@ namespace wbsh {
 		// `${name:-…}`, `${name-…}`, `${name:=…}`, `${name:?…}` (and their
 		// colon-less siblings) handle an unset `name` themselves, so the
 		// lookup here must not raise `set -u`'s unbound-variable error.
+		const bool handles_unset = paramOpHandlesUnset(body, i);
 		ElementSlot slot;
 		const std::string named = has_subscript
 			? lookupSubscripted(name, subscript, true, &slot)
-			: lookupParam(name, paramOpHandlesUnset(body, i));
+			: lookupParam(name, handles_unset);
+		const std::string subject = label.empty() ? body.substr(0, i) : label;
+		if (has_subscript && !handles_unset) checkElementBound(subject, subscript, slot);
 		if (i >= body.size()) return named;
 
-		ParamOpCtx ctx{ name, subscript, has_subscript, body, named,
-			label.empty() ? body.substr(0, i) : label, slot };
+		ParamOpCtx ctx{ name, subscript, has_subscript, body, named, subject, slot };
 		char op = body[i];
 		bool colon = false;
 		if (op == ':' && i + 1 < body.size() && isDefaultOp(body[i + 1])) {
@@ -2452,6 +2509,11 @@ namespace wbsh {
 		case K::SimpleVar:
 			if (s.text == "@") {
 				return renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
+			}
+
+			if (env_.nounset() && isUnsetPositional(s.text)) {
+				failFatal("$" + s.text + ": unbound variable");
+				break;
 			}
 
 			pushText(out, lookupParam(s.text), mark);
