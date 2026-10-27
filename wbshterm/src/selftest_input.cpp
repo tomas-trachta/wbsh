@@ -182,6 +182,21 @@ namespace wbshterm {
 				forward == 0 && reversed == -1, std::to_string(reversed));
 		}
 
+		static void checkMousePixelsBecomeDips(Report& report) {
+			const float at_100 = pixelsToDips(300, 96);
+			const float at_125 = pixelsToDips(300, 120);
+			const float at_150 = pixelsToDips(300, 144);
+			const float unknown = pixelsToDips(300, 0);
+
+			report.check("at 100% scale a pixel is a DIP", at_100 == 300.0f,
+				std::to_string(at_100));
+			report.check("at 125% and 150% scale pixels shrink to DIPs",
+				at_125 == 240.0f && at_150 == 200.0f,
+				std::to_string(at_125) + " " + std::to_string(at_150));
+			report.check("an unknown DPI counts as 100%", unknown == 300.0f,
+				std::to_string(unknown));
+		}
+
 	} /* namespace test */
 
 	void runInputChecks(test::Report& report) {
@@ -195,6 +210,7 @@ namespace wbshterm {
 		test::checkPickerTakesNonAscii(report);
 		test::checkWheelNotchesScrollWholeLines(report);
 		test::checkTouchpadDeltasAccumulate(report);
+		test::checkMousePixelsBecomeDips(report);
 	}
 
 } /* namespace wbshterm */

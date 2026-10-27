@@ -1,6 +1,6 @@
 /**
  * @file mouse.cpp
- * @brief Mouse arithmetic kept apart from the window: wheel deltas to lines.
+ * @brief Mouse arithmetic kept apart from the window: pixels to DIPs, wheel deltas to lines.
  */
 
 #include "mouse.h"
@@ -8,6 +8,12 @@
 #include <windows.h>
 
 namespace wbshterm {
+
+	float pixelsToDips(int pixels, unsigned int dpi) {
+		const unsigned int effective = dpi != 0 ? dpi : USER_DEFAULT_SCREEN_DPI;
+		return static_cast<float>(pixels) * static_cast<float>(USER_DEFAULT_SCREEN_DPI)
+			/ static_cast<float>(effective);
+	}
 
 	static bool oppositeSigns(int left, int right) {
 		return (left < 0 && right > 0) || (left > 0 && right < 0);

@@ -2,10 +2,13 @@
 
 /**
  * @file mouse.h
- * @brief Mouse arithmetic kept apart from the window: wheel deltas to lines.
+ * @brief Mouse arithmetic kept apart from the window: pixels to DIPs, wheel deltas to lines.
  */
 
 namespace wbshterm {
+
+	/** A mouse position in pixels at @p dpi as DIPs; a dpi of 0 counts as 96. */
+	float pixelsToDips(int pixels, unsigned int dpi);
 
 	/**
 	 * @brief Turns wheel deltas into whole lines to scroll.
