@@ -653,28 +653,67 @@ namespace wbshterm {
 		}
 	}
 
+	// A cell drawn in the configured face advances exactly one cell, so a
+	// run of them can be shaped as one. Wide characters, clusters and
+	// anything a fallback face has to supply advance as far as that face
+	// says, which drifts off the grid, so each is drawn in its own cells.
+	bool Renderer::sitsOnGrid(const Screen& screen, const Cell& cell) const {
+		if ((cell.attributes & kAttrWide) != 0) return false;
+		if (screen.clusterOf(cell) != nullptr) return false;
+		return font_.coversCharacter(cell.code);
+	}
+
 	void Renderer::drawRowText(const PaneCanvas& canvas, int absolute_row, int viewport_row) {
 		const Screen& screen = *canvas.screen;
 		std::wstring run;
-		int run_start = 0;
+		RunPlacement placement;
+		placement.row = viewport_row;
 
 		for (int column = 0; column < screen.columns(); ++column) {
 			const Cell& cell = screen.cellAt(absolute_row, column);
 			if ((cell.attributes & kAttrWideTail) != 0) continue;
 
-			if (!run.empty() && !sameStyle(cell, screen.cellAt(absolute_row, run_start))) {
-				drawRun(canvas, run, screen.cellAt(absolute_row, run_start), viewport_row,
-					run_start);
+			const bool on_grid = sitsOnGrid(screen, cell);
+			const Cell& run_style = screen.cellAt(absolute_row, placement.column);
+			if (!run.empty() && (!on_grid || !sameStyle(cell, run_style))) {
+				drawRun(canvas, run, run_style, placement);
 				run.clear();
 			}
 
-			if (run.empty()) run_start = column;
+			if (!on_grid) {
+				drawLoneCell(canvas, cell, viewport_row, column);
+				continue;
+			}
+
+			if (run.empty()) placement.column = column;
 			appendCellText(run, screen, cell);
+			placement.cells = column - placement.column + 1;
 		}
 
 		if (!run.empty()) {
-			drawRun(canvas, run, screen.cellAt(absolute_row, run_start), viewport_row, run_start);
+			drawRun(canvas, run, screen.cellAt(absolute_row, placement.column), placement);
 		}
+	}
+
+	void Renderer::drawLoneCell(const PaneCanvas& canvas, const Cell& cell, int row,
+			int column) {
+		std::wstring text;
+		appendCellText(text, *canvas.screen, cell);
+
+		RunPlacement placement;
+		placement.row     = row;
+		placement.column  = column;
+		placement.cells   = (cell.attributes & kAttrWide) != 0 ? 2 : 1;
+		placement.centred = true;
+		drawRun(canvas, text, cell, placement);
+	}
+
+	// A glyph narrower than its cells sits in their middle, the way a
+	// fallback CJK or emoji face is meant to be seen in a monospace grid.
+	static float centringOffset(IDWriteTextLayout* layout, float span) {
+		DWRITE_TEXT_METRICS metrics{};
+		if (FAILED(layout->GetMetrics(&metrics))) return 0.0f;
+		return std::max(0.0f, (span - metrics.widthIncludingTrailingWhitespace) / 2.0f);
 	}
 
 	// A hyperlink the program did not underline itself gets a dashed line,
@@ -688,7 +727,7 @@ namespace wbshterm {
 	}
 
 	void Renderer::drawRun(const PaneCanvas& canvas, const std::wstring& text, const Cell& style,
-			int row, int column) {
+			const RunPlacement& placement) {
 		if ((style.attributes & kAttrInvisible) != 0) return;
 
 		const std::uint16_t underline = underlineFor(style);
@@ -696,8 +735,9 @@ namespace wbshterm {
 
 		const CellMetrics& cell_box = font_.metrics();
 		const D2D1_POINT_2F origin = originOf(canvas);
-		const float left = origin.x + static_cast<float>(column) * cell_box.width;
-		const float top  = origin.y + static_cast<float>(row) * cell_box.height;
+		const float left  = origin.x + static_cast<float>(placement.column) * cell_box.width;
+		const float top   = origin.y + static_cast<float>(placement.row) * cell_box.height;
+		const float right = left + cell_box.width * static_cast<float>(placement.cells);
 		const float alpha = (style.attributes & kAttrDim) != 0 ? kDimAlpha : 1.0f;
 
 		setBrushColor(resolveForeground(style), alpha);
@@ -705,13 +745,13 @@ namespace wbshterm {
 		IDWriteTextLayout* layout = layoutFor(text, (style.attributes & kAttrBold) != 0,
 			(style.attributes & kAttrItalic) != 0);
 		if (layout != nullptr) {
-			canvas.target->DrawTextLayout(D2D1::Point2F(left, top), layout, brush_.Get(),
-				text_options_);
+			const float shift = placement.centred ? centringOffset(layout, right - left) : 0.0f;
+			canvas.target->DrawTextLayout(D2D1::Point2F(left + shift, top), layout,
+				brush_.Get(), text_options_);
 		}
 
 		if (underline == 0) return;
 
-		const float right = left + cell_box.width * static_cast<float>(text.size());
 		if (style.underline != kDefaultColor) {
 			setBrushColor(resolveColor(style.underline, config_.palette.foreground), alpha);
 		}
@@ -785,6 +825,16 @@ namespace wbshterm {
 		}
 	}
 
+	// On the first half of a wide character the cursor covers both its
+	// cells, as the character does.
+	static int cursorCells(const Screen& screen) {
+		const CursorState& cursor = screen.cursor();
+		const Cell& cell = screen.cell(cursor.row, cursor.column);
+		const bool wide = (cell.attributes & kAttrWide) != 0
+			&& cursor.column + 1 < screen.columns();
+		return wide ? 2 : 1;
+	}
+
 	// Scrolled back past the cursor's row there is no live cursor to show.
 	// An unfocused pane gets a hollow box that never blinks, the way vim
 	// and tmux mark theirs.
@@ -799,12 +849,13 @@ namespace wbshterm {
 		const D2D1_POINT_2F origin = originOf(canvas);
 		const float left = origin.x + static_cast<float>(cursor.column) * cell_box.width;
 		const float top  = origin.y + static_cast<float>(viewport_row) * cell_box.height;
+		const float width = cell_box.width * static_cast<float>(cursorCells(*canvas.screen));
 
 		setBrushColor(config_.palette.cursor, 1.0f);
 
 		if (!canvas.focused) {
 			canvas.target->DrawRectangle(
-				D2D1::RectF(left + 0.5f, top + 0.5f, left + cell_box.width - 0.5f,
+				D2D1::RectF(left + 0.5f, top + 0.5f, left + width - 0.5f,
 					top + cell_box.height - 0.5f), brush_.Get(), 1.0f);
 			return;
 		}
@@ -820,20 +871,19 @@ namespace wbshterm {
 
 		if (look.style == CursorStyle::Underline) {
 			canvas.target->FillRectangle(
-				D2D1::RectF(left, top + cell_box.height - 2.0f, left + cell_box.width,
+				D2D1::RectF(left, top + cell_box.height - 2.0f, left + width,
 					top + cell_box.height), brush_.Get());
 			return;
 		}
 
-		drawBlockCursor(canvas, left, top);
+		drawBlockCursor(canvas, D2D1::RectF(left, top, left + width, top + cell_box.height));
 	}
 
-	void Renderer::drawBlockCursor(const PaneCanvas& canvas, float left, float top) {
+	void Renderer::drawBlockCursor(const PaneCanvas& canvas, const D2D1_RECT_F& box) {
 		const CellMetrics& cell_box = font_.metrics();
 		const CursorState& cursor = canvas.screen->cursor();
 
-		canvas.target->FillRectangle(
-			D2D1::RectF(left, top, left + cell_box.width, top + cell_box.height), brush_.Get());
+		canvas.target->FillRectangle(box, brush_.Get());
 
 		const Cell& cell = canvas.screen->cell(cursor.row, cursor.column);
 		if (cell.code == U' ') return;
@@ -844,7 +894,7 @@ namespace wbshterm {
 
 		IDWriteTextFormat* format = font_.format((cell.attributes & kAttrBold) != 0, false);
 		canvas.target->DrawText(text.c_str(), static_cast<UINT32>(text.size()), format,
-			D2D1::RectF(left, top, left + cell_box.width * 3.0f, top + cell_box.height),
+			D2D1::RectF(box.left, box.top, box.left + cell_box.width * 3.0f, box.bottom),
 			brush_.Get(), text_options_);
 	}
 

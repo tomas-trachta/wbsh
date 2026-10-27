@@ -11,6 +11,7 @@
 #include "config.h"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace wbshterm {
@@ -48,16 +49,27 @@ namespace wbshterm {
 		IDWriteFactory* factory() const { return factory_.Get(); }
 		const CellMetrics& metrics() const { return metrics_; }
 
+		/**
+		 * @brief Whether the configured face itself has a glyph for @p code.
+		 *
+		 * Its glyphs advance exactly one cell; anything DirectWrite has to
+		 * find in a fallback face advances however far that face says.
+		 */
+		bool coversCharacter(char32_t code) const;
+
 	private:
 		bool createFormats(const std::wstring& family, float size_dip, std::string& out_error);
 		void createCaptionFormat();
 		void applyFallback(const std::vector<std::wstring>& families);
 		bool measureCell(std::string& out_error);
+		void findPrimaryFont(const std::wstring& family);
 
 		Microsoft::WRL::ComPtr<IDWriteFactory>    factory_;
 		Microsoft::WRL::ComPtr<IDWriteTextFormat> formats_[4];
 		Microsoft::WRL::ComPtr<IDWriteTextFormat> caption_;
+		Microsoft::WRL::ComPtr<IDWriteFont>       primary_font_;
 		CellMetrics                               metrics_;
+		mutable std::unordered_map<char32_t, bool> coverage_;
 	};
 
 } /* namespace wbshterm */

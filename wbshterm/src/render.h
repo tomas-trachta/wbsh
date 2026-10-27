@@ -118,8 +118,18 @@ namespace wbshterm {
 
 		void drawRowBackgrounds(const PaneCanvas& canvas, int absolute_row, int viewport_row);
 		void drawRowText(const PaneCanvas& canvas, int absolute_row, int viewport_row);
+		/** Where a run of text goes, in cells; centred text sits mid-span. */
+		struct RunPlacement {
+			int  row     = 0;
+			int  column  = 0;
+			int  cells   = 0;
+			bool centred = false;
+		};
+
+		bool sitsOnGrid(const Screen& screen, const Cell& cell) const;
+		void drawLoneCell(const PaneCanvas& canvas, const Cell& cell, int row, int column);
 		void drawRun(const PaneCanvas& canvas, const std::wstring& text, const Cell& style,
-			int row, int column);
+			const RunPlacement& placement);
 		void drawUnderline(ID2D1RenderTarget* target, std::uint16_t attributes,
 			const D2D1_RECT_F& span);
 		void drawCurlyUnderline(ID2D1RenderTarget* target, const D2D1_RECT_F& span);
@@ -127,7 +137,7 @@ namespace wbshterm {
 			float off);
 		IDWriteTextLayout* layoutFor(const std::wstring& text, bool bold, bool italic);
 		void drawCursor(const PaneCanvas& canvas);
-		void drawBlockCursor(const PaneCanvas& canvas, float left, float top);
+		void drawBlockCursor(const PaneCanvas& canvas, const D2D1_RECT_F& box);
 		void drawPickerRow(const PaneCanvas& canvas, const std::wstring& text, float top,
 			float width, bool highlighted);
 		void drawStatusBackdrop(const StatusBarCanvas& canvas, const StatusInk& ink);
