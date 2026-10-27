@@ -28,8 +28,10 @@ namespace wbshterm {
 	 * needs only the lengths kept here to know how many rows each chunk
 	 * spans at the new width; the cells themselves are read from the file
 	 * when a row is asked for and let go of again with releaseCache().
-	 * Without a file (a temp folder that cannot be written) append() fails
-	 * and the caller keeps its rows in memory.
+	 * Space a dropped chunk held is written over again, so the file stays
+	 * within about twice the bytes still kept. Without a file (a temp
+	 * folder that cannot be written) append() fails and the caller keeps
+	 * its rows in memory.
 	 */
 	class HistoryStore {
 	public:
@@ -61,6 +63,7 @@ namespace wbshterm {
 		int dropOldestChunk();
 
 		std::uint64_t bytesOnDisk() const { return bytes_on_disk_; }
+		std::uint64_t fileBytes() const { return file_size_; }
 
 		void releaseCache() const;
 		void clear();
@@ -82,6 +85,12 @@ namespace wbshterm {
 
 		bool ensureOpen();
 		bool writeChunk(const std::vector<char>& bytes, std::uint64_t& out_offset);
+		std::uint64_t placeChunk(std::uint32_t size) const;
+		bool overlapsChunk(std::uint64_t offset, std::uint32_t size) const;
+		bool worthWrapping(std::uint32_t size) const;
+		std::uint64_t lowestChunkOffset() const;
+		std::uint64_t highestChunkEnd() const;
+		void shrinkFile(std::uint64_t size);
 		bool readChunk(const Chunk& chunk, std::vector<char>& out_bytes) const;
 		const Loaded* loaded(int chunk) const;
 		void recountRows();
@@ -97,7 +106,7 @@ namespace wbshterm {
 		int                       columns_       = 80;
 		int                       total_rows_    = 0;
 		int                       line_count_    = 0;
-		std::uint64_t             file_end_      = 0;
+		std::uint64_t             file_size_     = 0;
 		std::uint64_t             bytes_on_disk_ = 0;
 		std::deque<Chunk>         chunks_;
 		mutable std::deque<Loaded> cache_;

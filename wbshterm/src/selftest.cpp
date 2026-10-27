@@ -611,6 +611,45 @@ namespace wbshterm {
 				dropped == 3 && store.rows() == 0, std::to_string(dropped));
 		}
 
+		static std::vector<std::vector<Cell>> numberedChunk(int first, int count) {
+			std::vector<std::vector<Cell>> lines;
+			for (int index = first; index < first + count; ++index) {
+				lines.push_back(cellsOf("row-" + std::to_string(index)));
+			}
+
+			return lines;
+		}
+
+		static void appendWithinLimit(HistoryStore& store, int chunk, std::uint64_t limit) {
+			store.append(numberedChunk(chunk * 50, 50));
+			while (store.bytesOnDisk() > limit) {
+				if (store.dropOldestChunk() == 0) break;
+			}
+		}
+
+		static void checkHistoryFileReusesDroppedSpace(Report& report) {
+			HistoryStore store;
+			store.setColumns(20);
+
+			const std::uint64_t limit = 20000;
+			std::uint64_t largest = 0;
+			for (int chunk = 0; chunk < 400; ++chunk) {
+				appendWithinLimit(store, chunk, limit);
+				largest = std::max(largest, store.fileBytes());
+			}
+
+			report.check("the history file stays near its byte limit",
+				largest > 0 && largest <= 2 * limit + 4096, std::to_string(largest));
+			report.check("history written over freed space reads back",
+				storeRowText(store, store.rows() - 1) == "row-19999"
+					&& storeRowText(store, store.rows() - 50) == "row-19950",
+				storeRowText(store, store.rows() - 1));
+
+			store.clear();
+			report.check("clearing history empties the file", store.fileBytes() == 0,
+				std::to_string(store.fileBytes()));
+		}
+
 		static void feedNumberedLines(Screen& screen, int count) {
 			for (int index = 0; index < count; ++index) {
 				feedToScreen(screen, "line-" + std::to_string(index) + "\r\n");
@@ -3107,6 +3146,7 @@ namespace wbshterm {
 		test::checkResizeMovesCommandBlocks(report);
 		test::checkResizeOnAltScreenReflowsThePrimary(report);
 		test::checkHistoryStoreRoundTrip(report);
+		test::checkHistoryFileReusesDroppedSpace(report);
 		test::checkOldRowsSwapOutToDisk(report);
 		test::checkCommandBlocksFollowSwappedRows(report);
 		test::checkSearchReachesDiskHistory(report);

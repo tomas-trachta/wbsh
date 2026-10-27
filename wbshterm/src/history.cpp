@@ -139,20 +139,73 @@ namespace wbshterm {
 		return !unavailable_;
 	}
 
+	std::uint64_t HistoryStore::lowestChunkOffset() const {
+		std::uint64_t lowest = UINT64_MAX;
+		for (const Chunk& chunk : chunks_) lowest = std::min(lowest, chunk.offset);
+		return lowest;
+	}
+
+	std::uint64_t HistoryStore::highestChunkEnd() const {
+		std::uint64_t highest = 0;
+		for (const Chunk& chunk : chunks_) highest = std::max(highest, chunk.offset + chunk.bytes);
+		return highest;
+	}
+
+	bool HistoryStore::overlapsChunk(std::uint64_t offset, std::uint32_t size) const {
+		for (const Chunk& chunk : chunks_) {
+			if (offset < chunk.offset + chunk.bytes && chunk.offset < offset + size) return true;
+		}
+
+		return false;
+	}
+
+	// Going back to the start pays off once the space freed there could
+	// hold everything still kept; earlier, the file would wrap in
+	// fragments too small for the chunks that follow.
+	bool HistoryStore::worthWrapping(std::uint32_t size) const {
+		const std::uint64_t lowest = lowestChunkOffset();
+		return lowest >= size && lowest >= bytes_on_disk_;
+	}
+
+	// Chunks go in and come out oldest first, so the kept bytes form at
+	// most a run at the front of the file and a run behind it: new chunks
+	// follow the newest one while they fit before the oldest.
+	std::uint64_t HistoryStore::placeChunk(std::uint32_t size) const {
+		if (chunks_.empty()) return 0;
+
+		const std::uint64_t highest = highestChunkEnd();
+		const std::uint64_t tail    = chunks_.back().offset + chunks_.back().bytes;
+		if (tail < highest && !overlapsChunk(tail, size)) return tail;
+
+		if (worthWrapping(size)) return 0;
+		return highest;
+	}
+
+	void HistoryStore::shrinkFile(std::uint64_t size) {
+		if (file_ == INVALID_HANDLE_VALUE || size >= file_size_) return;
+
+		LARGE_INTEGER where;
+		where.QuadPart = static_cast<LONGLONG>(size);
+		if (::SetFilePointerEx(file_, where, nullptr, FILE_BEGIN) == 0) return;
+		if (::SetEndOfFile(file_) != 0) file_size_ = size;
+	}
+
 	bool HistoryStore::writeChunk(const std::vector<char>& bytes, std::uint64_t& out_offset) {
 		if (!ensureOpen()) return false;
 
+		const DWORD wanted = static_cast<DWORD>(bytes.size());
+		const std::uint64_t offset = placeChunk(wanted);
+
 		LARGE_INTEGER where;
-		where.QuadPart = static_cast<LONGLONG>(file_end_);
+		where.QuadPart = static_cast<LONGLONG>(offset);
 		if (::SetFilePointerEx(file_, where, nullptr, FILE_BEGIN) == 0) return false;
 
 		DWORD written = 0;
-		const DWORD wanted = static_cast<DWORD>(bytes.size());
 		if (::WriteFile(file_, bytes.data(), wanted, &written, nullptr) == 0) return false;
 		if (written != wanted) return false;
 
-		out_offset = file_end_;
-		file_end_ += wanted;
+		out_offset = offset;
+		file_size_ = std::max(file_size_, offset + wanted);
 		return true;
 	}
 
@@ -229,6 +282,7 @@ namespace wbshterm {
 			[](const Loaded& entry) { return entry.chunk < 0; }), cache_.end());
 
 		recountRows();
+		shrinkFile(highestChunkEnd());
 		return rows;
 	}
 
@@ -240,9 +294,9 @@ namespace wbshterm {
 	void HistoryStore::clear() {
 		chunks_.clear();
 		releaseCache();
-		file_end_      = 0;
 		bytes_on_disk_ = 0;
 		recountRows();
+		shrinkFile(0);
 	}
 
 	int HistoryStore::chunkOfRow(int row) const {
