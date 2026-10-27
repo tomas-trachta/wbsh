@@ -55,6 +55,22 @@ namespace wbsh {
 		bool xtrace      = false;
 	};
 
+	/// The `shopt` flags. globstar is on by default since bash's `**` is
+	/// the more useful behaviour for an interactive shell.
+	struct ShoptFlags {
+		bool nullglob       = false;
+		bool dotglob        = false;
+		bool extglob        = false;
+		bool nocaseglob     = false;
+		bool nocasematch    = false;
+		bool globstar       = true;
+		bool lastpipe       = false;
+		bool huponexit      = false;
+		bool expand_aliases = true;
+		bool autocd         = false;
+		bool checkwinsize   = true;
+	};
+
 	struct SetOptionSpec {
 		const char* name;
 		char        letter;
@@ -180,28 +196,28 @@ namespace wbsh {
 
 		/// `shopt` flags. Defaults match bash's interactive defaults where
 		/// they line up with POSIX expectations.
-		bool nullglob()    const { return nullglob_; }
-		void setNullglob(bool b) { nullglob_ = b; }
-		bool dotglob()     const { return dotglob_; }
-		void setDotglob(bool b) { dotglob_ = b; }
-		bool extglob()     const { return extglob_; }
-		void setExtglob(bool b) { extglob_ = b; }
-		bool nocaseglob()  const { return nocaseglob_; }
-		void setNocaseglob(bool b) { nocaseglob_ = b; }
-		bool nocasematch() const { return nocasematch_; }
-		void setNocasematch(bool b) { nocasematch_ = b; }
-		bool globstar()    const { return globstar_; }
-		void setGlobstar(bool b) { globstar_ = b; }
-		bool lastpipe()    const { return lastpipe_; }
-		void setLastpipe(bool b) { lastpipe_ = b; }
-		bool huponexit()   const { return huponexit_; }
-		void setHuponexit(bool b) { huponexit_ = b; }
-		bool expand_aliases() const { return expand_aliases_; }
-		void setExpandAliases(bool b) { expand_aliases_ = b; }
-		bool autocd()      const { return autocd_; }
-		void setAutocd(bool b) { autocd_ = b; }
-		bool checkwinsize() const { return checkwinsize_; }
-		void setCheckwinsize(bool b) { checkwinsize_ = b; }
+		bool nullglob()    const { return shopt_.nullglob; }
+		void setNullglob(bool b) { shopt_.nullglob = b; }
+		bool dotglob()     const { return shopt_.dotglob; }
+		void setDotglob(bool b) { shopt_.dotglob = b; }
+		bool extglob()     const { return shopt_.extglob; }
+		void setExtglob(bool b) { shopt_.extglob = b; }
+		bool nocaseglob()  const { return shopt_.nocaseglob; }
+		void setNocaseglob(bool b) { shopt_.nocaseglob = b; }
+		bool nocasematch() const { return shopt_.nocasematch; }
+		void setNocasematch(bool b) { shopt_.nocasematch = b; }
+		bool globstar()    const { return shopt_.globstar; }
+		void setGlobstar(bool b) { shopt_.globstar = b; }
+		bool lastpipe()    const { return shopt_.lastpipe; }
+		void setLastpipe(bool b) { shopt_.lastpipe = b; }
+		bool huponexit()   const { return shopt_.huponexit; }
+		void setHuponexit(bool b) { shopt_.huponexit = b; }
+		bool expand_aliases() const { return shopt_.expand_aliases; }
+		void setExpandAliases(bool b) { shopt_.expand_aliases = b; }
+		bool autocd()      const { return shopt_.autocd; }
+		void setAutocd(bool b) { shopt_.autocd = b; }
+		bool checkwinsize() const { return shopt_.checkwinsize; }
+		void setCheckwinsize(bool b) { shopt_.checkwinsize = b; }
 
 		void   setShellName(std::string s) { shell_name_ = std::move(s); }
 		const std::string& shellName() const { return shell_name_; }
@@ -216,6 +232,18 @@ namespace wbsh {
 		 */
 		unsigned int randomNext();
 		void         setRandomSeed(unsigned int s) { random_state_ = s; }
+		/// A subshell's `$RANDOM` must not repeat the parent's sequence.
+		void         reseedRandom();
+
+		/**
+		 * @brief Put back everything a subshell may have changed, from a
+		 *        copy taken when it started.
+		 *
+		 * Variables and arrays the subshell left alone keep their storage,
+		 * so references the caller still holds into them stay valid. `$?`
+		 * is left for the caller to set from the subshell's status.
+		 */
+		void         restoreFrom(const Environment& snapshot);
 
 		/**
 		 * @brief `$SECONDS` — whole seconds since this Environment was
@@ -244,19 +272,7 @@ namespace wbsh {
 		std::string shell_name_ = "wbsh";
 		SetOptions options_;
 		bool interactive_ = false;
-		// shopt flags. globstar is on by default since bash's `**` is
-		// the more useful behaviour for an interactive shell.
-		bool nullglob_     = false;
-		bool dotglob_      = false;
-		bool extglob_      = false;
-		bool nocaseglob_   = false;
-		bool nocasematch_  = false;
-		bool globstar_     = true;
-		bool lastpipe_     = false;
-		bool huponexit_    = false;
-		bool expand_aliases_ = true;
-		bool autocd_       = false;
-		bool checkwinsize_ = true;
+		ShoptFlags shopt_;
 		std::chrono::steady_clock::time_point start_time_ =
 		    std::chrono::steady_clock::now();
 		long long seconds_offset_ = 0;

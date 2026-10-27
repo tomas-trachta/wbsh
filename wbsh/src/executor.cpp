@@ -2122,50 +2122,46 @@ namespace wbsh {
 		return status;
 	}
 
-	Executor::SubshellScope Executor::snapshotSubshellScope() const {
-		SubshellScope snap;
-		snap.saved_vars = env_.vars();
-		snap.options = env_.options();
-		snap.traps = trap_handlers_;
+	// A subshell starts without the parent's EXIT trap: that one belongs to
+	// the parent and fires when the parent exits.
+	Executor::SubshellScope Executor::enterSubshell() {
+		SubshellScope snap{ env_, functions_, trap_handlers_, {} };
 
 		std::error_code ec;
-		snap.saved_cwd = std::filesystem::current_path(ec);
+		snap.cwd = std::filesystem::current_path(ec);
+
+		trap_handlers_.erase("EXIT");
+		env_.reseedRandom();
 		return snap;
 	}
 
-	void Executor::restoreSubshellScope(SubshellScope& snap) {
-		unsetVarsNotIn(env_, snap.saved_vars);
-		for (const auto& var : snap.saved_vars) env_.forceSet(var.first, var.second);
-
-		env_.options() = snap.options;
+	void Executor::leaveSubshell(SubshellScope& snap) {
+		env_.restoreFrom(snap.env);
+		functions_ = std::move(snap.functions);
 		trap_handlers_ = std::move(snap.traps);
 
 		std::error_code ec;
-		std::filesystem::current_path(snap.saved_cwd, ec);
+		std::filesystem::current_path(snap.cwd, ec);
 	}
 
-	// A subshell starts without the parent's EXIT trap: that one belongs to
-	// the parent and fires when the parent exits.
-	std::unordered_map<std::string, std::string> Executor::enterSubshellTraps() {
-		std::unordered_map<std::string, std::string> saved = trap_handlers_;
-		trap_handlers_.erase("EXIT");
-		return saved;
+	int Executor::runSubshellBody(const Node* body) {
+		int status = 0;
+		if (body != nullptr) status = execNode(*body);
+		consumeFlow(FlowSignal::Kind::Exit, &status);
+
+		if (!flowPending()) status = fireExitTrap(status);
+		return status;
 	}
 
 	int Executor::execSubshell(const Subshell& subshell) {
-		SubshellScope snap = snapshotSubshellScope();
-		enterSubshellTraps();
-
 		RedirState state;
 		if (!applyRedirectionsOrUndo(subshell.redirs, state)) return 1;
 
-		int status = 0;
-		if (subshell.body != nullptr) status = execNode(*subshell.body);
-		consumeFlow(FlowSignal::Kind::Exit, &status);
-		undoRedirections(state);
+		SubshellScope snap = enterSubshell();
+		const int status = runSubshellBody(subshell.body);
+		leaveSubshell(snap);
 
-		if (!flowPending()) status = fireExitTrap(status);
-		restoreSubshellScope(snap);
+		undoRedirections(state);
 		return status;
 	}
 
@@ -3202,13 +3198,13 @@ namespace wbsh {
 	}
 
 	int Executor::runCommandSubstitutionBody(const std::string& body) {
-		std::unordered_map<std::string, std::string> saved_traps = enterSubshellTraps();
+		SubshellScope snap = enterSubshell();
 
 		int status = executeText(body, "<command-substitution>");
 		consumeFlow(FlowSignal::Kind::Exit, &status);
 		if (!flowPending() && hasTrap("EXIT")) status = fireExitTrap(status);
 
-		trap_handlers_ = std::move(saved_traps);
+		leaveSubshell(snap);
 		return status;
 	}
 
