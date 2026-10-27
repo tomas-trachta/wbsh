@@ -1,0 +1,44 @@
+=== 1. a command with no name returns the last $(...) status
+3
+4
+3
+0
+5
+3 1
+44
+0
+0
+inner sees 1
+6
+7
+8
+3
+3
+9
+words expand before assignments: 3
+2 []
+EXIT trap: 4
+3 hi
+process substitution: 0
+=== 2. $? follows each substitution at once
+3
+ 3
+heredoc  4
+=== 3. a command name keeps its own status
+local: 0
+export: 0
+declare: 0
+prefix: 0
+=== 4. conditions
+no
+or
+or
+while: done
+=== 5. set -e
+rc=1
+rc=4
+survived
+rc=0
+local survives
+ok
+condition ok
