@@ -305,6 +305,10 @@ all comments, so the whole surface is there to uncomment. A script error
 never takes the terminal down: the defaults stand, the first line of the
 error shows in red at the right of the status bar, and the whole of it is
 in `init.log` next to the script, where `wbshterm.log(...)` also writes.
+A script that never finishes cannot hang the window either: `init.lua`
+itself is stopped after two seconds, and a handler or key binding still
+running after a quarter of a second is stopped and turned off until the
+script is next loaded.
 
 Settings come first. `wbshterm.config` holds every section of the config
 file under the same names, already filled in from it, and whatever the

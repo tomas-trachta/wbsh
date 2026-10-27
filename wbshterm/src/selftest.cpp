@@ -1586,6 +1586,65 @@ namespace wbshterm {
 			removeScriptFixture(faulty);
 		}
 
+		static void checkLoopingHandlerIsStopped(Report& report, const std::wstring& directory) {
+			const ScriptFixture fixture = makeScriptFixture(directory,
+				"wbshterm.on(\"tick\", function() while true do end end)\n"
+				"wbshterm.on(\"title\", function()\n"
+				"    while true do pcall(function() while true do end end) end\n"
+				"end)\n");
+
+			Config config;
+			ScriptHost host;
+			host.load(fixture.script_path, fixture.config_path, config);
+
+			Palette frame;
+			const bool tick_stopped = !host.tick(0.0, config.palette, frame);
+			report.check("a tick handler that never returns is stopped and turned off",
+				tick_stopped && host.loaded() && !host.handles(ScriptEvent::Tick)
+					&& host.lastError().find("longer than") != std::string::npos,
+				host.lastError());
+
+			std::string title;
+			const bool title_stopped = !host.title("wbsh", "", title);
+			report.check("a loop that catches the watchdog with pcall is stopped too",
+				title_stopped && !host.handles(ScriptEvent::Title), host.lastError());
+
+			removeScriptFixture(fixture);
+		}
+
+		static void checkLoopingScriptIsStopped(Report& report, const std::wstring& directory) {
+			const ScriptFixture fixture = makeScriptFixture(directory, "while true do end\n");
+
+			Config config;
+			ScriptHost host;
+			const bool stopped = !host.load(fixture.script_path, fixture.config_path, config);
+			report.check("an init.lua that never finishes is stopped",
+				stopped && !host.loaded()
+					&& host.lastError().find("longer than") != std::string::npos,
+				host.lastError());
+
+			removeScriptFixture(fixture);
+		}
+
+		static void checkLoopingBindingIsStopped(Report& report, const std::wstring& directory) {
+			const ScriptFixture fixture = makeScriptFixture(directory,
+				"wbshterm.bind(\"ctrl+shift+j\", function() while true do end end)\n");
+
+			Config config;
+			ScriptHost host;
+			host.load(fixture.script_path, fixture.config_path, config);
+
+			RecordingActions actions;
+			const bool ran = host.runBinding(pressOf("ctrl+shift+j"), actions);
+			const bool off = !host.runBinding(pressOf("ctrl+shift+j"), actions);
+			report.check("a key binding that never returns is stopped and turned off",
+				ran && off
+					&& host.lastError().find("key binding is turned off") != std::string::npos,
+				host.lastError());
+
+			removeScriptFixture(fixture);
+		}
+
 		static void checkExampleScript(Report& report, const std::wstring& directory) {
 			const std::wstring path = directory + L"init.lua";
 			_wremove(path.c_str());
@@ -3102,6 +3161,9 @@ namespace wbshterm {
 		test::checkScriptTick(report, directory);
 		test::checkScriptBindings(report, directory);
 		test::checkScriptErrorsAreKept(report, directory);
+		test::checkLoopingHandlerIsStopped(report, directory);
+		test::checkLoopingScriptIsStopped(report, directory);
+		test::checkLoopingBindingIsStopped(report, directory);
 		test::checkExampleScript(report, directory);
 	}
 

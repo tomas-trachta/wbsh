@@ -24,6 +24,7 @@ namespace wbshterm {
 			"status_left", "status_right", "title", "fetch", "tick",
 		};
 		static const int kEventCount = sizeof(kEventNames) / sizeof(kEventNames[0]);
+		static const int kWatchdogInstructions = 100000;
 
 		static const char* eventName(ScriptEvent event) {
 			return kEventNames[static_cast<int>(event)];
@@ -187,6 +188,35 @@ namespace wbshterm {
 		appendLog("error: " + error_);
 	}
 
+	// Checked every so many instructions rather than on each one. Once the
+	// time is up the hook fires on every instruction, so a loop that
+	// catches the error with pcall meets it again at once and cannot go on.
+	void ScriptHost::watchdogHook(lua_State* state, lua_Debug*) {
+		ScriptHost* host = script_detail::hostOf(state);
+		if (host == nullptr || host->deadline_ == 0) return;
+		if (::GetTickCount64() < host->deadline_) return;
+
+		host->timed_out_ = true;
+		lua_sethook(state, &ScriptHost::watchdogHook, LUA_MASKCOUNT, 1);
+		luaL_error(state, "stopped after running longer than %d ms",
+			static_cast<int>(host->budget_ms_));
+	}
+
+	void ScriptHost::armWatchdog(unsigned long long budget_ms) {
+		timed_out_ = false;
+		budget_ms_ = budget_ms;
+		deadline_  = ::GetTickCount64() + budget_ms;
+		lua_sethook(state_, &ScriptHost::watchdogHook, LUA_MASKCOUNT,
+			script_detail::kWatchdogInstructions);
+	}
+
+	int ScriptHost::protectedCall(int arguments, int results, unsigned long long budget_ms) {
+		armWatchdog(budget_ms);
+		const int status = lua_pcall(state_, arguments, results, 0);
+		deadline_ = 0;
+		return status;
+	}
+
 	bool ScriptHost::openState(const std::wstring& path) {
 		state_ = luaL_newstate();
 		if (state_ == nullptr) {
@@ -212,7 +242,7 @@ namespace wbshterm {
 			return false;
 		}
 
-		if (lua_pcall(state_, 0, 0, 0) != LUA_OK) {
+		if (protectedCall(0, 0, kScriptLoadBudgetMs) != LUA_OK) {
 			keepError();
 			return false;
 		}
@@ -268,11 +298,23 @@ namespace wbshterm {
 	// The handler and its arguments are already on the stack; on success the
 	// results replace them, on failure nothing is left and the error is kept.
 	bool ScriptHost::callHandler(ScriptEvent event, int arguments, int results) {
-		if (lua_pcall(state_, arguments, results, 0) == LUA_OK) return true;
+		if (protectedCall(arguments, results, kScriptCallBudgetMs) == LUA_OK) return true;
 
 		keepError();
 		appendLog(std::string("in handler ") + script_detail::eventName(event));
+		if (timed_out_) disableHandler(event);
 		return false;
+	}
+
+	void ScriptHost::disableHandler(ScriptEvent event) {
+		lua_getfield(state_, LUA_REGISTRYINDEX, script_detail::kHandlersKey);
+		lua_pushnil(state_);
+		lua_setfield(state_, -2, script_detail::eventName(event));
+		lua_pop(state_, 1);
+
+		error_ += std::string("; the ") + script_detail::eventName(event)
+			+ " handler is turned off";
+		appendLog(error_);
 	}
 
 	bool ScriptHost::statusSegments(ScriptEvent side, const StatusContext& context,
@@ -359,14 +401,25 @@ namespace wbshterm {
 			if (!pushBinding(i)) return false;
 
 			actions_ = &actions;
-			const bool ran = lua_pcall(state_, 0, 0, 0) == LUA_OK;
+			const bool ran = protectedCall(0, 0, kScriptCallBudgetMs) == LUA_OK;
 			actions_ = nullptr;
 
 			if (!ran) keepError();
+			if (!ran && timed_out_) disableBinding(i);
 			return true;
 		}
 
 		return false;
+	}
+
+	void ScriptHost::disableBinding(std::size_t index) {
+		lua_getfield(state_, LUA_REGISTRYINDEX, script_detail::kBindingsKey);
+		lua_pushboolean(state_, 0);
+		lua_rawseti(state_, -2, static_cast<lua_Integer>(index + 1));
+		lua_pop(state_, 1);
+
+		error_ += "; the key binding is turned off";
+		appendLog(error_);
 	}
 
 	std::wstring scriptPath(const std::wstring& config_path) {
@@ -387,6 +440,8 @@ namespace wbshterm {
 		"-- Runs after wbshterm.conf, and again whenever this file is saved.\n"
 		"-- Everything below is a comment: uncomment what you want to try.\n"
 		"-- Errors are shown in the status bar and written to init.log.\n"
+		"-- A handler or binding still running after a quarter of a second is\n"
+		"-- stopped and turned off; this file itself gets two seconds.\n"
 		"\n"
 		"-- Settings: the same keys as wbshterm.conf, and this file wins.\n"
 		"-- wbshterm.config.font.size = 12\n"
