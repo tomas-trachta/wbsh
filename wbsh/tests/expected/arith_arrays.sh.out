@@ -1,0 +1,52 @@
+=== 1. reading elements
+40
+40 20 20 10
+30 10 0 0 900
+wbsh: s: bad array subscript
+scalar: 4 0 0
+expression element: 10
+20 j=2
+=== 2. assigning elements
+5
+10 21 5
+10 22 5
+9 25 5
+25 23 23
+9 23 9
+9 23 9 1 / 0 1 2 5
+4 6 / 0 2
+42 42
+2
+0 1 4
+10 7
+=== 3. evaluation order
+0 i=1
+15 6 7 i=1
+6 6 7 i=1
+6 6 7 i=1
+2 2 3
+2 2 3
+2 2 4
+=== 4. associative arrays
+3 6 0 2
+4 7
+1 4
+=== 5. bad subscripts
+wbsh: a: bad array subscript
+0
+rc=0
+wbsh: a[-10]: bad array subscript
+rc=0 1 2 3
+wbsh: a[]: bad array subscript
+0
+rc=0
+wbsh: a[1: bad array subscript (error token is "a[1")
+rc=1
+wbsh: 1/0: division by 0 (error token is "0")
+rc=1
+wbsh: 5 + a [1]: syntax error: invalid arithmetic operator (error token is "[1]")
+rc=1
+wbsh: a[1]a: syntax error in expression (error token is "a")
+rc=1
+wbsh: a[0][0]: syntax error: invalid arithmetic operator (error token is "[0]")
+rc=1
