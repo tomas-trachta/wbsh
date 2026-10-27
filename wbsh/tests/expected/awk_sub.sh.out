@@ -1,0 +1,29 @@
+=== ampersand and backslashes
+f<o><o>
+$$$$$$
+a[&]c
+a[\b]c
+a[\&]c
+a[\\]c
+a[\q]c
+[aaaaaa] bbb
+2
+path\\to\\file
+=== anchors
+Xaa
+aaX
+1 ababX
+>foo bar
+?abc!
+=== empty matches
+-a-c-
+-a-b-c-
+Xfoo bar
+-a-b-
+=== targets and counts
+-----
+a-b-c
+0 x y z
+a##a##
+1 one [two] one two
+3 bbb
