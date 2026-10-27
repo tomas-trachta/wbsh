@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+struct lua_Debug;
 struct lua_State;
 
 namespace wbshterm {
@@ -78,7 +79,13 @@ namespace wbshterm {
 	 * Every call is made on the thread that owns the window; nothing here
 	 * is locked. A script error never reaches the caller as anything but
 	 * false and lastError(): the terminal keeps running on its defaults.
+	 * A watchdog stops init.lua after kScriptLoadBudgetMs and a handler or
+	 * binding after kScriptCallBudgetMs, and a handler or binding it had
+	 * to stop is turned off, so a script that loops cannot hang the window.
 	 */
+	static const unsigned long long kScriptLoadBudgetMs = 2000;
+	static const unsigned long long kScriptCallBudgetMs = 250;
+
 	class ScriptHost {
 	public:
 		ScriptHost();
@@ -129,12 +136,20 @@ namespace wbshterm {
 		bool pushHandler(ScriptEvent event) const;
 		bool pushBinding(std::size_t index);
 		void keepError();
+		int protectedCall(int arguments, int results, unsigned long long budget_ms);
+		void armWatchdog(unsigned long long budget_ms);
+		void disableHandler(ScriptEvent event);
+		void disableBinding(std::size_t index);
+		static void watchdogHook(lua_State* state, lua_Debug* debug);
 
 		lua_State*            state_    = nullptr;
 		ScriptActions*        actions_  = nullptr;
 		std::string           error_;
 		std::wstring          log_path_;
 		std::vector<KeyPress> bindings_;
+		unsigned long long    deadline_  = 0;
+		unsigned long long    budget_ms_ = 0;
+		bool                  timed_out_ = false;
 	};
 
 	/** init.lua beside the config file, or empty when there is no config path. */
