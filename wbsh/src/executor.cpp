@@ -2049,6 +2049,7 @@ namespace wbsh {
 		snap.saved_name  = env_.shellName();
 		snap.saved_funcs = functions_;
 		snap.saved_traps = trap_handlers_;
+		snap.saved_lists_inherited_traps = lists_inherited_traps_;
 		snap.saved_options = env_.options();
 
 		std::error_code ec;
@@ -2075,6 +2076,7 @@ namespace wbsh {
 		env_.options() = snap.saved_options;
 		functions_ = std::move(snap.saved_funcs);
 		trap_handlers_ = std::move(snap.saved_traps);
+		lists_inherited_traps_ = snap.saved_lists_inherited_traps;
 
 		std::error_code ec;
 		std::filesystem::current_path(snap.saved_cwd, ec);
@@ -2100,6 +2102,7 @@ namespace wbsh {
 		const std::string body = readScriptBody(file);
 		ShellScriptScope snap = snapshotShellScriptScope();
 		trap_handlers_.clear();
+		lists_inherited_traps_ = false;
 
 		for (const auto& assignment : temp_env) env_.set(assignment.first, assignment.second);
 		env_.setShellName(path);
@@ -2122,35 +2125,64 @@ namespace wbsh {
 		return status;
 	}
 
-	// A subshell starts without the parent's EXIT trap: that one belongs to
-	// the parent and fires when the parent exits.
 	Executor::SubshellScope Executor::enterSubshell() {
-		SubshellScope snap{ env_, functions_, trap_handlers_, {} };
+		SubshellScope snap{ env_ };
+		snap.functions = functions_;
+		snap.aliases = aliases_;
+		snap.traps = trap_handlers_;
+		snap.inherited_traps = inherited_traps_;
+		snap.lists_inherited_traps = lists_inherited_traps_;
+		snap.dir_stack = dir_stack_;
+		snap.scope_stack = scope_stack_;
+		snap.getopts_subindex = getopts_subindex_;
 
 		std::error_code ec;
 		snap.cwd = std::filesystem::current_path(ec);
 
-		trap_handlers_.erase("EXIT");
+		resetSubshellTraps();
 		env_.reseedRandom();
 		return snap;
+	}
+
+	// The parent's traps, EXIT included, belong to the parent and never
+	// run in the subshell; only ignored signals stay ignored.
+	void Executor::resetSubshellTraps() {
+		if (!lists_inherited_traps_) inherited_traps_ = trap_handlers_;
+		lists_inherited_traps_ = true;
+
+		for (auto it = trap_handlers_.begin(); it != trap_handlers_.end(); ) {
+			if (it->second.empty()) ++it;
+			else it = trap_handlers_.erase(it);
+		}
 	}
 
 	void Executor::leaveSubshell(SubshellScope& snap) {
 		env_.restoreFrom(snap.env);
 		functions_ = std::move(snap.functions);
+		aliases_ = std::move(snap.aliases);
 		trap_handlers_ = std::move(snap.traps);
+		inherited_traps_ = std::move(snap.inherited_traps);
+		lists_inherited_traps_ = snap.lists_inherited_traps;
+		dir_stack_ = std::move(snap.dir_stack);
+		scope_stack_ = std::move(snap.scope_stack);
+		getopts_subindex_ = snap.getopts_subindex;
 
 		std::error_code ec;
 		std::filesystem::current_path(snap.cwd, ec);
 	}
 
-	int Executor::runSubshellBody(const Node* body) {
-		int status = 0;
-		if (body != nullptr) status = execNode(*body);
-		consumeFlow(FlowSignal::Kind::Exit, &status);
+	// `exit`, `return`, `break` and `continue` all end just the subshell,
+	// with the status they carry.
+	int Executor::consumeSubshellFlow(int status) {
+		if (!flowPending()) return status;
 
-		if (!flowPending()) status = fireExitTrap(status);
-		return status;
+		const int flow_status = flow_.status;
+		clearFlow();
+		return flow_status;
+	}
+
+	int Executor::endSubshell(int status) {
+		return fireExitTrap(consumeSubshellFlow(status));
 	}
 
 	int Executor::execSubshell(const Subshell& subshell) {
@@ -2158,7 +2190,9 @@ namespace wbsh {
 		if (!applyRedirectionsOrUndo(subshell.redirs, state)) return 1;
 
 		SubshellScope snap = enterSubshell();
-		const int status = runSubshellBody(subshell.body);
+		int status = 0;
+		if (subshell.body != nullptr) status = execNode(*subshell.body);
+		status = endSubshell(status);
 		leaveSubshell(snap);
 
 		undoRedirections(state);
@@ -3200,10 +3234,7 @@ namespace wbsh {
 	int Executor::runCommandSubstitutionBody(const std::string& body) {
 		SubshellScope snap = enterSubshell();
 
-		int status = executeText(body, "<command-substitution>");
-		consumeFlow(FlowSignal::Kind::Exit, &status);
-		if (!flowPending() && hasTrap("EXIT")) status = fireExitTrap(status);
-
+		const int status = endSubshell(executeText(body, "<command-substitution>"));
 		leaveSubshell(snap);
 		return status;
 	}
