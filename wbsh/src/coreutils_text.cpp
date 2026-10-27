@@ -1,6 +1,6 @@
 /**
  * @file coreutils_text.cpp
- * @brief Text-processing coreutils: sort, uniq, tr, cut, tee, paste,
+ * @brief Text-processing coreutils: sort, uniq, cut, tee, paste,
  *        tac, rev, nl, grep, find, sed, fold, column, expand,
  *        unexpand, comm, xargs (awk lives in awk.cpp).
  */
@@ -542,175 +542,6 @@ namespace wbsh {
 		uniqRunStream(in, out, options);
 		closeInputStream(in);
 		if (out != stdout) std::fclose(out);
-		std::fflush(stdout);
-		return 0;
-	}
-
-	static char trEscapeChar(char escaped) {
-		switch (escaped) {
-		case 'n':  return '\n';
-		case 't':  return '\t';
-		case 'r':  return '\r';
-		case '\\': return '\\';
-		case 'a':  return '\a';
-		case 'b':  return '\b';
-		case '0':  return '\0';
-		default:   return escaped;
-		}
-	}
-
-	static void appendCharRange(std::string& out, char from, char to) {
-		if (from <= to) for (char c = from; c <= to; ++c) out.push_back(c);
-		else            for (char c = from; c >= to; --c) out.push_back(c);
-	}
-
-	static std::string trExpandSet(const std::string& set) {
-		std::string out;
-		for (std::size_t i = 0; i < set.size(); ++i) {
-			if (set[i] == '\\' && i + 1 < set.size()) {
-				out.push_back(trEscapeChar(set[++i]));
-			} else if (i + 2 < set.size() && set[i + 1] == '-') {
-				appendCharRange(out, set[i], set[i + 2]);
-				i += 2;
-			} else {
-				out.push_back(set[i]);
-			}
-		}
-
-		return out;
-	}
-
-	static std::vector<bool> buildTrMembership(const std::string& set1, bool complement) {
-		std::vector<bool> in_set1(256, false);
-		for (unsigned char c : set1) in_set1[c] = true;
-		if (!complement) return in_set1;
-
-		std::vector<bool> inverted(256, true);
-		for (int k = 0; k < 256; ++k) if (in_set1[k]) inverted[k] = false;
-		return inverted;
-	}
-
-	static std::vector<unsigned char> buildTrMap(const std::string& set1, const std::string& set2,
-			const std::vector<bool>& in_set1, bool complement) {
-		std::vector<unsigned char> map(256);
-		for (int k = 0; k < 256; ++k) map[k] = static_cast<unsigned char>(k);
-		if (set2.empty()) return map;
-
-		if (complement) {
-			const unsigned char replacement = static_cast<unsigned char>(set2.back());
-			for (int k = 0; k < 256; ++k) if (in_set1[k]) map[k] = replacement;
-			return map;
-		}
-
-		for (std::size_t k = 0; k < set1.size(); ++k) {
-			const unsigned char src = static_cast<unsigned char>(set1[k]);
-			const unsigned char dst = (k < set2.size())
-				? static_cast<unsigned char>(set2[k])
-				: static_cast<unsigned char>(set2.back());
-			map[src] = dst;
-		}
-
-		return map;
-	}
-
-	struct TrOptions {
-		bool delete_mode = false;
-		bool squeeze = false;
-		bool complement = false;
-		bool truncate_set1 = false;
-		std::vector<std::string> sets;
-	};
-
-	enum TrOptionId { kTrComplement, kTrDelete, kTrSqueeze, kTrTruncate };
-
-	static const std::vector<OptDef> kTrOptionDefs = {
-		{ kTrComplement, 'c', "complement",      OptArg::None },
-		{ kTrComplement, 'C', nullptr,           OptArg::None },
-		{ kTrDelete,     'd', "delete",          OptArg::None },
-		{ kTrSqueeze,    's', "squeeze-repeats", OptArg::None },
-		{ kTrTruncate,   't', "truncate-set1",   OptArg::None },
-	};
-
-	static void applyTrHit(const OptHit& hit, TrOptions& options) {
-		switch (hit.id) {
-		case kTrComplement:
-			options.complement = true;
-			break;
-		case kTrDelete:
-			options.delete_mode = true;
-			break;
-		case kTrSqueeze:
-			options.squeeze = true;
-			break;
-		case kTrTruncate:
-			options.truncate_set1 = true;
-			break;
-		default:
-			break;
-		}
-	}
-
-	static bool checkTrOperandCount(const TrOptions& options) {
-		const std::size_t count = options.sets.size();
-		const bool translating = !options.delete_mode && !options.squeeze;
-		const bool two_sets = translating || (options.delete_mode && options.squeeze);
-		const std::size_t wanted = two_sets ? 2 : 1;
-		if (count == 0) {
-			perr("tr", "missing operand");
-			return false;
-		}
-
-		if (count < wanted) {
-			perr("tr", "missing operand after '" + options.sets.back() + "'");
-			return false;
-		}
-
-		const std::size_t allowed = (options.delete_mode && !options.squeeze) ? 1 : 2;
-		return !rejectExtraOperand("tr", options.sets, allowed);
-	}
-
-	static bool parseTrArgs(const std::vector<std::string>& args, TrOptions& options) {
-		OptScanResult scan;
-		if (!scanOptions("tr", args, kTrOptionDefs, scan)) return false;
-
-		for (const OptHit& hit : scan.hits) applyTrHit(hit, options);
-		options.sets = scan.operands;
-		return checkTrOperandCount(options);
-	}
-
-	static void trStream(const TrOptions& options, const std::vector<bool>& in_set1,
-			const std::vector<unsigned char>& map) {
-		int previous = -1;
-		int c;
-		while ((c = std::fgetc(stdin)) != EOF) {
-			const unsigned char byte = static_cast<unsigned char>(c);
-			if (options.delete_mode && in_set1[byte]) continue;
-
-			const unsigned char out = map[byte];
-			if (options.squeeze && static_cast<int>(out) == previous) continue;
-
-			std::fputc(out, stdout);
-			previous = out;
-		}
-	}
-
-	static int builtin_tr(Executor&, const std::vector<std::string>& args) {
-		TrOptions options;
-		if (!parseTrArgs(args, options)) return 1;
-
-		const std::string set2 =
-			(options.sets.size() > 1) ? trExpandSet(options.sets[1]) : std::string();
-		std::string set1 = trExpandSet(options.sets[0]);
-		const bool translating = !options.delete_mode && !set2.empty();
-		if (options.truncate_set1 && translating && set1.size() > set2.size()) {
-			set1.resize(set2.size());
-		}
-
-		const std::vector<bool> in_set1 = buildTrMembership(set1, options.complement);
-		const std::vector<unsigned char> map = buildTrMap(set1,
-			options.delete_mode ? std::string() : set2, in_set1, options.complement);
-
-		trStream(options, in_set1, map);
 		std::fflush(stdout);
 		return 0;
 	}
@@ -2349,7 +2180,6 @@ namespace wbsh {
 	void registerTextBuiltins(Executor& exec) {
 		exec.registerBuiltin("sort",     builtin_sort);
 		exec.registerBuiltin("uniq",     builtin_uniq);
-		exec.registerBuiltin("tr",       builtin_tr);
 		exec.registerBuiltin("cut",      builtin_cut);
 		exec.registerBuiltin("tee",      builtin_tee);
 		exec.registerBuiltin("paste",    builtin_paste);

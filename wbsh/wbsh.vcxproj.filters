@@ -45,6 +45,7 @@
     <ClCompile Include="src\builtins.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_text.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_tr.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_encoding.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_archive.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_grep.cpp"><Filter>Source Files</Filter></ClCompile>

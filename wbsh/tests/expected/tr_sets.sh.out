@@ -1,0 +1,81 @@
+=== classes
+HELLO WORLD
+hello world
+abc
+a_b_c
+a_b_c_
+xZZ;
+abc
+12
+0000000   x
+0000001
+xx
+
+=== escapes
+0000000   a   1   b   5   c  \n
+0000006
+zbc
+a/b
+xbz
+x
+a b 
+0000000   a  \v   b  \n
+0000004
+=== [c*n] and [=c=]
+xxx
+xxyyyy
+pxxxxq
+xxxxxxxxxx
+xbc
+xbc
+aEb
+bc
+=== literal brackets and dashes
+aybxc
+yzz
+xyb
+xyb
+=== squeeze / complement / truncate
+aabbcc dd
+abc  d
+xycc
+bcc
+bbc
+x
+abXXX0000000   a   b   9   9   9
+0000005
+hello
+xyc
+yy
+=== file and pipe input
+FIRST
+SECOND LINE
+THIRD
+FIRST
+SECOND LINE
+THIRD
+SECOND LINE
+THIRD
+0000000   A   B  \0   C   D  \n
+0000006
+=== errors
+wbsh: tr: range-endpoints of 'c-a' are in reverse collating sequence order
+status 1
+wbsh: tr: invalid character class 'foo'
+status 1
+wbsh: tr: when translating, the only character classes that may appear in string2 are 'upper' and 'lower'
+status 1
+wbsh: tr: misaligned [:upper:] and/or [:lower:] construct
+status 1
+wbsh: tr: misaligned [:upper:] and/or [:lower:] construct
+status 1
+wbsh: tr: when not truncating set1, string2 must be non-empty
+status 1
+wbsh: tr: only one [c*] repeat construct may appear in string2
+status 1
+wbsh: tr: the [c*] repeat construct may not appear in string1
+status 1
+wbsh: tr: [=c=] expressions may not appear in string2 when translating
+status 1
+wbsh: tr: invalid repeat count 'x' in [c*n] construct
+status 1
