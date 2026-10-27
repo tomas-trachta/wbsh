@@ -55,5 +55,5 @@ status="ok"
 [ $[ $errs ] -ge $threshold ] && status="degraded"
 echo "status=$status"
 
-rm -rf _run_tmp
+rm -f _run_tmp/app.log
 echo "=== done"

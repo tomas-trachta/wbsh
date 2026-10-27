@@ -26,6 +26,10 @@ namespace wbsh {
 	          const std::error_code& ec);
 	void perr(const std::string& cmd, const std::string& msg);
 
+	/// strerror-style text ("No such file or directory") for errors that map
+	/// to an errno value; Windows' own message for the rest.
+	std::string posixErrorText(const std::error_code& ec);
+
 	/// Translate an arg-style path (POSIX-or-Win32, UTF-8) to a native
 	/// filesystem::path without mojibake on non-ASCII names.
 	std::filesystem::path toNative(Executor& exec, const std::string& p);
@@ -108,6 +112,8 @@ namespace wbsh {
 	void registerSystemExtraBuiltins(Executor& exec);
 
 	void registerFileOpsBuiltins(Executor& exec);
+
+	void registerRemoveBuiltin(Executor& exec);
 
 	void registerFilterBuiltins(Executor& exec);
 

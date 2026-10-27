@@ -54,5 +54,5 @@ avg() {
 }
 echo "avg via awk: score=$(avg _run_tmp/data.csv 2) latency=$(avg _run_tmp/data.csv 3)"
 
-rm -rf _run_tmp
+rm -f _run_tmp/data.csv
 echo "=== done"

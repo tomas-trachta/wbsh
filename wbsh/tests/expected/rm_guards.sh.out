@@ -1,0 +1,38 @@
+=== . and ..
+wbsh: rm: refusing to remove '.' or '..' directory: skipping '..'
+rm -rf ..: 1
+wbsh: rm: refusing to remove '.' or '..' directory: skipping '.'
+rm -rf .: 1
+wbsh: rm: refusing to remove '.' or '..' directory: skipping 'keep/sub/..'
+rm -rf keep/sub/..: 1
+wbsh: rm: refusing to remove '.' or '..' directory: skipping 'keep/./'
+rm -r keep/./: 1
+wbsh: rm: cannot remove '..': Is a directory
+rm .. without -r: 1
+keep/k.txt keep/sub
+=== filesystem root
+wbsh: rm: it is dangerous to operate recursively on 'X:/'
+wbsh: rm: use --no-preserve-root to override this failsafe
+rm -rf X:/: 1
+=== -f and missing files
+rm -f nope: 0
+rm -f with no operand: 0
+wbsh: rm: cannot remove 'nope': No such file or directory
+rm nope: 1
+rm -rf nope/deeper: 0
+wbsh: rm: missing operand
+rm: 1
+wbsh: rm: invalid option -- 'q'
+rm -q: 1
+=== read-only files go away
+rm read-only: 0
+rm -r read-only inside: 0
+keep
+=== -f does not hide real errors
+wbsh: rm: cannot remove 'prot/f': Permission denied
+rm -f locked: 1
+wbsh: rm: cannot remove 'prot/f': Permission denied
+rm -rf locked + other: 1
+prot/f kept
+other removed
+cleanup: 0
