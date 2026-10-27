@@ -94,6 +94,14 @@ namespace wbsh {
 		std::string expandStringValue(const Word& w);
 
 		/**
+		 * @brief expandStringValue() for the value of `name=value`.
+		 *
+		 * Also expands a tilde prefix after each unquoted `:`, as in
+		 * `PATH=$PATH:~/bin`.
+		 */
+		std::string expandAssignmentValue(const Word& w);
+
+		/**
 		 * @brief expandStringValue() for pattern contexts.
 		 *
 		 * Used for `case` patterns and the right side of `[[ == ]]`.

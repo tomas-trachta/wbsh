@@ -1,0 +1,44 @@
+=== 1. assignment values expand after each unquoted colon
+a:/h/b
+/h:/h/c:d~:~e:/h
+a:/p:/o
+a:/h:/h
+a::/h
+/h/b:/h
+/usr/bin:/h/bin
+=== 2. quoted or partly quoted prefixes stay literal
+a:~/b
+a:~/b
+a:~/b
+a:~/b
+~/b
+a:~:b
+a:~x
+a=~
+~/h
+=== 3. append, element and keyed array assignments
+a:/h
+x:~ /h
+x:~ q:/h
+k:/h x=~
+/h:/h
+=== 4. prefix assignments
+a:/h
+=== 5. words spelled like assignments
+a:~/b x=a:/h/b y=/h a+=/h a[1]=x:/h e==~
+1=~ a-b=~ --opt=~ b:=~ d=~
+a:/h/b
+a:/h/b
+a:/h/b
+/h:/h
+a=/h
+b:~
+case pattern matched
+=== 6. command words
+/h /h/x /h:x /h/a:~ /p /o ~ ~
+~/h
+=== 7. the expansion is not split or globbed
+n=1 [/s p]
+a:/s p
+/* /*/x
+n=1 []

@@ -116,7 +116,7 @@ namespace wbsh {
 		const bool bare_assignments = command.words.empty();
 		for (const auto& assignment : command.assignments) {
 			indent(dump.os, depth + 1);
-			const std::string value = dump.expander.expandStringValue(assignment.value);
+			const std::string value = dump.expander.expandAssignmentValue(assignment.value);
 			if (dump.expander.failed()) {
 				dump.os << "<expand error: " << dump.expander.takeError() << ">";
 			}

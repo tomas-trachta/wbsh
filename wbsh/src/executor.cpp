@@ -1004,7 +1004,7 @@ namespace wbsh {
 	                                             const std::vector<Assignment>& assignments) {
 		NameValueList temp_env;
 		for (const auto& assignment : assignments) {
-			std::string value = expander.expandStringValue(assignment.value);
+			std::string value = expander.expandAssignmentValue(assignment.value);
 			if (expander.failed()) {
 				expander.takeError();
 				continue;
@@ -1327,10 +1327,10 @@ namespace wbsh {
 		array.name = assignment.name;
 		array.append = assignment.append;
 		for (const auto& item : assignment.keyed_items) {
-			std::string value = expander.expandStringValue(item.value);
 			if (item.has_key) {
 				array.sparse = true;
 				std::string key = expander.expandStringValue(item.key);
+				std::string value = expander.expandAssignmentValue(item.value);
 				array.keyed.emplace_back(std::move(key), std::move(value));
 			} else {
 				std::vector<std::string> fields = expander.expandWord(item.value);
@@ -1347,7 +1347,7 @@ namespace wbsh {
 		Executor::ElemAssign elem;
 		elem.name = assignment.name;
 		elem.subscript = assignment.subscript;
-		elem.value = expander.expandStringValue(assignment.value);
+		elem.value = expander.expandAssignmentValue(assignment.value);
 		elem.append = assignment.append;
 		return elem;
 	}
@@ -1356,7 +1356,7 @@ namespace wbsh {
 	                                                 const Assignment& assignment) {
 		Executor::ScalarAssign scalar;
 		scalar.name = assignment.name;
-		scalar.value = expander.expandStringValue(assignment.value);
+		scalar.value = expander.expandAssignmentValue(assignment.value);
 		scalar.append = assignment.append;
 		return scalar;
 	}
