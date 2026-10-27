@@ -505,6 +505,7 @@ namespace wbsh {
 	}
 
 	int Executor::execNode(const Node& node) {
+		if (env_.noexec() && !env_.interactive()) return 0;
 		if (node.loc.line > 0) env_.setCurrentLineno(static_cast<int>(node.loc.line));
 
 		switch (node.kind) {
@@ -571,7 +572,10 @@ namespace wbsh {
 
 	int Executor::execList(const List& list) {
 		int status = 0;
-		for (const auto& item : list.items) {
+		for (std::size_t index = 0; index < list.items.size(); ++index) {
+			const ListItem& item = list.items[index];
+			if (&list == input_echo_.list) echoInputBefore(list, index);
+
 #ifdef _WIN32
 			if (item.background) status = launchBackgroundCommand(*item.command);
 			else                 status = execNode(*item.command);
@@ -840,6 +844,27 @@ namespace wbsh {
 		return joined;
 	}
 
+	// `verbose` and `noexec` stay behind: the child re-reads text the
+	// parent has already echoed, and a parent under noexec spawns nothing.
+	static bool inheritsSetOption(const SetOptionSpec& spec) {
+		return spec.flag != &SetOptions::verbose && spec.flag != &SetOptions::noexec;
+	}
+
+	static std::string serializeChangedOptions(const SetOptions& options) {
+		const SetOptions defaults;
+		std::string words;
+		for (const SetOptionSpec& spec : setOptionTable()) {
+			const bool on = options.*(spec.flag);
+			if (!inheritsSetOption(spec) || on == defaults.*(spec.flag)) continue;
+
+			if (!words.empty()) words.push_back(' ');
+			words.push_back(on ? '-' : '+');
+			words += spec.name;
+		}
+
+		return words;
+	}
+
 	NameValueList Executor::buildSelfSpawnOverrides() {
 		NameValueList overrides;
 
@@ -857,6 +882,9 @@ namespace wbsh {
 
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
+
+		const std::string options = serializeChangedOptions(env_.options());
+		if (!options.empty()) overrides.emplace_back("WBSH_OPTIONS", options);
 
 		return overrides;
 	}
@@ -1131,9 +1159,22 @@ namespace wbsh {
 		return redirectFdFromPath(path, _O_RDONLY, target, state);
 	}
 
+	bool Executor::refusesClobber(const std::string& path) const {
+		if (!env_.noclobber()) return false;
+
+		std::error_code ec;
+		const std::filesystem::path native = utf8ToPath(path_conv_.toWin32(path));
+		if (!std::filesystem::is_regular_file(native, ec)) return false;
+
+		std::fprintf(stderr, "wbsh: %s: cannot overwrite existing file\n", path.c_str());
+		return true;
+	}
+
 	bool Executor::applyTruncOrClobber(const Redirection& redir, int target, RedirState& state) {
 		std::string path;
 		if (!expandRedirTarget(redir.target, path)) return false;
+		if (redir.op == RedirOp::Great && refusesClobber(path)) return false;
+
 		return redirectFdFromPath(path, _O_WRONLY | _O_CREAT | _O_TRUNC, target, state);
 	}
 
@@ -1146,6 +1187,7 @@ namespace wbsh {
 	bool Executor::applyAmpRedir(const Redirection& redir, int extra_flags, RedirState& state) {
 		std::string path;
 		if (!expandRedirTarget(redir.target, path)) return false;
+		if ((extra_flags & _O_TRUNC) != 0 && refusesClobber(path)) return false;
 
 		const int fd = openRedirSourceFd(path, _O_WRONLY | _O_CREAT | extra_flags);
 		if (fd < 0) {
@@ -1970,11 +2012,7 @@ namespace wbsh {
 		snap.saved_pos   = env_.positional();
 		snap.saved_name  = env_.shellName();
 		snap.saved_funcs = functions_;
-		snap.s_errexit   = env_.errexit();
-		snap.s_nounset   = env_.nounset();
-		snap.s_xtrace    = env_.xtrace();
-		snap.s_pipefail  = env_.pipefail();
-		snap.s_noglob    = env_.noglob();
+		snap.saved_options = env_.options();
 
 		std::error_code ec;
 		snap.saved_cwd = std::filesystem::current_path(ec);
@@ -1982,6 +2020,9 @@ namespace wbsh {
 	}
 
 	void Executor::restoreShellScriptScope(ShellScriptScope& snap, bool force_set) {
+		// Putting a value back is not an assignment, so allexport must not
+		// export it.
+		env_.options().allexport = false;
 		unsetVarsNotIn(env_, snap.saved_vars);
 
 		// `forceSet` (readonly bypass) only when unwinding a pending
@@ -1994,11 +2035,7 @@ namespace wbsh {
 
 		env_.setPositional(std::move(snap.saved_pos));
 		env_.setShellName(snap.saved_name);
-		env_.setErrexit(snap.s_errexit);
-		env_.setNounset(snap.s_nounset);
-		env_.setXtrace(snap.s_xtrace);
-		env_.setPipefail(snap.s_pipefail);
-		env_.setNoglob(snap.s_noglob);
+		env_.options() = snap.saved_options;
 		functions_ = std::move(snap.saved_funcs);
 
 		std::error_code ec;
@@ -2029,7 +2066,7 @@ namespace wbsh {
 		env_.setShellName(path);
 		env_.setPositional(std::vector<std::string>(argv.begin() + 1, argv.end()));
 
-		int status = executeText(body, path);
+		int status = executeInputText(body, path);
 		consumeFlow(FlowSignal::Kind::Exit, &status);
 		restoreShellScriptScope(snap, /*force_set=*/flowPending());
 		return status;
@@ -2048,11 +2085,7 @@ namespace wbsh {
 	Executor::SubshellScope Executor::snapshotSubshellScope() const {
 		SubshellScope snap;
 		snap.saved_vars = env_.vars();
-		snap.errexit  = env_.errexit();
-		snap.nounset  = env_.nounset();
-		snap.xtrace   = env_.xtrace();
-		snap.pipefail = env_.pipefail();
-		snap.noglob   = env_.noglob();
+		snap.options = env_.options();
 		snap.traps = trap_handlers_;
 
 		std::error_code ec;
@@ -2064,11 +2097,7 @@ namespace wbsh {
 		unsetVarsNotIn(env_, snap.saved_vars);
 		for (const auto& var : snap.saved_vars) env_.forceSet(var.first, var.second);
 
-		env_.setErrexit(snap.errexit);
-		env_.setNounset(snap.nounset);
-		env_.setXtrace(snap.xtrace);
-		env_.setPipefail(snap.pipefail);
-		env_.setNoglob(snap.noglob);
+		env_.options() = snap.options;
 		trap_handlers_ = std::move(snap.traps);
 
 		std::error_code ec;
@@ -2971,7 +3000,7 @@ namespace wbsh {
 		}
 	}
 
-	int Executor::executeText(const std::string& source_text, const std::string& origin) {
+	Node* Executor::parseText(const std::string& source_text, const std::string& origin) {
 		Lexer lexer(source_text);
 		std::vector<Token> tokens = lexer.tokenize();
 		reportSourceErrors(origin, lexer.errors());
@@ -2979,10 +3008,109 @@ namespace wbsh {
 		Parser parser(std::move(tokens), source_text);
 		Node* root = parser.parseProgram();
 		reportSourceErrors(origin, parser.errors());
-		if (root == nullptr) return 1;
+		if (root == nullptr) return nullptr;
 
 		owned_arenas_.push_back(parser.takeArena());
+		return root;
+	}
+
+	int Executor::executeText(const std::string& source_text, const std::string& origin) {
+		Node* root = parseText(source_text, origin);
+		if (root == nullptr) return 1;
+
 		return execute(*root);
+	}
+
+	int Executor::executeInputText(const std::string& source_text, const std::string& origin) {
+		Node* root = parseText(source_text, origin);
+		if (root == nullptr) return 1;
+
+		return executeInput(*root, source_text);
+	}
+
+	int Executor::executeInput(const Node& root, const std::string& source_text) {
+		const InputEcho saved = input_echo_;
+		const bool is_list = root.kind == Node::Kind::List;
+		input_echo_ = { is_list ? static_cast<const List*>(&root) : nullptr, &source_text, 0 };
+		if (!is_list) echoInputUpTo(source_text.size());
+
+		const int status = execute(root);
+		if (!flowPending()) echoInputUpTo(source_text.size());
+
+		input_echo_ = saved;
+		return status;
+	}
+
+	static std::size_t lineEndAfter(const std::string& text, std::size_t pos) {
+		if (pos >= text.size()) return text.size();
+
+		const std::size_t newline = text.find('\n', pos);
+		return newline == std::string::npos ? text.size() : newline + 1;
+	}
+
+	static std::size_t lineStartOf(const std::string& text, std::size_t pos) {
+		if (pos == 0 || text.empty()) return 0;
+
+		const std::size_t from = (pos < text.size()) ? pos - 1 : text.size() - 1;
+		const std::size_t newline = text.rfind('\n', from);
+		return newline == std::string::npos ? 0 : newline + 1;
+	}
+
+	static bool isBlankOrCommentLine(const std::string& text, std::size_t start, std::size_t end) {
+		std::size_t k = start;
+		while (k < end && (text[k] == ' ' || text[k] == '\t' || text[k] == '\r')) ++k;
+		return k >= end || text[k] == '\n' || text[k] == '#';
+	}
+
+	// Comment and blank lines after a command are read together with the
+	// next one, so they belong to its echo, not this one's.
+	static std::size_t dropTrailingCommentLines(const std::string& text, std::size_t floor,
+			std::size_t end) {
+		while (end > floor) {
+			const std::size_t start = lineStartOf(text, end - 1);
+			if (start < floor || !isBlankOrCommentLine(text, start, end)) break;
+			end = start;
+		}
+
+		return end;
+	}
+
+	// The input bash has read by the time it runs item `index`: through the
+	// end of the item's last line, heredoc bodies included.
+	static std::size_t inputReadThrough(const List& list, std::size_t index,
+			const std::string& text) {
+		const Node& command = *list.items[index].command;
+		const std::size_t last_byte = (command.src_end > command.loc.offset)
+			? command.src_end
+			: command.loc.offset;
+		const std::size_t command_end = lineEndAfter(text, last_byte);
+
+		const bool last = index + 1 >= list.items.size();
+		const std::size_t next_line = last
+			? text.size()
+			: lineStartOf(text, list.items[index + 1].command->loc.offset);
+
+		const std::size_t with_heredocs = dropTrailingCommentLines(text, command_end, next_line);
+		return (with_heredocs > command_end) ? with_heredocs : command_end;
+	}
+
+	void Executor::echoInputBefore(const List& list, std::size_t index) {
+		echoInputUpTo(inputReadThrough(list, index, *input_echo_.text));
+	}
+
+	static void writeInputEcho(const std::string& chunk) {
+		std::fflush(stdout);
+		std::fputs(chunk.c_str(), stderr);
+		if (chunk.back() != '\n') std::fputc('\n', stderr);
+		std::fflush(stderr);
+	}
+
+	void Executor::echoInputUpTo(std::size_t end) {
+		InputEcho& echo = input_echo_;
+		if (end <= echo.cursor) return;
+
+		if (env_.verbose()) writeInputEcho(echo.text->substr(echo.cursor, end - echo.cursor));
+		echo.cursor = end;
 	}
 
 	std::string Executor::run(const std::string& body) {

@@ -22,6 +22,50 @@
 
 namespace wbsh {
 
+	/// The `set -o` options. Those wbsh has no counterpart for (monitor,
+	/// histexpand, posix, ...) are only stored, so scripts that set them
+	/// keep working and `set -o` reports them back.
+	struct SetOptions {
+		bool allexport   = false;
+		bool braceexpand = true;
+		bool emacs       = false;
+		bool errexit     = false;
+		bool errtrace    = false;
+		bool functrace   = false;
+		bool hashall     = true;
+		bool histexpand  = false;
+		bool history     = false;
+		bool ignoreeof   = false;
+		bool interactive_comments = true;
+		bool keyword     = false;
+		bool monitor     = false;
+		bool noclobber   = false;
+		bool noexec      = false;
+		bool noglob      = false;
+		bool nolog       = false;
+		bool notify      = false;
+		bool nounset     = false;
+		bool onecmd      = false;
+		bool physical    = false;
+		bool pipefail    = false;
+		bool posix       = false;
+		bool privileged  = false;
+		bool verbose     = false;
+		bool vi          = false;
+		bool xtrace      = false;
+	};
+
+	struct SetOptionSpec {
+		const char* name;
+		char        letter;
+		bool SetOptions::* flag;
+	};
+
+	/// Every `set -o` option, sorted by name; `letter` is 0 for long-only ones.
+	const std::vector<SetOptionSpec>& setOptionTable();
+	const SetOptionSpec* findSetOption(const std::string& name);
+	const SetOptionSpec* findSetFlag(char letter);
+
 	class Environment {
 	public:
 		Environment();
@@ -109,25 +153,30 @@ namespace wbsh {
 
 		long long shellPid() const { return shell_pid_; }
 
-		std::string shellOptions() const {
-			std::string s;
-			if (errexit_) s += 'e';
-			if (nounset_) s += 'u';
-			if (xtrace_)  s += 'x';
-			if (noglob_)  s += 'f';
-			return s;
-		}
+		/// `$-`: the single-letter options that are on, in bash's order.
+		std::string shellOptions() const;
 
-		bool errexit() const  { return errexit_; }
-		void setErrexit(bool b) { errexit_ = b; }
-		bool nounset() const  { return nounset_; }
-		void setNounset(bool b) { nounset_ = b; }
-		bool xtrace()  const  { return xtrace_; }
-		void setXtrace(bool b) { xtrace_ = b; }
-		bool pipefail() const { return pipefail_; }
-		void setPipefail(bool b) { pipefail_ = b; }
-		bool noglob()  const  { return noglob_; }
-		void setNoglob(bool b) { noglob_ = b; }
+		SetOptions&       options()       { return options_; }
+		const SetOptions& options() const { return options_; }
+
+		bool errexit()     const { return options_.errexit; }
+		void setErrexit(bool b)  { options_.errexit = b; }
+		bool nounset()     const { return options_.nounset; }
+		void setNounset(bool b)  { options_.nounset = b; }
+		bool xtrace()      const { return options_.xtrace; }
+		void setXtrace(bool b)   { options_.xtrace = b; }
+		bool pipefail()    const { return options_.pipefail; }
+		void setPipefail(bool b) { options_.pipefail = b; }
+		bool noglob()      const { return options_.noglob; }
+		void setNoglob(bool b)   { options_.noglob = b; }
+		bool allexport()   const { return options_.allexport; }
+		bool noclobber()   const { return options_.noclobber; }
+		bool noexec()      const { return options_.noexec; }
+		bool verbose()     const { return options_.verbose; }
+		bool braceexpand() const { return options_.braceexpand; }
+
+		bool interactive() const { return interactive_; }
+		void setInteractive(bool b);
 
 		/// `shopt` flags. Defaults match bash's interactive defaults where
 		/// they line up with POSIX expectations.
@@ -193,11 +242,8 @@ namespace wbsh {
 		long long last_bg_pid_ = 0;
 		long long shell_pid_ = 0;
 		std::string shell_name_ = "wbsh";
-		bool errexit_ = false;
-		bool nounset_ = false;
-		bool xtrace_  = false;
-		bool pipefail_ = false;
-		bool noglob_  = false;
+		SetOptions options_;
+		bool interactive_ = false;
 		// shopt flags. globstar is on by default since bash's `**` is
 		// the more useful behaviour for an interactive shell.
 		bool nullglob_     = false;

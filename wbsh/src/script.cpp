@@ -351,7 +351,7 @@ namespace wbsh {
 		exec.setSourceText(src);
 		absorbInheritedState(env, exec);
 
-		int status = exec.execute(*root);
+		int status = exec.executeInput(*root, src);
 		exec.consumeFlow(FlowSignal::Kind::Exit, &status);
 		return status;
 	}

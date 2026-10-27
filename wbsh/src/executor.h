@@ -287,6 +287,12 @@ namespace wbsh {
 		// AST and keeps it alive for the lifetime of the call.
 		int executeText(const std::string& source_text, const std::string& origin);
 
+		// Run text the shell reads as input (a script, a REPL line, `eval`,
+		// `source`): under `set -v` each line is echoed to stderr as bash
+		// reads it, before the command on it runs.
+		int executeInputText(const std::string& source_text, const std::string& origin);
+		int executeInput(const Node& root, const std::string& source_text);
+
 		// Hand AST ownership to the executor by adopting the Arena that
 		// backs it (see Parser::takeArena). Used by the REPL: each line
 		// is parsed locally, but functions defined there must outlive
@@ -443,6 +449,16 @@ namespace wbsh {
 		};
 
 	private:
+		struct InputEcho {
+			const List*        list = nullptr;
+			const std::string* text = nullptr;
+			std::size_t        cursor = 0;
+		};
+
+		Node* parseText(const std::string& source_text, const std::string& origin);
+		void  echoInputBefore(const List& list, std::size_t index);
+		void  echoInputUpTo(std::size_t end);
+
 		int execNode(const Node& n);
 		int execList(const List& l);
 		int execAndOr(const AndOr& a);
@@ -514,6 +530,7 @@ namespace wbsh {
 		// and remember the temp path so undoRedirections cleans it up.
 		bool installRedirFromTempBody(std::string body, int target, RedirState& s);
 		bool applyLessRedir       (const Redirection& r, int target, RedirState& s);
+		bool refusesClobber(const std::string& path) const;
 		bool applyTruncOrClobber  (const Redirection& r, int target, RedirState& s);
 		bool applyAppendRedir     (const Redirection& r, int target, RedirState& s);
 		bool applyAmpRedir        (const Redirection& r, int extra_flags, RedirState& s);
@@ -546,7 +563,7 @@ namespace wbsh {
 			std::vector<std::string> saved_pos;
 			std::string saved_name;
 			std::unordered_map<std::string, const FunctionDef*> saved_funcs;
-			bool s_errexit, s_nounset, s_xtrace, s_pipefail, s_noglob;
+			SetOptions saved_options;
 			std::filesystem::path saved_cwd;
 		};
 		ShellScriptScope snapshotShellScriptScope() const;
@@ -557,7 +574,7 @@ namespace wbsh {
 		// requires a subshell's trap installs to be local to it.
 		struct SubshellScope {
 			std::unordered_map<std::string, std::string> saved_vars;
-			bool errexit, nounset, xtrace, pipefail, noglob;
+			SetOptions options;
 			std::unordered_map<std::string, std::string> traps;
 			std::filesystem::path saved_cwd;
 		};
@@ -691,6 +708,7 @@ namespace wbsh {
 		int  loop_depth_ = 0;
 		int  func_depth_ = 0;
 		int  errexit_suppress_ = 0;
+		InputEcho input_echo_;
 		FlowSignal flow_;
 	};
 

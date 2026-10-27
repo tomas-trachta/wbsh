@@ -246,6 +246,28 @@ namespace wbsh {
 		exec.executeText(text, label);
 	}
 
+	static void applyInheritedOption(Environment& env, const std::string& word) {
+		if (word.size() < 2) return;
+
+		const SetOptionSpec* spec = findSetOption(word.substr(1));
+		if (spec != nullptr) env.options().*(spec->flag) = word[0] == '-';
+	}
+
+	static void applyInheritedOptions(Environment& env) {
+		const std::string words = env.get("WBSH_OPTIONS");
+		if (words.empty()) return;
+
+		env.unset("WBSH_OPTIONS");
+		std::size_t i = 0;
+		while (i < words.size()) {
+			while (i < words.size() && words[i] == ' ') ++i;
+
+			const std::size_t start = i;
+			while (i < words.size() && words[i] != ' ') ++i;
+			applyInheritedOption(env, words.substr(start, i - start));
+		}
+	}
+
 	void absorbInheritedState(Environment& env, Executor& exec) {
 		const std::string local_names = env.get("WBSH_LOCAL_NAMES");
 		if (!local_names.empty()) {
@@ -256,6 +278,7 @@ namespace wbsh {
 		replayInheritedText(env, exec, "WBSH_FUNCTIONS", "<inherited functions>");
 		replayInheritedText(env, exec, "WBSH_ALIASES",   "<inherited aliases>");
 		replayInheritedText(env, exec, "WBSH_ARRAYS",    "<inherited arrays>");
+		applyInheritedOptions(env);
 	}
 
 }  // namespace wbsh
