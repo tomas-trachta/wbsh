@@ -1,0 +1,36 @@
+=== 1. a redirection of a closed fd does not leave the file open
+moved after 3>
+a
+removed after 5> 6>&5
+moved after { } 4>
+removed after ( ) 7>>
+moved after f 8<>
+here-string on 3 rc=0
+to3
+moved after exec 3>&-
+=== 2. >&N and <&N from a closed fd fail the command
+echo x >&7 -> rc=1 error=7: Bad file descriptor
+echo y 2>&7 -> rc=1 error=7: Bad file descriptor
+cat <&8 -> rc=1 error=8: Bad file descriptor
+{ echo inner >&3; } >/dev/null -> rc=1 error=3: Bad file descriptor
+x=$(echo sub >&3) -> rc=1 error=3: Bad file descriptor
+exec 4>&1; exec 4>&-; echo closed4 >&4 -> rc=1 error=4: Bad file descriptor
+|| runs after the failure
+=== 3. valid duplications still work
+echo z 3>&3 -> rc=0
+f out
+sub to 9
+via 4
+err to out
+moved stderr
+=== 4. exec redirections end with the subshell or script that made them
+echo leaked >&3 -> rc=1 error=3: Bad file descriptor
+echo leaked >&4 -> rc=1 error=4: Bad file descriptor
+removed f3 f4
+visible after ( exec >/dev/null )
+x=[]
+stdout back after ./s.sh
+to-log
+removed s.sh log.txt
+in5
+removed f5
