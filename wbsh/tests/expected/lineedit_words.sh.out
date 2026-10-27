@@ -1,0 +1,30 @@
+=== Ctrl-W right after an operator
+[ls ][]
+[ls ][]
+[][]
+[echo ][]
+[make ][]
+=== Ctrl-W stops only at whitespace
+[echo ][]
+[cat ][]
+[cd ][]
+[echo ][]
+[one two ][ee]
+[][]
+[][x]
+=== Alt-Backspace stops at punctuation
+[cd /usr/local/][]
+[cd /usr/local/][]
+[foo_][]
+[][]
+[git ][]
+[echo žluťoučký ][]
+=== Alt-B and Alt-F move by the same words
+[git commit --X][amend]
+[git X][commit --amend]
+[gitX][ commit --amend]
+[git commitX][ --amend]
+[a/bX][.c]
+=== Alt-D erases the word after the cursor
+[][ commit --amend]
+[git][ --amend]
