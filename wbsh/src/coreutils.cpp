@@ -38,6 +38,7 @@
 #include "executor.h"
 #include "inflate.h"
 #include "numparse.h"
+#include "optscan.h"
 #include "regexutil.h"
 #include "termreq.h"
 
@@ -1107,6 +1108,7 @@ namespace wbsh {
 		bool want_words = false;
 		bool want_bytes = false;
 		bool want_chars = false;
+		bool want_max_line = false;
 		std::vector<std::string> files;
 	};
 
@@ -1115,47 +1117,58 @@ namespace wbsh {
 		std::uintmax_t words = 0;
 		std::uintmax_t bytes = 0;
 		std::uintmax_t chars = 0;
+		std::uintmax_t max_line = 0;
 	};
 
-	static bool applyWcFlag(char flag, WcOptions& opts) {
-		switch (flag) {
-		case 'l': opts.want_lines = true; return true;
-		case 'w': opts.want_words = true; return true;
-		case 'c': opts.want_bytes = true; return true;
-		case 'm': opts.want_chars = true; return true;
-		default:  return false;
+	enum WcOptionId { kWcLines, kWcWords, kWcBytes, kWcChars, kWcMaxLine };
+
+	static const std::vector<OptDef> kWcOptionDefs = {
+		{ kWcLines,   'l', "lines",           OptArg::None },
+		{ kWcWords,   'w', "words",           OptArg::None },
+		{ kWcBytes,   'c', "bytes",           OptArg::None },
+		{ kWcChars,   'm', "chars",           OptArg::None },
+		{ kWcMaxLine, 'L', "max-line-length", OptArg::None },
+	};
+
+	static void applyWcHit(const OptHit& hit, WcOptions& opts) {
+		switch (hit.id) {
+		case kWcLines:
+			opts.want_lines = true;
+			break;
+		case kWcWords:
+			opts.want_words = true;
+			break;
+		case kWcBytes:
+			opts.want_bytes = true;
+			break;
+		case kWcChars:
+			opts.want_chars = true;
+			break;
+		case kWcMaxLine:
+			opts.want_max_line = true;
+			break;
+		default:
+			break;
 		}
 	}
 
-	static bool applyWcLongOption(const std::string& arg, WcOptions& opts) {
-		if (arg == "--lines") return applyWcFlag('l', opts);
-		if (arg == "--words") return applyWcFlag('w', opts);
-		if (arg == "--bytes") return applyWcFlag('c', opts);
-		if (arg == "--chars") return applyWcFlag('m', opts);
-		return false;
-	}
+	static bool parseWcArgs(const std::vector<std::string>& args, WcOptions& opts) {
+		OptScanResult scan;
+		if (!scanOptions("wc", args, kWcOptionDefs, scan)) return false;
 
-	static WcOptions parseWcArgs(const std::vector<std::string>& args) {
-		WcOptions opts;
-		for (const auto& arg : args) {
-			if (arg == "--") continue;
-			if (applyWcLongOption(arg, opts)) continue;
-			if (isShortFlagCluster(arg)) {
-				for (std::size_t k = 1; k < arg.size(); ++k) applyWcFlag(arg[k], opts);
-				continue;
-			}
+		for (const OptHit& hit : scan.hits) applyWcHit(hit, opts);
+		opts.files = scan.operands;
 
-			opts.files.push_back(arg);
-		}
-
-		if (!(opts.want_lines || opts.want_words || opts.want_bytes || opts.want_chars)) {
+		const bool any = opts.want_lines || opts.want_words || opts.want_bytes
+			|| opts.want_chars || opts.want_max_line;
+		if (!any) {
 			opts.want_lines = true;
 			opts.want_words = true;
 			opts.want_bytes = true;
 		}
 
 		if (opts.files.empty()) opts.files.push_back("-");
-		return opts;
+		return true;
 	}
 
 	static bool isUtf8LeadByte(int ch) {
@@ -1163,14 +1176,33 @@ namespace wbsh {
 		return byte < 0x80 || (byte & 0xC0) != 0x80;
 	}
 
+	static const std::uintmax_t kWcTabWidth = 8;
+
+	// Display columns as GNU counts them: tabs advance to the next multiple of
+	// eight, \n \r \f end the line, other control bytes take no column.
+	static void advanceWcLinePosition(int ch, std::uintmax_t& position, WcCounts& counts) {
+		if (ch == '\n' || ch == '\r' || ch == '\f') {
+			counts.max_line = (std::max)(counts.max_line, position);
+			position = 0;
+		} else if (ch == '\t') {
+			position += kWcTabWidth - (position % kWcTabWidth);
+		} else if (static_cast<unsigned char>(ch) >= 0x80) {
+			if (isUtf8LeadByte(ch)) ++position;
+		} else if (std::isprint(static_cast<unsigned char>(ch)) != 0) {
+			++position;
+		}
+	}
+
 	static WcCounts wcCountStream(std::FILE* stream) {
 		WcCounts counts;
 		bool in_word = false;
+		std::uintmax_t position = 0;
 		int ch = EOF;
 		while ((ch = std::fgetc(stream)) != EOF) {
 			++counts.bytes;
 			if (isUtf8LeadByte(ch)) ++counts.chars;
 			if (ch == '\n') ++counts.lines;
+			advanceWcLinePosition(ch, position, counts);
 
 			if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
 				in_word = false;
@@ -1180,6 +1212,7 @@ namespace wbsh {
 			}
 		}
 
+		counts.max_line = (std::max)(counts.max_line, position);
 		return counts;
 	}
 
@@ -1188,6 +1221,7 @@ namespace wbsh {
 		totals.words += counts.words;
 		totals.bytes += counts.bytes;
 		totals.chars += counts.chars;
+		totals.max_line = (std::max)(totals.max_line, counts.max_line);
 	}
 
 	static std::string formatWcLine(const WcOptions& opts, const WcCounts& counts,
@@ -1195,8 +1229,9 @@ namespace wbsh {
 		std::string out;
 		if (opts.want_lines) appendWcCount(out, counts.lines);
 		if (opts.want_words) appendWcCount(out, counts.words);
-		if (opts.want_chars && !opts.want_bytes) appendWcCount(out, counts.chars);
+		if (opts.want_chars) appendWcCount(out, counts.chars);
 		if (opts.want_bytes) appendWcCount(out, counts.bytes);
+		if (opts.want_max_line) appendWcCount(out, counts.max_line);
 		if (!label.empty()) {
 			out += " ";
 			out += label;
@@ -1207,7 +1242,9 @@ namespace wbsh {
 	}
 
 	static int builtin_wc(Executor& exec, const std::vector<std::string>& args) {
-		const WcOptions opts = parseWcArgs(args);
+		WcOptions opts;
+		if (!parseWcArgs(args, opts)) return 1;
+
 		WcCounts totals;
 		int status = 0;
 		for (const auto& file : opts.files) {

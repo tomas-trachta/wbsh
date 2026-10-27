@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include "awk.h"
 #include "executor.h"
 #include "numparse.h"
+#include "optscan.h"
 #include "regexutil.h"
 
 namespace wbsh {
@@ -83,23 +85,75 @@ namespace wbsh {
 		return false;
 	}
 
-	// Calls `on_line` for every newline-terminated line and once more for
-	// a trailing unterminated one; an empty trailing buffer is not a line.
+	// Calls `on_record` for every `terminator`-terminated record and once
+	// more for a trailing unterminated one; an empty trailing buffer is not
+	// a record. A false return from `on_record` (output gone) stops the scan.
 	template <typename Fn>
-	static void forEachLine(FILE* stream, Fn on_line) {
-		std::string line;
+	static bool forEachRecord(FILE* stream, char terminator, Fn on_record) {
+		std::string record;
+		bool keep_going = true;
 		int c;
-		while ((c = std::fgetc(stream)) != EOF) {
-			if (c != '\n') {
-				line.push_back(static_cast<char>(c));
+		_lock_file(stream);
+		while (keep_going && (c = _fgetc_nolock(stream)) != EOF) {
+			if (c != static_cast<unsigned char>(terminator)) {
+				record.push_back(static_cast<char>(c));
 				continue;
 			}
 
-			on_line(line);
-			line.clear();
+			keep_going = on_record(record);
+			record.clear();
 		}
 
-		if (!line.empty()) on_line(line);
+		_unlock_file(stream);
+		if (keep_going && !record.empty()) keep_going = on_record(record);
+		return keep_going;
+	}
+
+	template <typename Fn>
+	static void forEachLine(FILE* stream, Fn on_line) {
+		forEachRecord(stream, '\n', [&](const std::string& line) {
+			on_line(line);
+			return true;
+		});
+	}
+
+	static bool outputOk(FILE* out) {
+		return std::ferror(out) == 0;
+	}
+
+	static void writeRecord(FILE* out, const std::string& record, char terminator) {
+		std::fwrite(record.data(), 1, record.size(), out);
+		std::fputc(terminator, out);
+	}
+
+	static bool parseCountValue(const std::string& text, std::size_t& out) {
+		unsigned long long value = 0;
+		std::size_t consumed = 0;
+		if (text.empty() || text[0] == '-' || text[0] == ' ') return false;
+		if (!parseULL(text, value, &consumed) || consumed != text.size()) return false;
+
+		out = static_cast<std::size_t>(value);
+		return true;
+	}
+
+	static FILE* openInputStream(Executor& exec, const char* tool, const std::string& path) {
+		if (path == kStdinPath) return stdin;
+
+		FILE* stream = fopenNative(exec, path, "rb");
+		if (stream == nullptr) perr(tool, path + ": " + std::strerror(errno));
+		return stream;
+	}
+
+	static void closeInputStream(FILE* stream) {
+		if (stream != nullptr && stream != stdin) std::fclose(stream);
+	}
+
+	static bool rejectExtraOperand(const char* tool, const std::vector<std::string>& operands,
+			std::size_t allowed) {
+		if (operands.size() <= allowed) return false;
+
+		perr(tool, "extra operand '" + operands[allowed] + "'");
+		return true;
 	}
 
 	// Runs `on_stream` over stdin when no file (or "-") is named, else
@@ -252,72 +306,248 @@ namespace wbsh {
 		return 0;
 	}
 
+	enum class UniqDelimit { None, Prepend, Separate };
+
 	struct UniqOptions {
 		bool count = false;
-		bool dups_only = false;
-		bool uniques_only = false;
+		bool output_unique = true;
+		bool output_first_repeated = true;
+		bool output_later_repeated = false;
 		bool fold = false;
-		std::vector<std::string> files;
+		UniqDelimit delimit = UniqDelimit::None;
+		std::size_t skip_fields = 0;
+		std::size_t skip_chars = 0;
+		std::size_t check_chars = SIZE_MAX;
+		char terminator = '\n';
+		std::string input = kStdinPath;
+		std::string output = kStdinPath;
 	};
 
-	static void applyUniqCluster(const std::string& cluster, UniqOptions& options) {
-		for (std::size_t k = 1; k < cluster.size(); ++k) {
-			switch (cluster[k]) {
-			case 'c': options.count = true; break;
-			case 'd': options.dups_only = true; break;
-			case 'u': options.uniques_only = true; break;
-			case 'i': options.fold = true; break;
-			}
+	enum UniqOptionId {
+		kUniqCount, kUniqRepeated, kUniqAllRepeated, kUniqSkipFields, kUniqIgnoreCase,
+		kUniqSkipChars, kUniqUnique, kUniqZero, kUniqCheckChars
+	};
+
+	static const std::vector<OptDef> kUniqOptionDefs = {
+		{ kUniqCount,       'c', "count",           OptArg::None     },
+		{ kUniqRepeated,    'd', "repeated",        OptArg::None     },
+		{ kUniqAllRepeated, 'D', nullptr,           OptArg::None     },
+		{ kUniqAllRepeated, 0,   "all-repeated",    OptArg::Optional },
+		{ kUniqSkipFields,  'f', "skip-fields",     OptArg::Required },
+		{ kUniqIgnoreCase,  'i', "ignore-case",     OptArg::None     },
+		{ kUniqSkipChars,   's', "skip-chars",      OptArg::Required },
+		{ kUniqUnique,      'u', "unique",          OptArg::None     },
+		{ kUniqZero,        'z', "zero-terminated", OptArg::None     },
+		{ kUniqCheckChars,  'w', "check-chars",     OptArg::Required },
+	};
+
+	static bool applyUniqAllRepeated(const OptHit& hit, UniqOptions& options) {
+		options.output_unique = false;
+		options.output_later_repeated = true;
+		if (!hit.has_value || hit.value == "none") {
+			options.delimit = UniqDelimit::None;
+		} else if (hit.value == "prepend") {
+			options.delimit = UniqDelimit::Prepend;
+		} else if (hit.value == "separate") {
+			options.delimit = UniqDelimit::Separate;
+		} else {
+			perr("uniq", "invalid argument '" + hit.value + "' for '--all-repeated'");
+			return false;
+		}
+
+		return true;
+	}
+
+	static bool applyUniqCount(const OptHit& hit, std::size_t& out, const char* what) {
+		if (parseCountValue(hit.value, out)) return true;
+
+		perr("uniq", hit.value + ": invalid number of " + what);
+		return false;
+	}
+
+	static bool applyUniqHit(const OptHit& hit, UniqOptions& options) {
+		switch (hit.id) {
+		case kUniqCount:
+			options.count = true;
+			return true;
+		case kUniqRepeated:
+			options.output_unique = false;
+			return true;
+		case kUniqAllRepeated:
+			return applyUniqAllRepeated(hit, options);
+		case kUniqSkipFields:
+			return applyUniqCount(hit, options.skip_fields, "fields to skip");
+		case kUniqIgnoreCase:
+			options.fold = true;
+			return true;
+		case kUniqSkipChars:
+			return applyUniqCount(hit, options.skip_chars, "bytes to skip");
+		case kUniqUnique:
+			options.output_first_repeated = false;
+			return true;
+		case kUniqZero:
+			options.terminator = '\0';
+			return true;
+		case kUniqCheckChars:
+			return applyUniqCount(hit, options.check_chars, "bytes to compare");
+		default:
+			return false;
 		}
 	}
 
-	static UniqOptions parseUniqArgs(const std::vector<std::string>& args) {
-		UniqOptions options;
-		for (const auto& arg : args) {
-			if (arg == "-c" || arg == "--count") {
-				options.count = true;
-			} else if (arg == "-d" || arg == "--repeated") {
-				options.dups_only = true;
-			} else if (arg == "-u" || arg == "--unique") {
-				options.uniques_only = true;
-			} else if (arg == "-i" || arg == "--ignore-case") {
-				options.fold = true;
-			} else if (isShortCluster(arg)) {
-				applyUniqCluster(arg, options);
-			} else {
-				options.files.push_back(arg);
-			}
+	static bool parseUniqArgs(const std::vector<std::string>& args, UniqOptions& options) {
+		OptScanResult scan;
+		if (!scanOptions("uniq", args, kUniqOptionDefs, scan)) return false;
+
+		for (const OptHit& hit : scan.hits) {
+			if (!applyUniqHit(hit, options)) return false;
 		}
 
-		defaultToStdin(options.files);
-		return options;
+		if (options.count && options.output_later_repeated) {
+			perr("uniq", "printing all duplicated lines and repeat counts is meaningless");
+			return false;
+		}
+
+		if (rejectExtraOperand("uniq", scan.operands, 2)) return false;
+		if (!scan.operands.empty()) options.input = scan.operands[0];
+		if (scan.operands.size() > 1) options.output = scan.operands[1];
+		return true;
 	}
 
-	static void uniqEmitRun(const UniqOptions& options, const std::string& line, int run_length) {
-		if (options.dups_only && run_length < 2) return;
-		if (options.uniques_only && run_length > 1) return;
+	static bool isBlankChar(char c) {
+		return c == ' ' || c == '\t';
+	}
 
-		if (options.count) std::printf("%7d %s\n", run_length, line.c_str());
-		else               std::printf("%s\n", line.c_str());
+	static std::size_t uniqKeyStart(const std::string& line, const UniqOptions& options) {
+		std::size_t i = 0;
+		for (std::size_t field = 0; field < options.skip_fields && i < line.size(); ++field) {
+			while (i < line.size() && isBlankChar(line[i])) ++i;
+			while (i < line.size() && !isBlankChar(line[i])) ++i;
+		}
+
+		return i + (std::min)(options.skip_chars, line.size() - i);
+	}
+
+	static bool equalFoldRange(const std::string& a, std::size_t a_at, const std::string& b,
+			std::size_t b_at, std::size_t length) {
+		for (std::size_t i = 0; i < length; ++i) {
+			if (std::tolower(static_cast<unsigned char>(a[a_at + i]))
+					!= std::tolower(static_cast<unsigned char>(b[b_at + i]))) return false;
+		}
+
+		return true;
+	}
+
+	static bool uniqKeysMatch(const std::string& a, std::size_t a_at, const std::string& b,
+			std::size_t b_at, const UniqOptions& options) {
+		const std::size_t a_length = (std::min)(a.size() - a_at, options.check_chars);
+		const std::size_t b_length = (std::min)(b.size() - b_at, options.check_chars);
+		if (a_length != b_length) return false;
+
+		if (options.fold) return equalFoldRange(a, a_at, b, b_at, a_length);
+		return a.compare(a_at, a_length, b, b_at, b_length) == 0;
+	}
+
+	struct UniqRun {
+		FILE* out = nullptr;
+		std::string previous;
+		std::size_t previous_key = 0;
+		bool have_previous = false;
+		std::uintmax_t match_count = 0;
+		bool first_delimiter = true;
+	};
+
+	static void uniqWriteLine(UniqRun& run, const UniqOptions& options, bool match) {
+		const bool wanted = run.match_count == 0 ? options.output_unique
+			: !match ? options.output_first_repeated
+			: options.output_later_repeated;
+		if (!wanted) return;
+
+		if (options.count) {
+			std::fprintf(run.out, "%7llu ", static_cast<unsigned long long>(run.match_count + 1));
+		}
+
+		writeRecord(run.out, run.previous, options.terminator);
+	}
+
+	// Mirrors GNU's group delimiting: a separator goes before the second line
+	// of every repeated group, except the first group in `separate` mode.
+	static void uniqDelimitGroup(UniqRun& run, const UniqOptions& options, bool match) {
+		if (options.delimit == UniqDelimit::None) return;
+
+		if (!match) {
+			if (run.match_count != 0) run.first_delimiter = false;
+			return;
+		}
+
+		if (run.match_count != 1) return;
+		if (options.delimit == UniqDelimit::Prepend || !run.first_delimiter) {
+			std::fputc(options.terminator, run.out);
+		}
+	}
+
+	static void uniqStartRun(UniqRun& run, const std::string& line, std::size_t key) {
+		run.previous = line;
+		run.previous_key = key;
+		run.have_previous = true;
+	}
+
+	// Outside --all-repeated the comparison line stays the first of its
+	// group, as in GNU, which matters once -w / -s / -f / -i make
+	// non-identical lines compare equal.
+	static bool uniqFeedLine(UniqRun& run, const UniqOptions& options, const std::string& line) {
+		const std::size_t key = uniqKeyStart(line, options);
+		if (!run.have_previous) {
+			uniqStartRun(run, line, key);
+			return true;
+		}
+
+		const bool match = uniqKeysMatch(line, key, run.previous, run.previous_key, options);
+		if (match) ++run.match_count;
+		uniqDelimitGroup(run, options, match);
+
+		if (!match || options.output_later_repeated) {
+			uniqWriteLine(run, options, match);
+			uniqStartRun(run, line, key);
+			if (!match) run.match_count = 0;
+		}
+
+		return outputOk(run.out);
+	}
+
+	static void uniqRunStream(FILE* in, FILE* out, const UniqOptions& options) {
+		UniqRun run;
+		run.out = out;
+		const bool finished = forEachRecord(in, options.terminator,
+			[&](const std::string& line) { return uniqFeedLine(run, options, line); });
+
+		if (finished && run.have_previous) uniqWriteLine(run, options, false);
+	}
+
+	static FILE* openUniqOutput(Executor& exec, const std::string& path) {
+		if (path == kStdinPath) return stdout;
+
+		FILE* stream = fopenNative(exec, path, "wb");
+		if (stream == nullptr) perr("uniq", path + ": " + std::strerror(errno));
+		return stream;
 	}
 
 	static int builtin_uniq(Executor& exec, const std::vector<std::string>& args) {
-		const UniqOptions options = parseUniqArgs(args);
+		UniqOptions options;
+		if (!parseUniqArgs(args, options)) return 1;
 
-		std::vector<std::string> lines;
-		for (const auto& file : options.files) {
-			if (!loadLinesWithErrno(exec, "uniq", file, lines)) return 1;
+		FILE* in = openInputStream(exec, "uniq", options.input);
+		if (in == nullptr) return 1;
+
+		FILE* out = openUniqOutput(exec, options.output);
+		if (out == nullptr) {
+			closeInputStream(in);
+			return 1;
 		}
 
-		std::size_t i = 0;
-		while (i < lines.size()) {
-			std::size_t j = i + 1;
-			while (j < lines.size() && linesEqual(lines[j], lines[i], options.fold)) ++j;
-
-			uniqEmitRun(options, lines[i], static_cast<int>(j - i));
-			i = j;
-		}
-
+		uniqRunStream(in, out, options);
+		closeInputStream(in);
+		if (out != stdout) std::fclose(out);
 		std::fflush(stdout);
 		return 0;
 	}
@@ -393,28 +623,65 @@ namespace wbsh {
 		bool delete_mode = false;
 		bool squeeze = false;
 		bool complement = false;
+		bool truncate_set1 = false;
 		std::vector<std::string> sets;
 	};
 
-	static void applyTrCluster(const std::string& cluster, TrOptions& options) {
-		for (std::size_t k = 1; k < cluster.size(); ++k) {
-			if (cluster[k] == 'd') options.delete_mode = true;
-			else if (cluster[k] == 's') options.squeeze = true;
-			else if (cluster[k] == 'c' || cluster[k] == 'C') options.complement = true;
+	enum TrOptionId { kTrComplement, kTrDelete, kTrSqueeze, kTrTruncate };
+
+	static const std::vector<OptDef> kTrOptionDefs = {
+		{ kTrComplement, 'c', "complement",      OptArg::None },
+		{ kTrComplement, 'C', nullptr,           OptArg::None },
+		{ kTrDelete,     'd', "delete",          OptArg::None },
+		{ kTrSqueeze,    's', "squeeze-repeats", OptArg::None },
+		{ kTrTruncate,   't', "truncate-set1",   OptArg::None },
+	};
+
+	static void applyTrHit(const OptHit& hit, TrOptions& options) {
+		switch (hit.id) {
+		case kTrComplement:
+			options.complement = true;
+			break;
+		case kTrDelete:
+			options.delete_mode = true;
+			break;
+		case kTrSqueeze:
+			options.squeeze = true;
+			break;
+		case kTrTruncate:
+			options.truncate_set1 = true;
+			break;
+		default:
+			break;
 		}
 	}
 
-	static TrOptions parseTrArgs(const std::vector<std::string>& args) {
-		TrOptions options;
-		for (const auto& arg : args) {
-			if (arg == "-d") options.delete_mode = true;
-			else if (arg == "-s") options.squeeze = true;
-			else if (arg == "-c" || arg == "-C" || arg == "--complement") options.complement = true;
-			else if (arg.size() > 1 && isOptionArg(arg)) applyTrCluster(arg, options);
-			else options.sets.push_back(arg);
+	static bool checkTrOperandCount(const TrOptions& options) {
+		const std::size_t count = options.sets.size();
+		const bool translating = !options.delete_mode && !options.squeeze;
+		const bool two_sets = translating || (options.delete_mode && options.squeeze);
+		const std::size_t wanted = two_sets ? 2 : 1;
+		if (count == 0) {
+			perr("tr", "missing operand");
+			return false;
 		}
 
-		return options;
+		if (count < wanted) {
+			perr("tr", "missing operand after '" + options.sets.back() + "'");
+			return false;
+		}
+
+		const std::size_t allowed = (options.delete_mode && !options.squeeze) ? 1 : 2;
+		return !rejectExtraOperand("tr", options.sets, allowed);
+	}
+
+	static bool parseTrArgs(const std::vector<std::string>& args, TrOptions& options) {
+		OptScanResult scan;
+		if (!scanOptions("tr", args, kTrOptionDefs, scan)) return false;
+
+		for (const OptHit& hit : scan.hits) applyTrHit(hit, options);
+		options.sets = scan.operands;
+		return checkTrOperandCount(options);
 	}
 
 	static void trStream(const TrOptions& options, const std::vector<bool>& in_set1,
@@ -434,16 +701,17 @@ namespace wbsh {
 	}
 
 	static int builtin_tr(Executor&, const std::vector<std::string>& args) {
-		const TrOptions options = parseTrArgs(args);
-		const bool needs_two_sets = !options.delete_mode && !options.squeeze;
-		if (options.sets.empty() || (needs_two_sets && options.sets.size() < 2)) {
-			perr("tr", "usage: tr [-cds] SET1 [SET2]");
-			return 2;
-		}
+		TrOptions options;
+		if (!parseTrArgs(args, options)) return 1;
 
-		const std::string set1 = trExpandSet(options.sets[0]);
 		const std::string set2 =
 			(options.sets.size() > 1) ? trExpandSet(options.sets[1]) : std::string();
+		std::string set1 = trExpandSet(options.sets[0]);
+		const bool translating = !options.delete_mode && !set2.empty();
+		if (options.truncate_set1 && translating && set1.size() > set2.size()) {
+			set1.resize(set2.size());
+		}
+
 		const std::vector<bool> in_set1 = buildTrMembership(set1, options.complement);
 		const std::vector<unsigned char> map = buildTrMap(set1,
 			options.delete_mode ? std::string() : set2, in_set1, options.complement);
@@ -453,169 +721,321 @@ namespace wbsh {
 		return 0;
 	}
 
-	// A range is [first, last], 1-indexed; last == -1 means "to end".
-	static bool parseCutRange(const std::string& token, int& first, int& last) {
-		const std::size_t dash = token.find('-');
-		if (dash == std::string::npos) {
-			if (!parseInt(token, first)) return false;
-			last = first;
-			return true;
-		}
+	static const std::size_t kCutOpenEnd = SIZE_MAX;
 
-		if (dash == 0) {
-			first = 1;
-			return parseInt(token.substr(1), last);
-		}
-
-		if (dash + 1 == token.size()) {
-			last = -1;
-			return parseInt(token.substr(0, dash), first);
-		}
-
-		return parseInt(token.substr(0, dash), first) && parseInt(token.substr(dash + 1), last);
-	}
-
-	struct CutSpec {
-		std::vector<std::pair<int, int>> ranges;
-
-		bool parse(const std::string& spec) {
-			std::size_t i = 0;
-			while (i < spec.size()) {
-				std::string token;
-				while (i < spec.size() && spec[i] != ',') token.push_back(spec[i++]);
-				if (i < spec.size() && spec[i] == ',') ++i;
-				if (token.empty()) continue;
-
-				int first = 0;
-				int last = 0;
-				if (!parseCutRange(token, first, last)) return false;
-				ranges.emplace_back(first, last);
-			}
-
-			return !ranges.empty();
-		}
-
-		bool contains(int n) const {
-			for (const auto& range : ranges) {
-				if (n >= range.first && (range.second == -1 || n <= range.second)) return true;
-			}
-
-			return false;
-		}
+	struct CutRange {
+		std::size_t lo;
+		std::size_t hi;
 	};
+
+	enum class CutMode { None, Bytes, Fields };
 
 	struct CutOptions {
+		CutMode mode = CutMode::None;
+		std::string list;
+		bool have_delim = false;
 		char delim = '\t';
-		std::string field_spec;
-		std::string char_spec;
-		bool only_delim_lines = false;
+		bool have_output_delim = false;
+		std::string output_delim;
+		bool only_delimited = false;
+		bool complement = false;
+		char terminator = '\n';
 		std::vector<std::string> files;
+		std::vector<CutRange> ranges;
 	};
 
-	static CutOptions parseCutArgs(const std::vector<std::string>& args) {
-		CutOptions options;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "-d" && i + 1 < args.size()) {
-				if (!args[i + 1].empty()) options.delim = args[i + 1][0];
-				++i;
-			} else if (hasAttachedValue(arg, "-d")) {
-				options.delim = arg[2];
-			} else if (arg == "-f" && i + 1 < args.size()) {
-				options.field_spec = args[++i];
-			} else if (hasAttachedValue(arg, "-f")) {
-				options.field_spec = arg.substr(2);
-			} else if (arg == "-c" && i + 1 < args.size()) {
-				options.char_spec = args[++i];
-			} else if (hasAttachedValue(arg, "-c")) {
-				options.char_spec = arg.substr(2);
-			} else if (arg == "-s") {
-				options.only_delim_lines = true;
-			} else if (arg == "--") {
-				for (++i; i < args.size(); ++i) options.files.push_back(args[i]);
-			} else if (!arg.empty() && arg[0] != '-') {
-				options.files.push_back(arg);
-			}
-		}
-
-		return options;
+	static bool cutFail(const std::string& message) {
+		perr("cut", message);
+		return false;
 	}
 
-	static std::vector<std::string> splitOnChar(const std::string& line, char delim) {
-		std::vector<std::string> fields;
-		std::string current;
-		for (char c : line) {
-			if (c != delim) {
-				current.push_back(c);
+	static bool parseCutBound(const std::string& text, std::size_t& out) {
+		if (text.empty()) return false;
+		for (char c : text) {
+			if (std::isdigit(static_cast<unsigned char>(c)) == 0) return false;
+		}
+
+		return parseCountValue(text, out);
+	}
+
+	static std::string cutBadValueMessage(CutMode mode, const std::string& token) {
+		if (mode == CutMode::Fields) return "invalid field value '" + token + "'";
+		return "invalid byte/character position '" + token + "'";
+	}
+
+	static std::string cutNumberedFromOneMessage(CutMode mode) {
+		if (mode == CutMode::Fields) return "fields are numbered from 1";
+		return "byte/character positions are numbered from 1";
+	}
+
+	static bool parseCutBounds(const std::string& token, CutMode mode, CutRange& range) {
+		const std::size_t dash = token.find('-');
+		const std::string left = token.substr(0, dash);
+		const std::string right = dash == std::string::npos ? left : token.substr(dash + 1);
+		if (dash != std::string::npos && left.empty() && right.empty()) {
+			return cutFail("invalid range with no endpoint: -");
+		}
+
+		range.lo = 1;
+		range.hi = kCutOpenEnd;
+		const bool left_ok = left.empty() || parseCutBound(left, range.lo);
+		const bool right_ok = right.empty() || parseCutBound(right, range.hi);
+		if (!left_ok || !right_ok) return cutFail(cutBadValueMessage(mode, token));
+		return true;
+	}
+
+	static bool parseCutToken(const std::string& token, CutMode mode, CutRange& range) {
+		if (token.empty()) return cutFail(cutNumberedFromOneMessage(mode));
+		if (!parseCutBounds(token, mode, range)) return false;
+
+		if (range.lo == 0 || range.hi == 0) return cutFail(cutNumberedFromOneMessage(mode));
+		if (range.lo > range.hi) return cutFail("invalid decreasing range");
+		return true;
+	}
+
+	static bool isCutListSeparator(char c) {
+		return c == ',' || c == ' ' || c == '\t';
+	}
+
+	static bool parseCutList(const std::string& list, CutMode mode, std::vector<CutRange>& ranges) {
+		std::size_t start = 0;
+		while (start <= list.size()) {
+			std::size_t end = start;
+			while (end < list.size() && !isCutListSeparator(list[end])) ++end;
+
+			CutRange range{};
+			if (!parseCutToken(list.substr(start, end - start), mode, range)) return false;
+			ranges.push_back(range);
+			start = end + 1;
+		}
+
+		return true;
+	}
+
+	static void mergeCutRanges(std::vector<CutRange>& ranges) {
+		std::sort(ranges.begin(), ranges.end(),
+			[](const CutRange& a, const CutRange& b) { return a.lo < b.lo; });
+
+		std::vector<CutRange> merged;
+		for (const CutRange& range : ranges) {
+			if (!merged.empty() && range.lo <= merged.back().hi) {
+				merged.back().hi = (std::max)(merged.back().hi, range.hi);
 				continue;
 			}
 
-			fields.push_back(std::move(current));
-			current.clear();
+			merged.push_back(range);
 		}
 
-		fields.push_back(std::move(current));
-		return fields;
+		ranges = std::move(merged);
 	}
 
-	static void cutEmitFieldLine(const std::string& line, const CutOptions& options,
-			const CutSpec& spec) {
-		if (line.find(options.delim) == std::string::npos) {
-			if (!options.only_delim_lines) std::printf("%s\n", line.c_str());
-			return;
+	static std::vector<CutRange> complementCutRanges(const std::vector<CutRange>& ranges) {
+		std::vector<CutRange> inverse;
+		std::size_t next = 1;
+		for (const CutRange& range : ranges) {
+			if (range.lo > next) inverse.push_back({ next, range.lo - 1 });
+			if (range.hi == kCutOpenEnd) return inverse;
+			next = range.hi + 1;
 		}
 
-		const std::vector<std::string> fields = splitOnChar(line, options.delim);
-		std::string out;
-		bool first = true;
-		for (std::size_t k = 0; k < fields.size(); ++k) {
-			if (!spec.contains(static_cast<int>(k + 1))) continue;
-
-			if (!first) out.push_back(options.delim);
-			out += fields[k];
-			first = false;
-		}
-
-		std::printf("%s\n", out.c_str());
+		inverse.push_back({ next, kCutOpenEnd });
+		return inverse;
 	}
 
-	static void cutEmitCharLine(const std::string& line, const CutSpec& spec) {
-		std::string out;
-		for (std::size_t k = 0; k < line.size(); ++k) {
-			if (spec.contains(static_cast<int>(k + 1))) out.push_back(line[k]);
+	enum CutOptionId {
+		kCutBytes, kCutDelimiter, kCutFields, kCutIgnored, kCutComplement,
+		kCutOnlyDelimited, kCutOutputDelimiter, kCutZero
+	};
+
+	static const std::vector<OptDef> kCutOptionDefs = {
+		{ kCutBytes,           'b', "bytes",            OptArg::Required },
+		{ kCutBytes,           'c', "characters",       OptArg::Required },
+		{ kCutDelimiter,       'd', "delimiter",        OptArg::Required },
+		{ kCutFields,          'f', "fields",           OptArg::Required },
+		{ kCutIgnored,         'n', nullptr,            OptArg::None     },
+		{ kCutComplement,      0,   "complement",       OptArg::None     },
+		{ kCutOnlyDelimited,   's', "only-delimited",   OptArg::None     },
+		{ kCutOutputDelimiter, 0,   "output-delimiter", OptArg::Required },
+		{ kCutZero,            'z', "zero-terminated",  OptArg::None     },
+	};
+
+	static bool setCutList(CutOptions& options, CutMode mode, const std::string& list) {
+		if (options.mode != CutMode::None) return cutFail("only one type of list may be specified");
+
+		options.mode = mode;
+		options.list = list;
+		return true;
+	}
+
+	static bool setCutDelimiter(CutOptions& options, const std::string& value) {
+		if (value.size() > 1) return cutFail("the delimiter must be a single character");
+
+		options.have_delim = true;
+		options.delim = value.empty() ? '\0' : value[0];
+		return true;
+	}
+
+	static bool applyCutHit(const OptHit& hit, CutOptions& options) {
+		switch (hit.id) {
+		case kCutBytes:
+			return setCutList(options, CutMode::Bytes, hit.value);
+		case kCutFields:
+			return setCutList(options, CutMode::Fields, hit.value);
+		case kCutDelimiter:
+			return setCutDelimiter(options, hit.value);
+		case kCutIgnored:
+			return true;
+		case kCutComplement:
+			options.complement = true;
+			return true;
+		case kCutOnlyDelimited:
+			options.only_delimited = true;
+			return true;
+		case kCutOutputDelimiter:
+			options.have_output_delim = true;
+			options.output_delim = hit.value;
+			return true;
+		case kCutZero:
+			options.terminator = '\0';
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	static bool checkCutModeOptions(const CutOptions& options) {
+		if (options.mode == CutMode::None) {
+			return cutFail("you must specify a list of bytes, characters, or fields");
 		}
 
-		std::printf("%s\n", out.c_str());
+		if (options.mode == CutMode::Fields) return true;
+		if (options.have_delim) {
+			return cutFail("an input delimiter may be specified only when operating on fields");
+		}
+
+		if (options.only_delimited) {
+			return cutFail("suppressing non-delimited lines makes sense"
+				" only when operating on fields");
+		}
+
+		return true;
+	}
+
+	static bool buildCutRanges(CutOptions& options) {
+		if (!parseCutList(options.list, options.mode, options.ranges)) return false;
+
+		mergeCutRanges(options.ranges);
+		if (options.complement) options.ranges = complementCutRanges(options.ranges);
+		return true;
+	}
+
+	static bool parseCutArgs(const std::vector<std::string>& args, CutOptions& options) {
+		OptScanResult scan;
+		if (!scanOptions("cut", args, kCutOptionDefs, scan)) return false;
+
+		for (const OptHit& hit : scan.hits) {
+			if (!applyCutHit(hit, options)) return false;
+		}
+
+		if (!checkCutModeOptions(options)) return false;
+		if (!buildCutRanges(options)) return false;
+
+		if (!options.have_output_delim && options.mode == CutMode::Fields) {
+			options.output_delim.assign(1, options.delim);
+		}
+
+		options.files = scan.operands;
+		defaultToStdin(options.files);
+		return true;
+	}
+
+	// Ranges are sorted and disjoint, so the cursor only ever moves forward
+	// along a line.
+	struct CutCursor {
+		const std::vector<CutRange>& ranges;
+		std::size_t at = 0;
+
+		bool selects(std::size_t n) {
+			while (at < ranges.size() && ranges[at].hi < n) ++at;
+			return at < ranges.size() && ranges[at].lo <= n;
+		}
+
+		bool startsRange(std::size_t n) const {
+			return at < ranges.size() && ranges[at].lo == n;
+		}
+
+		bool exhausted() const {
+			return at >= ranges.size();
+		}
+	};
+
+	static void cutEmitBytes(const std::string& line, const CutOptions& options, std::string& out) {
+		CutCursor cursor{ options.ranges };
+		bool printed = false;
+		for (std::size_t k = 0; k < line.size() && !cursor.exhausted(); ++k) {
+			if (!cursor.selects(k + 1)) continue;
+
+			if (options.have_output_delim && printed && cursor.startsRange(k + 1)) {
+				out += options.output_delim;
+			}
+
+			out.push_back(line[k]);
+			printed = true;
+		}
+	}
+
+	static void cutEmitFields(const std::string& line, const CutOptions& options,
+			std::string& out) {
+		CutCursor cursor{ options.ranges };
+		bool printed = false;
+		std::size_t field = 1;
+		std::size_t start = 0;
+		while (start <= line.size() && !cursor.exhausted()) {
+			std::size_t end = line.find(options.delim, start);
+			if (end == std::string::npos) end = line.size();
+
+			if (cursor.selects(field)) {
+				if (printed) out += options.output_delim;
+				out.append(line, start, end - start);
+				printed = true;
+			}
+
+			start = end + 1;
+			++field;
+		}
+	}
+
+	static bool cutEmitLine(const std::string& line, const CutOptions& options) {
+		std::string out;
+		if (options.mode == CutMode::Bytes) {
+			cutEmitBytes(line, options, out);
+		} else if (line.find(options.delim) == std::string::npos) {
+			if (options.only_delimited) return true;
+			out = line;
+		} else {
+			cutEmitFields(line, options, out);
+		}
+
+		writeRecord(stdout, out, options.terminator);
+		return outputOk(stdout);
 	}
 
 	static int builtin_cut(Executor& exec, const std::vector<std::string>& args) {
-		CutOptions options = parseCutArgs(args);
-		if (options.field_spec.empty() && options.char_spec.empty()) {
-			perr("cut", "specify -f or -c");
-			return 1;
-		}
-
-		CutSpec spec;
-		if (!spec.parse(options.field_spec.empty() ? options.char_spec : options.field_spec)) {
-			perr("cut", "bad field/char spec");
-			return 1;
-		}
-
-		const bool by_field = !options.field_spec.empty();
-		defaultToStdin(options.files);
+		CutOptions options;
+		if (!parseCutArgs(args, options)) return 1;
 
 		int status = 0;
 		for (const auto& file : options.files) {
-			std::vector<std::string> lines;
-			if (!loadLinesWithErrno(exec, "cut", file, lines)) {
+			FILE* stream = openInputStream(exec, "cut", file);
+			if (stream == nullptr) {
 				status = 1;
 				continue;
 			}
 
-			for (const auto& line : lines) {
-				if (by_field) cutEmitFieldLine(line, options, spec);
-				else          cutEmitCharLine(line, spec);
-			}
+			const bool finished = forEachRecord(stream, options.terminator,
+				[&](const std::string& line) { return cutEmitLine(line, options); });
+			closeInputStream(stream);
+			if (!finished) break;
 		}
 
 		std::fflush(stdout);

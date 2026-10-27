@@ -1,0 +1,32 @@
+=== wc -L
+3
+9
+11
+17
+2 11
+=== wc -c -m
+4 4
+4 4
+=== wc errors
+wbsh: wc: invalid option -- 'x'
+status 1
+wbsh: wc: unrecognized option '--bogus'
+status 1
+=== tr -t / long options
+xbc
+xyc
+xxx
+bc
+a
+
+=== tr errors
+wbsh: tr: invalid option -- 'x'
+status 1
+wbsh: tr: missing operand after 'a'
+status 1
+wbsh: tr: extra operand 'b'
+status 1
+wbsh: tr: missing operand
+status 1
+wbsh: tr: extra operand 'c'
+status 1
