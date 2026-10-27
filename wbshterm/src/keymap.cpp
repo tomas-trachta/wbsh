@@ -63,6 +63,42 @@ namespace wbshterm {
 		return parameter;
 	}
 
+	bool isModifierKey(unsigned int virtual_key) {
+		switch (virtual_key) {
+		case VK_SHIFT:
+		case VK_LSHIFT:
+		case VK_RSHIFT:
+		case VK_CONTROL:
+		case VK_LCONTROL:
+		case VK_RCONTROL:
+		case VK_MENU:
+		case VK_LMENU:
+		case VK_RMENU:
+		case VK_LWIN:
+		case VK_RWIN:
+		case VK_CAPITAL:
+		case VK_NUMLOCK:
+		case VK_SCROLL:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	unsigned int win32ControlState(const Win32KeyState& state) {
+		unsigned int flags = 0;
+		if (state.right_alt) flags |= RIGHT_ALT_PRESSED;
+		if (state.left_alt) flags |= LEFT_ALT_PRESSED;
+		if (state.right_control) flags |= RIGHT_CTRL_PRESSED;
+		if (state.left_control) flags |= LEFT_CTRL_PRESSED;
+		if (state.shift) flags |= SHIFT_PRESSED;
+		if (state.num_lock) flags |= NUMLOCK_ON;
+		if (state.scroll_lock) flags |= SCROLLLOCK_ON;
+		if (state.caps_lock) flags |= CAPSLOCK_ON;
+		if (state.enhanced) flags |= ENHANCED_KEY;
+		return flags;
+	}
+
 	static bool hasModifier(const KeyPress& key) {
 		return modifierParameter(key) != 1;
 	}
@@ -72,6 +108,17 @@ namespace wbshterm {
 		bytes += '[';
 		bytes += body;
 		return bytes;
+	}
+
+	std::string encodeWin32Key(const Win32KeyEvent& event) {
+		std::string body = std::to_string(event.virtual_key);
+		body += ";" + std::to_string(event.scan_code);
+		body += ";" + std::to_string(event.unicode);
+		body += event.down ? ";1;" : ";0;";
+		body += std::to_string(event.control_state);
+		body += ";" + std::to_string(event.repeat == 0 ? 1u : event.repeat);
+		body += "_";
+		return csi(body);
 	}
 
 	static std::string ss3(char final_byte) {

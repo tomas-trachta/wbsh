@@ -417,7 +417,28 @@ namespace wbshterm {
 					&& screen.mouseModes().alternate_scroll, "");
 		}
 
+		static void checkPseudoconsoleInputModes(Report& report) {
+			Screen screen(10, 2);
+			CollectingResponder responder;
+			screen.setResponder(&responder);
+
+			feedToScreen(screen, "\x1b[?9001h\x1b[?1004h\x1b[?9001$p\x1b[?1004$p");
+			report.check("win32-input-mode and focus events switch on and answer DECRQM",
+				screen.win32InputMode() && screen.focusEvents()
+					&& responder.replies == "\x1b[?9001;1$y\x1b[?1004;1$y",
+				responder.replies);
+
+			feedToScreen(screen, "\x1b" "c");
+			report.check("RIS leaves the modes the pseudoconsole asked for",
+				screen.win32InputMode() && screen.focusEvents(), "");
+
+			feedToScreen(screen, "\x1b[?9001l\x1b[?1004l");
+			report.check("and they switch off again",
+				!screen.win32InputMode() && !screen.focusEvents(), "");
+		}
+
 		static void runModeChecks(Report& report) {
+			checkPseudoconsoleInputModes(report);
 			checkCursorShapes(report);
 			checkTabStops(report);
 			checkAutowrapMode(report);

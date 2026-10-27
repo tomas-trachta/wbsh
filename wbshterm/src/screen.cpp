@@ -941,7 +941,9 @@ namespace wbshterm {
 
 	// RIS: everything a crashed program could have left switched on goes,
 	// so `reset` brings the terminal back. Scrollback is the user's, not
-	// the program's, and stays.
+	// the program's, and stays. Focus events and win32-input-mode stay
+	// too: the pseudoconsole asks for them once, at its start, and passes
+	// a program's RIS on without asking again.
 	void Screen::hardReset() {
 		dropAltScreen();
 		resetModes();
@@ -1408,8 +1410,10 @@ namespace wbshterm {
 				if (enable) enterAltScreen();
 				else leaveAltScreen();
 				break;
+			case 1004: focus_events_ = enable; break;
 			case 2004: bracketed_paste_ = enable; break;
 			case 2026: synchronized_output_ = enable; break;
+			case 9001: win32_input_ = enable; break;
 			default:   break;
 			}
 		}
@@ -1438,8 +1442,10 @@ namespace wbshterm {
 		case 47:
 		case 1047:
 		case 1049: return alt_screen_ ? 1 : 2;
+		case 1004: return focus_events_ ? 1 : 2;
 		case 2004: return bracketed_paste_ ? 1 : 2;
 		case 2026: return synchronized_output_ ? 1 : 2;
+		case 9001: return win32_input_ ? 1 : 2;
 		default:   return 0;
 		}
 	}

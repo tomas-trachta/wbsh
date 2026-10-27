@@ -213,6 +213,8 @@ namespace wbshterm {
 		bool applicationCursorKeys() const { return application_cursor_; }
 		bool bracketedPaste() const { return bracketed_paste_; }
 		const MouseModes& mouseModes() const { return mouse_; }
+		bool win32InputMode() const { return win32_input_; }
+		bool focusEvents() const { return focus_events_; }
 
 		/** True between DECSET 2026 and its reset: a frame is mid-update. */
 		bool synchronizedOutput() const { return synchronized_output_; }
@@ -452,6 +454,8 @@ namespace wbshterm {
 		bool          application_cursor_ = false;
 		bool          bracketed_paste_    = false;
 		MouseModes    mouse_;
+		bool          win32_input_  = false;
+		bool          focus_events_ = false;
 		bool          synchronized_output_ = false;
 		bool          control_glyphs_     = true;
 		VtResponder*  responder_ = nullptr;

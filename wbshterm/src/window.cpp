@@ -747,25 +747,6 @@ namespace wbshterm {
 	}
 
 
-	static bool isModifierKey(unsigned int key) {
-		switch (key) {
-		case VK_SHIFT:
-		case VK_LSHIFT:
-		case VK_RSHIFT:
-		case VK_CONTROL:
-		case VK_LCONTROL:
-		case VK_RCONTROL:
-		case VK_MENU:
-		case VK_LMENU:
-		case VK_RMENU:
-		case VK_LWIN:
-		case VK_RWIN:
-			return true;
-		default:
-			return false;
-		}
-	}
-
 	// Which key carries a pane command is decided by the character it
 	// produces, not its virtual key, so | and - stay where the keycaps say
 	// they are on a layout that is not American.
@@ -1440,20 +1421,47 @@ namespace wbshterm {
 		}
 	}
 
+	bool TerminalWindow::onKeyMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+		switch (message) {
+		case WM_CHAR:
+		case WM_SYSCHAR:
+			onText(static_cast<wchar_t>(wparam));
+			return true;
+		case WM_KEYDOWN:
+		case WM_SYSKEYDOWN:
+			return onKeyDown(wparam, lparam);
+		case WM_KEYUP:
+		case WM_SYSKEYUP:
+			return onKeyUp(wparam, lparam);
+		default:
+			return false;
+		}
+	}
+
+	// Whatever a message did to the focus, the programs that asked to hear
+	// about it are told once it has been handled.
 	LRESULT TerminalWindow::handleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+		noteFocusMessage(message);
+		const LRESULT result = routeMessage(message, wparam, lparam);
+		if (message != WM_DESTROY && message != WM_NCDESTROY) syncFocusReports();
+		return result;
+	}
+
+	LRESULT TerminalWindow::routeMessage(UINT message, WPARAM wparam, LPARAM lparam) {
 		const bool mouse = message >= WM_MOUSEFIRST && message <= WM_MOUSELAST;
 		if (mouse && onMouseMessage(message, wparam, lparam)) return 0;
+
+		const bool key = message >= WM_KEYFIRST && message <= WM_KEYLAST;
+		if (key && onKeyMessage(message, wparam, lparam)) return 0;
 
 		switch (message) {
 		case WM_PAINT:       onPaint(); return 0;
 		case WM_SIZE:
 			if (wparam != SIZE_MINIMIZED) onResize();
 			return 0;
-		case WM_CHAR:
-		case WM_SYSCHAR:     onText(static_cast<wchar_t>(wparam)); return 0;
-		case WM_KEYDOWN:
-		case WM_SYSKEYDOWN:
-			if (onKeyDown(wparam)) return 0;
+		case WM_IME_STARTCOMPOSITION:
+		case WM_IME_COMPOSITION:
+			positionImeWindow();
 			break;
 		case WM_DPICHANGED:  onDpiChanged(wparam, lparam); return 0;
 		case WM_EXITSIZEMOVE: commitGridSizes(); return 0;
@@ -2012,6 +2020,11 @@ namespace wbshterm {
 			return;
 		}
 
+		if (pending_key_waiting_ || win32InputTakesKeys()) {
+			sendWin32Character(unit);
+			return;
+		}
+
 		char32_t character = 0;
 		if (surrogates_.take(unit, character)) onCharacter(character);
 	}
@@ -2152,7 +2165,8 @@ namespace wbshterm {
 		}
 	}
 
-	bool TerminalWindow::onKeyDown(WPARAM key) {
+	bool TerminalWindow::onKeyDown(WPARAM key, LPARAM lparam) {
+		flushPendingKey();
 		if (pickerTakesKey(key)) {
 			swallow_next_char_ = true;
 			return true;
@@ -2187,6 +2201,8 @@ namespace wbshterm {
 			swallow_next_char_ = alsoProducesCharacter(press);
 			return true;
 		}
+
+		if (win32InputTakesKeys()) return sendWin32KeyDown(press, lparam);
 
 		const std::string bytes = encodeKeyPress(press, currentModes());
 		if (bytes.empty()) return false;
