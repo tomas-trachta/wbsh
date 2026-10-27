@@ -1610,7 +1610,7 @@ namespace wbsh {
 
 	static int builtin_trap(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty() || (args.size() == 1 && args[0] == "-p")) {
-			for (const auto& entry : exec.trapHandlers()) {
+			for (const auto& entry : exec.listedTraps()) {
 				std::printf("trap -- '%s' %s\n", entry.second.c_str(), entry.first.c_str());
 			}
 

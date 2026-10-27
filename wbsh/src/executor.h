@@ -210,8 +210,12 @@ namespace wbsh {
 		/// need real signal plumbing on Windows (deferred).
 		void setTrap(const std::string& sig, std::string cmd) {
 			trap_handlers_[sig] = std::move(cmd);
+			lists_inherited_traps_ = false;
 		}
-		void clearTrap(const std::string& sig) { trap_handlers_.erase(sig); }
+		void clearTrap(const std::string& sig) {
+			trap_handlers_.erase(sig);
+			lists_inherited_traps_ = false;
+		}
 		bool hasTrap(const std::string& sig) const {
 			return trap_handlers_.count(sig) != 0;
 		}
@@ -219,8 +223,10 @@ namespace wbsh {
 			auto it = trap_handlers_.find(sig);
 			return it == trap_handlers_.end() ? std::string() : it->second;
 		}
-		const std::unordered_map<std::string, std::string>& trapHandlers() const {
-			return trap_handlers_;
+		/// What `trap` lists. A subshell does not run its parent's traps but
+		/// still lists them until it changes one, so `saved=$(trap)` works.
+		const std::unordered_map<std::string, std::string>& listedTraps() const {
+			return lists_inherited_traps_ ? inherited_traps_ : trap_handlers_;
 		}
 		// Run (and clear, so it fires once) the EXIT trap for a shell that
 		// is exiting with @p status. Returns the status to exit with: the
@@ -574,6 +580,7 @@ namespace wbsh {
 			std::string saved_name;
 			std::unordered_map<std::string, const FunctionDef*> saved_funcs;
 			std::unordered_map<std::string, std::string> saved_traps;
+			bool saved_lists_inherited_traps = false;
 			SetOptions saved_options;
 			std::filesystem::path saved_cwd;
 		};
@@ -583,15 +590,29 @@ namespace wbsh {
 		// A `( ... )`, `$(...)` or `<(...)` body runs in this process, so
 		// everything it can change is snapshotted on entry and put back on
 		// the way out, as if it had been a forked child.
+		struct ScopeEntry {
+			std::string name;
+			bool had_prev;
+			std::string prev_value;
+		};
+
 		struct SubshellScope {
 			Environment env;
 			std::unordered_map<std::string, const FunctionDef*> functions;
+			std::unordered_map<std::string, std::string> aliases;
 			std::unordered_map<std::string, std::string> traps;
+			std::unordered_map<std::string, std::string> inherited_traps;
+			bool lists_inherited_traps = false;
+			std::vector<std::string> dir_stack;
+			std::vector<std::vector<ScopeEntry>> scope_stack;
+			int getopts_subindex = 1;
 			std::filesystem::path cwd;
 		};
 		SubshellScope enterSubshell();
+		void resetSubshellTraps();
 		void leaveSubshell(SubshellScope& snap);
-		int runSubshellBody(const Node* body);
+		int endSubshell(int status);
+		int consumeSubshellFlow(int status);
 		int runExitTrapAction(const std::string& action, int status);
 		int runCommandSubstitutionBody(const std::string& body);
 		std::string captureSubstitution(const std::string& body, int& status);
@@ -687,12 +708,6 @@ namespace wbsh {
 		// function body finishes for any reason.
 		void popLocalScope();
 
-		struct ScopeEntry {
-			std::string name;
-			bool had_prev;
-			std::string prev_value;
-		};
-
 		Environment& env_;
 		Expander expander_;
 		PathConv path_conv_;
@@ -705,6 +720,8 @@ namespace wbsh {
 		std::vector<int>         history_status_;
 		std::vector<std::string> dir_stack_;
 		std::unordered_map<std::string, std::string> trap_handlers_;
+		std::unordered_map<std::string, std::string> inherited_traps_;
+		bool lists_inherited_traps_ = false;
 		bool in_exit_trap_ = false;
 		int  exit_trap_status_ = 0;
 		std::unordered_map<std::string, CompletionSpec> completion_specs_;

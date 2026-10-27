@@ -1,0 +1,53 @@
+=== 1. functions, positionals, arrays
+f stays inside
+outer
+pos=2 a b
+a=[]
+b=x y
+m=[]
+=== 2. variables, attributes, options, cwd
+v=1 w=[]
+ro=2
+EE=[] exported=0
+n=1+1
+flags=[nounset off
+pipefail off] nullglob=off
+same-dir=yes
+=== 3. aliases, locals, the directory stack, getopts
+alias zz='echo hi'
+qq stays inside
+in m=3
+l=1 m=[]
+h m=global
+after h m=global
+dirs=2
+o=a OPTIND=2
+OPTIND=1
+=== 4. EXIT traps
+after
+body
+sub-exit
+listed inside $(...): trap -- 'echo bye' EXIT
+trap -- 'echo bye' EXIT
+trap -- 'echo own' EXIT
+own
+nothing listed after a change
+body
+into-file
+=== 5. return, break and continue end only the subshell
+after return rc=3
+x=out rc=4
+loop 1 rc=0
+loop 2 rc=0
+cloop 1 rc=0
+cloop 2 rc=0
+1a
+1b
+2a
+2b
+cs-loop 1 rc=0
+cs-loop 2 rc=0
+sub-exit
+t rc=5
+exit rc=6
+bye
