@@ -594,6 +594,16 @@ rather than whatever has the focus — reading one pane while another works
 is most of the reason to split at all. Dividers drag, and the pointer
 turns into a sizing cursor over one.
 
+A program that asks for the mouse gets it: vim, htop, mc, tmux, fzf and Far
+see clicks (`CSI ?1000h`), drags (`?1002h`) or every movement (`?1003h`) of
+the left, middle and right buttons and both wheels, as SGR reports
+(`?1006h`), UTF-8 (`?1005h`) or classic X10 bytes, and DECRQM answers for
+each mode. Hold Shift to get past it: Shift+drag still selects,
+Shift+right-click still opens the menu and Shift+wheel still scrolls. On the
+alternate screen a program that did not ask for the mouse gets the wheel as
+arrow keys (alternate scroll, `?1007`, on unless a program turns it off), so
+pagers scroll with it. With nobody asking, the middle button pastes.
+
 ```ini
 [panes]
 prefix = ctrl+b     # ctrl / alt / shift in any order, then one key

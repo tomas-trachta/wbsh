@@ -7,6 +7,7 @@
 
 #include "cell.h"
 #include "history.h"
+#include "mouse.h"
 #include "theme.h"
 #include "vtparse.h"
 
@@ -211,6 +212,7 @@ namespace wbshterm {
 		const std::string& title() const { return title_; }
 		bool applicationCursorKeys() const { return application_cursor_; }
 		bool bracketedPaste() const { return bracketed_paste_; }
+		const MouseModes& mouseModes() const { return mouse_; }
 
 		/** True between DECSET 2026 and its reset: a frame is mid-update. */
 		bool synchronizedOutput() const { return synchronized_output_; }
@@ -407,7 +409,9 @@ namespace wbshterm {
 		void applyEraseInLine(const VtSequence& sequence);
 		void applyInsertDelete(const VtSequence& sequence);
 		void applyPrivateMode(const VtSequence& sequence, bool enable);
+		bool applyMouseMode(int mode, bool enable);
 		int  privateModeState(int mode) const;
+		int  mouseModeState(int mode) const;
 		void answerModeReport(const VtSequence& sequence);
 		void applyScrollRegion(const VtSequence& sequence);
 		void answerDeviceAttributes(bool secondary);
@@ -447,6 +451,7 @@ namespace wbshterm {
 		std::vector<CommandBlock> blocks_;
 		bool          application_cursor_ = false;
 		bool          bracketed_paste_    = false;
+		MouseModes    mouse_;
 		bool          synchronized_output_ = false;
 		bool          control_glyphs_     = true;
 		VtResponder*  responder_ = nullptr;

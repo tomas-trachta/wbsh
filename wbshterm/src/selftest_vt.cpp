@@ -389,10 +389,39 @@ namespace wbshterm {
 			report.check("the next frame starts the limit again", next_frame, "");
 		}
 
+		static void checkMouseModes(Report& report) {
+			Screen screen(10, 2);
+			CollectingResponder responder;
+			screen.setResponder(&responder);
+
+			feedToScreen(screen, "\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+			report.check("the last tracking mode set wins, and SGR encoding sticks",
+				screen.mouseModes().tracking == MouseTracking::kDrags
+					&& screen.mouseModes().encoding == MouseEncoding::kSgr, "");
+
+			feedToScreen(screen, "\x1b[?1002$p\x1b[?1000$p\x1b[?1006$p\x1b[?1007$p");
+			report.check("DECRQM answers for the mouse modes",
+				responder.replies == "\x1b[?1002;1$y\x1b[?1000;2$y\x1b[?1006;1$y\x1b[?1007;1$y",
+				responder.replies);
+
+			feedToScreen(screen, "\x1b[?1000l\x1b[?1005l\x1b[?1007l");
+			report.check("resetting any tracking mode turns tracking off, other encodings stay",
+				screen.mouseModes().tracking == MouseTracking::kOff
+					&& screen.mouseModes().encoding == MouseEncoding::kSgr
+					&& !screen.mouseModes().alternate_scroll, "");
+
+			feedToScreen(screen, "\x1b[?1003h\x1b" "c");
+			report.check("RIS turns mouse reporting off and alternate scroll back on",
+				screen.mouseModes().tracking == MouseTracking::kOff
+					&& screen.mouseModes().encoding == MouseEncoding::kDefault
+					&& screen.mouseModes().alternate_scroll, "");
+		}
+
 		static void runModeChecks(Report& report) {
 			checkCursorShapes(report);
 			checkTabStops(report);
 			checkAutowrapMode(report);
+			checkMouseModes(report);
 			checkRepeatAndMotion(report);
 			checkSynchronizedOutputEnds(report);
 			checkSyncHoldOnlyWhileDrawing(report);

@@ -948,6 +948,7 @@ namespace wbshterm {
 		resetVtExtras();
 		bracketed_paste_     = false;
 		synchronized_output_ = false;
+		mouse_               = MouseModes();
 		title_.clear();
 
 		clearAll();
@@ -1351,8 +1352,51 @@ namespace wbshterm {
 		markAllDirty();
 	}
 
+	static MouseTracking trackingOfMode(int mode) {
+		switch (mode) {
+		case 9:
+			return MouseTracking::kX10;
+		case 1000:
+			return MouseTracking::kClicks;
+		case 1002:
+			return MouseTracking::kDrags;
+		case 1003:
+			return MouseTracking::kMotion;
+		default:
+			return MouseTracking::kOff;
+		}
+	}
+
+	static MouseEncoding encodingOfMode(int mode) {
+		return mode == 1006 ? MouseEncoding::kSgr : MouseEncoding::kUtf8;
+	}
+
+	// The tracking modes are one setting, as in xterm: setting one
+	// replaces another, and resetting any of them turns tracking off.
+	// The encodings fall back to X10 bytes only when the one in use goes.
+	bool Screen::applyMouseMode(int mode, bool enable) {
+		const MouseTracking tracking = trackingOfMode(mode);
+		if (tracking != MouseTracking::kOff) {
+			mouse_.tracking = enable ? tracking : MouseTracking::kOff;
+			return true;
+		}
+
+		if (mode == 1005 || mode == 1006) {
+			const MouseEncoding encoding = encodingOfMode(mode);
+			if (enable) mouse_.encoding = encoding;
+			else if (mouse_.encoding == encoding) mouse_.encoding = MouseEncoding::kDefault;
+			return true;
+		}
+
+		if (mode != 1007) return false;
+		mouse_.alternate_scroll = enable;
+		return true;
+	}
+
 	void Screen::applyPrivateMode(const VtSequence& sequence, bool enable) {
 		for (std::size_t i = 0; i < sequence.params.size(); ++i) {
+			if (applyMouseMode(sequence.param(i, 0), enable)) continue;
+
 			switch (sequence.param(i, 0)) {
 			case 1:    application_cursor_ = enable; break;
 			case 6:    setOriginMode(enable); break;
@@ -1374,7 +1418,18 @@ namespace wbshterm {
 	// DECRPM's answers: 1 set, 2 reset, 0 for a mode this grid does not
 	// know. Asking is how a program finds out that synchronized output
 	// will be honoured before it relies on it.
+	int Screen::mouseModeState(int mode) const {
+		const MouseTracking tracking = trackingOfMode(mode);
+		if (tracking != MouseTracking::kOff) return mouse_.tracking == tracking ? 1 : 2;
+		if (mode == 1005 || mode == 1006) return mouse_.encoding == encodingOfMode(mode) ? 1 : 2;
+		if (mode == 1007) return mouse_.alternate_scroll ? 1 : 2;
+		return 0;
+	}
+
 	int Screen::privateModeState(int mode) const {
+		const int mouse = mouseModeState(mode);
+		if (mouse != 0) return mouse;
+
 		switch (mode) {
 		case 1:    return application_cursor_ ? 1 : 2;
 		case 6:    return origin_mode_ ? 1 : 2;
