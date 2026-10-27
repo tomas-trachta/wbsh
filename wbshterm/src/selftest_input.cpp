@@ -5,10 +5,13 @@
 
 #include "selftest_internal.h"
 
+#include "keymap.h"
 #include "mouse.h"
 #include "picker.h"
 #include "utf8.h"
 #include "view.h"
+
+#include <windows.h>
 
 #include <string>
 
@@ -283,6 +286,48 @@ namespace wbshterm {
 			report.check("X10 mode leaves the modifiers out", plain == "\x1b[<0;1;1M", plain);
 		}
 
+		static void checkWin32KeyRecords(Report& report) {
+			Win32KeyEvent enter;
+			enter.virtual_key   = 0x0D;
+			enter.scan_code     = 0x1C;
+			enter.unicode       = 0x0A;
+			enter.control_state = 0x0008;
+			const std::string pressed = encodeWin32Key(enter);
+			report.check("Ctrl+Enter goes out as its whole input record",
+				pressed == "\x1b[13;28;10;1;8;1_", pressed);
+
+			Win32KeyEvent shift_up;
+			shift_up.virtual_key = 0x10;
+			shift_up.scan_code   = 0x2A;
+			shift_up.down        = false;
+			shift_up.repeat      = 0;
+			const std::string released = encodeWin32Key(shift_up);
+			report.check("a key coming up is a record too, with a repeat of at least one",
+				released == "\x1b[16;42;0;0;0;1_", released);
+		}
+
+		static void checkWin32ControlState(Report& report) {
+			Win32KeyState altgr;
+			altgr.right_alt    = true;
+			altgr.left_control = true;
+			report.check("AltGr reads as the right Alt with the left Ctrl Windows adds",
+				win32ControlState(altgr) == (RIGHT_ALT_PRESSED | LEFT_CTRL_PRESSED),
+				std::to_string(win32ControlState(altgr)));
+
+			Win32KeyState locks;
+			locks.shift     = true;
+			locks.num_lock  = true;
+			locks.caps_lock = true;
+			locks.enhanced  = true;
+			const unsigned int expected = SHIFT_PRESSED | NUMLOCK_ON | CAPSLOCK_ON | ENHANCED_KEY;
+			report.check("Shift, the locks and the extended flag map to their bits",
+				win32ControlState(locks) == expected, std::to_string(win32ControlState(locks)));
+
+			report.check("modifier and lock keys are told from the rest",
+				isModifierKey(VK_RMENU) && isModifierKey(VK_CAPITAL) && !isModifierKey('A')
+					&& !isModifierKey(VK_RETURN), "");
+		}
+
 	} /* namespace test */
 
 	void runInputChecks(test::Report& report) {
@@ -300,6 +345,8 @@ namespace wbshterm {
 		test::checkSgrMouseReports(report);
 		test::checkLegacyMouseReports(report);
 		test::checkTrackingModesFilterEvents(report);
+		test::checkWin32KeyRecords(report);
+		test::checkWin32ControlState(report);
 	}
 
 } /* namespace wbshterm */

@@ -18,6 +18,7 @@
 #include "utf8.h"
 #include "view.h"
 
+#include <bitset>
 #include <memory>
 #include <string>
 #include <vector>
@@ -63,6 +64,7 @@ namespace wbshterm {
 			LPARAM lparam);
 		static LRESULT CALLBACK keyboardHook(int code, WPARAM wparam, LPARAM lparam);
 		LRESULT handleMessage(UINT message, WPARAM wparam, LPARAM lparam);
+		LRESULT routeMessage(UINT message, WPARAM wparam, LPARAM lparam);
 
 		bool registerClass(std::string& out_error);
 		bool createWindow(std::string& out_error);
@@ -136,7 +138,24 @@ namespace wbshterm {
 		void closeExitedPanes();
 		void onText(wchar_t unit);
 		void onCharacter(char32_t character);
-		bool onKeyDown(WPARAM key);
+		bool onKeyMessage(UINT message, WPARAM wparam, LPARAM lparam);
+		bool onKeyDown(WPARAM key, LPARAM lparam);
+		bool onKeyUp(WPARAM key, LPARAM lparam);
+		bool win32InputTakesKeys() const;
+		bool characterFollows() const;
+		bool sendWin32KeyDown(const KeyPress& press, LPARAM lparam);
+		void sendWin32Character(wchar_t unit);
+		void sendKeyedCharacter(wchar_t unit);
+		void sendKeylessCharacter(wchar_t unit);
+		void writeWin32Key(const Win32KeyEvent& event, bool typing);
+		void flushPendingKey();
+		void releaseHeldKeys();
+		void noteFocusMessage(UINT message);
+		void syncFocusReports();
+		Pane* livePane(const Pane* pane) const;
+		void reportFocus(Pane& pane, bool focused);
+		POINT cursorPixels() const;
+		void positionImeWindow();
 		bool rightAltTakesKey(const KeyPress& press);
 		bool pickerTakesKey(WPARAM key);
 		bool searchTakesKey(const KeyPress& press);
@@ -255,6 +274,13 @@ namespace wbshterm {
 		bool         prefix_pending_ = false;
 		SearchBox    search_;
 		const Pane*  search_pane_ = nullptr;
+		Win32KeyEvent pending_key_;
+		bool         pending_key_waiting_ = false;
+		bool         pending_key_used_    = false;
+		wchar_t      keyless_high_        = 0;
+		std::bitset<256> keys_down_sent_;
+		bool         has_focus_ = false;
+		const Pane*  focus_reported_ = nullptr;
 
 		Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
 	};

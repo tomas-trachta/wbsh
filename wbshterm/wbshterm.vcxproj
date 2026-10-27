@@ -271,6 +271,7 @@
     <ClCompile Include="src\view.cpp" />
     <ClCompile Include="src\window.cpp" />
     <ClCompile Include="src\window_mouse.cpp" />
+    <ClCompile Include="src\window_keys.cpp" />
     <ClCompile Include="src\script.cpp" />
     <ClCompile Include="src\script_actions.cpp" />
     <ClCompile Include="src\script_config.cpp" />

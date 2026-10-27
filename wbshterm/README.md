@@ -147,6 +147,28 @@ this file knowing they exist. The one wrinkle is that Windows also produces
 a character for a few keys that are handled here — Ctrl+Space, Shift+Tab,
 Ctrl+V — so those, and only those, swallow the character that follows.
 
+### Keys as console input records
+
+The pseudoconsole asks for win32-input-mode (`CSI ?9001h`) when it starts,
+and wbshterm answers it: every key press and release then goes over as
+`CSI Vk;Sc;Uc;Kd;Cs;Rc _`, which the pseudoconsole turns back into the
+exact input record a console program reads. PSReadLine, Far, the SDK's
+`terminal_read_key` and every other console program can tell Ctrl+Enter,
+Shift+Enter and Ctrl+/ apart, and they see key-ups, scan codes and the
+modifier and lock state. A key that makes a character carries it, as the
+layout produced it: AltGr characters, dead-key results and Alt+letter
+included. A character with no key behind it (an IME's result, the emoji
+panel) goes as a press and a release of no key. The window's own shortcuts
+come first and never reach the program, keys held when the window loses
+focus are released, and Alt+F4 still closes the window. The table above is
+what goes out when no pseudoconsole asks for this, or while the search box,
+the picker or a pane command reads keys.
+
+Focus changes are reported too when asked for (`CSI ?1004h`): `CSI I`
+when the window gains the focus or a pane is focused, `CSI O` when either
+loses it. An IME opens its composition and candidate windows at the
+cursor, in the terminal's font.
+
 ### The right Alt key
 
 On a layout that uses the right Alt as AltGr — Czech, German, most of
