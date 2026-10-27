@@ -25,6 +25,7 @@
     <ClInclude Include="src\executor.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\fnmatch.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\pathconv.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\consolekeys.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\lineedit.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\setup.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\repl.h"><Filter>Header Files</Filter></ClInclude>
@@ -89,6 +90,7 @@
     <ClCompile Include="src\coreutils_system.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_process.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\pathconv.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\consolekeys.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\setup.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\repl.cpp"><Filter>Source Files</Filter></ClCompile>

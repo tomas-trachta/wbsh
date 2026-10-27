@@ -140,21 +140,71 @@ namespace wbshsdk_terminal_detail {
 		out_key.kind = written > 0 ? WBSH_KEY_CHAR : WBSH_KEY_NONE;
 	}
 
-	// A character outside the BMP is delivered as two key-down records,
-	// one per UTF-16 unit, so the second one is fetched before encoding.
+	// The low half is normally queued before the high half is read; the
+	// wait only covers a pseudoconsole that writes the two separately.
+	static const DWORD kPairWaitMs = 100;
+
+	enum class PairStep {
+		kTake,
+		kSkip,
+		kStop,
+	};
+
+	static PairStep lowSurrogateStep(const INPUT_RECORD& record) {
+		if (record.EventType == FOCUS_EVENT || record.EventType == MENU_EVENT) {
+			return PairStep::kSkip;
+		}
+
+		if (record.EventType != KEY_EVENT) return PairStep::kStop;
+
+		const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
+		if (!key.bKeyDown) return PairStep::kSkip;
+
+		const WCHAR unit = key.uChar.UnicodeChar;
+		return unit >= 0xDC00 && unit <= 0xDFFF ? PairStep::kTake : PairStep::kStop;
+	}
+
+	static bool peekRecord(HANDLE input, INPUT_RECORD& record) {
+		DWORD count = 0;
+		if (::PeekConsoleInputW(input, &record, 1, &count) && count == 1) return true;
+		if (::WaitForSingleObject(input, kPairWaitMs) != WAIT_OBJECT_0) return false;
+
+		return ::PeekConsoleInputW(input, &record, 1, &count) && count == 1;
+	}
+
+	static void dropRecord(HANDLE input) {
+		INPUT_RECORD record{};
+		DWORD read = 0;
+		::ReadConsoleInputW(input, &record, 1, &read);
+	}
+
+	// A pseudoconsole sends each half of a pair as a press and a release
+	// of its own, so the low half is the next key-down that carries one.
+	// Releases and focus or menu noise on the way are passed over; a resize,
+	// the mouse or another key is left queued for the next read, and the
+	// high half then stands alone.
+	static bool readLowSurrogate(HANDLE input, WCHAR& out_low) {
+		INPUT_RECORD record{};
+		while (peekRecord(input, record)) {
+			const PairStep step = lowSurrogateStep(record);
+			if (step == PairStep::kStop) return false;
+
+			dropRecord(input);
+			if (step == PairStep::kTake) {
+				out_low = record.Event.KeyEvent.uChar.UnicodeChar;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	static void readCharacter(HANDLE input, WCHAR first, WbshKey& out_key) {
 		WCHAR units[2] = { first, 0 };
 		int count = 1;
 
-		if (first >= 0xD800 && first <= 0xDBFF) {
-			INPUT_RECORD next{};
-			DWORD read = 0;
-			if (::ReadConsoleInputW(input, &next, 1, &read) && read == 1
-				&& next.EventType == KEY_EVENT && next.Event.KeyEvent.bKeyDown) {
-				units[1] = next.Event.KeyEvent.uChar.UnicodeChar;
-				count = 2;
-			}
-		}
+		const bool high = first >= 0xD800 && first <= 0xDBFF;
+		if (high && readLowSurrogate(input, units[1])) count = 2;
 
 		encodeUtf8(units, count, out_key);
 	}

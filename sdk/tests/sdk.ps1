@@ -356,6 +356,28 @@ $completed = [PtyDriver]::Run("`"$Shell`" -r", @('hello --wh', 'TAB', 'ENTER', '
 Assert-That 'Tab on a util argument completes through the util''s own callback' `
     (($completed -match '--where') -and ($completed -match 'You are in')) $completed
 
+# --- characters past the BMP, typed ---------------------------------------
+# A pseudoconsole hands each UTF-16 half of an emoji over as a press and a
+# release of its own, so a reader that takes the record after the high half
+# as the low one gets the release and turns the emoji into two U+FFFD.
+
+$emoji = [char]::ConvertFromUtf32(0x1F600)
+
+Remove-Item $pickedFile -Force -ErrorAction SilentlyContinue
+$emojiScreen = Invoke-InConsole "pick apple ${emoji}x banana > '$pickedFileForShell'" @($emoji, 'ENTER')
+$emojiPicked = ''
+if (Test-Path $pickedFile) {
+    $emojiPicked = [System.IO.File]::ReadAllText($pickedFile, [System.Text.Encoding]::UTF8).Trim()
+}
+Remove-Item $pickedFile -Force -ErrorAction SilentlyContinue
+Assert-That 'terminal_read_key joins an emoji''s halves across the key-ups between them' `
+    (($emojiPicked -eq "${emoji}x") -and ($emojiScreen -match 'rc=0')) $emojiScreen
+
+$exit = 0
+$typedEmoji = [PtyDriver]::Run("`"$Shell`" -r", @("echo ${emoji}z | od -An -tx1", 'ENTER', 'exit', 'ENTER'), 700, 8000, [ref]$exit)
+Assert-That 'the shell''s line editor takes a typed emoji whole' `
+    ($typedEmoji -match 'f0 9f 98 80 7a') $typedEmoji
+
 # --- the procs sample: both hosts, a timed refresh, a piped fallback -------
 
 $procsListed = Invoke-Shell 'utils'

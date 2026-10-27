@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "consolekeys.h"
 #include "coreutils_internal.h"
 #include "executor.h"
 #include "pathconv.h"
@@ -307,25 +308,6 @@ namespace wbsh {
 		fzfRefilter(session);
 	}
 
-	static std::string fzfEncodeChar(wchar_t ch, HANDLE h_in) {
-		WCHAR pair[2] = { ch, 0 };
-		int len = 1;
-		if (ch >= 0xD800 && ch <= 0xDBFF) {
-			INPUT_RECORD record;
-			DWORD read = 0;
-			if (::ReadConsoleInputW(h_in, &record, 1, &read) && read == 1
-			    && record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown) {
-				pair[1] = record.Event.KeyEvent.uChar.UnicodeChar;
-				len = 2;
-			}
-		}
-
-		char bytes[8] = {};
-		const int length = ::WideCharToMultiByte(CP_UTF8, 0, pair, len, bytes, sizeof(bytes),
-			nullptr, nullptr);
-		return length > 0 ? std::string(bytes, length) : std::string();
-	}
-
 	// Handles one keystroke. Returns false when the modal loop should end;
 	// `accepted` distinguishes Enter (true) from Esc / Ctrl-C / Ctrl-G (false).
 	static bool fzfHandleKey(FzfSession& session, const KEY_EVENT_RECORD& k, bool& accepted) {
@@ -343,7 +325,7 @@ namespace wbsh {
 		if (ctrl && vk == 'U') { session.query.clear(); fzfRefilter(session); return true; }
 
 		const WCHAR ch = k.uChar.UnicodeChar;
-		if (!ctrl && ch >= 0x20) fzfInsertChar(session, fzfEncodeChar(ch, session.h_in));
+		if (!ctrl && ch >= 0x20) fzfInsertChar(session, readConsoleCharacter(session.h_in, ch));
 		return true;
 	}
 
