@@ -604,6 +604,10 @@ namespace wbshterm {
 		return row >= 0 && row < rows_ && dirty_[static_cast<std::size_t>(row)];
 	}
 
+	bool Screen::hasDirtyRows() const {
+		return std::find(dirty_.begin(), dirty_.end(), true) != dirty_.end();
+	}
+
 	void Screen::clearDirty() {
 		dirty_.assign(static_cast<std::size_t>(rows_), false);
 	}
@@ -998,8 +1002,11 @@ namespace wbshterm {
 	// OSC 633 and OSC 133 marks: A starts a prompt, C starts the command's
 	// output, and D reports how it ended. A shell may send both kinds, so
 	// a second A on the same prompt is the same prompt.
+	// A prompt or a finished command means the program that opened a
+	// synchronized frame is gone, whether or not it closed the frame.
 	void Screen::noteShellMark(const std::string& body) {
 		if (body.empty()) return;
+		if (body[0] == 'A' || body[0] == 'D') synchronized_output_ = false;
 
 		if (body[0] == 'A') {
 			if (promptAlreadyMarked()) return;
@@ -1338,6 +1345,7 @@ namespace wbshterm {
 		}
 
 		cursor_ = primary_cursor_;
+		synchronized_output_ = false;
 		markAllDirty();
 	}
 
