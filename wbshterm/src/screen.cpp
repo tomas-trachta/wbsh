@@ -15,7 +15,6 @@
 
 namespace wbshterm {
 
-	static const int kTabWidth = 8;
 	static const std::size_t kMaxCommandBlocks = 500;
 	static const std::size_t kSwapChunkRows = 1024;
 
@@ -24,7 +23,7 @@ namespace wbshterm {
 		0x666666, 0xF14C4C, 0x23D18B, 0xF5F543, 0x3B8EEA, 0xD670D6, 0x29B8DB, 0xFFFFFF,
 	};
 
-	static std::uint32_t indexedColor(int index) {
+	std::uint32_t indexedColor(int index) {
 		if (index < 0) return kDefaultColor;
 		if (index < 16) return kPaletteColor | static_cast<std::uint32_t>(index);
 
@@ -230,6 +229,7 @@ namespace wbshterm {
 			reflowPrimary(new_columns, new_rows);
 		}
 
+		resizeTabStops(new_columns);
 		columns_ = new_columns;
 		rows_    = new_rows;
 		dirty_.assign(static_cast<std::size_t>(rows_), true);
@@ -577,24 +577,37 @@ namespace wbshterm {
 
 	void Screen::vtPrint(char32_t code) {
 		writeChar(code);
+		last_printed_ = code;
+	}
+
+	void Screen::wrapToNextRow() {
+		row_breaks_[static_cast<std::size_t>(cursor_.row)] = LineBreak::kWraps;
+		carriageReturn();
+		lineFeed();
+		wrap_pending_ = false;
+	}
+
+	// Without autowrap a wide character that does not fit takes the last
+	// two cells instead of moving on to the next row.
+	void Screen::makeRoomForWide() {
+		if (cursor_.column + 1 < columns_) return;
+
+		if (!autowrap_) {
+			cursor_.column = std::max(0, columns_ - 2);
+			return;
+		}
+
+		clearRow(cursor_.row, cursor_.column, columns_ - 1);
+		carriageReturn();
+		lineFeed();
 	}
 
 	void Screen::writeChar(char32_t code) {
 		const int width = characterWidth(code);
 		if (width == 0) return;
 
-		if (wrap_pending_) {
-			row_breaks_[static_cast<std::size_t>(cursor_.row)] = LineBreak::kWraps;
-			carriageReturn();
-			lineFeed();
-			wrap_pending_ = false;
-		}
-
-		if (width == 2 && cursor_.column + 1 >= columns_) {
-			clearRow(cursor_.row, cursor_.column, columns_ - 1);
-			carriageReturn();
-			lineFeed();
-		}
+		if (wrap_pending_) wrapToNextRow();
+		if (width == 2) makeRoomForWide();
 
 		Cell glyph = pen_;
 		glyph.code = code;
@@ -615,7 +628,7 @@ namespace wbshterm {
 
 	void Screen::advanceCursor() {
 		if (cursor_.column + 1 >= columns_) {
-			wrap_pending_ = true;
+			wrap_pending_ = autowrap_;
 			return;
 		}
 
@@ -676,12 +689,6 @@ namespace wbshterm {
 	void Screen::backspace() {
 		wrap_pending_ = false;
 		if (cursor_.column > 0) --cursor_.column;
-	}
-
-	void Screen::tab() {
-		wrap_pending_ = false;
-		const int next = ((cursor_.column / kTabWidth) + 1) * kTabWidth;
-		cursor_.column = std::min(next, columns_ - 1);
 	}
 
 	void Screen::clearRow(int row, int from_column, int to_column) {
@@ -838,6 +845,7 @@ namespace wbshterm {
 	// the cursor's place stay.
 	void Screen::softReset() {
 		resetModes();
+		autowrap_ = true;
 	}
 
 	void Screen::dropAltScreen() {
@@ -854,6 +862,7 @@ namespace wbshterm {
 	void Screen::hardReset() {
 		dropAltScreen();
 		resetModes();
+		resetVtExtras();
 		bracketed_paste_     = false;
 		synchronized_output_ = false;
 		title_.clear();
@@ -870,6 +879,7 @@ namespace wbshterm {
 		case '8': restoreCursor(); break;
 		case 'D': lineFeed(); break;
 		case 'E': carriageReturn(); lineFeed(); break;
+		case 'H': tab_stops_[static_cast<std::size_t>(cursor_.column)] = true; break;
 		case 'M':
 			if (cursor_.row == scroll_top_) scrollDown(1);
 			else moveCursorBy(-1, 0);
@@ -899,12 +909,20 @@ namespace wbshterm {
 		}
 	}
 
-	// OSC 633 marks: A starts a prompt, C starts the command's output, and
-	// D reports how it ended.
+	bool Screen::promptAlreadyMarked() const {
+		return !blocks_.empty() && blocks_.back().prompt_row == currentAbsoluteRow()
+			&& blocks_.back().output_row < 0;
+	}
+
+	// OSC 633 and OSC 133 marks: A starts a prompt, C starts the command's
+	// output, and D reports how it ended. A shell may send both kinds, so
+	// a second A on the same prompt is the same prompt.
 	void Screen::noteShellMark(const std::string& body) {
 		if (body.empty()) return;
 
 		if (body[0] == 'A') {
+			if (promptAlreadyMarked()) return;
+
 			CommandBlock block;
 			block.prompt_row = currentAbsoluteRow();
 			blocks_.push_back(block);
@@ -1015,8 +1033,14 @@ namespace wbshterm {
 		const std::string body = text.substr(separator + 1);
 
 		if (code == "0" || code == "2") title_ = body;
-		if (code == "7")   noteWorkingDirectory(body);
-		if (code == "633")  noteShellMark(body);
+		if (code == "4")    answerPaletteQuery(body);
+		if (code == "7")    noteWorkingDirectory(body);
+		if (code == "8")    noteHyperlink(body);
+		if (code == "10")   answerColorQuery(10, body);
+		if (code == "11")   answerColorQuery(11, body);
+		if (code == "12")   answerColorQuery(12, body);
+		if (code == "52")   noteClipboardWrite(body);
+		if (code == "133" || code == "633") noteShellMark(body);
 		if (code == "1337") noteTerminalRequest(body);
 	}
 
@@ -1046,18 +1070,22 @@ namespace wbshterm {
 		responder_->vtRespond(reply);
 	}
 
-	void Screen::vtCsi(const VtSequence& sequence) {
-		if (sequence.private_byte == '?') {
-			if (sequence.final_byte == 'h') applyPrivateMode(sequence, true);
-			if (sequence.final_byte == 'l') applyPrivateMode(sequence, false);
-			if (sequence.final_byte == 'p' && sequence.intermediates == "$") {
-				answerModeReport(sequence);
-			}
+	void Screen::applyPrivateCsi(const VtSequence& sequence) {
+		if (sequence.private_byte != '?') {
+			if (sequence.final_byte == 'c') answerDeviceAttributes(true);
 			return;
 		}
 
+		if (sequence.final_byte == 'h') applyPrivateMode(sequence, true);
+		if (sequence.final_byte == 'l') applyPrivateMode(sequence, false);
+		if (sequence.final_byte == 'p' && sequence.intermediates == "$") {
+			answerModeReport(sequence);
+		}
+	}
+
+	void Screen::vtCsi(const VtSequence& sequence) {
 		if (sequence.private_byte != 0) {
-			if (sequence.final_byte == 'c') answerDeviceAttributes(true);
+			applyPrivateCsi(sequence);
 			return;
 		}
 
@@ -1066,16 +1094,38 @@ namespace wbshterm {
 			return;
 		}
 
+		if (applyCursorMotion(sequence)) return;
+
+		applyEditingCsi(sequence);
+	}
+
+	bool Screen::applyCursorMotion(const VtSequence& sequence) {
+		const int count = sequence.param(0, 1);
+
 		switch (sequence.final_byte) {
-		case 'A': moveCursorBy(-sequence.param(0, 1), 0); break;
-		case 'B': moveCursorBy(sequence.param(0, 1), 0); break;
-		case 'C': moveCursorBy(0, sequence.param(0, 1)); break;
-		case 'D': moveCursorBy(0, -sequence.param(0, 1)); break;
-		case 'E': moveCursor(cursor_.row + sequence.param(0, 1), 0); break;
-		case 'F': moveCursor(cursor_.row - sequence.param(0, 1), 0); break;
-		case 'G': moveCursor(cursor_.row, sequence.param(0, 1) - 1); break;
+		case 'A': moveCursorBy(-count, 0); return true;
+		case 'B':
+		case 'e': moveCursorBy(count, 0); return true;
+		case 'C':
+		case 'a': moveCursorBy(0, count); return true;
+		case 'D': moveCursorBy(0, -count); return true;
+		case 'E': moveCursor(cursor_.row + count, 0); return true;
+		case 'F': moveCursor(cursor_.row - count, 0); return true;
+		case 'G':
+		case '`': moveCursor(cursor_.row, count - 1); return true;
 		case 'H':
-		case 'f': moveCursorInOrigin(sequence.param(0, 1) - 1, sequence.param(1, 1) - 1); break;
+		case 'f': moveCursorInOrigin(count - 1, sequence.param(1, 1) - 1); return true;
+		case 'd': moveCursorInOrigin(count - 1, cursor_.column); return true;
+		case 'I': forwardTab(count); return true;
+		case 'Z': backwardTab(count); return true;
+		case 's': saveCursor(); return true;
+		case 'u': restoreCursor(); return true;
+		default:  return false;
+		}
+	}
+
+	void Screen::applyEditingCsi(const VtSequence& sequence) {
+		switch (sequence.final_byte) {
 		case 'J': applyEraseInDisplay(sequence); break;
 		case 'K': applyEraseInLine(sequence); break;
 		case 'S': scrollUp(sequence.param(0, 1)); break;
@@ -1085,13 +1135,12 @@ namespace wbshterm {
 		case 'X': applyInsertDelete(sequence); break;
 		case 'L': insertLines(sequence.param(0, 1)); break;
 		case 'M': deleteLines(sequence.param(0, 1)); break;
-		case 'd': moveCursorInOrigin(sequence.param(0, 1) - 1, cursor_.column); break;
+		case 'b': repeatLastCharacter(sequence.param(0, 1)); break;
 		case 'c': answerDeviceAttributes(false); break;
+		case 'g': clearTabStops(sequence.param(0, 0)); break;
 		case 'm': applySgr(sequence); break;
 		case 'n': answerStatusReport(sequence); break;
 		case 'r': applyScrollRegion(sequence); break;
-		case 's': saveCursor(); break;
-		case 'u': restoreCursor(); break;
 		default:  break;
 		}
 	}
@@ -1101,6 +1150,9 @@ namespace wbshterm {
 	// its plain namesake.
 	void Screen::applyIntermediateCsi(const VtSequence& sequence) {
 		if (sequence.intermediates == "!" && sequence.final_byte == 'p') softReset();
+		if (sequence.intermediates == " " && sequence.final_byte == 'q') {
+			setCursorShape(sequence.param(0, 0));
+		}
 	}
 
 	void Screen::applyScrollRegion(const VtSequence& sequence) {
@@ -1207,6 +1259,7 @@ namespace wbshterm {
 			switch (sequence.param(i, 0)) {
 			case 1:    application_cursor_ = enable; break;
 			case 6:    setOriginMode(enable); break;
+			case 7:    autowrap_ = enable; break;
 			case 25:   cursor_.visible = enable; break;
 			case 47:
 			case 1047:
@@ -1228,6 +1281,7 @@ namespace wbshterm {
 		switch (mode) {
 		case 1:    return application_cursor_ ? 1 : 2;
 		case 6:    return origin_mode_ ? 1 : 2;
+		case 7:    return autowrap_ ? 1 : 2;
 		case 25:   return cursor_.visible ? 1 : 2;
 		case 47:
 		case 1047:

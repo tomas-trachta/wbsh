@@ -7,11 +7,13 @@
 
 #include "cell.h"
 #include "history.h"
+#include "theme.h"
 #include "vtparse.h"
 
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace wbshterm {
@@ -108,6 +110,36 @@ namespace wbshterm {
 		virtual void tmuxAttach() = 0;
 	};
 
+	/** An xterm 256-colour index as a cell colour; 0-15 stay palette slots. */
+	std::uint32_t indexedColor(int index);
+
+	/**
+	 * @brief Whether a hyperlink a program printed may be handed to the shell.
+	 *
+	 * Only web and mail URLs: a file URL or a bare path could name a
+	 * program to run, and the text the user clicked need not show it.
+	 */
+	bool linkIsSafeToOpen(const std::string& target);
+
+	/** What DECSCUSR asked for; kDefault leaves the cursor to the config. */
+	enum class CursorShape : std::uint8_t {
+		kDefault,
+		kBlinkingBlock,
+		kSteadyBlock,
+		kBlinkingUnderline,
+		kSteadyUnderline,
+		kBlinkingBar,
+		kSteadyBar,
+	};
+
+	/** Where text a program puts on the clipboard (OSC 52) goes. */
+	class ClipboardHandler {
+	public:
+		virtual ~ClipboardHandler() = default;
+
+		virtual void clipboardWrite(const std::string& utf8) = 0;
+	};
+
 	/** Where a pick request from the shell goes: the window's overlay. */
 	class PickHandler {
 	public:
@@ -172,6 +204,11 @@ namespace wbshterm {
 		/** True between DECSET 2026 and its reset: a frame is mid-update. */
 		bool synchronizedOutput() const { return synchronized_output_; }
 
+		CursorShape cursorShape() const { return cursor_shape_; }
+
+		/** The OSC 8 target under a cell, or null when it is not a link. */
+		const std::string* linkAt(int absolute_row, int column) const;
+
 		bool rowDirty(int row) const;
 		void clearDirty();
 
@@ -203,6 +240,17 @@ namespace wbshterm {
 		/** Without one, a request to start pane mode is ignored. */
 		void setTmuxHandler(TmuxHandler* handler) { tmux_handler_ = handler; }
 
+		/** Without one, OSC 52 clipboard writes are ignored. */
+		void setClipboardHandler(ClipboardHandler* handler) { clipboard_handler_ = handler; }
+
+		/**
+		 * @brief The colours OSC 4/10/11/12 queries are answered with.
+		 *
+		 * Borrowed, and read at query time so a theme change is reported
+		 * as soon as it shows; null answers with the built-in palette.
+		 */
+		void setPalette(const Palette* palette) { palette_ = palette; }
+
 	private:
 		Cell& at(int row, int column);
 		void putCell(int row, int column, const Cell& value);
@@ -210,11 +258,28 @@ namespace wbshterm {
 		void markAllDirty();
 
 		void writeChar(char32_t code);
+		void wrapToNextRow();
+		void makeRoomForWide();
 		void advanceCursor();
 		void lineFeed();
 		void carriageReturn();
 		void backspace();
 		void tab();
+		void resetTabStops();
+		void resizeTabStops(int new_columns);
+		void forwardTab(int count);
+		void backwardTab(int count);
+		void clearTabStops(int mode);
+		void repeatLastCharacter(int count);
+		void setCursorShape(int shape);
+		void noteHyperlink(const std::string& body);
+		std::uint16_t internLink(const std::string& target);
+		void noteClipboardWrite(const std::string& body);
+		void answerColorQuery(int code, const std::string& body);
+		void answerPaletteQuery(const std::string& body);
+		void replyColor(const std::string& prefix, std::uint32_t rgb);
+		const Palette& palette() const;
+		void resetVtExtras();
 		void printControlGlyph(unsigned char control);
 
 		void scrollUp(int count);
@@ -228,6 +293,7 @@ namespace wbshterm {
 		void deleteLines(int count);
 		void pushToScrollback(int row);
 		void noteShellMark(const std::string& body);
+		bool promptAlreadyMarked() const;
 		void noteWorkingDirectory(const std::string& body);
 		void noteTerminalRequest(const std::string& body);
 		void notePickRequest(const std::string& body);
@@ -265,6 +331,9 @@ namespace wbshterm {
 		void hardReset();
 		void dropAltScreen();
 		void applyIntermediateCsi(const VtSequence& sequence);
+		void applyPrivateCsi(const VtSequence& sequence);
+		bool applyCursorMotion(const VtSequence& sequence);
+		void applyEditingCsi(const VtSequence& sequence);
 
 		void applySgr(const VtSequence& sequence);
 		std::size_t applySgrGroup(const VtSequence& sequence, std::size_t index);
@@ -320,6 +389,15 @@ namespace wbshterm {
 		VtResponder*  responder_ = nullptr;
 		PickHandler*  pick_handler_ = nullptr;
 		TmuxHandler*  tmux_handler_ = nullptr;
+		ClipboardHandler* clipboard_handler_ = nullptr;
+		const Palette*    palette_ = nullptr;
+
+		std::vector<bool> tab_stops_;
+		bool              autowrap_     = true;
+		char32_t          last_printed_ = 0;
+		CursorShape       cursor_shape_ = CursorShape::kDefault;
+		std::vector<std::string> links_;
+		std::unordered_map<std::string, std::uint16_t> link_ids_;
 	};
 
 } /* namespace wbshterm */

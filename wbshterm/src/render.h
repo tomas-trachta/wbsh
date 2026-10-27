@@ -105,6 +105,12 @@ namespace wbshterm {
 		void drawFocusBorder(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 
 	private:
+		struct CursorLook {
+			CursorStyle style  = CursorStyle::Block;
+			bool        blinks = true;
+		};
+
+		CursorLook cursorLookFor(CursorShape shape) const;
 		bool prepareBrush(ID2D1RenderTarget* target);
 
 		/** Where the pane's top-left cell sits inside its bounds. */
