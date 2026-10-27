@@ -14,6 +14,16 @@ namespace wbshterm {
 		return params[index] < 0 ? fallback : params[index];
 	}
 
+	bool VtSequence::isSubParam(std::size_t index) const {
+		return index < sub_params.size() && sub_params[index];
+	}
+
+	std::size_t VtSequence::groupEnd(std::size_t index) const {
+		std::size_t end = index + 1;
+		while (end < params.size() && isSubParam(end)) ++end;
+		return end;
+	}
+
 	static bool isControl(unsigned char byte) {
 		return byte < 0x20 || byte == 0x7F;
 	}
@@ -70,9 +80,11 @@ namespace wbshterm {
 
 	void VtParser::beginSequence() {
 		sequence_.params.clear();
+		sequence_.sub_params.clear();
 		sequence_.intermediates.clear();
 		sequence_.private_byte = 0;
 		sequence_.final_byte = 0;
+		dropping_params_ = false;
 		osc_.clear();
 		resetUtf8();
 	}
@@ -186,18 +198,26 @@ namespace wbshterm {
 		state_ = State::Ground;
 	}
 
+	void VtParser::pushParam(bool sub_param) {
+		sequence_.params.push_back(-1);
+		sequence_.sub_params.push_back(sub_param);
+	}
+
 	void VtParser::pushParamDigit(unsigned char byte) {
-		if (sequence_.params.empty()) sequence_.params.push_back(-1);
-		if (sequence_.params.size() > kMaxParams) return;
+		if (sequence_.params.empty()) pushParam(false);
+		if (dropping_params_) return;
 
 		int& value = sequence_.params.back();
 		if (value < 0) value = 0;
 		if (value < 100000) value = value * 10 + (byte - '0');
 	}
 
-	void VtParser::pushParamSeparator() {
-		if (sequence_.params.empty()) sequence_.params.push_back(-1);
-		if (sequence_.params.size() <= kMaxParams) sequence_.params.push_back(-1);
+	// Parameters past the cap are dropped: the digits of a dropped one
+	// would otherwise pile onto the last one kept.
+	void VtParser::pushParamSeparator(bool sub_param) {
+		if (sequence_.params.empty()) pushParam(false);
+		if (sequence_.params.size() < kMaxParams) pushParam(sub_param);
+		else dropping_params_ = true;
 	}
 
 	void VtParser::stepCsiEntry(unsigned char byte) {
@@ -245,7 +265,7 @@ namespace wbshterm {
 		}
 
 		if (byte == ';' || byte == ':') {
-			pushParamSeparator();
+			pushParamSeparator(byte == ':');
 			return;
 		}
 

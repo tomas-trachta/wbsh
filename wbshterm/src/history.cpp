@@ -31,11 +31,6 @@ namespace wbshterm {
 			std::memcpy(&out[at], &value, sizeof(value));
 		}
 
-		static bool sameStyle(const Cell& left, const Cell& right) {
-			return left.foreground == right.foreground && left.background == right.background
-				&& left.attributes == right.attributes;
-		}
-
 		static void putStyleRuns(std::vector<char>& out, const std::vector<Cell>& line) {
 			std::vector<std::size_t> starts;
 			for (std::size_t i = 0; i < line.size(); ++i) {
@@ -48,6 +43,7 @@ namespace wbshterm {
 				const Cell& style = line[starts[run]];
 				putU32(out, style.foreground);
 				putU32(out, style.background);
+				putU32(out, style.underline);
 				putU16(out, style.attributes);
 				putU32(out, static_cast<std::uint32_t>(end - starts[run]));
 			}
@@ -87,6 +83,7 @@ namespace wbshterm {
 				Cell style;
 				std::uint32_t count = 0;
 				if (!in.u32(style.foreground) || !in.u32(style.background)) return false;
+				if (!in.u32(style.underline)) return false;
 				if (!in.u16(style.attributes) || !in.u32(count)) return false;
 				if (filled + count > line.size()) return false;
 

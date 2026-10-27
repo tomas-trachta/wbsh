@@ -267,8 +267,13 @@ namespace wbshterm {
 		void applyIntermediateCsi(const VtSequence& sequence);
 
 		void applySgr(const VtSequence& sequence);
-		bool applyExtendedColor(const VtSequence& sequence, std::size_t& index,
-			std::uint32_t& out_color);
+		std::size_t applySgrGroup(const VtSequence& sequence, std::size_t index);
+		std::uint32_t* penColorFor(int code);
+		std::size_t applyColorSgr(const VtSequence& sequence, std::size_t index);
+		void applyUnderlineStyle(int style);
+		void setUnderlineShape(std::uint16_t shape);
+		void applySimpleSgr(int code);
+		void applyAttributeSgr(int code);
 		void applyEraseInDisplay(const VtSequence& sequence);
 		void applyEraseInLine(const VtSequence& sequence);
 		void applyInsertDelete(const VtSequence& sequence);

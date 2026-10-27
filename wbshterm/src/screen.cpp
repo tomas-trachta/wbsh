@@ -505,8 +505,7 @@ namespace wbshterm {
 	}
 
 	static bool sameCell(const Cell& left, const Cell& right) {
-		return left.code == right.code && left.foreground == right.foreground
-			&& left.background == right.background && left.attributes == right.attributes;
+		return left.code == right.code && sameStyle(left, right);
 	}
 
 	// The console repaints the grid after a resize with the very text the
@@ -1251,27 +1250,101 @@ namespace wbshterm {
 		responder_->vtRespond(reply);
 	}
 
-	bool Screen::applyExtendedColor(const VtSequence& sequence, std::size_t& index,
+	static std::uint32_t rgbColor(int red, int green, int blue) {
+		return (static_cast<std::uint32_t>(red & 0xFF) << 16)
+			| (static_cast<std::uint32_t>(green & 0xFF) << 8)
+			| static_cast<std::uint32_t>(blue & 0xFF);
+	}
+
+	// 38:2:r:g:b and 38:2:cs:r:g:b both appear in the wild: the colour
+	// space id the standard puts first is often left out.
+	static bool colonColor(const VtSequence& sequence, std::size_t index, std::size_t end,
 			std::uint32_t& out_color) {
 		const int kind = sequence.param(index + 1, 0);
+		if (kind == 5 && end > index + 2) {
+			out_color = indexedColor(sequence.param(index + 2, 0));
+			return true;
+		}
 
+		if (kind != 2 || end < index + 5) return false;
+
+		const std::size_t red = end >= index + 6 ? index + 3 : index + 2;
+		out_color = rgbColor(sequence.param(red, 0), sequence.param(red + 1, 0),
+			sequence.param(red + 2, 0));
+		return true;
+	}
+
+	// The semicolon form has no grouping, so the kind says how many of
+	// the following parameters belong to the colour.
+	static std::size_t semicolonColor(const VtSequence& sequence, std::size_t index,
+			std::uint32_t& out_color) {
+		const int kind = sequence.param(index + 1, 0);
 		if (kind == 5) {
 			out_color = indexedColor(sequence.param(index + 2, 0));
-			index += 2;
-			return true;
+			return index + 3;
 		}
 
 		if (kind == 2) {
-			const auto red   = static_cast<std::uint32_t>(sequence.param(index + 2, 0) & 0xFF);
-			const auto green = static_cast<std::uint32_t>(sequence.param(index + 3, 0) & 0xFF);
-			const auto blue  = static_cast<std::uint32_t>(sequence.param(index + 4, 0) & 0xFF);
-
-			out_color = (red << 16) | (green << 8) | blue;
-			index += 4;
-			return true;
+			out_color = rgbColor(sequence.param(index + 2, 0), sequence.param(index + 3, 0),
+				sequence.param(index + 4, 0));
+			return index + 5;
 		}
 
-		return false;
+		return index + 1;
+	}
+
+	std::uint32_t* Screen::penColorFor(int code) {
+		switch (code) {
+		case 38: return &pen_.foreground;
+		case 48: return &pen_.background;
+		case 58: return &pen_.underline;
+		default: return nullptr;
+		}
+	}
+
+	std::size_t Screen::applyColorSgr(const VtSequence& sequence, std::size_t index) {
+		std::uint32_t* target = penColorFor(sequence.param(index, 0));
+		const std::size_t end = sequence.groupEnd(index);
+		if (end > index + 1) {
+			colonColor(sequence, index, end, *target);
+			return end;
+		}
+
+		return semicolonColor(sequence, index, *target);
+	}
+
+	void Screen::setUnderlineShape(std::uint16_t shape) {
+		pen_.attributes &= static_cast<std::uint16_t>(~(kAttrUnderline | kAttrUnderlineShapes));
+		if (shape == kAttrNone) return;
+
+		pen_.attributes |= static_cast<std::uint16_t>(kAttrUnderline | shape);
+	}
+
+	// 4:0 is no underline, 4:1 the plain one, then double, curly, dotted
+	// and dashed; an unknown shape is drawn plain.
+	void Screen::applyUnderlineStyle(int style) {
+		switch (style) {
+		case 0:  setUnderlineShape(kAttrNone); break;
+		case 2:  setUnderlineShape(kAttrUnderlineDouble); break;
+		case 3:  setUnderlineShape(kAttrUnderlineCurly); break;
+		case 4:  setUnderlineShape(kAttrUnderlineDotted); break;
+		case 5:  setUnderlineShape(kAttrUnderlineDashed); break;
+		default: setUnderlineShape(kAttrUnderline); break;
+		}
+	}
+
+	std::size_t Screen::applySgrGroup(const VtSequence& sequence, std::size_t index) {
+		const int code = sequence.param(index, 0);
+		if (penColorFor(code) != nullptr) return applyColorSgr(sequence, index);
+
+		const std::size_t end = sequence.groupEnd(index);
+		if (code == 4 && end > index + 1) {
+			applyUnderlineStyle(sequence.param(index + 1, 0));
+			return end;
+		}
+
+		applySimpleSgr(code);
+		return end;
 	}
 
 	void Screen::applySgr(const VtSequence& sequence) {
@@ -1280,49 +1353,57 @@ namespace wbshterm {
 			return;
 		}
 
-		for (std::size_t i = 0; i < sequence.params.size(); ++i) {
-			const int code = sequence.param(i, 0);
+		std::size_t index = 0;
+		while (index < sequence.params.size()) index = applySgrGroup(sequence, index);
+	}
 
-			if (code == 38 && applyExtendedColor(sequence, i, pen_.foreground)) continue;
-			if (code == 48 && applyExtendedColor(sequence, i, pen_.background)) continue;
+	static void clearAttributes(Cell& pen, std::uint16_t attributes) {
+		pen.attributes &= static_cast<std::uint16_t>(~attributes);
+	}
 
-			if (code >= 30 && code <= 37) {
-				pen_.foreground = indexedColor(code - 30);
-				continue;
-			}
+	void Screen::applySimpleSgr(int code) {
+		if (code >= 30 && code <= 37) {
+			pen_.foreground = indexedColor(code - 30);
+			return;
+		}
 
-			if (code >= 40 && code <= 47) {
-				pen_.background = indexedColor(code - 40);
-				continue;
-			}
+		if (code >= 40 && code <= 47) {
+			pen_.background = indexedColor(code - 40);
+			return;
+		}
 
-			if (code >= 90 && code <= 97) {
-				pen_.foreground = indexedColor(code - 90 + 8);
-				continue;
-			}
+		if (code >= 90 && code <= 97) {
+			pen_.foreground = indexedColor(code - 90 + 8);
+			return;
+		}
 
-			if (code >= 100 && code <= 107) {
-				pen_.background = indexedColor(code - 100 + 8);
-				continue;
-			}
+		if (code >= 100 && code <= 107) {
+			pen_.background = indexedColor(code - 100 + 8);
+			return;
+		}
 
-			switch (code) {
-			case 0:  pen_ = Cell(); break;
-			case 1:  pen_.attributes |= kAttrBold; break;
-			case 2:  pen_.attributes |= kAttrDim; break;
-			case 3:  pen_.attributes |= kAttrItalic; break;
-			case 4:  pen_.attributes |= kAttrUnderline; break;
-			case 7:  pen_.attributes |= kAttrReverse; break;
-			case 8:  pen_.attributes |= kAttrInvisible; break;
-			case 22: pen_.attributes &= static_cast<std::uint16_t>(~(kAttrBold | kAttrDim)); break;
-			case 23: pen_.attributes &= static_cast<std::uint16_t>(~kAttrItalic); break;
-			case 24: pen_.attributes &= static_cast<std::uint16_t>(~kAttrUnderline); break;
-			case 27: pen_.attributes &= static_cast<std::uint16_t>(~kAttrReverse); break;
-			case 28: pen_.attributes &= static_cast<std::uint16_t>(~kAttrInvisible); break;
-			case 39: pen_.foreground = kDefaultColor; break;
-			case 49: pen_.background = kDefaultColor; break;
-			default: break;
-			}
+		applyAttributeSgr(code);
+	}
+
+	void Screen::applyAttributeSgr(int code) {
+		switch (code) {
+		case 0:  pen_ = Cell(); break;
+		case 1:  pen_.attributes |= kAttrBold; break;
+		case 2:  pen_.attributes |= kAttrDim; break;
+		case 3:  pen_.attributes |= kAttrItalic; break;
+		case 4:  setUnderlineShape(kAttrUnderline); break;
+		case 7:  pen_.attributes |= kAttrReverse; break;
+		case 8:  pen_.attributes |= kAttrInvisible; break;
+		case 21: setUnderlineShape(kAttrUnderlineDouble); break;
+		case 22: clearAttributes(pen_, kAttrBold | kAttrDim); break;
+		case 23: clearAttributes(pen_, kAttrItalic); break;
+		case 24: setUnderlineShape(kAttrNone); break;
+		case 27: clearAttributes(pen_, kAttrReverse); break;
+		case 28: clearAttributes(pen_, kAttrInvisible); break;
+		case 39: pen_.foreground = kDefaultColor; break;
+		case 49: pen_.background = kDefaultColor; break;
+		case 59: pen_.underline = kDefaultColor; break;
+		default: break;
 		}
 	}
 

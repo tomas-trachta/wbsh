@@ -114,6 +114,11 @@ namespace wbshterm {
 		void drawRowText(const PaneCanvas& canvas, int absolute_row, int viewport_row);
 		void drawRun(const PaneCanvas& canvas, const std::wstring& text, const Cell& style,
 			int row, int column);
+		void drawUnderline(ID2D1RenderTarget* target, std::uint16_t attributes,
+			const D2D1_RECT_F& span);
+		void drawCurlyUnderline(ID2D1RenderTarget* target, const D2D1_RECT_F& span);
+		void drawBrokenUnderline(ID2D1RenderTarget* target, const D2D1_RECT_F& span, float on,
+			float off);
 		IDWriteTextLayout* layoutFor(const std::wstring& text, bool bold, bool italic);
 		void drawCursor(const PaneCanvas& canvas);
 		void drawBlockCursor(const PaneCanvas& canvas, float left, float top);

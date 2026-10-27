@@ -26,13 +26,29 @@ namespace wbshterm {
 		kAttrInvisible = 1 << 5,
 		kAttrWide      = 1 << 6,
 		kAttrWideTail  = 1 << 7,
+
+		/** Underline shapes beyond the plain line; kAttrUnderline is set too. */
+		kAttrUnderlineDouble = 1 << 8,
+		kAttrUnderlineCurly  = 1 << 9,
+		kAttrUnderlineDotted = 1 << 10,
+		kAttrUnderlineDashed = 1 << 11,
 	};
 
+	static const std::uint16_t kAttrUnderlineShapes = kAttrUnderlineDouble | kAttrUnderlineCurly
+		| kAttrUnderlineDotted | kAttrUnderlineDashed;
+
+	/** The underline colour is kDefaultColor when it follows the text's. */
 	struct Cell {
 		char32_t      code       = U' ';
 		std::uint32_t foreground = kDefaultColor;
 		std::uint32_t background = kDefaultColor;
+		std::uint32_t underline  = kDefaultColor;
 		std::uint16_t attributes = kAttrNone;
 	};
+
+	inline bool sameStyle(const Cell& left, const Cell& right) {
+		return left.foreground == right.foreground && left.background == right.background
+			&& left.underline == right.underline && left.attributes == right.attributes;
+	}
 
 } /* namespace wbshterm */

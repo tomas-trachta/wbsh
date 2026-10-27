@@ -12,17 +12,27 @@
 
 namespace wbshterm {
 
-	static const std::size_t kMaxParams = 16;
+	static const std::size_t kMaxParams = 32;
 
-	/** A parsed escape sequence. Missing parameters are -1, not 0. */
+	/**
+	 * @brief A parsed escape sequence. Missing parameters are -1, not 0.
+	 *
+	 * A parameter after a colon rather than a semicolon is a sub-parameter
+	 * of the one before it, as in SGR `4:3` or `38:2::r:g:b`.
+	 */
 	struct VtSequence {
-		std::vector<int> params;
-		std::string      intermediates;
-		char             private_byte = 0;
-		char             final_byte   = 0;
+		std::vector<int>  params;
+		std::vector<bool> sub_params;
+		std::string       intermediates;
+		char              private_byte = 0;
+		char              final_byte   = 0;
 
 		int param(std::size_t index, int fallback) const;
 		int paramCount() const { return static_cast<int>(params.size()); }
+		bool isSubParam(std::size_t index) const;
+
+		/** One past the last sub-parameter of the parameter at @p index. */
+		std::size_t groupEnd(std::size_t index) const;
 	};
 
 	/** Where a terminal's answers to queries go: back to the shell. */
@@ -83,7 +93,8 @@ namespace wbshterm {
 
 		void beginSequence();
 		void pushParamDigit(unsigned char byte);
-		void pushParamSeparator();
+		void pushParam(bool sub_param);
+		void pushParamSeparator(bool sub_param);
 		bool handleSharedControl(unsigned char byte);
 		void printUtf8Byte(unsigned char byte);
 		void resetUtf8();
@@ -92,6 +103,7 @@ namespace wbshterm {
 		State       state_ = State::Ground;
 		VtSequence  sequence_;
 		std::string osc_;
+		bool        dropping_params_ = false;
 
 		char32_t utf8_code_    = 0;
 		int      utf8_pending_ = 0;
