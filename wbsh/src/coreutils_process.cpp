@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "executor.h"
+#include "exitstatus.h"
 #include "interrupt.h"
 #include "numparse.h"
 #include "pathconv.h"
@@ -587,7 +588,7 @@ namespace wbsh {
 	static int processExitCode(HANDLE process) {
 		DWORD exit_code = 0;
 		::GetExitCodeProcess(process, &exit_code);
-		return static_cast<int>(exit_code);
+		return shellStatusFromExitCode(exit_code);
 	}
 
 	static int expireTimedOutChild(HANDLE job, HANDLE process, const TimeoutOptions& options) {

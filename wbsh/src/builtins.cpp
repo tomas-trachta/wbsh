@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "executor.h"
+#include "exitstatus.h"
 #include "lexer.h"
 #include "lineedit.h"
 #include "numparse.h"
@@ -590,7 +591,7 @@ namespace wbsh {
 	}
 
 	static int builtin_exit(Executor& exec, const std::vector<std::string>& args) {
-		const int status = firstArgAsInt(args, exec.defaultExitStatus());
+		const int status = shellStatusFromInt(firstArgAsInt(args, exec.defaultExitStatus()));
 		exec.raiseExit(status);
 		return status;
 	}
@@ -601,7 +602,7 @@ namespace wbsh {
 			return 1;
 		}
 
-		const int status = firstArgAsInt(args, exec.lastStatus());
+		const int status = shellStatusFromInt(firstArgAsInt(args, exec.lastStatus()));
 		exec.raiseReturn(status);
 		return status;
 	}
