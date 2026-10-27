@@ -35,7 +35,6 @@ namespace wbsh {
 		// of blanks and leading/trailing blanks are ignored.
 		static const char* const kWhitespaceSeparator = " ";
 		static const char kDefaultSubsep = '\x1c';
-		static const double kIntegerPrintLimit = 1e16;
 		static const int kUsageError = 2;
 
 		static bool isWhitespaceSeparator(const std::string& separator) {
@@ -46,6 +45,124 @@ namespace wbsh {
 			return c == ' ' || c == '\t';
 		}
 
+		static bool isSpace(char c) {
+			return std::isspace(static_cast<unsigned char>(c)) != 0;
+		}
+
+		static std::size_t skipSpaces(const std::string& text, std::size_t i) {
+			while (i < text.size() && isSpace(text[i])) ++i;
+			return i;
+		}
+
+		static std::size_t skipDigitsFrom(const std::string& text, std::size_t i) {
+			while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
+			return i;
+		}
+
+		static bool isSign(const std::string& text, std::size_t i) {
+			return i < text.size() && (text[i] == '+' || text[i] == '-');
+		}
+
+		static std::size_t skipExponent(const std::string& text, std::size_t i) {
+			if (i >= text.size() || (text[i] != 'e' && text[i] != 'E')) return i;
+
+			std::size_t digits = i + 1;
+			if (isSign(text, digits)) ++digits;
+			const std::size_t end = skipDigitsFrom(text, digits);
+			return end > digits ? end : i;
+		}
+
+		static std::size_t scanDecimal(const std::string& text, std::size_t start) {
+			std::size_t i = isSign(text, start) ? start + 1 : start;
+			const std::size_t integer_end = skipDigitsFrom(text, i);
+			bool any_digit = integer_end > i;
+
+			i = integer_end;
+			if (i < text.size() && text[i] == '.') {
+				const std::size_t fraction_end = skipDigitsFrom(text, i + 1);
+				any_digit = any_digit || fraction_end > i + 1;
+				i = fraction_end;
+			}
+
+			if (!any_digit) return 0;
+			return skipExponent(text, i) - start;
+		}
+
+		static bool equalsIgnoringCase(const std::string& text, std::size_t pos, const char* word) {
+			for (std::size_t i = 0; word[i] != '\0'; ++i) {
+				if (pos + i >= text.size()) return false;
+
+				const auto c = static_cast<unsigned char>(text[pos + i]);
+				if (std::tolower(c) != word[i]) return false;
+			}
+
+			return true;
+		}
+
+		// gawk reads "+inf" / "-nan" but, without the sign, "inf" is just a word.
+		static std::size_t scanSignedSpecial(const std::string& text, std::size_t start) {
+			if (!isSign(text, start)) return 0;
+			if (equalsIgnoringCase(text, start + 1, "inf")) return 4;
+			if (equalsIgnoringCase(text, start + 1, "nan")) return 4;
+			return 0;
+		}
+
+		static std::size_t scanAwkNumber(const std::string& text, std::size_t start) {
+			const std::size_t special = scanSignedSpecial(text, start);
+			if (special != 0) return special;
+			return scanDecimal(text, start);
+		}
+
+		static bool hasNegativeExponent(const std::string& number_text) {
+			const std::size_t e = number_text.find_first_of("eE");
+			return e != std::string::npos && number_text.find('-', e) != std::string::npos;
+		}
+
+		static double parseAwkNumber(const std::string& number_text) {
+			double value = 0.0;
+			if (parseDouble(number_text, value)) return value;
+			if (hasNegativeExponent(number_text)) return 0.0;
+			return number_text[0] == '-' ? -HUGE_VAL : HUGE_VAL;
+		}
+
+		static double stringToNumber(const std::string& text) {
+			const std::size_t start = skipSpaces(text, 0);
+			const std::size_t length = scanAwkNumber(text, start);
+			if (length == 0) return 0.0;
+			return parseAwkNumber(text.substr(start, length));
+		}
+
+		static bool looksNumeric(const std::string& text, double& value) {
+			const std::size_t start = skipSpaces(text, 0);
+			const std::size_t length = scanAwkNumber(text, start);
+			if (length == 0) return false;
+			if (skipSpaces(text, start + length) != text.size()) return false;
+
+			value = parseAwkNumber(text.substr(start, length));
+			return true;
+		}
+
+		static std::string specialNumberText(double number) {
+			if (std::isnan(number)) return std::signbit(number) ? "-nan" : "+nan";
+			return number < 0 ? "-inf" : "+inf";
+		}
+
+		static std::string numberToString(double number) {
+			if (!std::isfinite(number)) return specialNumberText(number);
+
+			char buffer[400];
+			if (number == std::floor(number)) {
+				std::snprintf(buffer, sizeof(buffer), "%.0f", number);
+				return buffer;
+			}
+
+			std::snprintf(buffer, sizeof(buffer), "%.6g", number);
+			return buffer;
+		}
+
+		// A value with neither flag is uninitialised: "" and 0 at once. Input
+		// text that looks numeric (a POSIX "strnum") has both flags and keeps
+		// its original spelling as the string.
 		struct AwkValue {
 			double number = 0.0;
 			std::string text;
@@ -68,37 +185,33 @@ namespace wbsh {
 				return result;
 			}
 
+			static AwkValue input(std::string value) {
+				AwkValue result;
+				result.is_number = looksNumeric(value, result.number);
+				result.text = std::move(value);
+				result.is_string = true;
+				return result;
+			}
+
+			bool comparesAsNumber() const {
+				return is_number || !is_string;
+			}
+
 			double asNumber() const {
 				if (is_number) return number;
 				if (!is_string) return 0.0;
-
-				double parsed = 0.0;
-				parseDouble(text, parsed);
-				return parsed;
+				return stringToNumber(text);
 			}
 
 			std::string asString() const {
 				if (is_string) return text;
 				if (!is_number) return std::string();
-
-				if (number == std::floor(number) && std::abs(number) < kIntegerPrintLimit) {
-					char buffer[32];
-					std::snprintf(buffer, sizeof(buffer), "%lld", static_cast<long long>(number));
-					return buffer;
-				}
-
-				char buffer[64];
-				std::snprintf(buffer, sizeof(buffer), "%.6g", number);
-				return buffer;
+				return numberToString(number);
 			}
 
 			bool truthy() const {
-				if (!is_string) return number != 0.0;
-				if (text.empty()) return false;
-
-				double parsed = 0.0;
-				if (parseDouble(text, parsed)) return parsed != 0.0;
-				return true;
+				if (is_number) return number != 0.0;
+				return !text.empty();
 			}
 		};
 
@@ -332,7 +445,7 @@ namespace wbsh {
 				}
 
 				token.text = source.substr(start, pos - start);
-				parseDouble(token.text, token.number);
+				token.number = parseAwkNumber(token.text);
 				token.kind = TokenKind::Number;
 				return token;
 			}
@@ -1340,11 +1453,21 @@ namespace wbsh {
 			return op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=";
 		}
 
+		// As in gawk, NaN equals NaN and sorts above every number.
+		static int orderNumbers(double left, double right) {
+			if (std::isnan(left)) return std::isnan(right) ? 0 : 1;
+			if (std::isnan(right)) return -1;
+			if (left < right) return -1;
+			return left > right ? 1 : 0;
+		}
+
 		static AwkValue compareValues(const AwkValue& left, const AwkValue& right,
 				const std::string& op) {
-			const bool numeric = left.is_number || right.is_number;
-			if (numeric) return boolValue(compareWith(left.asNumber(), right.asNumber(), op));
-			return boolValue(compareWith(left.asString(), right.asString(), op));
+			const bool numeric = left.comparesAsNumber() && right.comparesAsNumber();
+			const int order = numeric
+				? orderNumbers(left.asNumber(), right.asNumber())
+				: left.asString().compare(right.asString());
+			return boolValue(compareWith(order, 0, op));
 		}
 
 		static const std::regex* literalRegex(const Expr& expr) {
@@ -1492,7 +1615,7 @@ namespace wbsh {
 			}
 
 			if (conversion == 'c') {
-				if (value.is_string && !value.asString().empty()) {
+				if (!value.is_number && !value.asString().empty()) {
 					std::snprintf(buffer, sizeof(buffer), spec.c_str(), value.asString()[0]);
 				} else {
 					std::snprintf(buffer, sizeof(buffer), spec.c_str(),
@@ -1599,7 +1722,7 @@ namespace wbsh {
 			Executor* exec = nullptr;
 			std::unordered_map<std::string, AwkValue> variables;
 			std::unordered_map<std::string, std::map<std::string, AwkValue>> arrays;
-			std::vector<std::string> fields;
+			std::vector<AwkValue> fields;
 			std::string record;
 			long long NR = 0;
 			long long FNR = 0;
@@ -1640,24 +1763,18 @@ namespace wbsh {
 				return fs_regex_ok;
 			}
 
+			std::vector<std::string> recordParts() {
+				if (isWhitespaceSeparator(FS)) return splitOnBlanks(record);
+				if (FS.size() == 1) return splitOnChar(record, FS[0]);
+				if (!fieldRegexReady()) return { record };
+				return splitByRegex(record, fs_regex);
+			}
+
 			void splitRecord() {
+				std::vector<std::string> parts = recordParts();
 				fields.clear();
-				if (isWhitespaceSeparator(FS)) {
-					fields = splitOnBlanks(record);
-					return;
-				}
-
-				if (FS.size() == 1) {
-					fields = splitOnChar(record, FS[0]);
-					return;
-				}
-
-				if (!fieldRegexReady()) {
-					fields.push_back(record);
-					return;
-				}
-
-				fields = splitByRegex(record, fs_regex);
+				fields.reserve(parts.size());
+				for (auto& part : parts) fields.push_back(AwkValue::input(std::move(part)));
 			}
 
 			void storeFieldCount() {
@@ -1668,22 +1785,26 @@ namespace wbsh {
 				record.clear();
 				for (std::size_t i = 0; i < fields.size(); ++i) {
 					if (i != 0) record += OFS;
-					record += fields[i];
+					record += fields[i].asString();
 				}
 
 				storeFieldCount();
 			}
 
 			AwkValue getField(int index) {
-				if (index == 0) return AwkValue::str(record);
+				if (index == 0) return AwkValue::input(record);
 				if (index < 0) return AwkValue::str("");
 				if (static_cast<std::size_t>(index) > fields.size()) return AwkValue::str("");
-				return AwkValue::str(fields[static_cast<std::size_t>(index) - 1]);
+				return fields[static_cast<std::size_t>(index) - 1];
 			}
 
-			void setField(int index, std::string value) {
+			void growFields(std::size_t count) {
+				if (count > fields.size()) fields.resize(count, AwkValue::str(""));
+			}
+
+			void setField(int index, AwkValue value) {
 				if (index == 0) {
-					record = value;
+					record = value.asString();
 					splitRecord();
 					storeFieldCount();
 					return;
@@ -1692,7 +1813,7 @@ namespace wbsh {
 				if (index < 0) return;
 
 				const auto slot = static_cast<std::size_t>(index);
-				if (slot > fields.size()) fields.resize(slot);
+				growFields(slot);
 				fields[slot - 1] = std::move(value);
 				rebuildRecord();
 			}
@@ -1715,13 +1836,13 @@ namespace wbsh {
 				if (special != nullptr) return AwkValue::str(*special);
 
 				const auto it = variables.find(name);
-				if (it == variables.end()) return AwkValue::str("");
+				if (it == variables.end()) return AwkValue();
 				return it->second;
 			}
 
 			void setFieldCount(int count) {
 				if (count < 0) count = 0;
-				fields.resize(static_cast<std::size_t>(count));
+				fields.resize(static_cast<std::size_t>(count), AwkValue::str(""));
 				rebuildRecord();
 			}
 
@@ -1873,7 +1994,7 @@ namespace wbsh {
 				const AwkValue current = getField(index);
 				const AwkValue rhs = eval(*expr.second);
 				const AwkValue result = applyOp(current, expr.op, rhs);
-				setField(index, result.asString());
+				setField(index, result);
 				return result;
 			}
 
@@ -1917,7 +2038,7 @@ namespace wbsh {
 			AwkValue assignToArrayElement(Expr& lhs, const std::string& op, const AwkValue& rhs) {
 				const std::string key = buildSubscript(lhs.args);
 				auto& array = arrays[lhs.name];
-				const AwkValue current = array.count(key) != 0 ? array[key] : AwkValue::str("");
+				const AwkValue current = array[key];
 				const AwkValue result = applyOp(current, op, rhs);
 				array[key] = result;
 				return result;
@@ -1927,7 +2048,7 @@ namespace wbsh {
 				const int index = fieldIndex(*lhs.first);
 				const AwkValue current = getField(index);
 				const AwkValue result = applyOp(current, op, rhs);
-				setField(index, result.asString());
+				setField(index, result);
 				return result;
 			}
 
@@ -2013,7 +2134,7 @@ namespace wbsh {
 				arrays[array_name].clear();
 				const auto parts = splitOnSeparator(text, separator);
 				for (std::size_t i = 0; i < parts.size(); ++i) {
-					arrays[array_name][std::to_string(i + 1)] = AwkValue::str(parts[i]);
+					arrays[array_name][std::to_string(i + 1)] = AwkValue::input(parts[i]);
 				}
 
 				return AwkValue::num(static_cast<double>(parts.size()));
@@ -2326,7 +2447,7 @@ namespace wbsh {
 					return AwkValue::num(1);
 				}
 
-				variables[expr.name] = AwkValue::str(line);
+				variables[expr.name] = AwkValue::input(line);
 				if (!from_file) bumpRecordCounters();
 				return AwkValue::num(1);
 			}
@@ -2522,7 +2643,7 @@ namespace wbsh {
 		static void applyInvocation(const Invocation& invocation, Interpreter& interp) {
 			if (!invocation.field_separator.empty()) interp.FS = invocation.field_separator;
 			for (const auto& assign : invocation.var_assigns) {
-				interp.variables[assign.first] = AwkValue::str(assign.second);
+				interp.setVar(assign.first, AwkValue::input(assign.second));
 			}
 		}
 
