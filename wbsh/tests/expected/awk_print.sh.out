@@ -1,0 +1,31 @@
+=== > truncates, >> appends
+x
+y
+x
+y
+z
+first
+=== comparisons inside parentheses
+1 0
+1
+big
+pattern ok
+=== redirect target is a concatenation
+cat
+=== parenthesised lists
+5-x
+plain
+a b
+a b
+12
+9
+0
+1 0
+1
+a b
+no parens
+007
+=== /dev/stdout and /dev/stderr
+to stdout
+to stderr
+(nothing above)
