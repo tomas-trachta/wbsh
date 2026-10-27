@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "consolekeys.h"
 #include "strscan.h"
 #include "termreq.h"
 #include "utils.h"
@@ -1241,23 +1242,8 @@ namespace wbsh {
 		redraw();
 	}
 
-	static bool readLowSurrogate(WCHAR& low) {
-		const HANDLE input = ::GetStdHandle(STD_INPUT_HANDLE);
-		INPUT_RECORD record;
-		if (!readInputRecord(input, record)) return false;
-		if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) return false;
-
-		low = record.Event.KeyEvent.uChar.UnicodeChar;
-		return true;
-	}
-
 	void LineEditor::insertWideCharFromConsole(wchar_t ch) {
-		WCHAR pair[2] = { static_cast<WCHAR>(ch), 0 };
-		int length = 1;
-		const bool high_surrogate = ch >= 0xD800 && ch <= 0xDBFF;
-		if (high_surrogate && readLowSurrogate(pair[1])) length = 2;
-
-		const std::string utf8 = utf16ToUtf8(pair, length);
+		const std::string utf8 = readConsoleCharacter(::GetStdHandle(STD_INPUT_HANDLE), ch);
 		if (utf8.empty()) return;
 
 		insertChars(utf8);

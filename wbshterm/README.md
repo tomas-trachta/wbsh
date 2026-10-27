@@ -817,13 +817,14 @@ for a plain press, so passing the character message straight through
 arrives at the shell as Ctrl+Backspace and erases a word, or nothing.
 Backspace and Delete both have live checks in `--selftest` now.
 
-**Astral characters cannot be typed into wbsh.** Paste or type an emoji
-and the shell echoes U+FFFD twice, once per UTF-16 half — the bytes are
-already replacement characters when they come back out of the pseudoconsole,
-so nothing downstream can recover them. The same emoji printed *by* the
-shell (`cat` a file containing one) arrives intact and renders correctly, so
-this is wbsh's line editor reading key events one UTF-16 unit at a time, not
-a terminal bug.
+**Astral characters typed into wbsh came out as U+FFFD twice.** The
+pseudoconsole hands each UTF-16 half of an emoji over as a key press and a
+release of its own, and wbsh's line editor (fzf, the pager prompt and the
+SDK's `terminal_read_key` too) took the record right after the high half
+as the low one: the release. They now read on to the key-down that carries
+the low half and pass over the releases on the way. `sdk/tests/sdk.ps1`
+types an emoji into the line editor and into a util through a
+pseudoconsole.
 
 **ConPTY never forwards the alt screen.** `less` and `vim` under a
 pseudoconsole never produce `CSI ?1049h`: conhost renders them into its own

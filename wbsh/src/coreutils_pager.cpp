@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "consolekeys.h"
 #include "executor.h"
 #include "numparse.h"
 
@@ -406,13 +407,6 @@ namespace wbsh {
 		}
 	}
 
-	static std::string encodeUtf8(wchar_t ch) {
-		char bytes[8] = {};
-		const int length = ::WideCharToMultiByte(CP_UTF8, 0, &ch, 1, bytes, sizeof(bytes),
-			nullptr, nullptr);
-		return length > 0 ? std::string(bytes, static_cast<std::size_t>(length)) : std::string();
-	}
-
 	static bool promptPattern(Pager& pager, char leader, std::string& entered) {
 		entered.clear();
 		for (;;) {
@@ -439,7 +433,9 @@ namespace wbsh {
 				continue;
 			}
 
-			if (key.uChar.UnicodeChar >= 0x20) entered += encodeUtf8(key.uChar.UnicodeChar);
+			if (key.uChar.UnicodeChar >= 0x20) {
+				entered += readConsoleCharacter(pager.console.in, key.uChar.UnicodeChar);
+			}
 		}
 
 		pager.message.clear();
