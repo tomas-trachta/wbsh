@@ -115,6 +115,14 @@ namespace wbsh {
 
 		const std::vector<LexError>& errors() const { return errors_; }
 
+		// For callers that scan raw text (heredoc bodies) for the same
+		// forms the lexer finds in words. `body_start` is the offset just
+		// past `$(` resp. `$((`; the result is the offset of the closing
+		// `)` (the first of `))`), or npos when the body is unterminated
+		// resp. turns out not to be arithmetic.
+		static std::size_t commandSubstitutionEnd(const std::string& text, std::size_t body_start);
+		static std::size_t arithmeticEnd(const std::string& text, std::size_t body_start);
+
 	private:
 		char peek(std::size_t n = 0) const;
 		char advance();
@@ -164,13 +172,20 @@ namespace wbsh {
 		WordSegment readBacktick();
 		void readDollarParen(std::vector<WordSegment>& out);
 
+		// `$((` and `((` are arithmetic only when the parenthesis that
+		// closes the second `(` is directly followed by `)`; otherwise,
+		// as in bash, they are a subshell nested in `$(` resp. `(`.
+		enum class ArithScan { Closed, NotArithmetic, Unterminated };
+		ArithScan readArithmeticBody(std::string& out);
+		ArithScan closeArithmeticBody();
+		ArithScan tryArithmeticAfterParen(std::string& out);
+		void restorePosition(std::size_t pos, SourceLoc loc, std::size_t error_count);
+
 		// The readBalanced* family starts just past the opening
 		// delimiter and consumes through the matching closer, which
 		// is not part of the result. Quoted strings and nested forms
 		// of the same construct are respected.
-		std::string readBalancedParens();
 		std::string readBalancedBraces();
-		std::string readBalancedDoubleParens();
 		// `$[...]` (legacy bash arithmetic); nested `[...]` is respected
 		// so array subscripts inside the expression don't end the form.
 		std::string readBalancedBrackets();
@@ -182,7 +197,7 @@ namespace wbsh {
 		void copySingleQuotedRun(std::string& out);
 		void copyDoubleQuotedRun(std::string& out);
 		void copyBackquotedRun  (std::string& out);
-		void copyDollarParenRun (std::string& out, int& paren_depth);
+		void copyDollarParenRun (std::string& out);
 
 		void collectHeredocBodies();
 		std::string readHeredocBody(const Token& delim);
@@ -212,6 +227,29 @@ namespace wbsh {
 			std::size_t delim_token_index;
 		};
 		std::vector<PendingHeredoc> pending_heredocs_;
+
+		// Open `(` of the command being scanned inside a `$(` body.
+		int nested_paren_depth_ = 0;
+
+		// A `$(` body is lexed as a command, so a `)` closing a case
+		// pattern or sitting in a comment or heredoc does not end it. The
+		// nested scan reuses this lexer with the outer word's state set
+		// aside.
+		struct OuterScanState {
+			std::vector<Token> tokens;
+			bool at_line_start = false;
+			bool in_dbracket = false;
+			std::vector<CaseState> case_states;
+			bool bang_is_keyword = false;
+			std::vector<PendingHeredoc> pending_heredocs;
+			int paren_depth = 0;
+		};
+		std::string readCommandSubstitutionBody();
+		bool scanToUnmatchedParen();
+		bool atUnmatchedCloseParen() const;
+		OuterScanState enterNestedScan();
+		void leaveNestedScan(OuterScanState& outer);
+		void trackNestedParen(TokKind kind);
 	};
 
 }  // namespace wbsh

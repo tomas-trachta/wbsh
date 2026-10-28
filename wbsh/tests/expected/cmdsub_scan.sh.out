@@ -1,0 +1,26 @@
+=== case patterns
+A
+yes
+star
+procsub
+=== comments and heredocs
+[hi]
+a ) b
+=== quoting and nesting
+)
+}
+nested deep
+a)b
+bq
+2
+=== arithmetic or subshell
+a b
+3 9
+6
+sub
+shell
+i0
+i1
+=== heredoc bodies
+heredoc X 6 p
+q

@@ -314,7 +314,7 @@ namespace wbsh {
 
 		WordSegment segment;
 		segment.kind = WordSegment::Kind::ProcSubst;
-		segment.text = readBalancedParens();
+		segment.text = readCommandSubstitutionBody();
 		segment.proc_dir = direction;
 		word.segments.push_back(std::move(segment));
 
@@ -328,6 +328,7 @@ namespace wbsh {
 		token.kind = kind;
 		token.text = text;
 		tokens_.push_back(std::move(token));
+		trackNestedParen(kind);
 		trackCaseOperator(kind);
 
 		if (kind != TokKind::Newline) {
@@ -419,14 +420,22 @@ namespace wbsh {
 
 	void Lexer::scanArithCommand(SourceLoc start) {
 		advance();
-		advance();
+
+		std::string body;
+		const ArithScan scan = tryArithmeticAfterParen(body);
+		if (scan == ArithScan::NotArithmetic) {
+			emitOperator(start, TokKind::LParen, "(");
+			return;
+		}
+
+		if (scan == ArithScan::Unterminated) error(start, "unterminated ((...)) command");
 
 		Token token;
 		token.kind = TokKind::DArithCmd;
 		token.loc = start;
 		token.first_on_line = at_line_start_;
 		at_line_start_ = false;
-		token.text = readBalancedDoubleParens();
+		token.text = std::move(body);
 		tokens_.push_back(std::move(token));
 	}
 
@@ -878,14 +887,169 @@ namespace wbsh {
 	}
 
 	void Lexer::readDollarParen(std::vector<WordSegment>& out) {
+		const SourceLoc start = loc_;
 		advance();
-		if (peek() == '(') {
-			advance();
-			out.push_back(segmentOf(WordSegment::Kind::ArithExp, readBalancedDoubleParens()));
+
+		std::string body;
+		const ArithScan scan = tryArithmeticAfterParen(body);
+		if (scan == ArithScan::NotArithmetic) {
+			out.push_back(segmentOf(WordSegment::Kind::CmdSubst, readCommandSubstitutionBody()));
 			return;
 		}
 
-		out.push_back(segmentOf(WordSegment::Kind::CmdSubst, readBalancedParens()));
+		if (scan == ArithScan::Unterminated) error(start, "unterminated $((...)) expansion");
+		out.push_back(segmentOf(WordSegment::Kind::ArithExp, std::move(body)));
+	}
+
+	Lexer::ArithScan Lexer::tryArithmeticAfterParen(std::string& out) {
+		if (peek() != '(') return ArithScan::NotArithmetic;
+
+		const std::size_t pos = pos_;
+		const SourceLoc loc = loc_;
+		const std::size_t error_count = errors_.size();
+		advance();
+
+		const ArithScan scan = readArithmeticBody(out);
+		if (scan == ArithScan::NotArithmetic) restorePosition(pos, loc, error_count);
+		return scan;
+	}
+
+	void Lexer::restorePosition(std::size_t pos, SourceLoc loc, std::size_t error_count) {
+		pos_ = pos;
+		loc_ = loc;
+		errors_.resize(error_count);
+	}
+
+	Lexer::ArithScan Lexer::readArithmeticBody(std::string& out) {
+		int depth = 1;
+		while (!eof()) {
+			switch (peek()) {
+			case '(':
+				++depth;
+				out.push_back(advance());
+				continue;
+			case ')':
+				if (depth > 1) {
+					--depth;
+					out.push_back(advance());
+					continue;
+				}
+
+				return closeArithmeticBody();
+			case '\\': copyBackslashEscape(out); continue;
+			case '\'': copySingleQuotedRun(out); continue;
+			case '"':  copyDoubleQuotedRun(out); continue;
+			case '`':  copyBackquotedRun(out); continue;
+			case '$':
+				if (peek(1) == '(') copyDollarParenRun(out);
+				else out.push_back(advance());
+				continue;
+			default:
+				out.push_back(advance());
+				continue;
+			}
+		}
+
+		return ArithScan::Unterminated;
+	}
+
+	Lexer::ArithScan Lexer::closeArithmeticBody() {
+		if (peek(1) != ')') return ArithScan::NotArithmetic;
+
+		advance();
+		advance();
+		return ArithScan::Closed;
+	}
+
+	std::string Lexer::readCommandSubstitutionBody() {
+		const SourceLoc start = loc_;
+		const std::size_t body_start = pos_;
+
+		OuterScanState outer = enterNestedScan();
+		const bool closed = scanToUnmatchedParen();
+		leaveNestedScan(outer);
+
+		if (!closed) {
+			error(start, "unterminated $(...) substitution");
+			return src_.substr(body_start);
+		}
+
+		return src_.substr(body_start, pos_ - 1 - body_start);
+	}
+
+	bool Lexer::scanToUnmatchedParen() {
+		while (!eof()) {
+			skipWhitespace();
+			if (atUnmatchedCloseParen()) {
+				advance();
+				return true;
+			}
+
+			if (!eof()) scanToken();
+		}
+
+		return false;
+	}
+
+	bool Lexer::atUnmatchedCloseParen() const {
+		return peek() == ')' && nested_paren_depth_ == 0 && !inCasePattern();
+	}
+
+	Lexer::OuterScanState Lexer::enterNestedScan() {
+		OuterScanState outer;
+		outer.tokens = std::move(tokens_);
+		outer.at_line_start = at_line_start_;
+		outer.in_dbracket = in_dbracket_;
+		outer.case_states = std::move(case_states_);
+		outer.bang_is_keyword = bang_is_keyword_;
+		outer.pending_heredocs = std::move(pending_heredocs_);
+		outer.paren_depth = nested_paren_depth_;
+
+		tokens_.clear();
+		at_line_start_ = true;
+		in_dbracket_ = false;
+		case_states_.clear();
+		bang_is_keyword_ = false;
+		pending_heredocs_.clear();
+		nested_paren_depth_ = 0;
+		return outer;
+	}
+
+	void Lexer::leaveNestedScan(OuterScanState& outer) {
+		tokens_ = std::move(outer.tokens);
+		at_line_start_ = outer.at_line_start;
+		in_dbracket_ = outer.in_dbracket;
+		case_states_ = std::move(outer.case_states);
+		bang_is_keyword_ = outer.bang_is_keyword;
+		pending_heredocs_ = std::move(outer.pending_heredocs);
+		nested_paren_depth_ = outer.paren_depth;
+	}
+
+	// A case pattern's optional `(` and its closing `)` are not grouping.
+	void Lexer::trackNestedParen(TokKind kind) {
+		if (inCasePattern()) return;
+
+		if (kind == TokKind::LParen) ++nested_paren_depth_;
+		else if (kind == TokKind::RParen) --nested_paren_depth_;
+	}
+
+	std::size_t Lexer::commandSubstitutionEnd(const std::string& text, std::size_t body_start) {
+		Lexer lexer(text);
+		lexer.pos_ = body_start;
+		lexer.readCommandSubstitutionBody();
+		if (!lexer.errors_.empty()) return std::string::npos;
+
+		return lexer.pos_ - 1;
+	}
+
+	std::size_t Lexer::arithmeticEnd(const std::string& text, std::size_t body_start) {
+		Lexer lexer(text);
+		lexer.pos_ = body_start;
+
+		std::string body;
+		if (lexer.readArithmeticBody(body) != ArithScan::Closed) return std::string::npos;
+
+		return lexer.pos_ - 2;
 	}
 
 	void Lexer::copyBackslashEscape(std::string& out) {
@@ -904,6 +1068,11 @@ namespace wbsh {
 		while (!eof() && peek() != '"') {
 			if (peek() == '\\') {
 				copyBackslashEscape(out);
+				continue;
+			}
+
+			if (peek() == '$' && peek(1) == '(') {
+				copyDollarParenRun(out);
 				continue;
 			}
 
@@ -927,66 +1096,12 @@ namespace wbsh {
 		if (!eof()) out.push_back(advance());
 	}
 
-	void Lexer::copyDollarParenRun(std::string& out, int& paren_depth) {
-		out.push_back(advance());
-		out.push_back(advance());
-		if (peek() != '(') {
-			++paren_depth;
-			return;
-		}
-
-		out.push_back(advance());
-		int inner_depth = 1;
-		while (!eof() && inner_depth > 0) {
-			if (peek() == '(') ++inner_depth;
-			else if (peek() == ')') --inner_depth;
-
-			out.push_back(advance());
-			if (inner_depth == 0 && peek() == ')') {
-				out.push_back(advance());
-				break;
-			}
-		}
-	}
-
-	std::string Lexer::readBalancedParens() {
-		std::string out;
-		int depth = 1;
-		while (!eof() && depth > 0) {
-			switch (peek()) {
-			case '\\': copyBackslashEscape(out); continue;
-			case '\'': copySingleQuotedRun(out); continue;
-			case '"':  copyDoubleQuotedRun(out); continue;
-			case '`':  copyBackquotedRun(out); continue;
-			case '$':
-				if (peek(1) == '(') {
-					copyDollarParenRun(out, depth);
-					continue;
-				}
-
-				out.push_back(advance());
-				continue;
-			case '(':
-				++depth;
-				out.push_back(advance());
-				continue;
-			case ')':
-				--depth;
-				if (depth == 0) {
-					advance();
-					return out;
-				}
-
-				out.push_back(advance());
-				continue;
-			default:
-				out.push_back(advance());
-				continue;
-			}
-		}
-
-		error(loc_, "unterminated $(...) substitution");
-		return out;
+	void Lexer::copyDollarParenRun(std::string& out) {
+		const std::size_t start = pos_;
+		std::vector<WordSegment> ignored;
+		advance();
+		readDollarParen(ignored);
+		out += src_.substr(start, pos_ - start);
 	}
 
 	std::string Lexer::readBalancedBraces() {
@@ -1002,6 +1117,11 @@ namespace wbsh {
 					out.push_back(advance());
 					out.push_back(advance());
 					++depth;
+					continue;
+				}
+
+				if (peek(1) == '(') {
+					copyDollarParenRun(out);
 					continue;
 				}
 
@@ -1058,38 +1178,6 @@ namespace wbsh {
 		}
 
 		error(loc_, "unterminated $[...] expansion");
-		return out;
-	}
-
-	std::string Lexer::readBalancedDoubleParens() {
-		std::string out;
-		int depth = 1;
-		while (!eof() && depth > 0) {
-			switch (peek()) {
-			case '(':
-				++depth;
-				out.push_back(advance());
-				continue;
-			case ')':
-				if (peek(1) == ')' && depth == 1) {
-					advance();
-					advance();
-					return out;
-				}
-
-				--depth;
-				out.push_back(advance());
-				continue;
-			case '\\': copyBackslashEscape(out); continue;
-			case '\'': copySingleQuotedRun(out); continue;
-			case '"':  copyDoubleQuotedRun(out); continue;
-			default:
-				out.push_back(advance());
-				continue;
-			}
-		}
-
-		error(loc_, "unterminated $((...)) expansion");
 		return out;
 	}
 

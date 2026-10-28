@@ -933,7 +933,7 @@ namespace wbsh {
 	void Expander::expandHeredocCmdSubst(const std::string& body, std::size_t& i,
 			std::string& out) {
 		const std::size_t end = body.size();
-		const std::size_t k = scanBalanced(body, i + 2, '(', ')', 1);
+		const std::size_t k = std::min(Lexer::commandSubstitutionEnd(body, i + 2), end);
 		const std::string inner = body.substr(i + 2, k - (i + 2));
 
 		std::string output = runCmdSubst(inner);
@@ -942,15 +942,16 @@ namespace wbsh {
 		i = (k < end) ? k + 1 : k;
 	}
 
-	void Expander::expandHeredocArith(const std::string& body, std::size_t& i,
+	bool Expander::expandHeredocArith(const std::string& body, std::size_t& i,
 			std::string& out) {
-		const std::size_t end = body.size();
-		const std::size_t k = scanBalanced(body, i + 3, '(', ')', 2);
-		const std::size_t inner_end = (k > 0) ? k - 1 : 0;
-		const std::string inner = body.substr(i + 3, inner_end - (i + 3));
+		if (i + 2 >= body.size() || body[i + 2] != '(') return false;
 
-		out += std::to_string(evalArith(inner));
-		i = (k < end) ? k + 1 : end;
+		const std::size_t k = Lexer::arithmeticEnd(body, i + 3);
+		if (k == std::string::npos) return false;
+
+		out += std::to_string(evalArith(body.substr(i + 3, k - (i + 3))));
+		i = k + 2;
+		return true;
 	}
 
 	void Expander::expandHeredocArithBracket(const std::string& body, std::size_t& i,
@@ -1019,8 +1020,7 @@ namespace wbsh {
 		}
 
 		if (next == '(') {
-			if (i + 2 < body.size() && body[i + 2] == '(') expandHeredocArith(body, i, out);
-			else expandHeredocCmdSubst(body, i, out);
+			if (!expandHeredocArith(body, i, out)) expandHeredocCmdSubst(body, i, out);
 			return;
 		}
 
