@@ -1,0 +1,24 @@
+=== 1. replacement results
+literal: 50000 111
+two-byte literal: 25000 444
+question mark: 50000 222
+bracket: 50000 333
+first only: 50000 500
+anchored start: 50000 500
+anchored end: 50000 006
+extglob alternatives: 25000 777
+extglob repeat: 8
+=== 2. prefix and suffix removal
+49999
+49999
+49999
+49999
+49998
+=== 3. small cases keep their meaning
+aXcaXc aXcabc aa bcabc abcab Ycabc abcaZ abQbc
+a+b+c a-b-c a=b=c a*b b*c
+čRžčRž č_č_ řžčřž čřžčř
+=== 4. ** by squaring
+1 4113633470431887361 -1
+4611686018427387904 -9223372036854775808 0 1 1
+=== fast
