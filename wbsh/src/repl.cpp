@@ -628,6 +628,7 @@ namespace wbsh {
 	}
 
 	static int exitWithStatus(Executor& exec, int exit_status) {
+		exec.endStoppedJobs();
 		const int status = exec.fireExitTrap(exit_status);
 		finishHistory(exec);
 		return status;

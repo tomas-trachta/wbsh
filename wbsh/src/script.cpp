@@ -385,6 +385,7 @@ namespace wbsh {
 			status = kSyntaxErrorStatus;
 		}
 
+		exec.endStoppedJobs();
 		return exec.fireExitTrap(status);
 	}
 

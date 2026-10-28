@@ -233,6 +233,11 @@ namespace wbsh {
 			std::string cmd_text;       ///< Original command text for `jobs` output.
 			bool running = true;        ///< False once the process has exited.
 			int  exit_code = 0;         ///< Exit code (valid once `running == false`).
+			bool stopped = false;       ///< Suspended by Ctrl+Z or `kill -STOP`.
+#ifdef _WIN32
+			HANDLE group = nullptr;     ///< Job object holding every process of the job.
+			std::vector<HANDLE> stages; ///< A pipeline's other processes.
+#endif
 		};
 		/// Add a launched background process.  @return the assigned job id.
 		int  registerJob(void* handle, long long pid, std::string cmd_text);
@@ -247,6 +252,18 @@ namespace wbsh {
 		void waitForAllJobs();
 		/// `wait -n`: the status of the next job to finish, or -1 with none.
 		int  waitForAnyJob();
+		/// Ctrl+Z and stopped jobs exist only in an interactive shell on a console.
+		bool jobControlActive() const;
+		/// `fg`: resume a stopped job and wait for it in the foreground.
+		int  foregroundJob(int id);
+		/// `bg`: resume a stopped job in the background.  @return false if not stopped.
+		bool continueJobInBackground(int id);
+		/// `kill -STOP` / `-CONT` / `-TERM` ... on a whole job.
+		bool signalJob(Job& job, int signum);
+		/// A builtin `sleep` stopped by Ctrl+Z goes on as a stopped job.
+		int  stopRemainingSleep(unsigned long milliseconds, const std::string& text);
+		/// Ends jobs left stopped when the interactive shell exits.
+		void endStoppedJobs();
 		/// `%N`, `%%`, `%+`, `%`, `%-`, `%name`, `%?text`; nullptr if no job matches.
 		Job* findJob(const std::string& spec);
 		/// The status of a finished background process that left the table.
@@ -824,7 +841,8 @@ namespace wbsh {
 		bool spawnExternalAndWait(const std::wstring& exe,
 		                          std::wstring& cmdline,
 		                          std::wstring& envblock,
-		                          int* exit_status);
+		                          int* exit_status,
+		                          const std::string& job_text);
 #endif
 
 		// Heuristic: does the file at `path` look like a shell script we
@@ -889,11 +907,15 @@ namespace wbsh {
 		                            HANDLE h_in, HANDLE h_out, HANDLE h_err);
 		HANDLE spawnSelfCommand(const std::string& command_text,
 		                        HANDLE h_in, HANDLE h_out, HANDLE h_err);
-		SpawnPlacement backgroundPlacement() const {
-			SpawnPlacement placement;
-			placement.new_process_group = spawning_background_;
-			return placement;
-		}
+		SpawnPlacement backgroundPlacement() const { return spawn_placement_; }
+		HANDLE startForegroundGroup();
+		void   endForegroundGroup(HANDLE group);
+		int    stopForegroundJob(std::vector<HANDLE> processes, HANDLE group,
+		                         const std::string& text);
+		int    waitForegroundProcesses(std::vector<HANDLE>& processes, HANDLE group,
+		                               const std::string& text, std::vector<int>& statuses);
+		int    waitForegroundJob(Job& job);
+		void   printJobState(const Job& job) const;
 		void   rememberProcSubstChild(HANDLE process);
 
 		// Process substitutions started while a node runs are released
@@ -945,7 +967,9 @@ namespace wbsh {
 		std::unordered_map<long long, int> finished_job_statuses_;
 		// Set while a `&` command is being started: it gets its own
 		// process group, so the console's Ctrl+C does not reach it.
-		bool spawning_background_ = false;
+#ifdef _WIN32
+		SpawnPlacement spawn_placement_;
+#endif
 		int getopts_subindex_ = 1;
 		// Arenas backing every AST the executor must keep alive (e.g.
 		// those parsed via `source` / `eval` / inherited `WBSH_FUNCTIONS`

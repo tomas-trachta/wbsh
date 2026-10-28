@@ -38,6 +38,7 @@
 #include "exitstatus.h"
 #include "inflate.h"
 #include "interrupt.h"
+#include "jobcontrol.h"
 #include "numparse.h"
 #include "optscan.h"
 #include "stdinsync.h"
@@ -51,6 +52,9 @@ namespace wbsh {
 	static const int         kFallbackConsoleRows    = 24;
 	static const std::size_t kStreamChunk            = 4096;
 	static const int kStatusInterruptedSleep         = 130;
+	static const int kSignalContinue                 = 18;
+	static const int kSignalStop                     = 19;
+	static const int kSignalTerminalStop             = 20;
 	static const std::size_t kTimeTextCapacity       = 256;
 	static const int         kDefaultUserId          = 1000;
 	static const int         kDefaultGroupId         = 1000;
@@ -1520,7 +1524,21 @@ namespace wbsh {
 		return true;
 	}
 
-	static int builtin_sleep(Executor&, const std::vector<std::string>& args) {
+	// At an interactive prompt Ctrl+Z stops the sleep; the rest of it
+	// carries on as a stopped job.
+	static int sleepInForeground(Executor& exec, unsigned long milliseconds,
+	                             const std::string& text) {
+		const ULONGLONG start = ::GetTickCount64();
+		const ForegroundEnd end = waitForeground({}, consoleInput(), milliseconds);
+		if (end == ForegroundEnd::Interrupted) return kStatusInterruptedSleep;
+		if (end != ForegroundEnd::Stopped) return 0;
+
+		const ULONGLONG slept = ::GetTickCount64() - start;
+		const ULONGLONG rest = slept < milliseconds ? milliseconds - slept : 0;
+		return exec.stopRemainingSleep(static_cast<unsigned long>(rest), text);
+	}
+
+	static int builtin_sleep(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
 			perr("sleep", "missing operand");
 			return 1;
@@ -1533,6 +1551,10 @@ namespace wbsh {
 		}
 
 		const unsigned long milliseconds = static_cast<unsigned long>(seconds * 1000.0);
+		if (exec.jobControlActive()) {
+			return sleepInForeground(exec, milliseconds, "sleep " + args[0]);
+		}
+
 		return sleepUnlessCtrlC(milliseconds) ? 0 : kStatusInterruptedSleep;
 	}
 
@@ -3204,7 +3226,8 @@ namespace wbsh {
 		std::printf(" 1) HUP   2) INT   3) QUIT  4) ILL   "
 			"5) TRAP  6) ABRT  7) BUS   8) FPE\n"
 			" 9) KILL 10) USR1 11) SEGV 12) USR2 "
-			"13) PIPE 14) ALRM 15) TERM\n");
+			"13) PIPE 14) ALRM 15) TERM\n"
+			"18) CONT 19) STOP 20) TSTP\n");
 	}
 
 	static bool killProbeOneProcess(int pid) {
@@ -3221,6 +3244,11 @@ namespace wbsh {
 	static bool killOneProcess(int pid, int signum) {
 #ifdef _WIN32
 		if (signum == 0) return killProbeOneProcess(pid);
+		if (signum == kSignalStop || signum == kSignalTerminalStop) {
+			return suspendProcessById(static_cast<unsigned long>(pid));
+		}
+
+		if (signum == kSignalContinue) return resumeProcessById(static_cast<unsigned long>(pid));
 
 		const HANDLE process = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
 		if (process == nullptr) {
@@ -3239,47 +3267,52 @@ namespace wbsh {
 #endif
 	}
 
-	static int killTerminate(const std::vector<int>& pids, int signum) {
-		int status = 0;
-		for (int pid : pids) {
-			if (!killOneProcess(pid, signum)) status = 1;
-		}
-
-		return status;
-	}
-
 	static bool killSignalByName(const std::string& arg, int& signum) {
 		if (arg == "-KILL") { signum = 9;  return true; }
 		if (arg == "-TERM") { signum = 15; return true; }
 		if (arg == "-INT")  { signum = 2;  return true; }
 		if (arg == "-HUP")  { signum = 1;  return true; }
+		if (arg == "-CONT") { signum = kSignalContinue;     return true; }
+		if (arg == "-STOP") { signum = kSignalStop;         return true; }
+		if (arg == "-TSTP") { signum = kSignalTerminalStop; return true; }
 		return false;
 	}
 
-	// `%N`, `%%`, `%name`, ... name a job of this shell.
-	static bool killTargetPid(Executor& exec, const std::string& arg, int& pid) {
-		if (arg.empty() || arg[0] != '%') {
-			if (parseInt(arg, pid)) return true;
-
-			std::fprintf(stderr, "wbsh: kill: %s: arguments must be process or job IDs\n",
-				arg.c_str());
-			return false;
+	static Executor::Job* jobWithPid(Executor& exec, int pid) {
+		for (Executor::Job& job : exec.jobsTable()) {
+			if (job.pid == pid && job.running) return &job;
 		}
 
-		exec.reapJobs();
-		const Executor::Job* job = exec.findJob(arg);
+		return nullptr;
+	}
+
+	// `%N`, `%%`, `%name`, ... name a job of this shell; a job is signalled
+	// as a whole, so stopping or ending it reaches all of its processes.
+	static bool killTarget(Executor& exec, const std::string& arg, int signum) {
+		int pid = 0;
+		if (arg.empty() || arg[0] != '%') {
+			if (!parseInt(arg, pid)) {
+				std::fprintf(stderr, "wbsh: kill: %s: arguments must be process or job IDs\n",
+					arg.c_str());
+				return false;
+			}
+
+			Executor::Job* job = jobWithPid(exec, pid);
+			return job != nullptr ? exec.signalJob(*job, signum) : killOneProcess(pid, signum);
+		}
+
+		Executor::Job* job = exec.findJob(arg);
 		if (job == nullptr || !job->running) {
 			std::fprintf(stderr, "wbsh: kill: %s: no such job\n", arg.c_str());
 			return false;
 		}
 
-		pid = static_cast<int>(job->pid);
-		return true;
+		return exec.signalJob(*job, signum);
 	}
 
 	static int builtin_kill(Executor& exec, const std::vector<std::string>& args) {
 		int signum = kSignalTerm;
-		std::vector<int> pids;
+		std::vector<std::string> targets;
 		for (std::size_t i = 0; i < args.size(); ++i) {
 			const std::string& arg = args[i];
 			if (arg == "-l") {
@@ -3299,18 +3332,21 @@ namespace wbsh {
 
 			if (killSignalByName(arg, signum)) continue;
 
-			int pid = 0;
-			if (!killTargetPid(exec, arg, pid)) return 1;
-
-			pids.push_back(pid);
+			targets.push_back(arg);
 		}
 
-		if (pids.empty()) {
+		if (targets.empty()) {
 			perr("kill", "usage: kill [-SIG] PID | %JOB ...");
 			return 2;
 		}
 
-		return killTerminate(pids, signum);
+		exec.reapJobs();
+		int status = 0;
+		for (const std::string& target : targets) {
+			if (!killTarget(exec, target, signum)) status = 1;
+		}
+
+		return status;
 	}
 
 	static void registerFileBuiltins(Executor& exec) {

@@ -1758,7 +1758,8 @@ namespace wbsh {
 		}
 
 		std::printf("%s\n", job->cmd_text.c_str());
-		const int status = exec.waitForJob(job->id);
+		std::fflush(stdout);
+		const int status = exec.foregroundJob(job->id);
 		return status < 0 ? 1 : status;
 	}
 
@@ -1777,6 +1778,8 @@ namespace wbsh {
 			std::fprintf(stderr, "wbsh: bg: %s: no such job\n", spec.c_str());
 			return 1;
 		}
+
+		if (exec.continueJobInBackground(job->id)) return 0;
 
 		if (job->running) std::fprintf(stderr, "wbsh: bg: job %d already in background\n", job->id);
 		return 0;
