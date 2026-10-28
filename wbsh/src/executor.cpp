@@ -1344,6 +1344,12 @@ namespace wbsh {
 		}
 	}
 
+	static std::string joinLines(const std::vector<std::string>& lines) {
+		std::string text;
+		for (const std::string& line : lines) text += line + "\n";
+		return text;
+	}
+
 	static std::string serializeDisabledBuiltins(const Executor& exec) {
 		const std::unordered_set<std::string>& disabled = exec.disabledBuiltins();
 		std::vector<std::string> names(disabled.begin(), disabled.end());
@@ -1376,6 +1382,10 @@ namespace wbsh {
 		if (!completions.empty()) overrides.emplace_back("WBSH_COMPLETIONS", completions);
 		const std::string disabled = serializeDisabledBuiltins(*this);
 		if (!disabled.empty()) overrides.emplace_back("WBSH_DISABLED_BUILTINS", disabled);
+		const std::string traps = serializeListedTraps();
+		if (!traps.empty()) overrides.emplace_back("WBSH_TRAPS", traps);
+		const std::string dir_stack = joinLines(dir_stack_);
+		if (!dir_stack.empty()) overrides.emplace_back("WBSH_DIRSTACK", dir_stack);
 
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
