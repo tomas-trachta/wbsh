@@ -200,6 +200,8 @@ namespace wbsh {
 		// The list keeps at most HISTSIZE entries.
 		const std::vector<std::string>& history() const { return history_.commands; }
 		const std::vector<int>& historyStatus() const { return history_.statuses; }
+		const std::vector<long long>& historyTimes() const { return history_.times; }
+		bool  writesHistoryTimes() const;
 		void  addHistoryEntry(std::string line);
 		void  eraseHistoryEntries(const std::string& line);
 		/// The newest entry becomes @p line, as when `fc` runs a command again.
