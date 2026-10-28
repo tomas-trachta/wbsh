@@ -2751,43 +2751,16 @@ namespace wbsh {
 		return renderArrayFields(elems, star, inside_dq, out);
 	}
 
-#ifdef _WIN32
-	static bool createTempFile(std::string& out_path) {
-		wchar_t dir[MAX_PATH + 1];
-		const DWORD dir_length = ::GetTempPathW(MAX_PATH + 1, dir);
-		if (dir_length == 0 || dir_length > MAX_PATH) return false;
-
-		wchar_t path[MAX_PATH];
-		if (::GetTempFileNameW(dir, L"wbsh", 0, path) == 0) return false;
-
-		out_path = wideToUtf8(path);
-		return true;
-	}
-
-	static void writeFileBytes(const std::string& path, const std::string& bytes) {
-		std::ofstream file(utf8ToPath(path), std::ios::binary | std::ios::trunc);
-		file.write(bytes.data(), bytes.size());
-	}
-#endif /* _WIN32 */
-
-	// `<(cmd)` is served from a temp file holding cmd's output; the
-	// executor deletes it once the command that used it has finished.
+	// The substituted command runs concurrently, connected through a
+	// named pipe whose path takes the place of the word.
 	void Expander::renderProcSubstSegment(const WordSegment& s, Tagged& out) {
-		if (s.proc_dir != '<') {
-			std::fprintf(stderr, "wbsh: process substitution >(...) not supported\n");
-			return;
-		}
-#ifdef _WIN32
-		std::string path;
-		if (!createTempFile(path)) return;
+		if (sub_ == nullptr) return;
 
-		const std::string body = (sub_ != nullptr) ? sub_->runRaw(s.text) : std::string();
-		writeFileBytes(path, body);
-		pending_temp_files_.push_back(path);
+		const std::string path = sub_->startProcessSubstitution(s.text, s.proc_dir);
+		if (path.empty()) return;
 
-		pushText(out, path_conv_.toPosix(path), F_QUOTED);
+		pushText(out, path, F_QUOTED);
 		out.had_quote = true;
-#endif /* _WIN32 */
 	}
 
 	bool Expander::renderSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
