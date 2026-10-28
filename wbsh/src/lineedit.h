@@ -76,6 +76,13 @@ namespace wbsh {
 	// @row:col), and `-o` prints what the editor wrote.
 	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args);
 
+	// A place reverse-i-search found its query: the history entry and
+	// the byte offset in it.
+	struct SearchHit {
+		std::size_t entry;
+		std::size_t offset;
+	};
+
 	enum class LineStatus {
 		kLine,          // Enter: the typed line is in `out`
 		kEof,           // Ctrl-D on an empty line, or stdin closed
@@ -117,6 +124,15 @@ namespace wbsh {
 
 		using EditCommand = void (LineEditor::*)();
 
+		struct SearchState {
+			std::string query;
+			std::size_t match = 0;       // history index shown; its size for the starting line
+			std::size_t offset = 0;      // where in that entry the query was found
+			bool cancel = false;         // back to the line the search started from
+			bool submit = false;         // Enter: the shown line runs
+			bool redispatch = false;     // another editing key runs on the shown line
+		};
+
 		void resetLine(const std::string& prompt);
 		void setPrompt(const std::string& prompt);
 		LineStatus readLineRaw(const std::string& prompt, std::string& out);
@@ -136,18 +152,15 @@ namespace wbsh {
 		std::string pastedKeyText(const ::KEY_EVENT_RECORD& key);
 		std::string replayCharacter(wchar_t ch);
 
-		// One keystroke inside the reverse-search modal. Returns true to
-		// keep looping, false to exit. Sets `cancel` on Esc / Ctrl-G /
-		// Ctrl-C (restore the pre-search buffer), `submit` on Enter, and
-		// `redispatch` for any other editing key, which then runs as usual.
-		bool revsearchHandleKey(const ::KEY_EVENT_RECORD& key,
-		                        std::string& query, std::size_t& match_index,
-		                        bool& cancel, bool& submit, bool& redispatch);
-		void revsearchStepOlder(const std::string& query, std::size_t& match_index);
-		void revsearchStepNewer(const std::string& query, std::size_t& match_index);
-		void revsearchEraseQueryChar(std::string& query, std::size_t& match_index);
-		void revsearchExtendQuery(std::string& query, const std::string& text,
-		                          std::size_t& match_index);
+		// One keystroke inside the reverse-search modal; false ends it.
+		bool revsearchHandleKey(const ::KEY_EVENT_RECORD& key, SearchState& search);
+		void revsearchStepOlder(SearchState& search);
+		void revsearchStepNewer(SearchState& search);
+		void revsearchEraseQueryChar(SearchState& search);
+		void revsearchExtendQuery(SearchState& search, const std::string& text);
+		void revsearchShowMatch(const SearchState& search);
+		void revsearchMoveTo(SearchState& search, bool found, const SearchHit& hit);
+		void endReverseSearch(const SearchState& search);
 #endif
 
 		// False when the input ran out before a key finished the line.
@@ -239,13 +252,13 @@ namespace wbsh {
 		void refreshSuggestion();
 		bool acceptInlineSuggestion();
 
-		// Ctrl-R modal: the search prompt replaces the normal one; printable
-		// chars extend the query, Ctrl-R/Ctrl-S iterate matches, Enter
-		// accepts and submits, Esc/Ctrl-G cancels, any other editing key
-		// accepts the match and returns to normal editing. Windows-only;
-		// a no-op stub elsewhere.
+		// Ctrl-R modal: the search prompt replaces the normal one; typed
+		// characters extend the query, Ctrl-R/Ctrl-S iterate matches, Enter
+		// accepts and submits, Esc/Ctrl-J keep the match, Ctrl-G cancels,
+		// any other editing key runs on the match. Windows-only; a no-op
+		// stub elsewhere.
 		void runReverseSearch();
-		void revsearchRefresh(const std::string& query, std::size_t match_index);
+		void revsearchRefresh(const SearchState& search);
 
 		// Ctrl-V: CF_UNICODETEXT inserted at the cursor, its lines as
 		// lines of the one command. Windows-only; a no-op stub elsewhere.
@@ -395,6 +408,8 @@ namespace wbsh {
 		// modal owns the prompt, gated by revsearch_active_.
 		std::string suggestion_;
 		bool revsearch_active_ = false;
+		UndoPoint revsearch_origin_;
+		std::string last_search_query_;
 		// History index behind the current suggestion_, or history.size()
 		// (via SIZE_MAX, clamped in refreshSuggestion's bounds check) when
 		// there is none. Lets refreshSuggestion() extend/shrink the same

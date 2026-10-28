@@ -651,89 +651,149 @@ namespace wbsh {
 		return readConsoleCharacter(::GetStdHandle(STD_INPUT_HANDLE), ch);
 	}
 
-	static std::size_t lastHistoryIndex(const std::vector<std::string>& history) {
-		return history.empty() ? 0 : history.size() - 1;
-	}
+	// As readline, the search moves through the places a query occurs, not
+	// just the entries: toward older text the last place at or before
+	// `hit.offset` in `hit.entry`, then the last place in each older entry.
+	static bool searchOlder(const std::vector<std::string>& history, const std::string& query,
+	                        SearchHit& hit) {
+		if (query.empty() || hit.entry >= history.size()) return false;
 
-	void LineEditor::revsearchRefresh(const std::string& query,
-	                                  std::size_t match_index) {
-		prompt_raw_ = "(reverse-i-search)`" + query + "': ";
-		prompt_visible_ = prompt_raw_;
+		std::size_t from = hit.offset;
+		for (std::size_t i = hit.entry + 1; i > 0; --i) {
+			const std::size_t found = history[i - 1].rfind(query, from);
+			if (found != std::string::npos) {
+				hit = { i - 1, found };
+				return true;
+			}
 
-		const auto& history = exec_.history();
-		if (match_index < history.size()) {
-			buffer_ = history[match_index];
-			const std::size_t found = buffer_.find(query);
-			cursor_ = found == std::string::npos ? buffer_.size() : found + query.size();
-		} else {
-			buffer_.clear();
-			cursor_ = 0;
+			from = std::string::npos;
 		}
 
-		last_cursor_row_ = 0;
-		emit(kEraseToEnd);
+		return false;
+	}
+
+	static bool searchNewer(const std::vector<std::string>& history, const std::string& query,
+	                        SearchHit& hit) {
+		if (query.empty()) return false;
+
+		std::size_t from = hit.offset;
+		for (std::size_t i = hit.entry; i < history.size(); ++i) {
+			const std::size_t found = history[i].find(query, from);
+			if (found != std::string::npos) {
+				hit = { i, found };
+				return true;
+			}
+
+			from = 0;
+		}
+
+		return false;
+	}
+
+	static SearchHit newestPlace(const std::vector<std::string>& history) {
+		return { history.empty() ? 0 : history.size() - 1, std::string::npos };
+	}
+
+	static bool searchFails(const std::vector<std::string>& history, const std::string& query,
+	                        const SearchHit& hit) {
+		if (query.empty()) return false;
+		if (hit.entry >= history.size()) return true;
+
+		return history[hit.entry].compare(hit.offset, query.size(), query) != 0;
+	}
+
+	// The cursor sits where the query starts in the match, as in readline.
+	// While the query matches nothing the last match stays, and before
+	// the first one the line the search started from.
+	void LineEditor::revsearchShowMatch(const SearchState& search) {
+		const auto& history = exec_.history();
+		if (search.match >= history.size()) {
+			buffer_ = revsearch_origin_.buffer;
+			cursor_ = revsearch_origin_.cursor;
+			return;
+		}
+
+		buffer_ = history[search.match];
+		cursor_ = (std::min)(search.offset, buffer_.size());
+	}
+
+	void LineEditor::revsearchRefresh(const SearchState& search) {
+		const SearchHit hit = { search.match, search.offset };
+		const bool failing = searchFails(exec_.history(), search.query, hit);
+		prompt_raw_ = std::string(failing ? "(failed reverse-i-search)`" : "(reverse-i-search)`")
+			+ search.query + "': ";
+		prompt_visible_ = prompt_raw_;
+
+		revsearchShowMatch(search);
 		redraw();
 	}
 
-	void LineEditor::revsearchStepOlder(const std::string& query,
-	                                    std::size_t& match_index) {
-		const auto& history = exec_.history();
-		if (match_index == 0) {
+	void LineEditor::revsearchMoveTo(SearchState& search, bool found, const SearchHit& hit) {
+		if (found) {
+			search.match = hit.entry;
+			search.offset = hit.offset;
+		} else {
 			ding();
-			return;
 		}
 
-		const std::size_t start = match_index < history.size()
-			? match_index - 1 : lastHistoryIndex(history);
-		const std::size_t next = findReverseSearchMatch(history, query, start, false);
-		if (next == history.size()) {
-			ding();
-			return;
-		}
-
-		match_index = next;
-		revsearchRefresh(query, match_index);
+		revsearchRefresh(search);
 	}
 
-	void LineEditor::revsearchStepNewer(const std::string& query,
-	                                    std::size_t& match_index) {
+	// Ctrl-R or Ctrl-S on an empty query searches for the last query again.
+	void LineEditor::revsearchStepOlder(SearchState& search) {
+		if (search.query.empty()) search.query = last_search_query_;
+
 		const auto& history = exec_.history();
-		if (match_index >= history.size() || match_index + 1 >= history.size()) {
-			ding();
-			return;
+		SearchHit hit = newestPlace(history);
+		if (search.match < history.size()) {
+			const bool line_start = search.offset == 0;
+			hit = line_start ? SearchHit{ search.match - 1, std::string::npos }
+			                 : SearchHit{ search.match, search.offset - 1 };
 		}
 
-		const std::size_t next = findReverseSearchMatch(history, query, match_index + 1, true);
-		if (next == history.size()) {
-			ding();
-			return;
-		}
-
-		match_index = next;
-		revsearchRefresh(query, match_index);
+		const bool before_first = search.match == 0 && search.offset == 0;
+		const bool found = !before_first && searchOlder(history, search.query, hit);
+		revsearchMoveTo(search, found, hit);
 	}
 
-	void LineEditor::revsearchEraseQueryChar(std::string& query, std::size_t& match_index) {
-		if (query.empty()) {
+	void LineEditor::revsearchStepNewer(SearchState& search) {
+		if (search.query.empty()) search.query = last_search_query_;
+
+		const auto& history = exec_.history();
+		SearchHit hit = { search.match, search.offset + 1 };
+		const bool found = search.match < history.size() && searchNewer(history, search.query, hit);
+		revsearchMoveTo(search, found, hit);
+	}
+
+	void LineEditor::revsearchEraseQueryChar(SearchState& search) {
+		if (search.query.empty()) {
 			ding();
 			return;
 		}
 
-		query.erase(previousClusterStart(query, query.size()));
+		search.query.erase(previousClusterStart(search.query, search.query.size()));
 		const auto& history = exec_.history();
-		match_index = findReverseSearchMatch(history, query, lastHistoryIndex(history), false);
-		revsearchRefresh(query, match_index);
+		SearchHit hit = newestPlace(history);
+		if (searchOlder(history, search.query, hit)) {
+			search.match = hit.entry;
+			search.offset = hit.offset;
+		} else {
+			search.match = history.size();
+		}
+
+		revsearchRefresh(search);
 	}
 
-	void LineEditor::revsearchExtendQuery(std::string& query, const std::string& text,
-	                                      std::size_t& match_index) {
-		query += text;
+	// A longer query stays on the place it matched if it still matches there.
+	void LineEditor::revsearchExtendQuery(SearchState& search, const std::string& text) {
+		search.query += text;
 
 		const auto& history = exec_.history();
-		const std::size_t start = match_index < history.size()
-			? match_index : lastHistoryIndex(history);
-		match_index = findReverseSearchMatch(history, query, start, false);
-		revsearchRefresh(query, match_index);
+		SearchHit hit = newestPlace(history);
+		if (search.match < history.size()) hit = { search.match, search.offset };
+
+		const bool found = searchOlder(history, search.query, hit);
+		revsearchMoveTo(search, found, hit);
 	}
 
 	// Another thread asks the editor waiting for keys to rebuild its
@@ -854,79 +914,80 @@ namespace wbsh {
 		return unit >= 0x20 && unit < 0x7F;
 	}
 
-	bool LineEditor::revsearchHandleKey(const KEY_EVENT_RECORD& key,
-	                                    std::string& query,
-	                                    std::size_t& match_index,
-	                                    bool& cancel, bool& submit, bool& redispatch) {
-		const bool is_ctrl = keys_detail::ctrlHeld(key) && !keys_detail::typesLayoutCharacter(key);
-		const bool is_meta = keys_detail::altHeld(key) && !keys_detail::typesLayoutCharacter(key);
+	// Esc and Ctrl-J end the search on the match, as readline's
+	// isearch-terminators do; Ctrl-G and Ctrl-C go back to the line the
+	// search started from.
+	bool LineEditor::revsearchHandleKey(const KEY_EVENT_RECORD& key, SearchState& search) {
+		const bool chord = !keys_detail::typesLayoutCharacter(key);
+		const bool is_ctrl = keys_detail::ctrlHeld(key) && chord;
+		const bool is_meta = keys_detail::altHeld(key) && chord;
 		const WORD vk = key.wVirtualKeyCode;
 		const WCHAR ch = key.uChar.UnicodeChar;
 
-		if (vk == VK_RETURN) { submit = true; return false; }
-		if (vk == VK_ESCAPE) { cancel = true; return false; }
+		if (vk == VK_RETURN && !is_ctrl && !is_meta) { search.submit = true; return false; }
+		if (vk == VK_ESCAPE || (is_ctrl && vk == 'J')) return false;
 		if (vk == VK_BACK && !is_ctrl && !is_meta) {
-			revsearchEraseQueryChar(query, match_index);
+			revsearchEraseQueryChar(search);
 			return true;
 		}
 
-		if (keys_detail::isInterruptKey(key)) { cancel = true; interrupted_ = true; return false; }
-		if (is_ctrl && vk == 'R') { revsearchStepOlder(query, match_index); return true; }
-		if (is_ctrl && vk == 'S') { revsearchStepNewer(query, match_index); return true; }
-		if (is_ctrl && vk == 'G') { cancel = true; return false; }
+		if (keys_detail::isInterruptKey(key)) interrupted_ = true;
+		if (interrupted_ || (is_ctrl && vk == 'G')) { search.cancel = true; return false; }
+		if (is_ctrl && vk == 'R') { revsearchStepOlder(search); return true; }
+		if (is_ctrl && vk == 'S') { revsearchStepNewer(search); return true; }
 
 		const bool typed = ch >= 0x80 || isPrintableAscii(ch);
 		if (is_ctrl || is_meta || !typed) {
-			redispatch = true;
+			search.redispatch = true;
 			return false;
 		}
 
 		const std::string text = ch >= 0x80
 			? wideCharacter(ch) : std::string(1, static_cast<char>(ch));
-		revsearchExtendQuery(query, text, match_index);
+		revsearchExtendQuery(search, text);
 		return true;
 	}
 
 	void LineEditor::runReverseSearch() {
-		const std::string saved_buffer = buffer_;
-		const std::size_t saved_cursor = cursor_;
 		const std::string saved_prompt = prompt_raw_;
 		const std::string saved_visible = prompt_visible_;
-
+		revsearch_origin_ = { buffer_, cursor_ };
 		revsearch_active_ = true;
-		std::string query;
-		std::size_t match_index = exec_.history().size();
-		revsearchRefresh(query, match_index);
 
-		bool cancel = false;
-		bool submit = false;
-		bool redispatch = false;
+		SearchState search;
+		search.match = exec_.history().size();
+		revsearchRefresh(search);
+
 		KEY_EVENT_RECORD key{};
 		bool looping = true;
 		while (looping) {
 			if (!nextKeyDown(key)) {
-				cancel = true;
+				search.cancel = true;
 				break;
 			}
 
-			looping = revsearchHandleKey(key, query, match_index, cancel, submit, redispatch);
+			looping = revsearchHandleKey(key, search);
 		}
 
 		prompt_raw_ = saved_prompt;
 		prompt_visible_ = saved_visible;
-		if (cancel) {
-			buffer_ = saved_buffer;
-			cursor_ = saved_cursor;
+		endReverseSearch(search);
+		if (search.redispatch) dispatchKeyDown(key);
+	}
+
+	// The line is drawn again from the row the search left the cursor on,
+	// so a match that wrapped leaves no rows behind.
+	void LineEditor::endReverseSearch(const SearchState& search) {
+		if (!search.query.empty()) last_search_query_ = search.query;
+		if (search.cancel) {
+			buffer_ = revsearch_origin_.buffer;
+			cursor_ = revsearch_origin_.cursor;
 		}
 
-		last_cursor_row_ = 0;
 		revsearch_active_ = false;
-		emit(kEraseToEnd);
-		emit(prompt_raw_);
 		redraw();
 		if (interrupted_) interrupt();
-		if (submit) acceptLine();
-		if (redispatch) dispatchKeyDown(key);
+		if (search.submit) acceptLine();
 	}
 
 	static DWORD enterRawInputMode(HANDLE input) {
@@ -1342,7 +1403,7 @@ namespace wbsh {
 	void LineEditor::refreshPrompt() {}
 	void LineEditor::insertClipboardText() {}
 	void LineEditor::runReverseSearch() {}
-	void LineEditor::revsearchRefresh(const std::string&, std::size_t) {}
+	void LineEditor::revsearchRefresh(const SearchState&) {}
 	void LineEditor::refreshSuggestion() {}
 	bool LineEditor::acceptInlineSuggestion() { return false; }
 	std::size_t LineEditor::screenColumns() const { return 0; }
