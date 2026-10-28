@@ -28,7 +28,6 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
-#include <regex>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -38,7 +37,6 @@
 #include "numparse.h"
 #include "pathconv.h"
 #include "posixregex.h"
-#include "regexutil.h"
 
 namespace wbsh {
 
@@ -117,7 +115,7 @@ namespace wbsh {
 			FileIdentity identity;
 			unsigned mode = 0;
 			PermMatch perm = PermMatch::Exact;
-			std::regex regex;
+			PosixRegex regex;
 			std::FILE* out = stdout;
 			char terminator = '\n';
 			std::vector<std::string> command;
@@ -483,7 +481,7 @@ namespace wbsh {
 		}
 
 		static bool testRegex(Run&, Node& node, Entry& entry) {
-			return matchRegex(entry.path, node.regex);
+			return node.regex.matchesWhole(entry.path);
 		}
 
 		static bool testType(Run&, Node& node, Entry& entry) {
@@ -1094,11 +1092,13 @@ namespace wbsh {
 			if (!takeArgument(p, name, pattern)) return false;
 
 			const RegexType type = p.run->options.regex_type;
-			const bool extended = type != RegexType::Basic;
 			if (type == RegexType::Emacs) pattern = emacsToExtended(pattern);
 
+			RegexOptions options;
+			options.syntax = type == RegexType::Basic ? RegexSyntax::Basic : RegexSyntax::Extended;
+			options.ignore_case = name == "-iregex";
 			node.test = testRegex;
-			if (compilePosixRegex(node.regex, pattern, extended, name == "-iregex")) return true;
+			if (node.regex.compile(pattern, options)) return true;
 			return parserFail(p, "invalid regular expression `" + pattern + "'");
 		}
 

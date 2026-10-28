@@ -51,7 +51,7 @@ get the shape of the codebase:
 | bc | `wbsh/src/coreutils_bc.cpp`, `bcnum.cpp/h`, `bc_internal.h`, `bc_lexer.cpp/h`, `bc_parser.cpp`, `bc_interp.cpp`, `bc_output.cpp`, `bc_mathlib.cpp` | GNU-compatible bc: base 10^9 bignum decimals with bc's scale rules, a lazily-reading lexer (interactive input runs line by line), parser to a syntax tree, tree-walking interpreter with dynamic scoping, ibase / obase output with line wrapping, and the `-l` library computed natively with guard digits. |
 | curl | `wbsh/src/coreutils_curl.cpp`, `curl_internal.h`, `curl_options.cpp`, `curl_request.cpp`, `curl_support.cpp`, `curl_http.cpp`, `curl_writeout.cpp` | The `curl` builtin: per-URL driver with outputs, retries and cookies; option table and `-K` config files; request bodies (`-d` family, `-F`, `-T`); URL, cookie-jar and header helpers; the WinHTTP transfer with manual redirects, `--max-time` watchdog and Content-Length checks; `--write-out`. Tests run against `wbsh/tests/helpers/httpd.ps1`, a loopback server. |
 | Codecs | `wbsh/src/inflate.cpp/h`, `deflate.cpp/h`, `bzip2.cpp/h`, `xz.cpp/h`, `lzw.cpp/h`, `huffman.cpp/h`, `codecs.cpp/h` | DEFLATE both ways, bzip2 both ways, xz / lzma and .Z decoding, the shared length-limited Huffman builder, and `codecs.h`: format detection plus one decompress / compress entry point for `tar` and the compressor commands. |
-| Regex | `wbsh/src/posixregex.cpp/h` | POSIX BRE / ERE (with GNU `\w \s \b \< \>` and back-references) translated to ECMAScript, because MSVC's basic / extended grammars reject those. Used by `grep` and `sed`. |
+| Regex | `wbsh/src/posixregex.h`, `posixregex_internal.h`, `posixregex.cpp`, `posixregex_parse.cpp`, `posixregex_pike.cpp`, `posixregex_dfa.cpp`, `posixregex_backtrack.cpp` | Our own POSIX BRE / ERE / awk regex engine (GNU `\w \s \b \< \>` and back-references included) with leftmost-longest, UTF-8 aware matching. The parser builds a Pike VM program; a lazily built DFA answers "does it match", the Pike VM finds spans and groups, and patterns with back-references go to a backtracker that keeps its stack on the heap. Used by `grep`, `sed`, `awk`, `find -regex`, `nl`, `pgrep` and `[[ =~ ]]`. |
 | Literal search | `wbsh/src/strsearch.cpp/h` | Boyer-Moore-Horspool for one needle, Aho-Corasick for many, with ASCII case folding. `grep` runs metachar-free patterns through it and uses it as a required-literal prefilter in front of the regex. |
 | Devices | `wbsh/src/devices.cpp/h` | Pipe-backed `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/full` for redirections and the coreutils' file opening. |
 | CLI | `wbsh/src/main.cpp`, `wbsh/src/script.cpp` | Entry point: UTF-8 argv decoding, flag dispatch, the non-interactive run / dump driver. |
@@ -221,8 +221,9 @@ The points you'll bump into most often:
   errors are a pending message on the `Expander` (`failed()` /
   `takeError()`). Numeric parsing goes through `numparse.h` (never bare
   `std::stoi`-family calls), filesystem calls use the `std::error_code`
-  overloads, and `std::regex` only ever via `regexutil.h` — whose two
-  adapters are the single designated exception boundary in the codebase.
+  overloads, and regexes go through `posixregex.h`; `std::regex` is left
+  only for `grep -P`, via `regexutil.h` — whose two adapters are the
+  single designated exception boundary in the codebase.
   Don't add `try`/`catch`/`throw` anywhere else.
 
 When in doubt, find a recent function in the same file that does something

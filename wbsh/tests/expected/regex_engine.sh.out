@@ -1,0 +1,105 @@
+=== a group repeated hundreds of times still matches
+1
+rc=0
+X
+awk fired
+=~ matched 300 chars
+=== a 40000 character line
+1
+1
+X
+1 40000
+1
+<ab>
+=== grep -P keeps std::regex but reports when it gives up
+0
+wbsh: grep: -P: pattern exceeded the matcher's stack or complexity limit
+rc=2
+=== leftmost-longest
+X
+[abcd]
+BASH_REMATCH[0]=abcd
+1 4
+abc
+ab
+abc
+=== empty matches
+-y-z-
+XaXcX
+aXcX
+=== groups and back-references
+hell owrold
+dup
+dup
+aababc
+[ab]
+rc=0
+key|value
+=== BRE and ERE operators
+X Y
+X
+X
+X
+X
+XbX
+Xa
+aa
+a
+a
+a)
+aaaa
+=== classes, escapes and anchors
+Nabc
+aXb
+XXb
+W c
+NSb
+<aaa> <bbb>
+a-a-a b-b-b
+XbZ
+d
+\
+n
+X
+a
+b
+a
+X
+X
+b
+one
+b
+=== case-insensitive
+X
+nocasematch =~
+ÉCOLE
+é
+ÉCOLE
+=== awk dialect
+a|b
+a-b
+a-b
+aRb
+|word| |here|
+<word <here
+3 c
+=== other users
+tree/sub/file.txt
+tree/other.log
+tree/sub/file.txt
+tree/sub/file.txt
+     1	apple
+       banana
+     2	apricot
+=== invalid patterns
+wbsh: grep: Unmatched \{
+rc=2
+wbsh: grep: Unmatched ( or \(
+wbsh: grep: Unmatched [, [^, [:, [., or [=
+wbsh: grep: Invalid character class name
+wbsh: grep: Invalid range end
+wbsh: grep: Trailing backslash
+wbsh: grep: Invalid back reference
+wbsh: grep: Regular expression too big
+sed: -e expression #1, char 9: Unmatched ( or \(
+=~ rc=2

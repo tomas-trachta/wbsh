@@ -16,7 +16,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <regex>
 #include <string>
 #include <vector>
 
@@ -25,7 +24,6 @@
 #include "numparse.h"
 #include "optscan.h"
 #include "posixregex.h"
-#include "regexutil.h"
 
 namespace wbsh {
 
@@ -1060,7 +1058,7 @@ namespace wbsh {
 
 		struct SectionStyle {
 			Style style = Style::None;
-			std::regex regex;
+			PosixRegex regex;
 		};
 
 		struct Options {
@@ -1115,7 +1113,7 @@ namespace wbsh {
 		} else if (value == "n") {
 			out.style = Style::None;
 		} else if (!value.empty() && value[0] == 'p'
-				&& compilePosixRegex(out.regex, value.substr(1), false, false)) {
+				&& out.regex.compile(value.substr(1), RegexOptions())) {
 			out.style = Style::Regex;
 		} else {
 			perr("nl", std::string("invalid ") + section + " numbering style: '" + value + "'");
@@ -1263,7 +1261,7 @@ namespace wbsh {
 		case Style::NonEmpty:
 			return !line.empty();
 		case Style::Regex:
-			return searchRegex(line, state.current->regex);
+			return state.current->regex.test(line);
 		case Style::None:
 			return false;
 		default:

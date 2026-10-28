@@ -1,14 +1,12 @@
 /**
  * @file awk_regex.cpp
- * @brief awk regex compilation (literal fast path or std::regex) and the dynamic-regex cache.
+ * @brief awk regex compilation (literal fast path or posixregex.h) and the dynamic-regex cache.
  */
 
 #include "awk_regex.h"
 
 #include <cctype>
 #include <cstring>
-
-#include "regexutil.h"
 
 namespace wbsh {
 
@@ -24,8 +22,8 @@ namespace wbsh {
 			return backslashes % 2 == 1;
 		}
 
-		// An escaped letter or digit is a class or an assertion (\w, \b, \1) except
-		// for the \n and \t character escapes.
+		// An escaped letter or digit is a class, an assertion or a numeric escape
+		// (\w, \y, \101) except for \n and \t; gawk's \< \> \` \' are assertions too.
 		static bool literalEscape(char escaped, char& out) {
 			if (escaped == 'n') {
 				out = '\n';
@@ -38,6 +36,7 @@ namespace wbsh {
 			}
 
 			if (std::isalnum(static_cast<unsigned char>(escaped))) return false;
+			if (std::strchr("<>`'", escaped) != nullptr) return false;
 
 			out = escaped;
 			return true;
@@ -88,7 +87,9 @@ namespace wbsh {
 				return true;
 			}
 
-			out.ok = compileRegex(out.regex, pattern);
+			RegexOptions options;
+			options.syntax = RegexSyntax::Awk;
+			out.ok = out.regex.compile(pattern, options);
 			return out.ok;
 		}
 
@@ -129,7 +130,7 @@ namespace wbsh {
 
 			std::size_t pos = 0;
 			if (re.literal) return findLiteral(re, subject, 0, pos);
-			return searchRegex(subject, re.regex);
+			return re.regex.test(subject);
 		}
 
 		bool awkRegexFind(const AwkRegex& re, const std::string& subject, std::size_t from,
@@ -140,15 +141,11 @@ namespace wbsh {
 				return findLiteral(re, subject, from, pos);
 			}
 
-			const auto flags = from == 0
-				? std::regex_constants::match_default
-				: std::regex_constants::match_prev_avail;
-			std::smatch match;
-			const auto first = subject.cbegin() + static_cast<std::ptrdiff_t>(from);
-			if (!searchRegexFlags(first, subject.cend(), re.regex, match, flags)) return false;
+			RegexMatch match;
+			if (!re.regex.search(subject, from, match)) return false;
 
-			pos = from + static_cast<std::size_t>(match.position(0));
-			length = static_cast<std::size_t>(match.length(0));
+			pos = match.start(0);
+			length = match.length(0);
 			return true;
 		}
 

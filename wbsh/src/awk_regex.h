@@ -9,24 +9,25 @@
 #include <cstddef>
 #include <list>
 #include <memory>
-#include <regex>
 #include <string>
 #include <unordered_map>
 #include <utility>
+
+#include "posixregex.h"
 
 namespace wbsh {
 
 	namespace awk_detail {
 
 		// A pattern without regex operators (optionally anchored with ^ / $) is
-		// matched with plain string search instead of std::regex.
+		// matched with plain string search instead of a compiled regex.
 		struct AwkRegex {
 			bool ok = false;
 			bool literal = false;
 			bool anchor_start = false;
 			bool anchor_end = false;
 			std::string needle;
-			std::regex regex;
+			PosixRegex regex;
 		};
 
 		/// False when @p pattern is not a valid regular expression.

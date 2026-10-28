@@ -23,7 +23,6 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -39,7 +38,6 @@
 #include "inflate.h"
 #include "numparse.h"
 #include "optscan.h"
-#include "regexutil.h"
 #include "termreq.h"
 
 namespace wbsh {

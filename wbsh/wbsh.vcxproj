@@ -212,6 +212,8 @@
     <ClInclude Include="src\exitstatus.h" />
     <ClInclude Include="src\numparse.h" />
     <ClInclude Include="src\optscan.h" />
+    <ClInclude Include="src\posixregex.h" />
+    <ClInclude Include="src\posixregex_internal.h" />
     <ClInclude Include="src\regexutil.h" />
     <ClInclude Include="src\strsearch.h" />
     <ClInclude Include="src\strscan.h" />
@@ -254,6 +256,10 @@
     <ClCompile Include="src\coreutils_grep.cpp" />
     <ClCompile Include="src\coreutils_sed.cpp" />
     <ClCompile Include="src\posixregex.cpp" />
+    <ClCompile Include="src\posixregex_backtrack.cpp" />
+    <ClCompile Include="src\posixregex_dfa.cpp" />
+    <ClCompile Include="src\posixregex_parse.cpp" />
+    <ClCompile Include="src\posixregex_pike.cpp" />
     <ClCompile Include="src\strsearch.cpp" />
     <ClCompile Include="src\coreutils_cpio.cpp" />
     <ClCompile Include="src\coreutils_misc.cpp" />
