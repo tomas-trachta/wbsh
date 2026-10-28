@@ -65,6 +65,20 @@ cpio -o -H tar < list > long.tar 2> err
 sed 's/[0-9]\{20,\}/N/g' err
 cpio -t < long.tar 2> /dev/null
 
+echo "=== backslash traversal"
+newc_header() {
+    printf '070701%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x' \
+        1 33188 0 0 1 0 "$1" 0 0 0 0 "$2" 0
+}
+{
+    newc_header 6 15; printf '%s' '..\escaped.txt'; printf '\0\0\0\0'
+    printf 'pwned\n\0\0'
+    newc_header 0 11; printf 'TRAILER!!!\0\0\0\0'
+} > slash.newc
+mkdir slash_out
+(cd slash_out && cpio -id < ../slash.newc 2>&1 | sed 's/^[0-9]* block.*/N blocks/')
+[ -e escaped.txt ] && echo "escaped" || echo "contained"
+
 echo "=== errors"
 echo tree/a.txt | cpio -o -H zip > /dev/null; echo "status $?"
 echo nothere | cpio -o -H odc > none.odc; echo "status $?"

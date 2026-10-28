@@ -164,6 +164,10 @@ cpio: tree/N/N.txt: file name too long
 6 blocks
 tree/a.txt
 tree/sub/b.txt
+=== backslash traversal
+cpio: ..\escaped.txt: refusing to write outside the current directory
+N blocks
+contained
 === errors
 wbsh: cpio: invalid archive format 'zip'
 wbsh: cpio: usage: cpio -i|-o|-t [-dmuv] [-H FORMAT] [-F ARCHIVE] [PATTERN]...

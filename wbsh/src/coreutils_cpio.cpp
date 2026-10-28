@@ -10,6 +10,7 @@
 
 #include "coreutils_internal.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -332,7 +333,13 @@ namespace wbsh {
 		return false;
 	}
 
-	static bool safeCpioName(const std::string& name) {
+	static std::string withForwardSlashes(std::string name) {
+		std::replace(name.begin(), name.end(), '\\', '/');
+		return name;
+	}
+
+	static bool safeCpioName(const std::string& raw_name) {
+		const std::string name = withForwardSlashes(raw_name);
 		if (name.empty() || name[0] == '/' || (name.size() > 1 && name[1] == ':')) return false;
 		return name != ".." && name.compare(0, 3, "../") != 0
 			&& name.find("/../") == std::string::npos
