@@ -86,6 +86,11 @@ namespace wbsh {
 			std::wstring cmdline;
 			std::wstring envblock;
 		};
+
+		struct SelfSpawnLine {
+			std::wstring cmdline;
+			std::string argv_file;
+		};
 #endif
 
 		enum class ExtensionClass {
@@ -97,6 +102,7 @@ namespace wbsh {
 
 	using executor_detail::ExtensionClass;
 #ifdef _WIN32
+	using executor_detail::SelfSpawnLine;
 	using executor_detail::SpawnCommand;
 	using executor_detail::StdioHandles;
 #endif
@@ -1123,6 +1129,46 @@ namespace wbsh {
 		}
 	}
 
+	// CreateProcess takes at most 32767 characters of command line. A
+	// longer self-spawn (a big pipeline stage or heredoc) hands its words
+	// over in a temp file, NUL-terminated each, which the child reads and
+	// deletes (see `--argv-file` in main.cpp).
+	static const std::size_t kMaxSelfCommandLine = 32000;
+
+	static std::string writeArgvFile(const std::vector<std::string>& argv) {
+		wchar_t dir[MAX_PATH + 1] = {};
+		wchar_t name[MAX_PATH + 1] = {};
+		if (::GetTempPathW(MAX_PATH + 1, dir) == 0) return {};
+		if (::GetTempFileNameW(dir, L"wba", 0, name) == 0) return {};
+
+		std::string body;
+		for (std::size_t i = 1; i < argv.size(); ++i) body += argv[i] + '\0';
+
+		const std::string path = wideToUtf8(name);
+		writeAllText(path, body);
+		return path;
+	}
+
+	static SelfSpawnLine buildSelfSpawnLine(const std::vector<std::string>& argv) {
+		SelfSpawnLine line;
+		line.cmdline = buildCommandLine(argv);
+		if (line.cmdline.size() <= kMaxSelfCommandLine) return line;
+
+		line.argv_file = writeArgvFile(argv);
+		if (line.argv_file.empty()) return line;
+
+		line.cmdline = buildCommandLine({ argv[0], "--argv-file", line.argv_file });
+		return line;
+	}
+
+	static void discardSelfSpawnFiles(const SelfSpawnLine& line, const NameValueList& overrides) {
+		discardHistorySnapshot(overrides);
+		if (line.argv_file.empty()) return;
+
+		std::error_code ec;
+		std::filesystem::remove(utf8ToPath(line.argv_file), ec);
+	}
+
 	// The child gets `$0` and the positionals the way `bash -c cmd name args`
 	// would, so `"$1" | cat` sees the same `$1` as the parent.
 	std::vector<std::string> Executor::selfSpawnArgv(const std::string& self,
@@ -1146,16 +1192,16 @@ namespace wbsh {
 		}
 
 		const std::string self = getSelfExecutablePath();
-		const std::vector<std::string> argv = selfSpawnArgv(self, slice);
+		const SelfSpawnLine line = buildSelfSpawnLine(selfSpawnArgv(self, slice));
 
 		const NameValueList overrides = buildSelfSpawnOverrides();
 		SpawnCommand command;
 		command.exe      = utf8ToWide(self);
-		command.cmdline  = buildCommandLine(argv);
+		command.cmdline  = line.cmdline;
 		command.envblock = buildEnvBlock(env_, overrides, /*include_unexported=*/true);
 
 		const HANDLE process = spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err });
-		if (process == INVALID_HANDLE_VALUE) discardHistorySnapshot(overrides);
+		if (process == INVALID_HANDLE_VALUE) discardSelfSpawnFiles(line, overrides);
 		return process;
 	}
 
@@ -1189,16 +1235,16 @@ namespace wbsh {
 	HANDLE Executor::spawnShellCommand(const std::vector<std::string>& argv,
 	                                   const SpawnPlacement& placement) {
 		const std::string self = getSelfExecutablePath();
-		const std::vector<std::string> child_argv = selfSpawnArgv(self, quotedCommandText(argv));
+		const SelfSpawnLine line = buildSelfSpawnLine(selfSpawnArgv(self, quotedCommandText(argv)));
 
 		const NameValueList overrides = buildSelfSpawnOverrides();
 		SpawnCommand command;
 		command.exe      = utf8ToWide(self);
-		command.cmdline  = buildCommandLine(child_argv);
+		command.cmdline  = line.cmdline;
 		command.envblock = buildEnvBlock(env_, overrides, /*include_unexported=*/true);
 
 		const HANDLE process = spawnWithHandles(command, currentStdio(), placement);
-		if (process == INVALID_HANDLE_VALUE) discardHistorySnapshot(overrides);
+		if (process == INVALID_HANDLE_VALUE) discardSelfSpawnFiles(line, overrides);
 		return process;
 	}
 
