@@ -71,6 +71,7 @@
     <ClCompile Include="src\executor_traps.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins_declare.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\builtins_fc.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins_read.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\stdinsync.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\testops.cpp"><Filter>Source Files</Filter></ClCompile>

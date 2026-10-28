@@ -520,6 +520,7 @@ namespace wbsh {
 		const std::string entry = std::move(state.history_entry);
 		state.history_entry.clear();
 		state.history_recorded = historyWanted(exec, entry);
+		exec.setCurrentCommandInHistory(state.history_recorded);
 		if (!state.history_recorded) return;
 
 		const HistoryFilter filter = { exec.env().get("HISTCONTROL"), std::string() };
@@ -535,6 +536,7 @@ namespace wbsh {
 		if (state.history_recorded) exec.markLastHistoryStatus(exec.lastStatus());
 
 		state.history_recorded = false;
+		exec.setCurrentCommandInHistory(false);
 		saveNewHistory(exec);
 	}
 

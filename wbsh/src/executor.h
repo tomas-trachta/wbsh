@@ -201,6 +201,11 @@ namespace wbsh {
 		const std::vector<int>& historyStatus() const { return history_.statuses; }
 		void  addHistoryEntry(std::string line);
 		void  eraseHistoryEntries(const std::string& line);
+		/// The newest entry becomes @p line, as when `fc` runs a command again.
+		void  replaceLastHistoryEntry(std::string line);
+		/// Whether the command running now, read at the prompt, is the newest entry.
+		bool  currentCommandInHistory() const { return current_in_history_; }
+		void  setCurrentCommandInHistory(bool held) { current_in_history_ = held; }
 		void  markLastHistoryStatus(int status);
 		void  setHistoryEntryStatus(std::size_t index, int status);
 		void  clearHistory();
@@ -944,11 +949,13 @@ namespace wbsh {
 		InputEcho input_echo_;
 		FlowSignal flow_;
 		std::size_t command_number_ = 1;
+		bool current_in_history_ = false;
 	};
 
 	void registerCoreBuiltins(Executor& exec);
 	void registerDeclarationBuiltins(Executor& exec);
 	void registerReadBuiltin(Executor& exec);
+	void registerFcBuiltin(Executor& exec);
 	void registerTestBuiltins(Executor& exec);
 	void registerCoreutils(Executor& exec);
 
