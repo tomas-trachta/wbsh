@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "consolekeys.h"
+#include "numparse.h"
 #include "strscan.h"
 #include "termreq.h"
 #include "textcells.h"
@@ -327,7 +328,10 @@ namespace wbsh {
 	}
 
 	void LineEditor::emit(const std::string& text) {
-		if (headless_) return;
+		if (headless_) {
+			if (capture_output_) captured_output_ += text;
+			return;
+		}
 
 		const HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
 		DWORD wrote;
@@ -391,11 +395,26 @@ namespace wbsh {
 	// A line that ends exactly at the right edge leaves the console's
 	// cursor waiting on that edge; the CRLF puts it on the row below,
 	// where the layout counts it.
+	std::size_t LineEditor::screenColumns() const {
+		return forced_columns_ != 0 ? forced_columns_ : consoleWidth();
+	}
+
+	static ScreenPos promptEnd(std::size_t visible, std::size_t width) {
+		return { visible / width, visible % width };
+	}
+
+	std::string LineEditor::describeCursorCell() const {
+		const std::size_t width = screenColumns();
+		const ScreenPos start = promptEnd(prompt_visible_len_, width);
+		const ScreenPos cursor = settled(advanceOver(buffer_, cursor_, start, width), width);
+		return "@" + std::to_string(cursor.row) + ":" + std::to_string(cursor.col);
+	}
+
 	void LineEditor::redraw() {
-		const std::size_t width = consoleWidth();
+		const std::size_t width = screenColumns();
 		refreshSuggestion();
 
-		const ScreenPos start = { prompt_visible_len_ / width, prompt_visible_len_ % width };
+		const ScreenPos start = promptEnd(prompt_visible_len_, width);
 		const ScreenPos cursor = settled(advanceOver(buffer_, cursor_, start, width), width);
 		const ScreenPos text_end = advanceOver(buffer_, buffer_.size(), start, width);
 		const ScreenPos end = advanceOver(suggestion_, suggestion_.size(), text_end, width);
@@ -1349,10 +1368,14 @@ namespace wbsh {
 		return prefix;
 	}
 
+	static std::size_t cellsOf(const std::string& text) {
+		return displayWidth(text, text.size());
+	}
+
 	static std::size_t longestLength(const std::vector<std::string>& matches) {
 		std::size_t longest = 0;
 		for (const std::string& match : matches) {
-			longest = std::max<std::size_t>(longest, match.size());
+			longest = std::max<std::size_t>(longest, cellsOf(match));
 		}
 
 		return longest;
@@ -1367,7 +1390,7 @@ namespace wbsh {
 
 			line += matches[index];
 			const bool more_in_row = col + 1 < cols && (col + 1) * rows + row < matches.size();
-			if (more_in_row) line.append(pad - matches[index].size(), ' ');
+			if (more_in_row) line.append(pad - cellsOf(matches[index]), ' ');
 		}
 
 		return line;
@@ -1377,7 +1400,7 @@ namespace wbsh {
 		emit("\r\n");
 
 		const std::size_t pad = longestLength(matches) + 2;
-		const std::size_t cols = std::max<std::size_t>(1, consoleWidth() / pad);
+		const std::size_t cols = std::max<std::size_t>(1, screenColumns() / pad);
 		const std::size_t rows = (matches.size() + cols - 1) / cols;
 		for (std::size_t row = 0; row < rows; ++row) {
 			emit(matchesRow(matches, row, rows, cols, pad) + "\r\n");
@@ -1551,15 +1574,15 @@ namespace wbsh {
 			return;
 		}
 
-		query.pop_back();
+		query.erase(previousClusterStart(query, query.size()));
 		const auto& history = exec_.history();
 		match_index = findReverseSearchMatch(history, query, lastHistoryIndex(history), false);
 		revsearchRefresh(query, match_index);
 	}
 
-	void LineEditor::revsearchExtendQuery(std::string& query, char letter,
+	void LineEditor::revsearchExtendQuery(std::string& query, const std::string& text,
 	                                      std::size_t& match_index) {
-		query.push_back(letter);
+		query += text;
 
 		const auto& history = exec_.history();
 		const std::size_t start = match_index < history.size()
@@ -1692,12 +1715,15 @@ namespace wbsh {
 		if (is_ctrl && vk == 'S') { revsearchStepNewer(query, match_index); return true; }
 		if (is_ctrl && vk == 'G') { cancel = true; return false; }
 
-		if (is_ctrl || is_meta || !isPrintableAscii(ch)) {
+		const bool typed = ch >= 0x80 || isPrintableAscii(ch);
+		if (is_ctrl || is_meta || !typed) {
 			redispatch = true;
 			return false;
 		}
 
-		revsearchExtendQuery(query, static_cast<char>(ch), match_index);
+		const std::string text = ch >= 0x80
+			? wideCharacter(ch) : std::string(1, static_cast<char>(ch));
+		revsearchExtendQuery(query, text, match_index);
 		return true;
 	}
 
@@ -2002,17 +2028,41 @@ namespace wbsh {
 
 	}  // namespace replay_detail
 
-	std::string LineEditor::replayKeys(const std::vector<std::string>& keys) {
-		resetLine("");
+	static std::string spelledOut(const std::string& output) {
+		std::string text;
+		for (const char letter : output) {
+			if (letter == '\x1b') text += "\\e";
+			else if (letter == '\r') text += "\\r";
+			else if (letter == '\n') text += "\\n\n";
+			else if (letter == '\a') text += "\\a";
+			else text.push_back(letter);
+		}
+
+		return text;
+	}
+
+	std::string LineEditor::replayKeys(const std::vector<std::string>& keys,
+	                                   const ReplayOptions& options) {
+		resetLine(options.prompt);
 		replay_keys_.clear();
 		for (const std::string& token : keys) replay_detail::queueToken(token, replay_keys_);
 
+		forced_columns_ = options.columns;
+		capture_output_ = options.show_output;
+		captured_output_.clear();
 		headless_ = true;
+		emit(prompt_raw_);
 		const bool finished = editUntilDone();
 		headless_ = false;
-
 		replay_keys_.clear();
-		return describeReplay(finished);
+
+		std::string report = describeReplay(finished);
+		if (options.columns != 0 && !finished) report += " " + describeCursorCell();
+		if (options.show_output) report += "\n" + spelledOut(captured_output_);
+
+		forced_columns_ = 0;
+		capture_output_ = false;
+		return report;
 	}
 
 #else  /* !_WIN32 */
@@ -2042,13 +2092,46 @@ namespace wbsh {
 	void LineEditor::revsearchRefresh(const std::string&, std::size_t) {}
 	void LineEditor::refreshSuggestion() {}
 	bool LineEditor::acceptInlineSuggestion() { return false; }
-	std::string LineEditor::replayKeys(const std::vector<std::string>&) { return {}; }
+	std::size_t LineEditor::screenColumns() const { return 0; }
+	std::string LineEditor::describeCursorCell() const { return {}; }
+	std::string LineEditor::replayKeys(const std::vector<std::string>&, const ReplayOptions&) {
+		return {};
+	}
 
 #endif /* _WIN32 */
 
+	// -c COLUMNS, -p PROMPT and -o come before the keys; `--` ends them.
+	static std::size_t takeReplayOptions(const std::vector<std::string>& args,
+	                                     LineEditor::ReplayOptions& options) {
+		std::size_t i = 0;
+		while (i < args.size()) {
+			const std::string& arg = args[i];
+			if (arg == "--") return i + 1;
+
+			const bool valued = (arg == "-c" || arg == "-p") && i + 1 < args.size();
+			if (!valued && arg != "-o") return i;
+
+			long long columns = 0;
+			if (arg == "-c" && parseLL(args[i + 1], columns) && columns > 0) {
+				options.columns = static_cast<std::size_t>(columns);
+			}
+
+			if (arg == "-p") options.prompt = args[i + 1];
+			if (arg == "-o") options.show_output = true;
+			i += valued ? 2 : 1;
+		}
+
+		return i;
+	}
+
 	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args) {
+		LineEditor::ReplayOptions options;
+		const std::size_t first = takeReplayOptions(args, options);
+		const std::vector<std::string> keys(args.begin() + static_cast<std::ptrdiff_t>(first),
+		                                    args.end());
+
 		LineEditor editor(exec.env(), exec);
-		std::printf("%s\n", editor.replayKeys(args).c_str());
+		std::printf("%s\n", editor.replayKeys(keys, options).c_str());
 		return 0;
 	}
 

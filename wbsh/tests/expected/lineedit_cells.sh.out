@@ -1,0 +1,22 @@
+=== wide characters take two cells
+[echo 日本語日本語][] @0:19
+[echo 日本語日][本語] @0:15
+[😀][😀] @0:4
+=== combining marks take none
+[ééé][] @0:5
+[éé][é] @0:4
+=== a wide prompt counts its cells too
+[ab][] @0:9
+=== wrapping: a wide character that does not fit goes to the next row
+[abcdefg][] @0:9
+[abcdefgh][] @1:0
+[abcdefg日][] @1:2
+[abcdefg][日] @0:9
+[abcdef日][] @1:0
+[日本語日][本語日本語] @1:0
+=== the redraw moves up exactly the rows it went down
+[abcdef][g日] @0:8
+$ \r\e[J$ a\r\e[3C\r\e[J$ ab\r\e[4C\r\e[J$ abc\r\e[5C\r\e[J$ abcd\r\e[6C\r\e[J$ abcde\r\e[7C\r\e[J$ abcdef\r\e[8C\r\e[J$ abcdefg\r\e[9C\r\e[J$ abcdefg日\r\e[2C\e[1A\r\e[J$ abcdefg日\r\e[1A\e[9C\r\e[J$ abcdefg日\r\e[1A\e[8C
+=== reverse search takes non-ASCII text
+accept [echo žluťoučký kůň]
+accept [echo žluťoučký kůň]
