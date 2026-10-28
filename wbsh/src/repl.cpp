@@ -175,15 +175,15 @@ namespace wbsh {
 		return off != nullptr && *off != '\0' && *off != '0';
 	}
 
-	static FILE* openGitStatusPipe() {
+	static FILE* openGitPipe(const std::string& args) {
 #ifdef _WIN32
-		return _popen("git --no-optional-locks status --porcelain 2>NUL", "r");
+		return _popen(("git --no-optional-locks " + args + " 2>NUL").c_str(), "r");
 #else
-		return popen("git --no-optional-locks status --porcelain 2>/dev/null", "r");
+		return popen(("git --no-optional-locks " + args + " 2>/dev/null").c_str(), "r");
 #endif
 	}
 
-	static void closeGitStatusPipe(FILE* pipe) {
+	static void closeGitPipe(FILE* pipe) {
 #ifdef _WIN32
 		_pclose(pipe);
 #else
@@ -194,7 +194,7 @@ namespace wbsh {
 	static std::string detectGitDirtyState() {
 		if (gitDirtyCheckDisabled()) return {};
 
-		FILE* pipe = openGitStatusPipe();
+		FILE* pipe = openGitPipe("status --porcelain");
 		if (pipe == nullptr) return {};
 
 		bool unstaged = false;
@@ -212,7 +212,7 @@ namespace wbsh {
 			if (unstaged) break;
 		}
 
-		closeGitStatusPipe(pipe);
+		closeGitPipe(pipe);
 		if (unstaged)  return "unstaged";
 		if (staged)    return "staged";
 		if (untracked) return "untracked";
@@ -237,6 +237,30 @@ namespace wbsh {
 		return ref;
 	}
 
+	static std::string firstGitLine(const std::string& args) {
+		FILE* pipe = openGitPipe(args);
+		if (pipe == nullptr) return {};
+
+		char line[512] = {};
+		const bool read = std::fgets(line, sizeof(line), pipe) != nullptr;
+		closeGitPipe(pipe);
+		if (!read) return {};
+
+		std::string text = line;
+		stripLineEnding(text);
+		return text;
+	}
+
+	// A reftable repository's HEAD file is only a stub pointing at
+	// refs/heads/.invalid; the real HEAD has to come from git.
+	static std::string branchFromGit() {
+		const std::string branch = firstGitLine("symbolic-ref --short -q HEAD");
+		if (!branch.empty()) return branch;
+
+		const std::string commit = firstGitLine("rev-parse --short HEAD");
+		return commit.empty() ? std::string() : commit + " (detached)";
+	}
+
 	static GitInfo detectGitInfo() {
 		GitInfo info;
 		const fs::path git_dir = findGitDir();
@@ -248,6 +272,7 @@ namespace wbsh {
 
 		stripLineEnding(line);
 		info.branch = branchFromHeadLine(line);
+		if (info.branch == ".invalid") info.branch = branchFromGit();
 
 		info.state = detectGitOpState(git_dir);
 		if (info.state.empty()) info.state = detectGitDirtyState();

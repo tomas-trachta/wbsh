@@ -1,0 +1,24 @@
+=== a linked worktree sees the main repository's refs and remotes
+[git checkout feature/login ][]
+[git branch maint ][]
+[git push upstream ][]
+[git push origin master ][]
+=== the main checkout gives the same answers
+[git checkout feature/login ][]
+[git push upstream ][]
+=== checkout offers tags, remote branches and names it can create
+[git checkout v1.0 ][]
+[git checkout upstream/][]
+[git checkout upstream/topic ][]
+[git checkout topic ][]
+[git checkout rel][]
+=== switch offers branches and creatable names, not tags
+[git switch topic ][]
+[git switch v][]
+=== merge, rebase and friends offer every ref
+[git merge v1.0 ][]
+[git rebase origin/release ][]
+=== a reftable repository is listed by git for-each-ref
+[git checkout alpha ][]
+[git checkout v2.0 ][]
+[git switch beta ][]

@@ -35,6 +35,14 @@ namespace wbsh {
 	// when not inside a repository.
 	std::filesystem::path findGitDir();
 
+	// The directory a linked worktree shares with its main repository
+	// (refs, packed-refs, config), named by its git dir's `commondir`
+	// file; `git_dir` itself when there is none.
+	std::filesystem::path findGitCommonDir(const std::filesystem::path& git_dir);
+
+	// Refs kept in a reftable instead of files: only git can list them.
+	bool usesRefTable(const std::filesystem::path& common_dir);
+
 	// Substring search over shell history for reverse-i-search. Scans from
 	// `start_index` (inclusive; clamped to the last entry) toward older
 	// entries, or toward newer ones when `forward`. Returns the index of
@@ -206,6 +214,11 @@ namespace wbsh {
 		                                            const std::vector<std::string>& prev);
 		std::vector<std::string> prevTokensBefore(const Tok& tok) const;
 		std::vector<std::string> gitBranches();
+		// `kind` is refs/heads, refs/tags or refs/remotes; names come back
+		// without it.
+		std::vector<std::string> gitRefs(const std::string& kind);
+		void appendRefsFromGit(const std::string& kind, std::vector<std::string>& names);
+		std::vector<std::string> gitRefTargets(bool tags_and_remotes, bool guesses);
 		std::vector<std::string> gitRemotes();
 		void applyCompletion(const Tok& tok,
 		                     const std::vector<std::string>& matches);
