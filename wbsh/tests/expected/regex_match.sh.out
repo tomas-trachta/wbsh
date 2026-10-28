@@ -1,0 +1,28 @@
+=== 1. unquoted ( ) | belong to the regex word
+group: abc b (2)
+alternation: foo
+bare bar
+blank inside parens: [a b]
+date: 2024 05
+bracket class
+&& after the regex
+|| after the regex
+verbosity 3
+[[ =~ (x)
+=== 2. quoted parts match literally
+quoted variable is literal
+quoted variable matches itself
+unquoted variable is a regex
+quoted dot is literal
+escaped dot matches a dot
+escaped dot is not a wildcard
+escaped bar is literal
+single-quoted plus is literal
+=== 3. BASH_REMATCH
+unmatched group: [] (2)
+no match leaves 0 elements
+declare -a BASH_REMATCH=([0]="ab" [1]="a" [2]="b")
+nocasematch: B
+=== 4. invalid regex returns 2
+status 2
+and is false

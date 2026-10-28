@@ -96,6 +96,53 @@ namespace wbsh {
 		return isBlank(c) || c == '\n' || isOperatorStart(c);
 	}
 
+	static bool endsRegexWord(char c) {
+		return isBlank(c) || c == '\n' || c == ')' || c == '&' || c == ';' || c == '<' || c == '>';
+	}
+
+	static bool isWordSpelled(const Token& token, const char* text) {
+		return token.kind == TokKind::Word && token.text == text;
+	}
+
+	static bool isCommandSeparator(TokKind kind) {
+		switch (kind) {
+		case TokKind::Newline:
+		case TokKind::Semi:
+		case TokKind::Amp:
+		case TokKind::AndIf:
+		case TokKind::OrIf:
+		case TokKind::Pipe:
+		case TokKind::PipeAmp:
+		case TokKind::LParen:
+		case TokKind::RParen:
+		case TokKind::DSemi:
+		case TokKind::SemiAmp:
+		case TokKind::DSemiAmp:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	static bool isCommandPrefixWord(const Token& token) {
+		static const char* const kPrefixes[] = {
+			"!", "if", "then", "else", "elif", "do", "while", "until", "{", "time",
+		};
+		for (const char* prefix : kPrefixes) {
+			if (isWordSpelled(token, prefix)) return true;
+		}
+
+		return false;
+	}
+
+	static void appendLiteralChar(std::vector<WordSegment>& out, char c) {
+		if (out.empty() || out.back().kind != WordSegment::Kind::Literal) {
+			out.push_back(WordSegment{});
+		}
+
+		out.back().text.push_back(c);
+	}
+
 	static WordSegment segmentOf(WordSegment::Kind kind, std::string text) {
 		WordSegment segment;
 		segment.kind = kind;
@@ -236,7 +283,8 @@ namespace wbsh {
 			return;
 		}
 
-		if (c == '\n' || isOperatorStart(c)) {
+		const bool regex_word = atRegexOperand() && !endsRegexWord(c);
+		if (!regex_word && (c == '\n' || isOperatorStart(c))) {
 			scanOperator();
 			return;
 		}
@@ -420,18 +468,15 @@ namespace wbsh {
 
 	void Lexer::scanWord() {
 		const std::size_t start_pos = pos_;
+		const bool command_start = atCommandWordStart();
 		Token word;
 		word.kind = TokKind::Word;
 		word.loc = loc_;
 		word.first_on_line = at_line_start_;
 		at_line_start_ = false;
 
-		while (!eof()) {
-			skipLineContinuations();
-			if (eof()) break;
-			if (endsWord(peek())) break;
-			if (!readWordSegment(word.segments)) break;
-		}
+		if (atRegexOperand()) scanRegexSegments(word);
+		else scanWordSegments(word);
 
 		word.text = src_.substr(start_pos, pos_ - start_pos);
 		if (isDigitsOnly(word.segments) && (peek() == '<' || peek() == '>')) {
@@ -439,8 +484,55 @@ namespace wbsh {
 		}
 
 		markHeredocDelimiter(word);
+		trackDBracket(word, command_start);
 		tokens_.push_back(std::move(word));
 		if (tokens_.back().is_heredoc_delim) pending_heredocs_.push_back({ tokens_.size() - 1 });
+	}
+
+	void Lexer::scanWordSegments(Token& word) {
+		while (!eof()) {
+			skipLineContinuations();
+			if (eof()) break;
+			if (endsWord(peek())) break;
+			if (!readWordSegment(word.segments)) break;
+		}
+	}
+
+	void Lexer::scanRegexSegments(Token& word) {
+		int paren_depth = 0;
+		while (!eof()) {
+			skipLineContinuations();
+			if (eof()) break;
+			if (!readRegexPart(word.segments, paren_depth)) break;
+		}
+	}
+
+	bool Lexer::readRegexPart(std::vector<WordSegment>& out, int& paren_depth) {
+		const char c = peek();
+		if (c == '\n') return false;
+		if (paren_depth == 0 && endsRegexWord(c)) return false;
+		if (isSegmentStart(c)) return readWordSegment(out);
+
+		if (c == '(') ++paren_depth;
+		else if (c == ')') --paren_depth;
+		appendLiteralChar(out, advance());
+		return true;
+	}
+
+	bool Lexer::atRegexOperand() const {
+		return in_dbracket_ && !tokens_.empty() && isWordSpelled(tokens_.back(), "=~");
+	}
+
+	bool Lexer::atCommandWordStart() const {
+		if (tokens_.empty()) return true;
+
+		const Token& previous = tokens_.back();
+		return isCommandSeparator(previous.kind) || isCommandPrefixWord(previous);
+	}
+
+	void Lexer::trackDBracket(const Token& word, bool command_start) {
+		if (command_start && isWordSpelled(word, "[[")) in_dbracket_ = true;
+		else if (isWordSpelled(word, "]]")) in_dbracket_ = false;
 	}
 
 	void Lexer::markHeredocDelimiter(Token& word) const {

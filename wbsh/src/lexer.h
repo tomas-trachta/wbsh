@@ -133,6 +133,12 @@ namespace wbsh {
 		void scanLessRun(SourceLoc start);
 		void scanGreatRun(SourceLoc start);
 		void scanWord();
+		void scanWordSegments(Token& word);
+		void scanRegexSegments(Token& word);
+		bool readRegexPart(std::vector<WordSegment>& out, int& paren_depth);
+		bool atRegexOperand() const;
+		bool atCommandWordStart() const;
+		void trackDBracket(const Token& word, bool command_start);
 		void markHeredocDelimiter(Token& word) const;
 		void skipWhitespace();
 		void skipComment();
@@ -183,6 +189,9 @@ namespace wbsh {
 		std::vector<LexError> errors_;
 
 		bool at_line_start_ = true;
+		// Inside `[[ ... ]]` the word after `=~` is a regex in which
+		// `(`, `)` and `|` (and blanks inside parentheses) are word text.
+		bool in_dbracket_ = false;
 
 		// Heredoc delimiters waiting for their body after the next
 		// newline, as indices into `tokens_` so the body can be filled in.
