@@ -1,0 +1,8 @@
+big=40000
+=== 1. a stage with a 40000-character literal
+40001
+=== 2. a heredoc body of 80000 characters
+80001
+=== 3. a function stage with a long positional
+40000
+40000

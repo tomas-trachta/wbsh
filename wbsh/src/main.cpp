@@ -15,6 +15,7 @@
 #  pragma comment(lib, "shell32.lib")
 #endif /* _WIN32 */
 
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -358,14 +359,43 @@ static void prepareCrtForShellUse() {
 
 #endif /* _WIN32 */
 
-int main(int argc, char** argv) {
-#ifdef _WIN32
-	prepareCrtForShellUse();
+static std::vector<std::string> readArgvFile(const std::string& path) {
+	std::vector<std::string> words;
+	std::ifstream file(utf8ToPath(path), std::ios::binary);
+	std::string word;
+	while (std::getline(file, word, '\0')) words.push_back(word);
+	file.close();
 
+	std::error_code ec;
+	std::filesystem::remove(utf8ToPath(path), ec);
+	return words;
+}
+
+// A parent wbsh whose self-spawn command line would pass the Windows
+// limit runs `wbsh --argv-file PATH` instead; PATH holds the real words.
+static void expandArgvFile(int& argc, char**& argv,
+		std::vector<std::string>& storage, std::vector<char*>& ptrs) {
+	if (argc != 3 || std::string(argv[1]) != "--argv-file") return;
+
+	std::vector<std::string> words = readArgvFile(argv[2]);
+	words.insert(words.begin(), argv[0]);
+	storage = std::move(words);
+
+	ptrs.clear();
+	for (auto& arg : storage) ptrs.push_back(arg.data());
+	ptrs.push_back(nullptr);
+	argc = static_cast<int>(storage.size());
+	argv = ptrs.data();
+}
+
+int main(int argc, char** argv) {
 	std::vector<std::string> argv_utf8_storage;
 	std::vector<char*>       argv_ptrs;
+#ifdef _WIN32
+	prepareCrtForShellUse();
 	rewriteArgvAsUtf8(argc, argv, argv_utf8_storage, argv_ptrs);
 #endif /* _WIN32 */
+	expandArgvFile(argc, argv, argv_utf8_storage, argv_ptrs);
 
 	Options options;
 	std::string error;
