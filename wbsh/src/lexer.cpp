@@ -206,6 +206,19 @@ namespace wbsh {
 		return true;
 	}
 
+	// `{name}` or `{name[subscript]}` right before a redirection operator:
+	// the shell picks the descriptor and stores it in the variable.
+	static bool isFdVariableWord(const std::string& text) {
+		if (text.size() < 3 || text.front() != '{' || text.back() != '}') return false;
+		if (!isNameStart(text[1])) return false;
+
+		std::size_t i = 2;
+		while (i + 1 < text.size() && isNameCont(text[i])) ++i;
+		if (i + 1 == text.size()) return true;
+
+		return text[i] == '[' && text[text.size() - 2] == ']';
+	}
+
 	static void stripLeadingTabs(std::string& line) {
 		std::size_t count = 0;
 		while (count < line.size() && line[count] == '\t') ++count;
@@ -499,9 +512,8 @@ namespace wbsh {
 		else scanWordSegments(word);
 
 		word.text = src_.substr(start_pos, pos_ - start_pos);
-		if (isDigitsOnly(word.segments) && (peek() == '<' || peek() == '>')) {
-			word.kind = TokKind::IoNumber;
-		}
+		const bool names_fd = isDigitsOnly(word.segments) || isFdVariableWord(word.text);
+		if (names_fd && (peek() == '<' || peek() == '>')) word.kind = TokKind::IoNumber;
 
 		markHeredocDelimiter(word);
 		trackDBracket(word, command_start);

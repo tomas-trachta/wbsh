@@ -1,0 +1,13 @@
+rc=0
+fd=10
+first
+second
+read [first] [second]
+third
+rw=10
+two: 1
+via dup
+hi
+persisted: yes
+elem=10
+coproc saw EOF

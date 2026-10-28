@@ -59,6 +59,7 @@ namespace wbsh {
 	struct Redirection {
 		RedirOp op = RedirOp::Less;
 		int fd = -1;                    ///< fd before the operator; -1 for default.
+		std::string fd_variable;        ///< `{name}>file`: the variable that gets the fd.
 		Word target;
 		std::string heredoc_body;
 		bool heredoc_quoted = false;

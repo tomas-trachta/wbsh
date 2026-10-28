@@ -1925,33 +1925,101 @@ namespace wbsh {
 		return installRedirFromTempBody(std::move(body), target, state);
 	}
 
+	static int redirTargetFd(const Redirection& redir) {
+		return (redir.fd != -1) ? redir.fd : defaultRedirTargetFd(redir.op);
+	}
+
+	static int lowestFreeFdFrom(int first) {
+		int fd = first;
+		while (_get_osfhandle(fd) != -1) ++fd;
+		return fd;
+	}
+
+	static void forgetSavedFd(std::vector<std::pair<int, int>>& saved, int fd) {
+		saved.erase(std::remove_if(saved.begin(), saved.end(),
+			[fd](const std::pair<int, int>& entry) { return entry.first == fd; }), saved.end());
+	}
+
 	bool Executor::applyRedirections(const std::vector<Redirection>& redirs, RedirState& state) {
 		for (const auto& redir : redirs) {
-			const int target = (redir.fd != -1) ? redir.fd : defaultRedirTargetFd(redir.op);
 			std::fflush(stdout);
 			std::fflush(stderr);
 
-			bool ok = true;
-			switch (redir.op) {
-			case RedirOp::Less:        ok = applyLessRedir       (redir, target, state); break;
-			case RedirOp::Great:
-			case RedirOp::Clobber:     ok = applyTruncOrClobber  (redir, target, state); break;
-			case RedirOp::DGreat:      ok = applyAppendRedir     (redir, target, state); break;
-			case RedirOp::AmpGreat:    ok = applyAmpRedir(redir, _O_TRUNC, state);        break;
-			case RedirOp::AmpDGreat:   ok = applyAmpRedir(redir, _O_APPEND, state);       break;
-			case RedirOp::LessGreat:   ok = applyLessGreatRedir  (redir, target, state); break;
-			case RedirOp::LessAnd:
-			case RedirOp::GreatAnd:    ok = applyDupRedir        (redir, target, state); break;
-			case RedirOp::DLess:
-			case RedirOp::DLessDash:   ok = applyHeredocRedir    (redir, target, state); break;
-			case RedirOp::TLess:       ok = applyHerestringRedir (redir, target, state); break;
-			}
-
+			const bool ok = redir.fd_variable.empty()
+				? applyRedirection(redir, redirTargetFd(redir), state)
+				: applyFdVariableRedir(redir, state);
 			if (!ok) return false;
 			if (flowPending()) return false;
 		}
 
 		return true;
+	}
+
+	bool Executor::applyRedirection(const Redirection& redir, int target, RedirState& state) {
+		switch (redir.op) {
+		case RedirOp::Less:        return applyLessRedir       (redir, target, state);
+		case RedirOp::Great:
+		case RedirOp::Clobber:     return applyTruncOrClobber  (redir, target, state);
+		case RedirOp::DGreat:      return applyAppendRedir     (redir, target, state);
+		case RedirOp::AmpGreat:    return applyAmpRedir(redir, _O_TRUNC, state);
+		case RedirOp::AmpDGreat:   return applyAmpRedir(redir, _O_APPEND, state);
+		case RedirOp::LessGreat:   return applyLessGreatRedir  (redir, target, state);
+		case RedirOp::LessAnd:
+		case RedirOp::GreatAnd:    return applyDupRedir        (redir, target, state);
+		case RedirOp::DLess:
+		case RedirOp::DLessDash:   return applyHeredocRedir    (redir, target, state);
+		case RedirOp::TLess:       return applyHerestringRedir (redir, target, state);
+		default:                   return false;
+		}
+	}
+
+	// `{name}>file` opens the file on the lowest free fd from 10 up and
+	// stores it in `name`; `{name}>&-` closes the fd that `name` holds.
+	// Either way the change outlives the command, as in bash.
+	bool Executor::applyFdVariableRedir(const Redirection& redir, RedirState& state) {
+		std::string spec;
+		const bool dup = redir.op == RedirOp::GreatAnd || redir.op == RedirOp::LessAnd;
+		if (dup && expandRedirTarget(redir.target, spec) && spec == "-") {
+			return closeFdVariable(redir.fd_variable);
+		}
+
+		const int fd = lowestFreeFdFrom(kFirstSavedFd);
+		if (!applyRedirection(redir, fd, state)) return false;
+
+		forgetSavedFd(state.saved, fd);
+		assignFdVariable(redir.fd_variable, fd);
+		return true;
+	}
+
+	bool Executor::closeFdVariable(const std::string& variable) {
+		const std::string value = expander_.expandHeredoc("${" + variable + "}", false);
+		int fd = -1;
+		if (!parseInt(value, fd) || fd < 0) {
+			std::fprintf(stderr, "wbsh: %s: invalid file descriptor\n", variable.c_str());
+			return false;
+		}
+
+		beforeRepointing(fd);
+		_close(fd);
+		return true;
+	}
+
+	void Executor::assignFdVariable(const std::string& variable, int fd) {
+		const std::size_t open = variable.find('[');
+		if (open == std::string::npos) {
+			env_.set(variable, std::to_string(fd));
+			return;
+		}
+
+		const std::string name = variable.substr(0, open);
+		const std::string subscript = variable.substr(open + 1, variable.size() - open - 2);
+		if (env_.isAssocArray(name)) {
+			env_.setAssocElement(name, expander_.expandHeredoc(subscript, false),
+				std::to_string(fd));
+			return;
+		}
+
+		env_.setIndexedElement(name, expander_.evalArith(subscript), std::to_string(fd));
 	}
 
 	static void restoreSavedFd(int fd, int backup) {
