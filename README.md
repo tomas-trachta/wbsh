@@ -131,7 +131,9 @@ PS1='\[\e[35;1m\]\w\[\e[0m\]\g \$ '
 | `PS1`, `PS2` | Primary and continuation prompts. Escapes below.               |
 | `PATH`      | Stored in POSIX form, auto-translated for spawns.               |
 | `HOME`      | Defaults to `%USERPROFILE%` in POSIX form.                      |
-| `HISTFILE`  | History file (default `$HOME/.wbsh_history`).                   |
+| `HISTFILE`  | History file (default `$HOME/.wbsh_history`); each command is appended as it finishes. Empty: not saved. |
+| `HISTSIZE`, `HISTFILESIZE` | Entries kept in memory / in the file (default 5000; negative: no limit). |
+| `HISTCONTROL`, `HISTIGNORE` | `ignorespace`, `ignoredups`, `ignoreboth`, `erasedups`; colon-separated patterns (`&` = previous entry) left out of history. |
 | `COLUMNS`, `LINES` | Updated on resize; fires the `WINCH` trap.               |
 | `WBSH_GIT_NO_DIRTY` | Skip the working-tree check in the `\g` prompt (huge repos). |
 | `WBSH_NO_PATHCONV`, `MSYS_NO_PATHCONV` | Suppress POSIX→Win32 argument translation for spawned commands. |

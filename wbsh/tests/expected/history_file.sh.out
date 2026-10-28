@@ -1,0 +1,51 @@
+=== each command is in the file as soon as it finishes
+#!wbsh-history-v3
+0<TAB>echo first
+=== a shell started meanwhile keeps its entries when the first one exits
+echo a1
+echo b1
+echo b2
+printf 'echo b1\\necho b2\\n' | env -u WBSH_INIT_COMMAND "$WBSH_UNDER_TEST" -i > /dev/null 2>&1
+echo a2
+=== the exit status of each command is kept
+#!wbsh-history-v3
+0<TAB>true
+1<TAB>false
+=== HISTFILESIZE trims the file when the shell exits
+echo two
+echo three
+=== HISTSIZE limits the list in memory
+    1  echo four
+    2  history > "$HOME/listing"
+=== HISTCONTROL=ignorespace and ignoredups
+    1  echo same
+    2  echo other
+    3  history > "$HOME/listing"
+=== without HISTCONTROL duplicates and leading spaces are kept
+    1   echo spaced
+    2  echo same
+    3  echo same
+    4  history > "$HOME/listing"
+=== HISTCONTROL=erasedups removes the older copies
+    1  echo y
+    2  echo x
+    3  history > "$HOME/listing"
+=== HISTIGNORE patterns and &
+    1  echo kept
+    2  history > "$HOME/listing"
+=== set +o history stops recording
+    1  echo before
+    2  set +o history
+    3  history > "$HOME/listing"
+=== HISTFILE set in .wbshrc is the file used
+hist untouched
+0	echo into-other
+=== an empty HISTFILE saves nothing
+hist untouched
+=== history -a appends the new entries, history -w rewrites the file
+#!wbsh-history-v3
+0<TAB>echo appended
+#!wbsh-history-v3
+0<TAB>echo appended
+0<TAB>echo second
+0

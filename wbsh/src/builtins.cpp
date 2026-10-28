@@ -1756,8 +1756,18 @@ namespace wbsh {
 
 	static int writeHistoryFile(Executor& exec) {
 		const std::string path = historyFilePath(exec);
-		if (path.empty() || !exec.saveHistoryToFile(path)) {
+		if (path.empty() || !exec.writeHistory(path)) {
 			printerr("history: cannot write history file");
+			return 1;
+		}
+
+		return 0;
+	}
+
+	static int appendHistoryFileEntries(Executor& exec) {
+		const std::string path = historyFilePath(exec);
+		if (path.empty() || !exec.appendNewHistory(path)) {
+			printerr("history: cannot append to history file");
 			return 1;
 		}
 
@@ -1814,6 +1824,7 @@ namespace wbsh {
 			}
 
 			if (args[0] == "-w") return writeHistoryFile(exec);
+			if (args[0] == "-a") return appendHistoryFileEntries(exec);
 			if (args[0] == "-r") return readHistoryFile(exec);
 			if (args[0] == "-s") return appendHistoryEntry(exec, args);
 		}

@@ -282,6 +282,7 @@
     <ClCompile Include="src\inflate.cpp" />
     <ClCompile Include="src\setup.cpp" />
     <ClCompile Include="src\history.cpp" />
+    <ClCompile Include="src\historyfile.cpp" />
     <ClCompile Include="src\repl.cpp" />
     <ClCompile Include="src\script.cpp" />
     <ClCompile Include="src\main.cpp" />

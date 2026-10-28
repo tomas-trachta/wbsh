@@ -110,6 +110,7 @@
     <ClCompile Include="..\wbshterm\src\charwidth_ucd.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\setup.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\history.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\historyfile.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\repl.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\script.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\main.cpp"><Filter>Source Files</Filter></ClCompile>
