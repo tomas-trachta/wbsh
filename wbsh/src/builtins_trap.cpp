@@ -210,6 +210,18 @@ namespace wbsh::trap_detail {
 
 namespace wbsh {
 
+	std::string Executor::serializeListedTraps() const {
+		std::string text;
+		for (const std::string& name : trap_detail::listingOrder()) {
+			const auto found = listedTraps().find(name);
+			if (found == listedTraps().end()) continue;
+
+			text += "trap -- " + trap_detail::quoted(found->second) + " " + name + "\n";
+		}
+
+		return text;
+	}
+
 	void registerTrapBuiltin(Executor& exec) {
 		exec.registerBuiltin("trap", trap_detail::builtin_trap);
 	}

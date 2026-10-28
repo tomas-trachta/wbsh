@@ -1,0 +1,25 @@
+=== traps
+trap -- ': exit trap' EXIT
+trap -- 'echo "it'\''s INT"' SIGINT
+trap -- '' SIGQUIT
+trap -- ': exit trap' EXIT
+trap -- 'echo "it'\''s INT"' SIGINT
+trap -- '' SIGQUIT
+substituted: trap -- ': exit trap' EXIT
+trap -- '' SIGQUIT
+pipeline: trap -- 'echo "it'\''s INT"' SIGINT
+=== traps are listed, not run, in a stage
+stage
+no traps left: 0
+=== a DEBUG trap stays quiet while the stage is set up
+trap -- ': debug' DEBUG
+trap -- ': err' ERR
+=== the directory stack
+D/two D/one D
+D/two D/one D
+D/two D/one D
+ 0  D/two
+ 1  D/one
+ 2  D
+D/two D/one D
+D/one D

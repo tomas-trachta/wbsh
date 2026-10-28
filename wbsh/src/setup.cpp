@@ -356,6 +356,30 @@ namespace wbsh {
 		exec.executeText(text, label);
 	}
 
+	static void applyInheritedTraps(Environment& env, Executor& exec) {
+		const std::string text = env.get("WBSH_TRAPS");
+		if (text.empty()) return;
+
+		env.unset("WBSH_TRAPS");
+		exec.adoptInheritedTraps(text);
+	}
+
+	static void applyInheritedDirStack(Environment& env, Executor& exec) {
+		const std::string text = env.get("WBSH_DIRSTACK");
+		if (text.empty()) return;
+
+		env.unset("WBSH_DIRSTACK");
+		std::vector<std::string>& stack = exec.dirStack();
+		stack.clear();
+		std::size_t start = 0;
+		while (start < text.size()) {
+			std::size_t end = text.find('\n', start);
+			if (end == std::string::npos) end = text.size();
+			stack.push_back(text.substr(start, end - start));
+			start = end + 1;
+		}
+	}
+
 	static void applyInheritedDisabledBuiltins(Environment& env, Executor& exec) {
 		const std::string names = env.get("WBSH_DISABLED_BUILTINS");
 		if (names.empty()) return;
@@ -501,6 +525,8 @@ namespace wbsh {
 		exec.adoptInheritedCallStack();
 		applyInheritedFunctionFiles(env, exec);
 		applyInheritedDisabledBuiltins(env, exec);
+		applyInheritedTraps(env, exec);
+		applyInheritedDirStack(env, exec);
 		env.unset("WBSH_LINENO");
 		replayInheritedText(env, exec, "WBSH_ATTRIBUTES", "<inherited attributes>");
 		replayInheritedText(env, exec, "WBSH_BINDINGS", "<inherited bindings>");

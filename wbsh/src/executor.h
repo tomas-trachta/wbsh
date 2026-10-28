@@ -312,6 +312,12 @@ namespace wbsh {
 		const std::unordered_map<std::string, std::string>& listedTraps() const {
 			return lists_inherited_traps_ ? inherited_traps_ : trap_handlers_;
 		}
+		/// `trap -- 'action' NAME` lines for what `trap` lists, so a
+		/// self-spawned subshell can list them too (WBSH_TRAPS).
+		std::string serializeListedTraps() const;
+		/// Replay a parent's WBSH_TRAPS: listed, but only ignored signals
+		/// (and ERR / DEBUG / RETURN under errtrace / functrace) stay active.
+		void adoptInheritedTraps(const std::string& text);
 		// Run (and clear, so it fires once) the EXIT trap for a shell that
 		// is exiting with @p status. Returns the status to exit with: the
 		// trap's own `exit N`, otherwise @p status.

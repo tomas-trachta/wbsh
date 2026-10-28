@@ -143,6 +143,15 @@ namespace wbsh {
 		trap_handlers_[trap.name] = std::move(trap.action);
 	}
 
+	// The replay runs as if inside a trap, so a DEBUG trap it installs does
+	// not fire for the `trap` commands after it.
+	void Executor::adoptInheritedTraps(const std::string& text) {
+		++trap_depth_;
+		executeText(text, "<inherited traps>");
+		--trap_depth_;
+		resetSubshellTraps();
+	}
+
 	void Executor::restoreTrapsAfterFunction(std::vector<SuspendedTrap>& suspended) {
 		for (SuspendedTrap& trap : suspended) restoreTrap(trap);
 	}
