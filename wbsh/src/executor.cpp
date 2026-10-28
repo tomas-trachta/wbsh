@@ -3542,39 +3542,51 @@ namespace wbsh {
 	}
 
 	template <typename Error>
-	static void reportSourceErrors(const std::string& origin, const std::vector<Error>& errors) {
+	static void formatSourceErrors(const std::string& origin, const std::vector<Error>& errors,
+			std::string& out) {
 		for (const auto& error : errors) {
-			std::fprintf(stderr, "wbsh: %s:%zu:%zu: %s\n",
-				origin.c_str(), error.loc.line, error.loc.column, error.message.c_str());
+			out += "wbsh: " + origin + ":" + std::to_string(error.loc.line) + ":"
+				+ std::to_string(error.loc.column) + ": " + error.message + "\n";
 		}
 	}
 
-	Node* Executor::parseText(const std::string& source_text, const std::string& origin) {
+	// Only the commands on the lines before a syntax error are kept; the
+	// diagnostics are printed once execution reaches the error.
+	Executor::ParsedText Executor::parseText(const std::string& source_text,
+			const std::string& origin) {
 		Lexer lexer(source_text);
 		std::vector<Token> tokens = lexer.tokenize();
-		reportSourceErrors(origin, lexer.errors());
-
 		Parser parser(std::move(tokens), source_text);
-		Node* root = parser.parseProgram();
-		reportSourceErrors(origin, parser.errors());
-		if (root == nullptr) return nullptr;
 
+		ParsedText parsed;
+		parsed.root = parser.parseProgram();
+		formatSourceErrors(origin, lexer.errors(), parsed.diagnostics);
+		formatSourceErrors(origin, parser.errors(), parsed.diagnostics);
+		if (parsed.root == nullptr) return parsed;
+
+		truncateAtSyntaxError(*parsed.root, parser,
+			firstSyntaxErrorOffset(lexer.errors(), parser.errors()));
 		owned_arenas_.push_back(parser.takeArena());
-		return root;
+		return parsed;
+	}
+
+	int Executor::finishParsedText(const ParsedText& parsed, int status) {
+		if (parsed.diagnostics.empty() || flowPending()) return status;
+
+		std::fputs(parsed.diagnostics.c_str(), stderr);
+		return kSyntaxErrorStatus;
 	}
 
 	int Executor::executeText(const std::string& source_text, const std::string& origin) {
-		Node* root = parseText(source_text, origin);
-		if (root == nullptr) return 1;
-
-		return execute(*root);
+		const ParsedText parsed = parseText(source_text, origin);
+		const int status = parsed.root != nullptr ? execute(*parsed.root) : 0;
+		return finishParsedText(parsed, status);
 	}
 
 	int Executor::executeInputText(const std::string& source_text, const std::string& origin) {
-		Node* root = parseText(source_text, origin);
-		if (root == nullptr) return 1;
-
-		return executeInput(*root, source_text);
+		const ParsedText parsed = parseText(source_text, origin);
+		const int status = parsed.root != nullptr ? executeInput(*parsed.root, source_text) : 0;
+		return finishParsedText(parsed, status);
 	}
 
 	int Executor::executeInput(const Node& root, const std::string& source_text) {
