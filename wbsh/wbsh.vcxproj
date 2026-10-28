@@ -192,6 +192,7 @@
     <ClInclude Include="src\textcells.h" />
     <ClInclude Include="src\utf8.h" />
     <ClInclude Include="src\awk.h" />
+    <ClInclude Include="src\curl_internal.h" />
     <ClInclude Include="src\bcnum.h" />
     <ClInclude Include="src\bc_internal.h" />
     <ClInclude Include="src\bc_lexer.h" />
@@ -243,6 +244,11 @@
     <ClCompile Include="src\coreutils_tr.cpp" />
     <ClCompile Include="src\coreutils_find.cpp" />
     <ClCompile Include="src\coreutils_curl.cpp" />
+    <ClCompile Include="src\curl_options.cpp" />
+    <ClCompile Include="src\curl_support.cpp" />
+    <ClCompile Include="src\curl_request.cpp" />
+    <ClCompile Include="src\curl_http.cpp" />
+    <ClCompile Include="src\curl_writeout.cpp" />
     <ClCompile Include="src\coreutils_hash.cpp" />
     <ClCompile Include="src\coreutils_grep.cpp" />
     <ClCompile Include="src\coreutils_sed.cpp" />

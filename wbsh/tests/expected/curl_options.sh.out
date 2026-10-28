@@ -1,0 +1,170 @@
+=== unknown options are rejected
+curl: option --bogus: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+rc=2
+curl: option -z: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+rc=2
+curl: option -o: requires parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+rc=2
+curl: no URL specified!
+curl: try 'curl --help' or 'curl --manual' for more information
+rc=2
+=== option values are not taken as the URL
+hello from the test server
+rc=0
+=== HTTP errors fail only with -f
+status 404
+rc=0
+curl: (22) The requested URL returned error: 404
+rc=22
+rc=22
+status 500
+rc=22
+rc=22
+no file
+=== request bodies
+POST /echo HTTP/1.1
+Connection: Keep-Alive
+Content-Type: application/x-www-form-urlencoded
+Accept: */*
+User-Agent: curl/8.10.1
+Content-Length: 7
+Host: HOST
+
+a=1&b=2
+line1line2
+line1
+line2
+q=a%20b%26c
+Content-Type: text/plain
+Content-Type: application/json
+Accept: application/json
+GET /echo?q=1&r=2 HTTP/1.1
+PUT /echo HTTP/1.1
+PUT /echo HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+User-Agent: curl/8.10.1
+Content-Length: 12
+Host: HOST
+
+line1
+line2
+=== redirects are followed only with -L
+moved
+rc=0
+hello from the test server
+HTTP/1.1 302 Found
+Connection: close
+Content-Length: 6
+Content-Type: text/plain
+Location: /ok
+
+HTTP/1.1 200 OK
+Connection: close
+Content-Length: 27
+Content-Type: text/plain
+
+hello from the test server
+curl: (47) Maximum (0) redirects followed
+rc=47
+hello from the test server
+=== request headers
+GET /echo HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+Authorization: Basic dXNlcjpwYXNz
+Referer: http://ref/
+User-Agent: agent/1
+X-Test: yes
+Host: HOST
+
+GET /echo HTTP/1.1
+Connection: Keep-Alive
+Host: HOST
+
+=== write-out
+200 1 text/plain 27
+200|text/plain|0|%
+failed with 22
+curl: unknown --write-out variable: 'nosuchvar'
+
+=== timeouts and retries
+rc=28
+recovered
+rc=0
+=== proxy
+GET http://example.invalid/echo HTTP/1.1
+=== multipart forms
+POST /echo HTTP/1.1
+Connection: Keep-Alive
+Content-Type: multipart/form-data; boundary=BOUNDARY
+Accept: */*
+User-Agent: curl/8.10.1
+Content-Length: 399
+Host: HOST
+
+BOUNDARY
+Content-Disposition: form-data; name="name"
+
+value
+BOUNDARY
+Content-Disposition: form-data; name="up"; filename="up.txt"
+Content-Type: text/plain
+
+file content
+
+BOUNDARY
+Content-Disposition: form-data; name="note"
+
+file content
+
+BOUNDARY--
+=== compressed, resume, range
+this body was gzip encoded
+rc=0
+0123456789abcdefghij
+fghij
+=== outputs
+hello from the test server
+hello from the test server
+hello from the test server
+status 201
+hello from the test server
+status 202
+=== cookies
+Cookie: k=v
+127.0.0.1	session	abc123
+Cookie: session=abc123
+=== verbose, dump-header, head
+> GET /ok HTTP/1.1
+> User-Agent: curl/8.10.1
+> Accept: */*
+> Connection: Keep-Alive
+> 
+< HTTP/1.1 200 OK
+< Connection: close
+< Content-Length: 27
+< Content-Type: text/plain
+< 
+HTTP/1.1 200 OK
+Connection: close
+Content-Length: 27
+Content-Type: text/plain
+
+HTTP/1.1 200 OK
+Connection: close
+Content-Length: 27
+Content-Type: text/plain
+
+=== errors
+curl: (7) Failed to connect to 127.0.0.1 port 1 after N ms: Couldn't connect to server
+rc=7
+curl: (1) Protocol "ftp" not supported
+rc=1
+rc=37
+file content
+=== config file
+X-Config: 1
