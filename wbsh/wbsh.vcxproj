@@ -192,6 +192,9 @@
     <ClInclude Include="src\textcells.h" />
     <ClInclude Include="src\utf8.h" />
     <ClInclude Include="src\awk.h" />
+    <ClInclude Include="src\bcnum.h" />
+    <ClInclude Include="src\bc_internal.h" />
+    <ClInclude Include="src\bc_lexer.h" />
     <ClInclude Include="src\awk_internal.h" />
     <ClInclude Include="src\awk_interp.h" />
     <ClInclude Include="src\awk_lexer.h" />
@@ -226,6 +229,12 @@
     <ClCompile Include="src\coreutils.cpp" />
     <ClCompile Include="src\coreutils_archive.cpp" />
     <ClCompile Include="src\coreutils_bc.cpp" />
+    <ClCompile Include="src\bcnum.cpp" />
+    <ClCompile Include="src\bc_lexer.cpp" />
+    <ClCompile Include="src\bc_parser.cpp" />
+    <ClCompile Include="src\bc_interp.cpp" />
+    <ClCompile Include="src\bc_output.cpp" />
+    <ClCompile Include="src\bc_mathlib.cpp" />
     <ClCompile Include="src\coreutils_encoding.cpp" />
     <ClCompile Include="src\coreutils_text.cpp" />
     <ClCompile Include="src\coreutils_xargs.cpp" />

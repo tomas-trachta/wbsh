@@ -42,6 +42,9 @@
     <ClInclude Include="src\strsearch.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\strscan.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\awk.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\bcnum.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\bc_internal.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\bc_lexer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\awk_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\awk_interp.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\awk_lexer.h"><Filter>Header Files</Filter></ClInclude>
@@ -74,6 +77,12 @@
     <ClCompile Include="src\strsearch.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_builtins.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\bcnum.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\bc_lexer.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\bc_parser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\bc_interp.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\bc_output.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\bc_mathlib.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_fields.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_interp.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_io.cpp"><Filter>Source Files</Filter></ClCompile>
