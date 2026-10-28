@@ -1270,6 +1270,7 @@ namespace wbsh {
 			int last_status) {
 		if (last_status != 0) overrides.emplace_back("WBSH_STATUS", std::to_string(last_status));
 		overrides.emplace_back("WBSH_SHELL_PID", std::to_string(env.shellPid()));
+		overrides.emplace_back("WBSH_PPID", env.get("PPID"));
 	}
 
 	// A self-spawned subshell starts with this shell's history and job
@@ -2843,10 +2844,11 @@ namespace wbsh {
 
 		// `forceSet` (readonly bypass) only when unwinding a pending
 		// signal, plain `set` otherwise — a deliberate asymmetry preserved
-		// from the original implementation.
+		// from the original implementation. A readonly variable still holds
+		// the saved value; writing it back must not report an error.
 		for (const auto& var : snap.saved_vars) {
-			if (force_set) env_.forceSet(var.first, var.second);
-			else           env_.set(var.first, var.second);
+			if (force_set || env_.isReadonly(var.first)) env_.forceSet(var.first, var.second);
+			else                                         env_.set(var.first, var.second);
 		}
 
 		env_.setPositional(std::move(snap.saved_pos));
@@ -3873,12 +3875,19 @@ namespace wbsh {
 		return letters;
 	}
 
+	// A self-spawned subshell sets these readonly variables up itself.
+	static bool isSeededBySubshell(const std::string& name) {
+		return name == "BASH_VERSINFO" || name == "PPID";
+	}
+
 	std::string Executor::serializeAttributes() const {
 		std::set<std::string> names(env_.readonlySet().begin(), env_.readonlySet().end());
 		for (const auto& entry : env_.attributeMap()) names.insert(entry.first);
 
 		std::string out;
 		for (const std::string& name : names) {
+			if (isSeededBySubshell(name)) continue;
+
 			const std::string letters = attributeOptionLetters(env_, name);
 			if (!letters.empty()) out += "declare -" + letters + " " + name + "\n";
 		}
@@ -3893,6 +3902,8 @@ namespace wbsh {
 	std::string Executor::serializeArrays() const {
 		std::string out;
 		for (const auto& name : sortedKeys(env_.indexedArrays())) {
+			if (isSeededBySubshell(name)) continue;
+
 			const auto* array = env_.getIndexedArray(name);
 			if (array != nullptr) appendIndexedArray(out, name, *array);
 		}

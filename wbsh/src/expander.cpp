@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -101,8 +102,24 @@ namespace wbsh {
 	}
 
 	static const char* const kDynamicSpecials[] = {
-		"BASHPID", "BASH_COMMAND", "LINENO", "RANDOM", "SECONDS"
+		"BASHPID", "BASH_COMMAND", "EPOCHREALTIME", "EPOCHSECONDS", "LINENO", "RANDOM", "SECONDS"
 	};
+
+	static long long epochMicroseconds() {
+		const auto since_epoch = std::chrono::system_clock::now().time_since_epoch();
+		return std::chrono::duration_cast<std::chrono::microseconds>(since_epoch).count();
+	}
+
+	static long long epochSeconds() {
+		return epochMicroseconds() / 1000000;
+	}
+
+	static std::string epochRealtime() {
+		const long long micros = epochMicroseconds();
+		char text[32];
+		std::snprintf(text, sizeof(text), "%lld.%06lld", micros / 1000000, micros % 1000000);
+		return text;
+	}
 
 	static bool isDynamicSpecialName(const std::string& name) {
 		for (const char* special : kDynamicSpecials) {
@@ -1499,6 +1516,8 @@ namespace wbsh {
 		if (name == "SECONDS") { out = std::to_string(env_.secondsSinceStart()); return true; }
 		if (name == "LINENO")  { out = std::to_string(env_.currentLineno());     return true; }
 		if (name == "BASH_COMMAND") { out = env_.currentCommand();             return true; }
+		if (name == "EPOCHSECONDS")  { out = std::to_string(epochSeconds()); return true; }
+		if (name == "EPOCHREALTIME") { out = epochRealtime();                return true; }
 		if (name == "BASHPID") {
 #ifdef _WIN32
 			out = std::to_string(static_cast<long long>(::GetCurrentProcessId()));
