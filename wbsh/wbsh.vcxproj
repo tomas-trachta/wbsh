@@ -305,6 +305,8 @@
     <ClCompile Include="src\coreutils_compress.cpp" />
     <ClCompile Include="src\codecs.cpp" />
     <ClCompile Include="src\bytestream.cpp" />
+    <ClCompile Include="src\lzo.cpp" />
+    <ClCompile Include="src\lzop.cpp" />
     <ClCompile Include="src\lzw.cpp" />
     <ClCompile Include="src\xz.cpp" />
     <ClCompile Include="src\bzip2.cpp" />

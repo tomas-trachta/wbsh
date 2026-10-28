@@ -1,0 +1,89 @@
+=== a known input, byte for byte
+ 89 4c 5a 4f 00 0d 0a 1a 0a 10 40 20 a0 09 40 01
+ 05 03 00 00 01 00 00 81 a4 5f 5e 10 00 00 00 00
+ 00 09 68 65 6c 6c 6f 2e 74 78 74 61 ad 07 01 00
+ 00 00 29 00 00 00 1d 40 e1 0f 4d 03 68 65 6c 6c
+ 6f 20 32 14 00 0c 6c 6c 6f 20 68 65 6c 6c 6f 20
+ 68 65 6c 6c 6f 11 00 00 00 00 00 00
+hello.txt
+hello.txt.lzo
+ 00 00 00 03 00 00 00 03 02 4d 01 27 61 62 63 00
+ 00 00 00
+ 89 4c 5a 4f 00 0d 0a 1a 0a 10 40 20 a0 09 40 02
+ 01 03 00 00 01 00 00 81 a4
+ 00 00 00 00
+=== round trips
+empty ok
+one byte ok
+repetitive, multi-block ok
+incompressible ok
+exactly one block ok
+one block and a byte ok
+wbsh.exe ok
+-1 ok
+-9 -C ok
+-F ok
+stored blocks stay small
+15409
+y
+y
+=== in place, names and options
+a.txt.lzo
+a.txt
+a.txt.lzo
+restored
+wbsh: lzop: a.txt.lzo already has .lzo suffix -- unchanged
+rc=1
+wbsh: lzop: a.txt.lzo already exists; not overwritten
+rc=1
+forced
+wbsh: lzop: a.txt already exists; not overwritten
+rc=1
+decompressing a.txt.lzo into a.txt
+unlzop -v ok
+t.tar
+hello hello hello hello hello hello hello
+-o ok
+wbsh: lzop: -o needs a single input file
+rc=1
+from stdin
+method      compressed  uncompr.  ratio uncompressed_name
+LZO1X-1             92        41 224.4% hello.txt
+LZO1X-1             92        41 224.4% out
+test ok
+hello.txt.lzo:	OK
+=== lzopcat and concatenated files
+one
+two
+one
+two
+one
+=== damage is detected
+wbsh: lzopcat: cut.lzo: unexpected end of file
+rc=1
+wbsh: lzop: cut.lzo: unexpected end of file
+rc=1
+wbsh: lzopcat: stdin: unexpected end of file
+rc=1
+wbsh: lzop: bad.lzo: checksum error
+rc=1
+   U   e   l   l   o       U   e   l   l   o       U   e   l   l
+   o       U   e   l   l   o       U   e   l   l   o       h   e
+wbsh: lzop: sums.lzo: checksum error
+rc=1
+wbsh: lzop: bare.lzo: compressed data violation
+rc=1
+wbsh: lzop: head.lzo: header corrupted
+rc=1
+wbsh: lzopcat: stdin: not in lzop format
+rc=1
+=== tar
+ 89 4c 5a 4f 00 0d 0a 1a 0a
+src/
+src/small.txt
+src/sub/
+src/sub/repeat
+-a picks lzop
+tar extract ok
+src/small.txt
+4

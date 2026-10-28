@@ -3,9 +3,9 @@
  * @brief tar: create, extract and list ustar archives, compressed with
  *        any codec the bundled tools know.
  *
- * Reading auto-detects gzip, bzip2, xz, lzma and compress; writing uses
- * the codec named by -z / -j / -a. Long names are written as GNU 'L'
- * records; pax 'x' headers and base-256 sizes are understood on read.
+ * Reading auto-detects gzip, bzip2, xz, lzma, lzop and compress; writing
+ * uses the codec named by -z / -j / --lzop / -a. Long names are written as
+ * GNU 'L' records; pax 'x' headers and base-256 sizes are understood on read.
  * Members are refused when they would land outside the target directory.
  * Archives stream in both directions: one member at a time, never the
  * whole archive in memory.
@@ -231,6 +231,12 @@ namespace wbsh {
 		return true;
 	}
 
+	static bool forceTarCodec(Codec codec, TarOptions& options) {
+		options.codec = codec;
+		options.codec_forced = true;
+		return true;
+	}
+
 	static bool applyTarLongFlag(const std::string& arg, TarOptions& options) {
 		static const struct { const char* name; char flag; } kLongFlags[] = {
 			{ "--create", 'c' }, { "--extract", 'x' }, { "--get", 'x' }, { "--list", 't' },
@@ -244,12 +250,8 @@ namespace wbsh {
 			if (arg == entry.name) return applyTarSimpleFlag(entry.flag, options);
 		}
 
-		if (arg == "--lzma") {
-			options.codec = Codec::Lzma;
-			options.codec_forced = true;
-			return true;
-		}
-
+		if (arg == "--lzma") return forceTarCodec(Codec::Lzma, options);
+		if (arg == "--lzop") return forceTarCodec(Codec::Lzop, options);
 		return arg == "--overwrite" || arg == "--no-recursion" || applyTarLongValue(arg, options);
 	}
 
@@ -574,6 +576,11 @@ namespace wbsh {
 		return toNative(exec, options.directory);
 	}
 
+	static bool tarCanWrite(Codec codec) {
+		return codec == Codec::None || codec == Codec::Gzip || codec == Codec::Bzip2
+			|| codec == Codec::Lzop;
+	}
+
 	static int createArchive(Executor& exec, const TarOptions& options) {
 		if (options.members.empty()) {
 			perr("tar", "Cowardly refusing to create an empty archive");
@@ -582,8 +589,9 @@ namespace wbsh {
 
 		Codec codec = options.codec;
 		if (options.auto_compress && !options.codec_forced) codec = codecForSuffix(options.archive);
-		if (codec != Codec::None && codec != Codec::Gzip && codec != Codec::Bzip2) {
-			perr("tar", "writing this compression format is not supported (gzip and bzip2 are)");
+		if (!tarCanWrite(codec)) {
+			perr("tar", "writing this compression format is not supported "
+				"(gzip, bzip2 and lzop are)");
 			return 2;
 		}
 

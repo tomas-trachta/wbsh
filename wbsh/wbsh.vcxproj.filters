@@ -136,6 +136,8 @@
     <ClCompile Include="src\coreutils_compress.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\codecs.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\bytestream.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzo.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzop.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lzw.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\xz.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\bzip2.cpp"><Filter>Source Files</Filter></ClCompile>
