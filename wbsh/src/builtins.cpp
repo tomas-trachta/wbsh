@@ -896,7 +896,8 @@ namespace wbsh {
 		const std::string joined = joinWithSpaces(args.begin(), args.end());
 		if (joined.empty()) return 0;
 
-		return exec.executeInputText(joined, "eval");
+		const int line = exec.env().currentLineno();
+		return exec.executeInputText(joined, "eval", static_cast<std::size_t>(line > 0 ? line : 1));
 	}
 
 	static bool readScriptFile(const std::filesystem::path& path, std::string& out_body) {
@@ -926,7 +927,7 @@ namespace wbsh {
 		std::vector<std::string> saved = exec.env().positional();
 		if (args.size() > 1) exec.env().setPositional({ args.begin() + 1, args.end() });
 
-		exec.beginSource();
+		exec.beginSource(args[0]);
 		int status = exec.executeInputText(body, args[0]);
 		exec.endSource();
 		exec.consumeFlow(FlowSignal::Kind::Return, &status);

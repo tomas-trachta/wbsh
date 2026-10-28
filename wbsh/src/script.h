@@ -9,6 +9,7 @@
  * real executor based on the flags passed in.
  */
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,8 @@ namespace wbsh {
 	struct ScriptRun {
 		std::string source;
 		std::string script_name;              ///< `$0`; empty keeps the shell's name.
+		bool from_file = false;               ///< Read from script_name (BASH_SOURCE's `main`).
+		std::size_t first_line = 1;           ///< `$LINENO` of the first line of source.
 		std::vector<std::string> positional;  ///< `$1`, `$2`, ...
 		bool show_tokens     = false;
 		bool show_ast        = false;

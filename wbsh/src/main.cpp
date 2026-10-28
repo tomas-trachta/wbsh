@@ -15,6 +15,7 @@
 #  pragma comment(lib, "shell32.lib")
 #endif /* _WIN32 */
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -22,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "numparse.h"
 #include "pathconv.h"
 #include "repl.h"
 #include "script.h"
@@ -271,9 +273,20 @@ static bool astShown(const Options& options) {
 	return !options.execute;
 }
 
+// A self-spawned pipeline stage is a slice of its parent's script and
+// keeps counting lines from where the slice starts.
+static std::size_t inheritedFirstLine() {
+	const char* text = std::getenv("WBSH_LINENO");
+	int line = 0;
+	if (text == nullptr || !parseInt(text, line) || line < 1) return 1;
+
+	return static_cast<std::size_t>(line);
+}
+
 // `wbsh -c cmd name a b` runs cmd with $0 = name and $1.. = a b, as bash does.
 static void loadCommandString(const Options& options, ScriptRun& run) {
 	run.source = options.command;
+	run.first_line = inheritedFirstLine();
 	if (options.operands.empty()) return;
 
 	run.script_name = options.operands.front();
@@ -293,6 +306,7 @@ static bool loadScriptRun(const Options& options, ScriptRun& run) {
 		return true;
 	case SourceKind::File:
 		run.script_name = options.file_path;
+		run.from_file = true;
 		return readScriptFile(options.file_path, run.source);
 	case SourceKind::Stdin:
 	case SourceKind::Unset:

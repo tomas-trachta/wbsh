@@ -38,10 +38,10 @@ a
 parse error 2:1: syntax error near unexpected token `fi'
 rc=2
 === 7. eval and source return 2 and the shell goes on
-wbsh: eval:1:9: syntax error near unexpected token `fi'
+wbsh: eval:56:9: syntax error near unexpected token `fi'
 eval rc=2
 y
-wbsh: eval:2:1: syntax error near unexpected token `fi'
+wbsh: eval:59:1: syntax error near unexpected token `fi'
 eval rc=2
 sourced
 wbsh: _run_tmp/syntax_probe.sh:2:1: syntax error near unexpected token `fi'

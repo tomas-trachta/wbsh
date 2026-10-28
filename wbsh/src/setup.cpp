@@ -253,6 +253,14 @@ namespace wbsh {
 		exec.executeText(text, label);
 	}
 
+	static void applyInheritedFunctionFiles(Environment& env, Executor& exec) {
+		const std::string text = env.get("WBSH_FUNCTION_FILES");
+		if (text.empty()) return;
+
+		env.unset("WBSH_FUNCTION_FILES");
+		exec.adoptInheritedFunctionFiles(text);
+	}
+
 	static void applyInheritedOption(Environment& env, const std::string& word) {
 		if (word.size() < 2) return;
 
@@ -369,6 +377,9 @@ namespace wbsh {
 		replayInheritedText(env, exec, "WBSH_FUNCTIONS", "<inherited functions>");
 		replayInheritedText(env, exec, "WBSH_ALIASES",   "<inherited aliases>");
 		replayInheritedText(env, exec, "WBSH_ARRAYS",    "<inherited arrays>");
+		exec.adoptInheritedCallStack();
+		applyInheritedFunctionFiles(env, exec);
+		env.unset("WBSH_LINENO");
 		replayInheritedText(env, exec, "WBSH_ATTRIBUTES", "<inherited attributes>");
 		replayInheritedText(env, exec, "WBSH_BINDINGS", "<inherited bindings>");
 		replayInheritedText(env, exec, "WBSH_COMPLETIONS", "<inherited completions>");

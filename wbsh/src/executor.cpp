@@ -652,13 +652,24 @@ namespace wbsh {
 		return execNode(root);
 	}
 
+	// A function, `eval` or `source` moves `$LINENO` into its own text;
+	// once it returns, the line is the caller's again, as an ERR trap
+	// for the call itself sees it.
 	int Executor::execNode(const Node& node) {
 		if (env_.noexec() && !env_.interactive()) return 0;
-		if (node.loc.line > 0) env_.setCurrentLineno(static_cast<int>(node.loc.line));
+		const bool tracks_line = nodeTracksLineno(node);
+		if (tracks_line) env_.setCurrentLineno(static_cast<int>(node.loc.line));
 
 		const int status = dispatchNode(node);
+		if (tracks_line) env_.setCurrentLineno(static_cast<int>(node.loc.line));
 		exitOnFatalExpansionError();
 		return status;
+	}
+
+	bool Executor::nodeTracksLineno(const Node& node) const {
+		if (node.loc.line == 0) return false;
+
+		return frozen_lineno_source_ == nullptr || node.source_text != frozen_lineno_source_;
 	}
 
 	// POSIX: a failed `${name?}` or a `set -u` error ends a
@@ -676,18 +687,20 @@ namespace wbsh {
 		case Node::Kind::AndOr:         return execAndOr(static_cast<const AndOr&>(node));
 		case Node::Kind::Pipeline:      return execPipeline(static_cast<const Pipeline&>(node));
 		case Node::Kind::SimpleCommand:
-			return execSimpleCommand(static_cast<const SimpleCommand&>(node));
+			return finishLeafCommand(execSimpleCommand(static_cast<const SimpleCommand&>(node)));
 		case Node::Kind::BraceGroup:    return execBraceGroup(static_cast<const BraceGroup&>(node));
-		case Node::Kind::Subshell:      return execSubshell(static_cast<const Subshell&>(node));
+		case Node::Kind::Subshell:
+			return finishLeafCommand(execSubshell(static_cast<const Subshell&>(node)));
 		case Node::Kind::IfClause:      return execIf(static_cast<const IfClause&>(node));
 		case Node::Kind::WhileClause:   return execWhile(static_cast<const WhileClause&>(node));
 		case Node::Kind::ForClause:     return execFor(static_cast<const ForClause&>(node));
 		case Node::Kind::CaseClause:    return execCase(static_cast<const CaseClause&>(node));
 		case Node::Kind::FunctionDef:
 			return execFunctionDef(static_cast<const FunctionDef&>(node));
-		case Node::Kind::DBracket:      return execDBracket(static_cast<const DBracketCond&>(node));
+		case Node::Kind::DBracket:
+			return finishLeafCommand(execDBracket(static_cast<const DBracketCond&>(node)));
 		case Node::Kind::ArithCommand:
-			return execArithCommand(static_cast<const ArithCommand&>(node));
+			return finishLeafCommand(execArithCommand(static_cast<const ArithCommand&>(node)));
 		}
 
 		return 0;
@@ -703,7 +716,8 @@ namespace wbsh {
 		return source->substr(node.src_start, node.src_end - node.src_start);
 	}
 
-	static int negateStatus(int status) {
+	int Executor::negateBangStatus(int status) {
+		status_judged_ = true;
 		return (status == 0) ? 1 : 0;
 	}
 
@@ -739,6 +753,7 @@ namespace wbsh {
 			const ListItem& item = list.items[index];
 			if (&list == input_echo_.list) echoInputBefore(list, index);
 
+			status_judged_ = false;
 #ifdef _WIN32
 			if (item.background) status = launchBackgroundCommand(*item.command);
 			else                 status = execNode(*item.command);
@@ -748,15 +763,40 @@ namespace wbsh {
 			if (flowPending()) return status;
 			setLastStatus(status);
 
-			const bool errexit_fires = env_.errexit() && status != 0
-				&& errexit_suppress_ == 0 && !item.background;
-			if (!errexit_fires) continue;
-
-			raiseExit(status);
-			return status;
+			if (!item.background && handleCommandFailure(status)) return status;
 		}
 
 		return status;
+	}
+
+	// True when the shell must stop: the ERR trap left a flow signal, or
+	// errexit ends the shell.
+	bool Executor::handleCommandFailure(int status) {
+		const bool judged = status_judged_;
+		status_judged_ = status != 0;
+		if (status == 0 || judged || errexit_suppress_ > 0) return false;
+
+		fireErrTrap(status);
+		if (flowPending()) return true;
+		if (!env_.errexit()) return false;
+
+		raiseExit(status);
+		return true;
+	}
+
+	int Executor::finishLeafCommand(int status) {
+		setPipeStatus({ status });
+		status_judged_ = call_set_err_trap_;
+		call_set_err_trap_ = false;
+		return status;
+	}
+
+	void Executor::setPipeStatus(const std::vector<int>& statuses) {
+		std::vector<std::string> values;
+		values.reserve(statuses.size());
+		for (const int status : statuses) values.push_back(std::to_string(status));
+
+		env_.setIndexedArrayFromList("PIPESTATUS", std::move(values));
 	}
 
 	int Executor::execAndOr(const AndOr& and_or) {
@@ -767,7 +807,10 @@ namespace wbsh {
 		setLastStatus(left);
 
 		const bool short_circuit = (and_or.op == AndOr::Op::AndIf) ? (left != 0) : (left == 0);
-		if (short_circuit) return left;
+		if (short_circuit) {
+			status_judged_ = true;
+			return left;
+		}
 
 		const int right = execNode(*and_or.right);
 		if (flowPending()) return right;
@@ -844,13 +887,16 @@ namespace wbsh {
 		return true;
 	}
 
-	static int waitPipelineProcessesAndStatus(const std::vector<HANDLE>& processes,
-	                                          bool pipefail) {
+	static std::vector<int> waitPipelineProcesses(const std::vector<HANDLE>& processes) {
 		std::vector<int> statuses(processes.size(), 0);
 		for (std::size_t i = 0; i < processes.size(); ++i) {
 			statuses[i] = waitProcessAndClose(processes[i]);
 		}
 
+		return statuses;
+	}
+
+	static int pipelineStatus(const std::vector<int>& statuses, bool pipefail) {
 		int last = statuses.empty() ? 0 : statuses.back();
 		if (!pipefail) return last;
 
@@ -909,7 +955,11 @@ namespace wbsh {
 		closeValidHandles(pipe_r);
 		closeValidHandles(pipe_w);
 
-		const int status = waitPipelineProcessesAndStatus(processes, env_.pipefail());
+		std::vector<int> statuses = waitPipelineProcesses(processes);
+		const int status = pipelineStatus(statuses, env_.pipefail());
+		statuses.resize(count, 1);
+		setPipeStatus(statuses);
+		status_judged_ = false;
 		if (processes.size() < count) return 1;
 		return status;
 	}
@@ -923,13 +973,13 @@ namespace wbsh {
 		if (pipeline.commands.size() == 1) {
 			int status = execNode(*pipeline.commands[0]);
 			if (flowPending()) return status;
-			if (pipeline.bang) status = negateStatus(status);
+			if (pipeline.bang) status = negateBangStatus(status);
 			return status;
 		}
 
 #ifdef _WIN32
 		int status = execPipelineMultiCmd(pipeline);
-		if (pipeline.bang) status = negateStatus(status);
+		if (pipeline.bang) status = negateBangStatus(status);
 		return status;
 #else
 		return 1;
@@ -1167,6 +1217,9 @@ namespace wbsh {
 
 		const std::string functions = serializeFunctions();
 		if (!functions.empty()) overrides.emplace_back("WBSH_FUNCTIONS", functions);
+		const std::string function_files = serializeFunctionFiles();
+		if (!function_files.empty()) overrides.emplace_back("WBSH_FUNCTION_FILES", function_files);
+		overrides.emplace_back("WBSH_LINENO", std::to_string(env_.currentLineno()));
 		const std::string aliases = serializeAliases();
 		if (!aliases.empty()) overrides.emplace_back("WBSH_ALIASES", aliases);
 		const std::string arrays = serializeArrays();
@@ -2590,6 +2643,8 @@ namespace wbsh {
 		snap.saved_pos   = env_.positional();
 		snap.saved_name  = env_.shellName();
 		snap.saved_funcs = functions_;
+		snap.saved_function_files = function_files_;
+		snap.saved_call_stack = call_stack_;
 		snap.saved_traps = trap_handlers_;
 		snap.saved_lists_inherited_traps = lists_inherited_traps_;
 		snap.saved_options = env_.options();
@@ -2617,6 +2672,9 @@ namespace wbsh {
 		env_.setShellName(snap.saved_name);
 		env_.options() = snap.saved_options;
 		functions_ = std::move(snap.saved_funcs);
+		function_files_ = std::move(snap.saved_function_files);
+		call_stack_ = std::move(snap.saved_call_stack);
+		publishCallStack();
 		trap_handlers_ = std::move(snap.saved_traps);
 		lists_inherited_traps_ = snap.saved_lists_inherited_traps;
 
@@ -2650,6 +2708,8 @@ namespace wbsh {
 		for (const auto& assignment : temp_env) env_.set(assignment.first, assignment.second);
 		env_.setShellName(path);
 		env_.setPositional(std::vector<std::string>(argv.begin() + 1, argv.end()));
+		call_stack_.clear();
+		beginScriptFrame(path);
 
 		int status = executeInputText(body, path);
 		consumeFlow(FlowSignal::Kind::Exit, &status);
@@ -2672,6 +2732,7 @@ namespace wbsh {
 	Executor::SubshellScope Executor::enterSubshell() {
 		SubshellScope snap{ env_ };
 		snap.functions = functions_;
+		snap.function_files = function_files_;
 		snap.aliases = aliases_;
 		snap.traps = trap_handlers_;
 		snap.inherited_traps = inherited_traps_;
@@ -2690,13 +2751,15 @@ namespace wbsh {
 	}
 
 	// The parent's traps, EXIT included, belong to the parent and never
-	// run in the subshell; only ignored signals stay ignored.
+	// run in the subshell; only ignored signals stay ignored, and the ERR
+	// trap is inherited under errtrace (`set -E`).
 	void Executor::resetSubshellTraps() {
 		if (!lists_inherited_traps_) inherited_traps_ = trap_handlers_;
 		lists_inherited_traps_ = true;
 
+		const bool keep_err = env_.options().errtrace;
 		for (auto it = trap_handlers_.begin(); it != trap_handlers_.end(); ) {
-			if (it->second.empty()) ++it;
+			if (it->second.empty() || (keep_err && it->first == "ERR")) ++it;
 			else it = trap_handlers_.erase(it);
 		}
 	}
@@ -2705,6 +2768,7 @@ namespace wbsh {
 		endExecRedirJournal();
 		env_.restoreFrom(snap.env);
 		functions_ = std::move(snap.functions);
+		function_files_ = std::move(snap.function_files);
 		aliases_ = std::move(snap.aliases);
 		trap_handlers_ = std::move(snap.traps);
 		inherited_traps_ = std::move(snap.inherited_traps);
@@ -3057,6 +3121,7 @@ namespace wbsh {
 
 	int Executor::execFunctionDef(const FunctionDef& fd) {
 		functions_[fd.name] = &fd;
+		function_files_[fd.name] = currentSourceFile();
 		return 0;
 	}
 
@@ -3273,18 +3338,30 @@ namespace wbsh {
 		if (it == functions_.end()) return kStatusCommandNotFound;
 		const FunctionDef* def = it->second;
 
+		pushCallFrame({ name, functionFile(name), env_.currentLineno() });
 		const std::vector<std::string> saved_positional = env_.positional();
 		env_.setPositional(args);
+		std::string saved_err_trap = suspendErrTrapForFunction();
+		const bool err_trap_kept = hasTrap("ERR");
+
+		const int status = runFunctionBody(*def);
+
+		restoreErrTrapAfterFunction(std::move(saved_err_trap), err_trap_kept);
+		env_.setPositional(saved_positional);
+		popCallFrame();
+		return status;
+	}
+
+	int Executor::runFunctionBody(const FunctionDef& def) {
 		++func_depth_;
 		scope_stack_.emplace_back();
 
 		int status = 0;
-		if (def->body != nullptr) status = execNode(*def->body);
+		if (def.body != nullptr) status = execNode(*def.body);
 		consumeFlow(FlowSignal::Kind::Return, &status);
 
 		popLocalScope();
 		--func_depth_;
-		env_.setPositional(saved_positional);
 		return status;
 	}
 
@@ -3305,6 +3382,7 @@ namespace wbsh {
 	}
 
 	bool Executor::unsetFunction(const std::string& name) {
+		function_files_.erase(name);
 		return functions_.erase(name) != 0;
 	}
 
@@ -3680,8 +3758,9 @@ namespace wbsh {
 	// Only the commands on the lines before a syntax error are kept; the
 	// diagnostics are printed once execution reaches the error.
 	Executor::ParsedText Executor::parseText(const std::string& source_text,
-			const std::string& origin) {
+			const std::string& origin, std::size_t first_line) {
 		Lexer lexer(source_text);
+		lexer.startAtLine(first_line);
 		std::vector<Token> tokens = lexer.tokenize();
 		Parser parser(std::move(tokens), source_text);
 
@@ -3704,14 +3783,16 @@ namespace wbsh {
 		return kSyntaxErrorStatus;
 	}
 
-	int Executor::executeText(const std::string& source_text, const std::string& origin) {
-		const ParsedText parsed = parseText(source_text, origin);
+	int Executor::executeText(const std::string& source_text, const std::string& origin,
+			std::size_t first_line) {
+		const ParsedText parsed = parseText(source_text, origin, first_line);
 		const int status = parsed.root != nullptr ? execute(*parsed.root) : 0;
 		return finishParsedText(parsed, status);
 	}
 
-	int Executor::executeInputText(const std::string& source_text, const std::string& origin) {
-		const ParsedText parsed = parseText(source_text, origin);
+	int Executor::executeInputText(const std::string& source_text, const std::string& origin,
+			std::size_t first_line) {
+		const ParsedText parsed = parseText(source_text, origin, first_line);
 		const int status = parsed.root != nullptr ? executeInput(*parsed.root, source_text) : 0;
 		return finishParsedText(parsed, status);
 	}
@@ -3820,7 +3901,9 @@ namespace wbsh {
 	int Executor::runCommandSubstitutionBody(const std::string& body) {
 		SubshellScope snap = enterSubshell();
 
-		const int status = endSubshell(executeText(body, "<command-substitution>"));
+		const int lineno = env_.currentLineno();
+		const std::size_t line = static_cast<std::size_t>(lineno > 0 ? lineno : 1);
+		const int status = endSubshell(executeText(body, "<command-substitution>", line));
 		leaveSubshell(snap);
 		return status;
 	}
