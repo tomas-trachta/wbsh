@@ -85,6 +85,32 @@ namespace wbsh {
 		return openUtf8(exec.pathConv().toWin32(p), mode);
 	}
 
+	bool isLinkStatus(const fs::file_status& status) {
+		return status.type() == fs::file_type::symlink || status.type() == fs::file_type::junction;
+	}
+
+	bool queryFileIdentity(const fs::path& native, FileIdentity& identity) {
+#ifdef _WIN32
+		HANDLE handle = ::CreateFileW(native.c_str(), FILE_READ_ATTRIBUTES,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+		if (handle == INVALID_HANDLE_VALUE) return false;
+
+		BY_HANDLE_FILE_INFORMATION info{};
+		const bool ok = ::GetFileInformationByHandle(handle, &info) != FALSE;
+		::CloseHandle(handle);
+		if (!ok) return false;
+
+		identity.volume = info.dwVolumeSerialNumber;
+		identity.index = (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+		return true;
+#else
+		(void)native;
+		(void)identity;
+		return false;
+#endif /* _WIN32 */
+	}
+
 	static bool startsWithDash(const std::string& arg) {
 		return !arg.empty() && arg[0] == '-';
 	}

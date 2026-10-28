@@ -267,16 +267,12 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
-	static bool isLink(const fs::file_status& status) {
-		return status.type() == fs::file_type::symlink || status.type() == fs::file_type::junction;
-	}
-
 	static bool isRealDirectory(const fs::file_status& status) {
 		return status.type() == fs::file_type::directory;
 	}
 
 	static std::string fileKind(const fs::path& native, const fs::file_status& status) {
-		if (isLink(status)) return "symbolic link";
+		if (isLinkStatus(status)) return "symbolic link";
 		if (isRealDirectory(status)) return "directory";
 		if (status.type() != fs::file_type::regular) return "file";
 
@@ -286,7 +282,7 @@ namespace wbsh {
 
 	static bool wantsPrompt(const fs::path& native, const fs::file_status& status,
 	                        const RmOptions& opts, bool& write_protected) {
-		write_protected = !isLink(status) && hasReadOnlyAttribute(native);
+		write_protected = !isLinkStatus(status) && hasReadOnlyAttribute(native);
 		if (opts.prompt == Prompt::Always) return true;
 		if (opts.prompt == Prompt::Never || !write_protected) return false;
 		return isConsoleStream(stdin);

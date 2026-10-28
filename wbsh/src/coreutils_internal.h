@@ -37,6 +37,22 @@ namespace wbsh {
 	/// fopen on a UTF-8, POSIX-or-Win32 path (`_wfopen` on Windows).
 	std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode);
 
+	/// Symbolic links and NTFS junctions are both "links" to the POSIX tools.
+	bool isLinkStatus(const std::filesystem::file_status& status);
+
+	/// Volume serial plus file index: equal for every name of one file or directory.
+	struct FileIdentity {
+		std::uint64_t volume = 0;
+		std::uint64_t index = 0;
+
+		bool operator==(const FileIdentity& other) const {
+			return volume == other.volume && index == other.index;
+		}
+	};
+
+	/// Identity of the file @p native resolves to (links followed); false if it cannot be opened.
+	bool queryFileIdentity(const std::filesystem::path& native, FileIdentity& identity);
+
 	/// Append every line of `path` ("-" = stdin) to `lines`, stripping
 	/// the trailing `\n` / `\r\n`. Returns false if the file can't be
 	/// opened (errno is set).

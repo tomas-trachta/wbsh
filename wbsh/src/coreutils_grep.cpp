@@ -64,6 +64,7 @@ namespace wbsh {
 			bool line_numbers = false;
 			bool byte_offset = false;
 			bool recursive = false;
+			bool dereference = false;
 			bool null_data = false;
 			bool color = false;
 			int with_filename = -1;
@@ -119,6 +120,7 @@ namespace wbsh {
 			bool any_selected = false;
 			bool any_error = false;
 			bool printed_group = false;
+			std::vector<FileIdentity> ancestors;
 		};
 
 	}  // namespace grep_detail
@@ -191,8 +193,11 @@ namespace wbsh {
 		case 'b': options.byte_offset = true;          return true;
 		case 'H': options.with_filename = 1;           return true;
 		case 'h': options.with_filename = 0;           return true;
-		case 'r':
-		case 'R': options.recursive = true;            return true;
+		case 'r': options.recursive = true;            return true;
+		case 'R':
+			options.recursive = true;
+			options.dereference = true;
+			return true;
 		case 'z': options.null_data = true;            return true;
 		case 'a': options.binary = BinaryMode::Text;   return true;
 		case 'I': options.binary = BinaryMode::Skip;   return true;
@@ -784,6 +789,59 @@ namespace wbsh {
 	}
 
 	static void grepTree(Executor& exec, GrepRun& run, const std::string& directory,
+	                     const std::string& shown_base);
+
+	static bool isAncestor(const GrepRun& run, const FileIdentity& identity) {
+		return std::find(run.ancestors.begin(), run.ancestors.end(), identity) != run.ancestors.end();
+	}
+
+	static void warnDirectoryLoop(const GrepRun& run, const std::string& shown) {
+		if (run.options->no_messages) return;
+		std::fflush(stdout);
+		std::fprintf(stderr, "grep: warning: %s: recursive directory loop\n", shown.c_str());
+	}
+
+	static void descendInto(Executor& exec, GrepRun& run, const std::string& path,
+	                        const std::string& shown) {
+		FileIdentity identity;
+		const bool tracked = run.options->dereference
+			&& queryFileIdentity(toNative(exec, path), identity);
+		if (!tracked) {
+			grepTree(exec, run, path, shown);
+			return;
+		}
+
+		if (isAncestor(run, identity)) {
+			warnDirectoryLoop(run, shown);
+			return;
+		}
+
+		run.ancestors.push_back(identity);
+		grepTree(exec, run, path, shown);
+		run.ancestors.pop_back();
+	}
+
+	static void grepTreeEntry(Executor& exec, GrepRun& run, const fs::directory_entry& entry,
+	                          const std::string& directory, const std::string& shown_base) {
+		const std::string name = pathToUtf8(entry.path().filename());
+		const std::string path = childPath(directory, name);
+		const std::string shown = childPath(shown_base, name);
+
+		std::error_code ec;
+		if (!run.options->dereference && isLinkStatus(entry.symlink_status(ec))) return;
+
+		if (entry.is_directory(ec)) {
+			const bool excluded = globListMatches(run.options->exclude_dirs, name);
+			if (!excluded) descendInto(exec, run, path, shown);
+			return;
+		}
+
+		if (entry.is_regular_file(ec) && fileWanted(*run.options, name)) {
+			grepPath(exec, run, path, shown);
+		}
+	}
+
+	static void grepTree(Executor& exec, GrepRun& run, const std::string& directory,
 	                     const std::string& shown_base) {
 		std::error_code ec;
 		std::vector<fs::directory_entry> entries;
@@ -794,19 +852,7 @@ namespace wbsh {
 
 		std::sort(entries.begin(), entries.end());
 		for (const fs::directory_entry& entry : entries) {
-			const std::string name = pathToUtf8(entry.path().filename());
-			const std::string path = childPath(directory, name);
-			const std::string shown = childPath(shown_base, name);
-			std::error_code type_ec;
-			if (entry.is_directory(type_ec)) {
-				const bool excluded = globListMatches(run.options->exclude_dirs, name);
-				if (!excluded) grepTree(exec, run, path, shown);
-				continue;
-			}
-
-			if (entry.is_regular_file(type_ec) && fileWanted(*run.options, name)) {
-				grepPath(exec, run, path, shown);
-			}
+			grepTreeEntry(exec, run, entry, directory, shown_base);
 		}
 	}
 
@@ -819,7 +865,7 @@ namespace wbsh {
 		}
 
 		if (run.options->recursive) {
-			grepTree(exec, run, operand, operand);
+			descendInto(exec, run, operand, operand);
 			return;
 		}
 
@@ -837,7 +883,7 @@ namespace wbsh {
 		const bool many = implicit_tree || options.files.size() > 1 || options.recursive;
 		run.show_names = options.with_filename == 1 || (options.with_filename == -1 && many);
 
-		if (implicit_tree) grepTree(exec, run, ".", "");
+		if (implicit_tree) descendInto(exec, run, ".", "");
 		for (const std::string& operand : options.files) grepOperand(exec, run, operand);
 
 		std::fflush(stdout);

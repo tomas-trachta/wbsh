@@ -1,0 +1,26 @@
+=== -r skips junctions inside the tree
+jt/sub/f.txt:needle
+rc=0
+=== -r follows a junction given as operand
+jt/side/g.txt:needle
+rc=0
+=== -R follows junctions and reports the loop
+jt/side/g.txt:needle
+jt/sub/f.txt:needle
+grep: warning: jt/sub/loop: recursive directory loop
+rc=0
+=== -R -s silences the loop warning
+jt/side/g.txt:needle
+jt/sub/f.txt:needle
+rc=0
+=== --dereference-recursive is -R
+jt/sub/f.txt:1
+jt/sub/loop/side/g.txt:1
+grep: warning: jt/sub/loop/sub: recursive directory loop
+=== -r without operand searches .
+sub/f.txt:needle
+rc=0
+=== -R loop through an operand junction
+jt/sub/loop/sub/f.txt:needle
+jt/sub/loop/sub/loop/side/g.txt:needle
+grep: warning: jt/sub/loop/sub/loop/sub: recursive directory loop
