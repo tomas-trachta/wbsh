@@ -792,7 +792,8 @@ namespace wbsh {
 	                     const std::string& shown_base);
 
 	static bool isAncestor(const GrepRun& run, const FileIdentity& identity) {
-		return std::find(run.ancestors.begin(), run.ancestors.end(), identity) != run.ancestors.end();
+		const auto& ancestors = run.ancestors;
+		return std::find(ancestors.begin(), ancestors.end(), identity) != ancestors.end();
 	}
 
 	static void warnDirectoryLoop(const GrepRun& run, const std::string& shown) {

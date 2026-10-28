@@ -53,6 +53,11 @@ namespace wbsh {
 	/// Identity of the file @p native resolves to (links followed); false if it cannot be opened.
 	bool queryFileIdentity(const std::filesystem::path& native, FileIdentity& identity);
 
+	/// Create and open (binary, write) a new file `<prefix>XXXXXX` in the directory of
+	/// @p target, so it can later replace @p target by rename; nullptr with errno set on failure.
+	std::FILE* createSiblingTempFile(const std::filesystem::path& target, const std::string& prefix,
+	                                 std::filesystem::path& temp);
+
 	/// Append every line of `path` ("-" = stdin) to `lines`, stripping
 	/// the trailing `\n` / `\r\n`. Returns false if the file can't be
 	/// opened (errno is set).

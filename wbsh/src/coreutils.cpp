@@ -55,6 +55,7 @@ namespace wbsh {
 	static const double      kSeqEpsilon             = 1e-12;
 	static const int         kMktempAttempts         = 200;
 	static const std::size_t kMktempMinPlaceholders  = 3;
+	static const std::size_t kSiblingTempPlaceholders = 6;
 	static const int         kSignalTerm             = 15;
 
 	void perr(const std::string& cmd, const std::string& path, const std::error_code& ec) {
@@ -102,7 +103,8 @@ namespace wbsh {
 		if (!ok) return false;
 
 		identity.volume = info.dwVolumeSerialNumber;
-		identity.index = (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+		const std::uint64_t high = info.nFileIndexHigh;
+		identity.index = (high << 32) | info.nFileIndexLow;
 		return true;
 #else
 		(void)native;
@@ -3058,6 +3060,21 @@ namespace wbsh {
 		}
 
 		return suffix;
+	}
+
+	std::FILE* createSiblingTempFile(const fs::path& target, const std::string& prefix,
+	                                 fs::path& temp) {
+		const fs::path directory = target.parent_path();
+		for (int attempt = 0; attempt < kMktempAttempts; ++attempt) {
+			const std::string name = prefix + randomMktempSuffix(kSiblingTempPlaceholders, attempt);
+			temp = directory / utf8ToPath(name);
+
+			std::FILE* stream = ::_wfopen(temp.c_str(), L"wbx");
+			if (stream != nullptr) return stream;
+			if (errno != EEXIST) return nullptr;
+		}
+
+		return nullptr;
 	}
 
 	static bool tryClaimMktempCandidate(const std::string& candidate, bool make_dir) {
