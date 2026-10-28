@@ -877,7 +877,7 @@ namespace wbsh {
 		std::error_code ec;
 		fs::directory_iterator it(dir.native, ec);
 		for (; !ec && it != fs::directory_iterator(); it.increment(ec)) {
-			children.push_back(it->path());
+			children.push_back(longPathSafe(it->path()));
 		}
 
 		if (!ec) return true;
@@ -900,7 +900,8 @@ namespace wbsh {
 		}
 
 		Endpoint dst;
-		loadCopyTarget(dst_dir.native / name, joinShown(dst_dir.shown, name_text), dst);
+		const fs::path target = longPathSafe(dst_dir.native / name);
+		loadCopyTarget(target, joinShown(dst_dir.shown, name_text), dst);
 		return copyEntry(src, dst, opts);
 	}
 

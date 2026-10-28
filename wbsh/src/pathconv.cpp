@@ -13,12 +13,17 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cwchar>
 #include <string>
 
 namespace wbsh {
 
 	static const char kWin32ListSeparator = ';';
 	static const char kPosixListSeparator = ':';
+
+	// MAX_PATH less the 12 characters CreateDirectory insists on leaving
+	// for an 8.3 file name inside the new directory.
+	static const std::size_t kPlainPathLimit = 248;
 
 	std::wstring utf8ToWide(const std::string& s) {
 #ifdef _WIN32
@@ -53,9 +58,122 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
+#ifdef _WIN32
+	static const wchar_t kExtendedPrefix[] = L"\\\\?\\";
+	static const wchar_t kExtendedUncPrefix[] = L"\\\\?\\UNC\\";
+	static const wchar_t kDevicePrefix[] = L"\\\\.\\";
+
+	static bool startsWith(const std::wstring& text, const wchar_t* prefix) {
+		return text.compare(0, std::wcslen(prefix), prefix) == 0;
+	}
+
+	static bool isSeparatorWide(wchar_t c) {
+		return c == L'\\' || c == L'/';
+	}
+
+	static bool isAbsoluteWide(const std::wstring& path) {
+		const bool drive = path.size() >= 3 && path[1] == L':' && isSeparatorWide(path[2]);
+		const bool unc = path.size() >= 2 && isSeparatorWide(path[0]) && isSeparatorWide(path[1]);
+		return drive || unc;
+	}
+
+	static bool isExtendedOrDevice(const std::wstring& path) {
+		return startsWith(path, kExtendedPrefix) || startsWith(path, kDevicePrefix);
+	}
+
+	static bool needsExtendedForm(const std::wstring& path) {
+		return !isExtendedOrDevice(path) && path.size() >= kPlainPathLimit;
+	}
+
+	static bool needsExtendedFormHere(const std::wstring& path) {
+		if (isExtendedOrDevice(path) || isAbsoluteWide(path)) return needsExtendedForm(path);
+		return path.size() + ::GetCurrentDirectoryW(0, nullptr) >= kPlainPathLimit;
+	}
+
+	static std::wstring fullWidePath(const std::wstring& path) {
+		const DWORD needed = ::GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+		if (needed == 0) return std::wstring();
+
+		std::wstring full(needed, L'\0');
+		const DWORD length = ::GetFullPathNameW(path.c_str(), needed, full.data(), nullptr);
+		if (length == 0 || length >= needed) return std::wstring();
+
+		full.resize(length);
+		return full;
+	}
+
+	// GetFullPathNameW does the normalisation the prefix switches off:
+	// `/` to `\`, `.` and `..` resolved, the current directory applied.
+	static std::wstring extendedForm(const std::wstring& path) {
+		const std::wstring full = fullWidePath(path);
+		if (startsWith(full, kDevicePrefix) || startsWith(full, kExtendedPrefix)) return full;
+		if (full.size() >= 2 && full[0] == L'\\' && full[1] == L'\\') {
+			return kExtendedUncPrefix + full.substr(2);
+		}
+
+		if (full.size() >= 3 && full[1] == L':') return kExtendedPrefix + full;
+		return path;
+	}
+
+	static std::wstring withoutExtendedPrefixWide(const std::wstring& path) {
+		if (startsWith(path, kExtendedUncPrefix)) {
+			return L"\\\\" + path.substr(std::wcslen(kExtendedUncPrefix));
+		}
+
+		const std::size_t prefix = std::wcslen(kExtendedPrefix);
+		const bool drive = path.size() > prefix + 1 && path[prefix + 1] == L':';
+		if (startsWith(path, kExtendedPrefix) && drive) return path.substr(prefix);
+		return path;
+	}
+#endif /* _WIN32 */
+
+	std::wstring utf8ToFileWide(const std::string& s) {
+		const std::wstring wide = utf8ToWide(s);
+#ifdef _WIN32
+		if (needsExtendedForm(wide)) return extendedForm(wide);
+#endif /* _WIN32 */
+		return wide;
+	}
+
+	std::filesystem::path longPathSafe(const std::filesystem::path& p) {
+#ifdef _WIN32
+		if (needsExtendedFormHere(p.native())) {
+			return std::filesystem::path(extendedForm(p.native()));
+		}
+#endif /* _WIN32 */
+		return p;
+	}
+
+	std::filesystem::path withoutExtendedPrefix(const std::filesystem::path& p) {
+#ifdef _WIN32
+		return std::filesystem::path(withoutExtendedPrefixWide(p.native()));
+#else
+		return p;
+#endif /* _WIN32 */
+	}
+
+	std::filesystem::path expandShortNames(const std::filesystem::path& p) {
+#ifdef _WIN32
+		if (p.native().find(L'~') == std::wstring::npos) return p;
+
+		const std::wstring extended = longPathSafe(p).native();
+		const DWORD needed = ::GetLongPathNameW(extended.c_str(), nullptr, 0);
+		if (needed == 0) return p;
+
+		std::wstring expanded(needed, L'\0');
+		const DWORD length = ::GetLongPathNameW(extended.c_str(), expanded.data(), needed);
+		if (length == 0 || length >= needed) return p;
+
+		expanded.resize(length);
+		return withoutExtendedPrefix(std::filesystem::path(expanded));
+#else
+		return p;
+#endif /* _WIN32 */
+	}
+
 	std::filesystem::path utf8ToPath(const std::string& s) {
 #ifdef _WIN32
-		return std::filesystem::path(utf8ToWide(s));
+		return std::filesystem::path(utf8ToFileWide(s));
 #else
 		return std::filesystem::path(s);
 #endif /* _WIN32 */
@@ -63,7 +181,7 @@ namespace wbsh {
 
 	std::string pathToUtf8(const std::filesystem::path& p) {
 #ifdef _WIN32
-		return wideToUtf8(p.wstring());
+		return wideToUtf8(withoutExtendedPrefixWide(p.wstring()));
 #else
 		return p.string();
 #endif /* _WIN32 */
@@ -71,7 +189,7 @@ namespace wbsh {
 
 #ifdef _WIN32
 	static bool statFromAttributes(const std::string& win32_path, struct stat& info) {
-		const DWORD attributes = ::GetFileAttributesW(utf8ToWide(win32_path).c_str());
+		const DWORD attributes = ::GetFileAttributesW(utf8ToFileWide(win32_path).c_str());
 		if (attributes == INVALID_FILE_ATTRIBUTES) return false;
 
 		const bool is_dir = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -96,7 +214,7 @@ namespace wbsh {
 
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode) {
 #ifdef _WIN32
-		const std::wstring wide_path = utf8ToWide(utf8_path);
+		const std::wstring wide_path = utf8ToFileWide(utf8_path);
 		std::wstring wide_mode;
 		for (const char* m = mode; *m != '\0'; ++m) {
 			wide_mode.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*m)));

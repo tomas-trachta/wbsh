@@ -351,7 +351,7 @@ namespace wbsh {
 		if (ec) return failUnlessForcedAway(shown, ec, opts);
 
 		for (; it != fs::directory_iterator(); it.increment(ec)) {
-			children.push_back(it->path());
+			children.push_back(longPathSafe(it->path()));
 		}
 
 		if (!ec) return Outcome::Removed;

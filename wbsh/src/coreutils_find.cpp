@@ -1759,7 +1759,7 @@ namespace wbsh {
 				child.name = pathToUtf8(name);
 				child.path = childPath(parent.path, child.name);
 				child.root = parent.root;
-				child.native = parent.native / name;
+				child.native = longPathSafe(parent.native / name);
 				child.depth = parent.depth + 1;
 				child.follow = isFollowed(run, child.depth);
 				visit(run, child);

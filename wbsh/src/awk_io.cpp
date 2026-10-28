@@ -465,7 +465,7 @@ namespace wbsh {
 		}
 
 		static bool writeWholeFile(const std::string& path, const std::string& contents) {
-			std::FILE* file = _wfopen(utf8ToWide(path).c_str(), L"wb");
+			std::FILE* file = _wfopen(utf8ToFileWide(path).c_str(), L"wb");
 			if (file == nullptr) return false;
 
 			const std::size_t written = std::fwrite(contents.data(), 1, contents.size(), file);
@@ -485,7 +485,7 @@ namespace wbsh {
 			flushAllOutput();
 			const std::string redirected = "(" + stream.command + "\n) < " + singleQuoted(temp);
 			const int status = exec.executeText(redirected, "awk");
-			_wremove(utf8ToWide(temp).c_str());
+			_wremove(utf8ToFileWide(temp).c_str());
 			return status;
 		}
 

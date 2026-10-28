@@ -1,0 +1,33 @@
+relative path is over 300 characters
+=== create, write, read
+mkdir -p: 0
+redirect: 0
+hello
+more
+2
+test -f sees it
+2
+file.txt
+=== edit, copy, move, remove
+less
+cp: 0
+mv: 0
+file.txt
+moved.txt
+rm: 0
+=== walkers
+./SEG/SEG/SEG/SEG/sub/file.txt
+SEG/SEG/SEG/SEG/sub/file.txt:less
+cp -r: 0
+copytree/SEG/SEG/SEG/sub/file.txt
+tar c: 0
+tar x: 0
+x/SEG/SEG/SEG/SEG/sub/file.txt
+=== working directory
+cd: 0
+hello
+pwd shows the long path
+external process started
+=== cleanup
+rm -rf: 0
+t.tar

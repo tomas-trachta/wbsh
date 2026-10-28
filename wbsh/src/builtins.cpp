@@ -553,7 +553,7 @@ namespace wbsh {
 		}
 
 		std::error_code ec;
-		std::filesystem::path here = std::filesystem::current_path(ec);
+		std::filesystem::path here = expandShortNames(std::filesystem::current_path(ec));
 		if (!ec && physical) here = resolvedPath(here);
 		std::string shown = ec ? exec.env().get("PWD") : pathToUtf8(here);
 		if (!windows_form) shown = exec.pathConv().toPosix(shown);

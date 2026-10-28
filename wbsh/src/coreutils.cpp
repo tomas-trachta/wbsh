@@ -2829,7 +2829,7 @@ namespace wbsh {
 	static bool pushdEnter(Executor& exec, const std::string& target,
 	                       std::vector<std::string>& stack) {
 		std::error_code ec;
-		fs::current_path(toNative(exec, target), ec);
+		fs::current_path(withoutExtendedPrefix(toNative(exec, target)), ec);
 		if (ec) {
 			perr("pushd", target, ec);
 			return false;
@@ -2856,7 +2856,7 @@ namespace wbsh {
 		}
 
 		std::error_code ec;
-		fs::current_path(toNative(exec, stack[0]), ec);
+		fs::current_path(withoutExtendedPrefix(toNative(exec, stack[0])), ec);
 		if (!ec) {
 			exec.env().set("OLDPWD", previous);
 			exec.env().set("PWD", stack[0]);
@@ -3095,9 +3095,9 @@ namespace wbsh {
 
 	static bool tryClaimMktempCandidate(const std::string& candidate, bool make_dir) {
 		std::error_code ec;
-		if (make_dir) return fs::create_directory(candidate, ec) && !ec;
+		if (make_dir) return fs::create_directory(utf8ToPath(candidate), ec) && !ec;
 
-		const HANDLE handle = ::CreateFileA(candidate.c_str(),
+		const HANDLE handle = ::CreateFileW(utf8ToFileWide(candidate).c_str(),
 			GENERIC_WRITE, 0, nullptr,
 			CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (handle == INVALID_HANDLE_VALUE) return false;
