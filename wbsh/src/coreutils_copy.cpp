@@ -1,7 +1,7 @@
 /**
  * @file coreutils_copy.cpp
- * @brief mv, with GNU's operand rules (-t, -T, several sources into a
- *        directory) and overwrite modes.
+ * @brief cp and mv, with GNU's operand rules (-t, -T, several sources
+ *        into a directory) and overwrite modes.
  *
  * A move is a MoveFileExW rename. Only a move to another volume
  * (ERROR_NOT_SAME_DEVICE) falls back to copy + remove; every other
@@ -14,9 +14,12 @@
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <windows.h>
+#  include <winioctl.h>
 #endif /* _WIN32 */
 
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -40,9 +43,20 @@ namespace wbsh {
 			kOptVerbose,
 			kOptTargetDir,
 			kOptNoTargetDir,
+			kOptRecursive,
+			kOptArchive,
+			kOptPreserveCommon,
+			kOptPreserve,
+			kOptNoPreserve,
+			kOptDereference,
+			kOptNoDereference,
+			kOptCommandLine,
+			kOptRemoveDest,
 		};
 
 		enum class Overwrite { Replace, Ask, Never };
+
+		enum class Deref { Unset, Never, CommandLine, Always };
 
 		struct TargetOptions {
 			bool no_target_dir = false;
@@ -52,6 +66,19 @@ namespace wbsh {
 
 		struct MvOptions {
 			Overwrite overwrite = Overwrite::Replace;
+			bool update = false;
+			bool verbose = false;
+			TargetOptions target;
+			std::vector<std::string> operands;
+		};
+
+		struct CpOptions {
+			Overwrite overwrite = Overwrite::Replace;
+			Deref deref = Deref::Unset;
+			bool force = false;
+			bool remove_destination = false;
+			bool recursive = false;
+			bool preserve_times = false;
 			bool update = false;
 			bool verbose = false;
 			TargetOptions target;
@@ -72,6 +99,8 @@ namespace wbsh {
 
 	}  // namespace copy_detail
 
+	using copy_detail::CpOptions;
+	using copy_detail::Deref;
 	using copy_detail::Endpoint;
 	using copy_detail::MvOptions;
 	using copy_detail::Overwrite;
@@ -331,12 +360,18 @@ namespace wbsh {
 		return ec || src_time > dst_time;
 	}
 
+	static bool keepExisting(const char* tool, const Endpoint& src, const Endpoint& dst,
+	                         Overwrite overwrite, bool update) {
+		if (!dst.exists) return false;
+		if (overwrite == Overwrite::Never) return true;
+		if (update && !isSourceNewer(src, dst)) return true;
+		return overwrite == Overwrite::Ask && !askOverwrite(tool, dst.shown);
+	}
+
 	static bool keepExistingDestination(const Endpoint& src, const Endpoint& dst,
 	                                    const MvOptions& opts) {
-		if (!dst.exists || isCaseOnlyRename(src, dst)) return false;
-		if (opts.overwrite == Overwrite::Never) return true;
-		if (opts.update && !isSourceNewer(src, dst)) return true;
-		return opts.overwrite == Overwrite::Ask && !askOverwrite("mv", dst.shown);
+		if (isCaseOnlyRename(src, dst)) return false;
+		return keepExisting("mv", src, dst, opts.overwrite, opts.update);
 	}
 
 	static std::error_code lastWin32Error() {
@@ -476,7 +511,476 @@ namespace wbsh {
 		return status;
 	}
 
+	static const std::vector<OptDef>& cpOptionDefs() {
+		static const std::vector<OptDef> defs = {
+			{ copy_detail::kOptRecursive,      'r', "recursive",           OptArg::None },
+			{ copy_detail::kOptRecursive,      'R', nullptr,               OptArg::None },
+			{ copy_detail::kOptArchive,        'a', "archive",             OptArg::None },
+			{ copy_detail::kOptPreserveCommon, 'p', nullptr,               OptArg::None },
+			{ copy_detail::kOptPreserve,       0,   "preserve",            OptArg::Optional },
+			{ copy_detail::kOptNoPreserve,     0,   "no-preserve",         OptArg::Required },
+			{ copy_detail::kOptForce,          'f', "force",               OptArg::None },
+			{ copy_detail::kOptInteractive,    'i', "interactive",         OptArg::None },
+			{ copy_detail::kOptNoClobber,      'n', "no-clobber",          OptArg::None },
+			{ copy_detail::kOptUpdate,         'u', nullptr,               OptArg::None },
+			{ copy_detail::kOptUpdate,         0,   "update",              OptArg::Optional },
+			{ copy_detail::kOptVerbose,        'v', "verbose",             OptArg::None },
+			{ copy_detail::kOptDereference,    'L', "dereference",         OptArg::None },
+			{ copy_detail::kOptNoDereference,  'P', "no-dereference",      OptArg::None },
+			{ copy_detail::kOptNoDereference,  'd', nullptr,               OptArg::None },
+			{ copy_detail::kOptCommandLine,    'H', nullptr,               OptArg::None },
+			{ copy_detail::kOptRemoveDest,     0,   "remove-destination",  OptArg::None },
+			{ copy_detail::kOptTargetDir,      't', "target-directory",    OptArg::Required },
+			{ copy_detail::kOptNoTargetDir,    'T', "no-target-directory", OptArg::None },
+		};
+		return defs;
+	}
+
+	static bool isKnownAttribute(const std::string& name) {
+		static const char* const kAttributes[] = {
+			"mode", "ownership", "timestamps", "links", "context", "xattr", "all",
+		};
+		for (const char* known : kAttributes) {
+			if (name == known) return true;
+		}
+
+		return false;
+	}
+
+	static bool applyPreserveList(const OptHit& hit, const char* option, bool enable,
+	                              CpOptions& opts) {
+		if (!hit.has_value) {
+			opts.preserve_times = enable;
+			return true;
+		}
+
+		std::size_t start = 0;
+		while (start <= hit.value.size()) {
+			const std::size_t comma = hit.value.find(',', start);
+			const std::size_t end = comma == std::string::npos ? hit.value.size() : comma;
+			const std::string name = hit.value.substr(start, end - start);
+			if (!isKnownAttribute(name)) {
+				reportCopy("cp", "invalid argument " + inQuotes(name) + " for '--" + option + "'");
+				return false;
+			}
+
+			if (name == "timestamps" || name == "all") opts.preserve_times = enable;
+			start = end + 1;
+		}
+
+		return true;
+	}
+
+	static bool applyUpdateWhen(const OptHit& hit, CpOptions& opts) {
+		if (!hit.has_value || hit.value == "older") {
+			opts.update = true;
+			return true;
+		}
+
+		if (hit.value == "all") return true;
+		if (hit.value == "none") {
+			opts.overwrite = Overwrite::Never;
+			return true;
+		}
+
+		reportCopy("cp", "invalid argument " + inQuotes(hit.value) + " for '--update'");
+		return false;
+	}
+
+	static void applyArchive(CpOptions& opts) {
+		opts.recursive = true;
+		opts.preserve_times = true;
+		opts.deref = Deref::Never;
+	}
+
+	static bool applyCpLinkOption(const OptHit& hit, CpOptions& opts) {
+		switch (hit.id) {
+			case copy_detail::kOptDereference:
+				opts.deref = Deref::Always;
+				return true;
+			case copy_detail::kOptNoDereference:
+				opts.deref = Deref::Never;
+				return true;
+			case copy_detail::kOptCommandLine:
+				opts.deref = Deref::CommandLine;
+				return true;
+			default:
+				applyTargetOption(hit, opts.target);
+				return true;
+		}
+	}
+
+	static bool applyCpOption(const OptHit& hit, CpOptions& opts) {
+		switch (hit.id) {
+			case copy_detail::kOptRecursive:
+				opts.recursive = true;
+				return true;
+			case copy_detail::kOptArchive:
+				applyArchive(opts);
+				return true;
+			case copy_detail::kOptPreserveCommon:
+				opts.preserve_times = true;
+				return true;
+			case copy_detail::kOptPreserve:
+				return applyPreserveList(hit, "preserve", true, opts);
+			case copy_detail::kOptNoPreserve:
+				return applyPreserveList(hit, "no-preserve", false, opts);
+			case copy_detail::kOptForce:
+				opts.force = true;
+				return true;
+			case copy_detail::kOptInteractive:
+				opts.overwrite = Overwrite::Ask;
+				return true;
+			case copy_detail::kOptNoClobber:
+				opts.overwrite = Overwrite::Never;
+				return true;
+			case copy_detail::kOptUpdate:
+				return applyUpdateWhen(hit, opts);
+			case copy_detail::kOptVerbose:
+				opts.verbose = true;
+				return true;
+			case copy_detail::kOptRemoveDest:
+				opts.remove_destination = true;
+				return true;
+			default:
+				return applyCpLinkOption(hit, opts);
+		}
+	}
+
+	static bool parseCpArgs(const std::vector<std::string>& args, CpOptions& opts) {
+		OptScanResult scanned;
+		if (!scanOptions("cp", args, cpOptionDefs(), scanned)) return false;
+
+		for (const OptHit& hit : scanned.hits) {
+			if (!applyCpOption(hit, opts)) return false;
+		}
+
+		opts.operands = scanned.operands;
+		return true;
+	}
+
+	static bool followsLinks(const CpOptions& opts, bool command_line) {
+		switch (opts.deref) {
+			case Deref::Always:
+				return true;
+			case Deref::Never:
+				return false;
+			case Deref::CommandLine:
+				return command_line;
+			default:
+				return !opts.recursive;
+		}
+	}
+
+	static void loadCopySource(const fs::path& native, const std::string& shown, bool follow,
+	                           Endpoint& endpoint) {
+		endpoint.shown = shown;
+		endpoint.native = native;
+
+		std::error_code ec;
+		endpoint.status = follow ? fs::status(native, ec) : fs::symlink_status(native, ec);
+		endpoint.exists = !ec && endpoint.status.type() != fs::file_type::not_found;
+	}
+
+	static void loadCopyTarget(const fs::path& native, const std::string& shown,
+	                           Endpoint& endpoint) {
+		loadCopySource(native, shown, false, endpoint);
+	}
+
+	static bool isLinkStatus(const fs::file_status& status) {
+		return status.type() == fs::file_type::symlink || status.type() == fs::file_type::junction;
+	}
+
+	static bool isDirectoryOrLinkToOne(const Endpoint& endpoint) {
+		std::error_code ec;
+		return isRealDirectory(endpoint.status) || fs::is_directory(endpoint.native, ec);
+	}
+
+	static void announceCopy(const Endpoint& src, const Endpoint& dst, const CpOptions& opts) {
+		if (!opts.verbose) return;
+
+		const std::string from = inQuotes(src.shown);
+		const std::string to = inQuotes(dst.shown);
+		std::printf("%s -> %s\n", from.c_str(), to.c_str());
+		std::fflush(stdout);
+	}
+
+	static bool removeForRetry(const fs::path& native) {
+		clearReadOnly(native);
+
+		std::error_code ec;
+		return fs::remove(native, ec);
+	}
+
+	static bool copyFileContents(const fs::path& from, const fs::path& to, std::error_code& ec) {
+#ifdef _WIN32
+		if (::CopyFileW(from.c_str(), to.c_str(), FALSE) != 0) return true;
+
+		ec = lastWin32Error();
+		return false;
+#else
+		return fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+#endif /* _WIN32 */
+	}
+
+	static bool writeFileCopy(const Endpoint& src, const Endpoint& dst, const CpOptions& opts) {
+		if (opts.remove_destination && dst.exists) removeForRetry(dst.native);
+
+		std::error_code ec;
+		if (copyFileContents(src.native, dst.native, ec)) return true;
+
+		const bool retry = opts.force && dst.exists && removeForRetry(dst.native);
+		if (retry && copyFileContents(src.native, dst.native, ec)) return true;
+
+		reportCopy("cp", "cannot copy " + inQuotes(src.shown) + " to " + inQuotes(dst.shown)
+			+ ": " + posixErrorText(ec));
+		return false;
+	}
+
+	static void stampCopy(const Endpoint& src, const Endpoint& dst, const CpOptions& opts) {
+		std::error_code ec;
+		if (!opts.preserve_times) {
+			fs::last_write_time(dst.native, fs::file_time_type::clock::now(), ec);
+			return;
+		}
+
+		const fs::file_time_type source_time = fs::last_write_time(src.native, ec);
+		if (!ec) fs::last_write_time(dst.native, source_time, ec);
+	}
+
+	static bool copyRegularFile(const Endpoint& src, const Endpoint& dst, const CpOptions& opts) {
+		if (dst.exists && isRealDirectory(dst.status)) {
+			reportCopy("cp", "cannot overwrite directory " + inQuotes(dst.shown)
+				+ " with non-directory");
+			return false;
+		}
+
+		if (keepExisting("cp", src, dst, opts.overwrite, opts.update)) return true;
+		if (!writeFileCopy(src, dst, opts)) return false;
+
+		stampCopy(src, dst, opts);
+		announceCopy(src, dst, opts);
+		return true;
+	}
+
+	static const wchar_t* const kNtPathPrefix = L"\\??\\";
+
+#ifdef _WIN32
+	// The mount-point layout of REPARSE_DATA_BUFFER, which only the DDK headers declare.
+	struct MountPointHeader {
+		DWORD tag;
+		WORD data_length;
+		WORD reserved;
+		WORD substitute_offset;
+		WORD substitute_length;
+		WORD print_offset;
+		WORD print_length;
+	};
+
+	static std::vector<BYTE> mountPointBuffer(const std::wstring& target) {
+		const std::wstring substitute = kNtPathPrefix + target;
+		const std::size_t name_chars = substitute.size() + 1 + target.size() + 1;
+		const std::size_t names_bytes = name_chars * sizeof(WCHAR);
+		std::vector<BYTE> buffer(sizeof(MountPointHeader) + names_bytes, 0);
+
+		MountPointHeader header{};
+		header.tag = IO_REPARSE_TAG_MOUNT_POINT;
+		const std::size_t fields_bytes = sizeof(MountPointHeader)
+			- offsetof(MountPointHeader, substitute_offset);
+		header.data_length = static_cast<WORD>(fields_bytes + names_bytes);
+		header.substitute_length = static_cast<WORD>(substitute.size() * sizeof(WCHAR));
+		header.print_offset = static_cast<WORD>(header.substitute_length + sizeof(WCHAR));
+		header.print_length = static_cast<WORD>(target.size() * sizeof(WCHAR));
+		std::memcpy(buffer.data(), &header, sizeof(header));
+
+		BYTE* names = buffer.data() + sizeof(MountPointHeader);
+		std::memcpy(names, substitute.c_str(), header.substitute_length);
+		std::memcpy(names + header.print_offset, target.c_str(), header.print_length);
+		return buffer;
+	}
+
+	static bool setMountPoint(const fs::path& link, const std::wstring& target,
+	                          std::error_code& ec) {
+		const HANDLE handle = ::CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+		if (handle == INVALID_HANDLE_VALUE) {
+			ec = lastWin32Error();
+			return false;
+		}
+
+		std::vector<BYTE> buffer = mountPointBuffer(target);
+		DWORD returned = 0;
+		const bool set = ::DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, buffer.data(),
+			static_cast<DWORD>(buffer.size()), nullptr, 0, &returned, nullptr) != 0;
+		if (!set) ec = lastWin32Error();
+		::CloseHandle(handle);
+		return set;
+	}
+#endif /* _WIN32 */
+
+	static std::wstring junctionTarget(const fs::path& junction, std::error_code& ec) {
+		std::wstring target = fs::read_symlink(junction, ec).native();
+		const std::wstring prefix = kNtPathPrefix;
+		if (target.compare(0, prefix.size(), prefix) == 0) target.erase(0, prefix.size());
+		return target;
+	}
+
+	static bool copyJunction(const fs::path& from, const fs::path& to, std::error_code& ec) {
+		const std::wstring target = junctionTarget(from, ec);
+		if (ec) return false;
+
+		fs::create_directory(to, ec);
+		if (ec) return false;
+#ifdef _WIN32
+		if (setMountPoint(to, target, ec)) return true;
+#endif /* _WIN32 */
+		std::error_code cleanup_ec;
+		fs::remove(to, cleanup_ec);
+		return false;
+	}
+
+	static bool copyLink(const Endpoint& src, const Endpoint& dst, const CpOptions& opts) {
+		if (keepExisting("cp", src, dst, opts.overwrite, opts.update)) return true;
+		if (dst.exists && !isRealDirectory(dst.status)) removeForRetry(dst.native);
+
+		std::error_code ec;
+		if (src.status.type() == fs::file_type::junction) copyJunction(src.native, dst.native, ec);
+		else fs::copy_symlink(src.native, dst.native, ec);
+		if (ec) {
+			reportCopy("cp", "cannot create symbolic link " + inQuotes(dst.shown) + ": "
+				+ posixErrorText(ec));
+			return false;
+		}
+
+		announceCopy(src, dst, opts);
+		return true;
+	}
+
+	static bool prepareDirectoryTarget(const Endpoint& src, const Endpoint& dst,
+	                                   const CpOptions& opts) {
+		if (dst.exists && isDirectoryOrLinkToOne(dst)) return true;
+		if (dst.exists) {
+			reportCopy("cp", "cannot overwrite non-directory " + inQuotes(dst.shown)
+				+ " with directory " + inQuotes(src.shown));
+			return false;
+		}
+
+		std::error_code ec;
+		fs::create_directory(dst.native, ec);
+		if (ec) {
+			reportCopy("cp", "cannot create directory " + inQuotes(dst.shown) + ": "
+				+ posixErrorText(ec));
+			return false;
+		}
+
+		announceCopy(src, dst, opts);
+		return true;
+	}
+
+	static bool listDirectory(const Endpoint& dir, std::vector<fs::path>& children) {
+		std::error_code ec;
+		fs::directory_iterator it(dir.native, ec);
+		for (; !ec && it != fs::directory_iterator(); it.increment(ec)) {
+			children.push_back(it->path());
+		}
+
+		if (!ec) return true;
+		reportCopy("cp", "cannot access " + inQuotes(dir.shown) + ": " + posixErrorText(ec));
+		return false;
+	}
+
+	static bool copyEntry(const Endpoint& src, const Endpoint& dst, const CpOptions& opts);
+
+	static bool copyChild(const fs::path& child, const Endpoint& src_dir, const Endpoint& dst_dir,
+	                      const CpOptions& opts) {
+		const fs::path name = child.filename();
+		const std::string name_text = pathToUtf8(name);
+
+		Endpoint src;
+		loadCopySource(child, joinShown(src_dir.shown, name_text), followsLinks(opts, false), src);
+		if (!src.exists) {
+			reportCopy("cp", "cannot stat " + inQuotes(src.shown) + ": No such file or directory");
+			return false;
+		}
+
+		Endpoint dst;
+		loadCopyTarget(dst_dir.native / name, joinShown(dst_dir.shown, name_text), dst);
+		return copyEntry(src, dst, opts);
+	}
+
+	static bool copyDirectory(const Endpoint& src, const Endpoint& dst, const CpOptions& opts) {
+		if (!opts.recursive) {
+			reportCopy("cp", "-r not specified; omitting directory " + inQuotes(src.shown));
+			return false;
+		}
+
+		std::vector<fs::path> children;
+		if (!listDirectory(src, children)) return false;
+		if (!prepareDirectoryTarget(src, dst, opts)) return false;
+
+		bool ok = true;
+		for (const fs::path& child : children) {
+			if (!copyChild(child, src, dst, opts)) ok = false;
+		}
+
+		if (opts.preserve_times) stampCopy(src, dst, opts);
+		return ok;
+	}
+
+	static bool copyEntry(const Endpoint& src, const Endpoint& dst, const CpOptions& opts) {
+		if (isLinkStatus(src.status)) return copyLink(src, dst, opts);
+		if (isRealDirectory(src.status)) return copyDirectory(src, dst, opts);
+		return copyRegularFile(src, dst, opts);
+	}
+
+	static bool refuseCopy(const Endpoint& src, const Endpoint& dst, const CpOptions& opts) {
+		std::error_code ec;
+		if (dst.exists && fs::equivalent(src.native, dst.native, ec) && !ec) {
+			reportCopy("cp", inQuotes(src.shown) + " and " + inQuotes(dst.shown)
+				+ " are the same file");
+			return true;
+		}
+
+		if (!opts.recursive || !movesIntoItself(src, dst)) return false;
+
+		reportCopy("cp", "cannot copy a directory, " + inQuotes(src.shown) + ", into itself, "
+			+ inQuotes(dst.shown));
+		return true;
+	}
+
+	static bool copyOne(Executor& exec, const Transfer& transfer, const CpOptions& opts) {
+		Endpoint src;
+		loadCopySource(toNative(exec, transfer.source), transfer.source, followsLinks(opts, true),
+			src);
+		if (!src.exists) {
+			reportCopy("cp", "cannot stat " + inQuotes(transfer.source)
+				+ ": No such file or directory");
+			return false;
+		}
+
+		Endpoint dst;
+		loadCopyTarget(toNative(exec, transfer.dest), transfer.dest, dst);
+		if (refuseCopy(src, dst, opts)) return false;
+		return copyEntry(src, dst, opts);
+	}
+
+	static int builtin_cp(Executor& exec, const std::vector<std::string>& args) {
+		CpOptions opts;
+		if (!parseCpArgs(args, opts)) return 1;
+
+		std::vector<Transfer> plan;
+		if (!planTransfers(exec, "cp", opts.target, opts.operands, plan)) return 1;
+
+		int status = 0;
+		for (const Transfer& transfer : plan) {
+			if (!copyOne(exec, transfer, opts)) status = 1;
+		}
+
+		return status;
+	}
+
 	void registerCopyBuiltins(Executor& exec) {
+		exec.registerBuiltin("cp", builtin_cp);
 		exec.registerBuiltin("mv", builtin_mv);
 	}
 

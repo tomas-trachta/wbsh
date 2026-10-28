@@ -896,59 +896,6 @@ namespace wbsh {
 		return status;
 	}
 
-	static fs::path destinationFor(const fs::path& src, const fs::path& dst, bool dst_is_dir) {
-		if (dst_is_dir) return dst / src.filename();
-		return dst;
-	}
-
-	static bool copyPath(Executor& exec, const std::string& source, const fs::path& target,
-	                     bool recursive) {
-		fs::copy_options options = fs::copy_options::overwrite_existing;
-		if (recursive) options |= fs::copy_options::recursive | fs::copy_options::copy_symlinks;
-
-		std::error_code ec;
-		fs::copy(toNative(exec, source), target, options, ec);
-		if (!ec) return true;
-
-		perr("cp", source, ec);
-		return false;
-	}
-
-	static int builtin_cp(Executor& exec, const std::vector<std::string>& args) {
-		bool recursive = false;
-		std::vector<std::string> paths;
-		for (const auto& arg : args) {
-			if (arg == "--recursive" || arg == "-a") {
-				recursive = true;
-				continue;
-			}
-
-			if (isShortFlagCluster(arg)) {
-				if (hasShortFlag(arg, 'r') || hasShortFlag(arg, 'R')) recursive = true;
-				continue;
-			}
-
-			paths.push_back(arg);
-		}
-
-		if (paths.size() < 2) {
-			perr("cp", "missing source/destination");
-			return 1;
-		}
-
-		const fs::path dst = toNative(exec, paths.back());
-		std::error_code ec;
-		const bool dst_is_dir = fs::is_directory(dst, ec);
-
-		int status = 0;
-		for (std::size_t i = 0; i + 1 < paths.size(); ++i) {
-			const fs::path target = destinationFor(toNative(exec, paths[i]), dst, dst_is_dir);
-			if (!copyPath(exec, paths[i], target, recursive)) status = 1;
-		}
-
-		return status;
-	}
-
 	static bool touchPath(Executor& exec, const std::string& path) {
 		const fs::path native = toNative(exec, path);
 		std::error_code ec;
@@ -3149,7 +3096,6 @@ namespace wbsh {
 		exec.registerBuiltin("which",    builtin_which);
 		exec.registerBuiltin("mkdir",    builtin_mkdir);
 		exec.registerBuiltin("rmdir",    builtin_rmdir);
-		exec.registerBuiltin("cp",       builtin_cp);
 		exec.registerBuiltin("touch",    builtin_touch);
 		exec.registerBuiltin("wc",       builtin_wc);
 		exec.registerBuiltin("stat",     builtin_stat);

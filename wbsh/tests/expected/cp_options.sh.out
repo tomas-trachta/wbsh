@@ -1,0 +1,64 @@
+=== directories need -r
+wbsh: cp: -r not specified; omitting directory 'a'
+cp a cpa: 1
+  cpa not created
+wbsh: cp: -r not specified; omitting directory 'a'
+cp a y.txt out: 1 -> out/y.txt
+cp -r a cpa: 0 -> cpa/f.txt
+cp -R into existing: 0 -> cpa/a cpa/f.txt
+cp -rT twice: 0 -> cpb/f.txt
+wbsh: cp: cannot copy a directory, 'a', into itself, 'a/sub'
+cp -r a a/sub: 1
+wbsh: cp: 'y.txt' and './y.txt' are the same file
+same file: 1
+wbsh: cp: cannot overwrite non-directory 'y.txt' with directory 'a'
+dir onto file: 1
+wbsh: cp: cannot overwrite directory 'g/y.txt' with non-directory
+file onto dir: 1
+=== timestamps: -p, -a, default
+  plain copy gets a new time
+  -p keeps the time
+  -a keeps the time
+  --preserve=timestamps keeps it
+  --no-preserve=all drops it
+wbsh: cp: invalid argument 'bogus' for '--preserve'
+--preserve=bogus: 1
+=== -n -i -f -u -v
+cp -n: 0 dst=dst
+prompt: cp: overwrite 'dst'? 
+cp -i no: dst=dst
+prompt: cp: overwrite 'dst'? 
+cp -i yes: dst=src
+cp -u older: 0 dst=newer
+cp -u newer: 0 dst=newest
+cp -u missing dest: 0 -> newest
+onto read-only: 1 ro=ro
+cp -f onto read-only: 0 ro=newest
+'src' -> 'v1'
+'a' -> 'av'
+'a/f.txt' -> 'av/f.txt'
+=== -t -T --
+cp -t: 0 -> t/dst t/src
+wbsh: cp: cannot overwrite directory 't' with non-directory
+cp -T file onto dir: 1
+wbsh: cp: extra operand 'extra'
+cp -T extra operand: 1
+cp --: 0 -> d
+=== links
+  -r recreates the junction: in
+  and it points at the same target
+cp -rL: 0 -> tree-L/j/in tree-L/j/more
+wbsh: cp: -r not specified; omitting directory 'jd'
+cp junction without -r: 1
+cp -r junction: 0 -> jd-r/in jd-r/more
+=== errors
+wbsh: cp: missing file operand
+no operands: 1
+wbsh: cp: missing destination file operand after 'src'
+one operand: 1
+wbsh: cp: cannot stat 'nope': No such file or directory
+missing source: 1
+wbsh: cp: target 'nodir' is not a directory
+several into a non-directory: 1
+wbsh: cp: unrecognized option '--bogus'
+unknown option: 1
