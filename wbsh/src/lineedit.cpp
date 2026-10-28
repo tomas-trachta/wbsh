@@ -155,6 +155,10 @@ namespace wbsh {
 		return history[index].substr(prefix.size());
 	}
 
+	static void stripLineEnding(std::string& line) {
+		while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+	}
+
 	static fs::path findGitEntry(fs::path& probe) {
 		std::error_code ec;
 		for (;;) {
@@ -173,10 +177,11 @@ namespace wbsh {
 		std::string line;
 		if (!std::getline(file, line)) return {};
 
+		stripLineEnding(line);
 		const std::string prefix = "gitdir: ";
 		if (!hasPrefix(line, prefix)) return {};
 
-		fs::path target(line.substr(prefix.size()));
+		fs::path target = utf8ToPath(line.substr(prefix.size()));
 		if (!target.is_absolute()) target = (worktree / target).lexically_normal();
 		return target;
 	}
@@ -191,6 +196,24 @@ namespace wbsh {
 		if (fs::is_directory(gitdir, ec)) return gitdir;
 
 		return resolveGitDirFile(gitdir, probe);
+	}
+
+	fs::path findGitCommonDir(const fs::path& git_dir) {
+		std::ifstream file(git_dir / "commondir");
+		std::string line;
+		if (!std::getline(file, line)) return git_dir;
+
+		stripLineEnding(line);
+		if (line.empty()) return git_dir;
+
+		fs::path common = utf8ToPath(line);
+		if (!common.is_absolute()) common = (git_dir / common).lexically_normal();
+		return common;
+	}
+
+	bool usesRefTable(const fs::path& common_dir) {
+		std::error_code ec;
+		return fs::is_directory(common_dir / "reftable", ec);
 	}
 
 	LineEditor::LineEditor(Environment& env, Executor& exec)
@@ -992,13 +1015,13 @@ namespace wbsh {
 		return matches;
 	}
 
-	static void appendLooseBranches(const fs::path& gitdir,
-	                                std::vector<std::string>& branches) {
+	static void appendLooseRefs(const fs::path& common_dir, const std::string& kind,
+	                            std::vector<std::string>& names) {
 		std::error_code ec;
-		const fs::path heads = gitdir / "refs" / "heads";
-		if (!fs::is_directory(heads, ec)) return;
+		const fs::path root = common_dir / utf8ToPath(kind);
+		if (!fs::is_directory(root, ec)) return;
 
-		fs::recursive_directory_iterator it(heads, ec);
+		fs::recursive_directory_iterator it(root, ec);
 		if (ec) return;
 
 		for (auto entry = it; entry != fs::recursive_directory_iterator(); entry.increment(ec)) {
@@ -1007,21 +1030,16 @@ namespace wbsh {
 			std::error_code file_ec;
 			if (!entry->is_regular_file(file_ec)) continue;
 
-			std::string relative = pathToUtf8(fs::relative(entry->path(), heads, file_ec));
+			std::string relative = pathToUtf8(fs::relative(entry->path(), root, file_ec));
 			std::replace(relative.begin(), relative.end(), '\\', '/');
-			branches.push_back(std::move(relative));
+			names.push_back(std::move(relative));
 		}
 	}
 
-	static void stripLineEnding(std::string& line) {
-		while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-	}
-
-	static void appendPackedBranches(const fs::path& gitdir,
-	                                 std::vector<std::string>& branches) {
-		static const std::string kHeadsPrefix = "refs/heads/";
-
-		std::ifstream packed(gitdir / "packed-refs");
+	static void appendPackedRefs(const fs::path& common_dir, const std::string& kind,
+	                             std::vector<std::string>& names) {
+		const std::string prefix = kind + "/";
+		std::ifstream packed(common_dir / "packed-refs");
 		std::string line;
 		while (std::getline(packed, line)) {
 			if (line.empty() || line[0] == '#' || line[0] == '^') continue;
@@ -1031,9 +1049,7 @@ namespace wbsh {
 
 			std::string ref = line.substr(space + 1);
 			stripLineEnding(ref);
-			if (!hasPrefix(ref, kHeadsPrefix)) continue;
-
-			branches.push_back(ref.substr(kHeadsPrefix.size()));
+			if (hasPrefix(ref, prefix)) names.push_back(ref.substr(prefix.size()));
 		}
 	}
 
@@ -1042,15 +1058,90 @@ namespace wbsh {
 		names.erase(std::unique(names.begin(), names.end()), names.end());
 	}
 
-	std::vector<std::string> LineEditor::gitBranches() {
-		std::vector<std::string> branches;
-		const fs::path gitdir = findGitDir();
-		if (gitdir.empty()) return branches;
 
-		appendLooseBranches(gitdir, branches);
-		appendPackedBranches(gitdir, branches);
-		sortUnique(branches);
-		return branches;
+	// A reftable repository keeps no ref files to read, so git itself is
+	// asked; it runs through the shell so a `git` function can stand in.
+	void LineEditor::appendRefsFromGit(const std::string& kind, std::vector<std::string>& names) {
+		const int saved_status = exec_.lastStatus();
+		const std::string listing =
+			exec_.run("git for-each-ref '--format=%(refname)' " + kind + " 2>/dev/null");
+		exec_.setLastStatus(saved_status);
+
+		const std::string prefix = kind + "/";
+		std::size_t start = 0;
+		while (start < listing.size()) {
+			std::size_t end = listing.find('\n', start);
+			if (end == std::string::npos) end = listing.size();
+
+			std::string ref = listing.substr(start, end - start);
+			stripLineEnding(ref);
+			if (hasPrefix(ref, prefix)) names.push_back(ref.substr(prefix.size()));
+			start = end + 1;
+		}
+	}
+
+	std::vector<std::string> LineEditor::gitRefs(const std::string& kind) {
+		std::vector<std::string> names;
+		const fs::path gitdir = findGitDir();
+		if (gitdir.empty()) return names;
+
+		const fs::path common = findGitCommonDir(gitdir);
+		if (usesRefTable(common)) {
+			appendRefsFromGit(kind, names);
+		} else {
+			appendLooseRefs(common, kind, names);
+			appendPackedRefs(common, kind, names);
+		}
+
+		sortUnique(names);
+		return names;
+	}
+
+	std::vector<std::string> LineEditor::gitBranches() {
+		return gitRefs("refs/heads");
+	}
+
+	static void appendAll(std::vector<std::string>& into, const std::vector<std::string>& names) {
+		into.insert(into.end(), names.begin(), names.end());
+	}
+
+	static bool isRemoteHead(const std::string& name) {
+		const std::string suffix = "/HEAD";
+		return name.size() >= suffix.size()
+		    && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+	}
+
+	// `git checkout foo` / `git switch foo` create a local branch from the
+	// one remote branch called foo, so those names are offered too -- only
+	// when exactly one remote has them, as git requires.
+	static std::vector<std::string> guessedBranches(const std::vector<std::string>& remote_refs) {
+		std::map<std::string, int> seen;
+		for (const std::string& ref : remote_refs) {
+			const std::size_t slash = ref.find('/');
+			if (slash == std::string::npos || isRemoteHead(ref)) continue;
+
+			++seen[ref.substr(slash + 1)];
+		}
+
+		std::vector<std::string> names;
+		for (const auto& entry : seen) {
+			if (entry.second == 1) names.push_back(entry.first);
+		}
+
+		return names;
+	}
+
+	std::vector<std::string> LineEditor::gitRefTargets(bool tags_and_remotes, bool guesses) {
+		std::vector<std::string> names = gitBranches();
+		const std::vector<std::string> remote_refs = gitRefs("refs/remotes");
+		if (tags_and_remotes) {
+			appendAll(names, gitRefs("refs/tags"));
+			appendAll(names, remote_refs);
+		}
+
+		if (guesses) appendAll(names, guessedBranches(remote_refs));
+		sortUnique(names);
+		return names;
 	}
 
 	std::vector<std::string> LineEditor::gitRemotes() {
@@ -1058,7 +1149,7 @@ namespace wbsh {
 		const fs::path gitdir = findGitDir();
 		if (gitdir.empty()) return remotes;
 
-		std::ifstream config(gitdir / "config");
+		std::ifstream config(findGitCommonDir(gitdir) / "config");
 		std::string line;
 		while (std::getline(config, line)) {
 			StrScan in(line);
@@ -1134,14 +1225,17 @@ namespace wbsh {
 			return filterPrefix(wants_remote ? gitRemotes() : gitBranches(), prefix);
 		}
 
-		static const char* const kBranchSubs[] = {
-			"checkout", "switch", "branch", "merge", "rebase", "reset",
-			"diff", "log", "show", "cherry-pick", "revert",
+		if (sub == "checkout") return filterPrefix(gitRefTargets(true, true), prefix);
+		if (sub == "switch")   return filterPrefix(gitRefTargets(false, true), prefix);
+		if (sub == "branch")   return filterPrefix(gitBranches(), prefix);
+
+		static const char* const kRefSubs[] = {
+			"merge", "rebase", "reset", "diff", "log", "show", "cherry-pick", "revert",
 			nullptr,
 		};
-		if (!tableContains(kBranchSubs, sub)) return {};
+		if (!tableContains(kRefSubs, sub)) return {};
 
-		return filterPrefix(gitBranches(), prefix);
+		return filterPrefix(gitRefTargets(true, false), prefix);
 	}
 
 	static std::vector<std::string> dockerSecondLevelCompletions(
