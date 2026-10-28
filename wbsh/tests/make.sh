@@ -514,7 +514,7 @@ unset FOO
 
 echo "=== shells"
 printf 'SHELL = cmd\nall:\n\t@echo hello from cmd\n\techo %%OS%%\n' > Makefile
-run
+run | tr -d '\r'
 cat > Makefile <<'MK'
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
