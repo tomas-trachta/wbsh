@@ -21,6 +21,7 @@ extern char** environ;
 #include <utility>
 
 #include "numparse.h"
+#include "utf8.h"
 
 namespace wbsh {
 
@@ -497,10 +498,15 @@ namespace wbsh {
 	}
 
 	static void transformCase(std::string& value, bool upper) {
-		for (char& c : value) {
-			const int code = static_cast<unsigned char>(c);
-			c = static_cast<char>(upper ? std::toupper(code) : std::tolower(code));
+		std::string converted;
+		converted.reserve(value.size());
+		for (std::size_t pos = 0; pos < value.size();) {
+			const Utf8Char c = decodeUtf8(value, pos);
+			appendUtf8(converted, upper ? upperCode(c.code) : lowerCode(c.code));
+			pos += c.length;
 		}
+
+		value = std::move(converted);
 	}
 
 	bool Environment::applyAttributes(const std::string& name, std::string& value) const {

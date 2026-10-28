@@ -1604,10 +1604,11 @@ namespace wbsh {
 				array.sparse = true;
 				std::string key = expander.expandStringValue(item.key);
 				std::string value = expander.expandAssignmentValue(item.value);
-				array.keyed.emplace_back(std::move(key), std::move(value));
+				array.items.push_back({ true, std::move(key), std::move(value) });
 			} else {
-				std::vector<std::string> fields = expander.expandWord(item.value);
-				appendFields(array.items, fields);
+				for (std::string& field : expander.expandWord(item.value)) {
+					array.items.push_back({ false, std::string(), std::move(field) });
+				}
 			}
 
 			if (expander.failed()) break;
@@ -1632,27 +1633,6 @@ namespace wbsh {
 		scalar.value = expander.expandAssignmentValue(assignment.value);
 		scalar.append = assignment.append;
 		return scalar;
-	}
-
-	bool Executor::expandSimpleCmdAssigns(const SimpleCommand& sc, SimpleCmdAssigns& out) {
-		for (const auto& assignment : sc.assignments) {
-			if (assignment.is_array) {
-				out.array.push_back(expandArrayAssign(expander_, assignment));
-			} else if (assignment.has_subscript) {
-				out.elem.push_back(expandElemAssign(expander_, assignment));
-			} else {
-				out.scalar.push_back(expandScalarAssign(expander_, assignment));
-			}
-
-			if (expander_.failed()) {
-				reportExpanderError(expander_);
-				return false;
-			}
-
-			if (flowPending()) return false;
-		}
-
-		return true;
 	}
 
 	std::string Executor::expandDeclarationArg(const DeclarationArg& arg) {
@@ -1797,15 +1777,11 @@ namespace wbsh {
 	static void appendToIndexedArray(Environment& env, Expander& expander,
 	                                 const Executor::ArrayAssign& array) {
 		long long next_index = nextIndexedAppendSlot(env, array.name);
-		for (const auto& keyed : array.keyed) {
-			long long index = 0;
-			if (!expander.tryEvalArith(keyed.first, index)) index = next_index;
-			env.setIndexedElement(array.name, index, keyed.second);
+		for (const auto& item : array.items) {
+			long long index = next_index;
+			if (item.has_key && !expander.tryEvalArith(item.key, index)) index = next_index;
+			env.setIndexedElement(array.name, index, item.value);
 			next_index = index + 1;
-		}
-
-		for (const auto& value : array.items) {
-			env.setIndexedElement(array.name, next_index++, value);
 		}
 	}
 
@@ -1813,25 +1789,45 @@ namespace wbsh {
 	                                     const Executor::ArrayAssign& array) {
 		std::map<long long, std::string> sparse;
 		long long next_index = 0;
-		for (const auto& keyed : array.keyed) {
-			long long index = 0;
-			if (!expander.tryEvalArith(keyed.first, index)) index = next_index;
-			sparse[index] = keyed.second;
+		for (const auto& item : array.items) {
+			long long index = next_index;
+			if (item.has_key && !expander.tryEvalArith(item.key, index)) index = next_index;
+			sparse[index] = item.value;
 			next_index = index + 1;
 		}
 
-		for (const auto& value : array.items) sparse[next_index++] = value;
 		env.setIndexedArraySparse(array.name, std::move(sparse));
+	}
+
+	// Words without a `[key]=` pair up as key and value, as in bash 5.1+.
+	static void assignAssocItems(Environment& env, const Executor::ArrayAssign& array) {
+		const std::string* pending_key = nullptr;
+		for (const auto& item : array.items) {
+			if (item.has_key) {
+				env.setAssocElement(array.name, item.key, item.value);
+			} else if (pending_key == nullptr) {
+				pending_key = &item.value;
+			} else {
+				env.setAssocElement(array.name, *pending_key, item.value);
+				pending_key = nullptr;
+			}
+		}
+
+		if (pending_key != nullptr) env.setAssocElement(array.name, *pending_key, std::string());
+	}
+
+	static std::vector<std::string> itemValues(const Executor::ArrayAssign& array) {
+		std::vector<std::string> values;
+		values.reserve(array.items.size());
+		for (const auto& item : array.items) values.push_back(item.value);
+		return values;
 	}
 
 	static void applyArrayAssignToEnv(Environment& env, Expander& expander,
 	                                  const Executor::ArrayAssign& array) {
 		if (env.isAssocArray(array.name)) {
 			if (!array.append) env.declareAssocArray(array.name);
-			for (const auto& keyed : array.keyed) {
-				env.setAssocElement(array.name, keyed.first, keyed.second);
-			}
-
+			assignAssocItems(env, array);
 			return;
 		}
 
@@ -1845,7 +1841,7 @@ namespace wbsh {
 			return;
 		}
 
-		env.setIndexedArrayFromList(array.name, array.items);
+		env.setIndexedArrayFromList(array.name, itemValues(array));
 	}
 
 	static void applyElemAssignToEnv(Environment& env, Expander& expander,
@@ -1885,6 +1881,81 @@ namespace wbsh {
 		}
 
 		env.set(scalar.name, env.appendedValue(scalar.name, scalar.value));
+	}
+
+	// A prefix assignment is visible to the expansions after it while
+	// the assignments expand; the command gets them all afterwards.
+	using SavedVars = std::vector<std::pair<std::string, Environment::VarState>>;
+
+	static void setTemporarily(Environment& env, const Executor::ScalarAssign& scalar,
+			SavedVars& prior) {
+		if (env.isReadonly(scalar.name)) return;
+
+		const std::string target = env.resolveRef(scalar.name);
+		prior.emplace_back(target, env.saveVar(target));
+		env.set(scalar.name, scalar.value);
+	}
+
+	static void restoreTemporaries(Environment& env, SavedVars& prior) {
+		for (auto it = prior.rbegin(); it != prior.rend(); ++it) {
+			env.restoreVar(it->first, std::move(it->second));
+		}
+	}
+
+	static void applyAssignNow(Environment& env, Expander& expander,
+			Executor::SimpleCmdAssigns& expanded) {
+		for (const auto& scalar : expanded.scalar) applyScalarAssignToEnv(env, scalar);
+		for (const auto& elem : expanded.elem)     applyElemAssignToEnv(env, expander, elem);
+		for (const auto& array : expanded.array)   applyArrayAssignToEnv(env, expander, array);
+	}
+
+	static void expandAssignInto(Expander& expander, const Assignment& assignment,
+			Executor::SimpleCmdAssigns& out) {
+		if (assignment.is_array) {
+			out.array.push_back(expandArrayAssign(expander, assignment));
+			return;
+		}
+
+		if (assignment.has_subscript) {
+			out.elem.push_back(expandElemAssign(expander, assignment));
+			return;
+		}
+
+		out.scalar.push_back(expandScalarAssign(expander, assignment));
+	}
+
+	bool Executor::expandOneAssign(const Assignment& assignment, SimpleCmdAssigns& out, bool bare,
+			SavedVars& prior) {
+		SimpleCmdAssigns one;
+		expandAssignInto(expander_, assignment, one);
+		if (expander_.failed() || flowPending()) return false;
+
+		if (bare) {
+			applyAssignNow(env_, expander_, one);
+			return true;
+		}
+
+		if (!one.scalar.empty()) setTemporarily(env_, one.scalar.back(), prior);
+		for (auto& scalar : one.scalar) out.scalar.push_back(std::move(scalar));
+		for (auto& elem : one.elem)     out.elem.push_back(std::move(elem));
+		for (auto& array : one.array)   out.array.push_back(std::move(array));
+		return true;
+	}
+
+	// Like bash, the assignments expand left to right, each seeing the
+	// ones before it; a bare assignment (no command) takes effect at once.
+	bool Executor::expandSimpleCmdAssigns(const SimpleCommand& sc, SimpleCmdAssigns& out,
+			bool bare) {
+		SavedVars prior;
+		bool ok = true;
+		for (const auto& assignment : sc.assignments) {
+			ok = expandOneAssign(assignment, out, bare, prior);
+			if (!ok) break;
+		}
+
+		restoreTemporaries(env_, prior);
+		if (expander_.failed()) reportExpanderError(expander_);
+		return ok;
 	}
 
 	void Executor::applyBareAssignmentsToShell(const SimpleCmdAssigns& assigns) {
@@ -1997,7 +2068,7 @@ namespace wbsh {
 		if (!expandSimpleCmdArgv(sc, argv, compound)) return 1;
 
 		SimpleCmdAssigns assigns_data;
-		if (!expandSimpleCmdAssigns(sc, assigns_data)) return 1;
+		if (!expandSimpleCmdAssigns(sc, assigns_data, argv.empty())) return 1;
 		const NameValueList assigns = assigns_data.scalarPairs();
 		const std::size_t words_before_alias = argv.size();
 		aliasExpandArgvHead(argv);
@@ -2701,7 +2772,8 @@ namespace wbsh {
 	}
 
 	// A nameref loop variable is pointed at each word in turn.
-	static void setLoopVariable(Environment& env, const std::string& name, const std::string& value) {
+	static void setLoopVariable(Environment& env, const std::string& name,
+			const std::string& value) {
 		if (env.isNameref(name)) env.setNameref(name, value);
 		else env.set(name, value);
 	}
