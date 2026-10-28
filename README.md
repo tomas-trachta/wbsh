@@ -194,14 +194,18 @@ non-printing markers. Default `PS1`:
 `iconv`, `xargs`, `less`, `more`.
 
 **Encoding and hashing:** `base64`, `base32`, `uuencode`, `uudecode`, `xxd`,
-`od`, `hexdump`, `hd`, `md5sum`, `sha1sum`, `sha256sum`, `sha384sum`,
-`sha512sum`, `sha3sum` (all with `-c`), `cksum`, `sum`, `crc32`.
+`od`, `hexdump` (`-e` / `-f` format strings), `hd`, `md5sum`, `sha1sum`,
+`sha256sum`, `sha384sum`, `sha512sum`, `sha3sum` (all with `-c`), `cksum`,
+`sum`, `crc32`.
 
-**Archives and compression:** `tar` (gzip, bzip2, xz, lzma and compress are
-detected on read; `-z` / `-j` / `-a` on write), `gzip`, `gunzip`, `zcat`,
-`bzip2`, `bunzip2`, `bzcat`, `xz` / `unxz` / `xzcat`, `lzma` / `unlzma` /
-`lzcat`, `uncompress`, `zip`, `unzip`, `cpio`, `ar` (read-only). `xz` and
-`lzma` decompress only, as busybox's do.
+**Archives and compression:** `tar` (gzip, bzip2, xz, lzma, lzop and compress
+are detected on read; `-z` / `-j` / `-J` / `--lzma` / `--lzop` / `-a` on
+write), `gzip`, `gunzip`, `zcat`, `bzip2`, `bunzip2`, `bzcat`, `xz` / `unxz` /
+`xzcat`, `lzma` / `unlzma` / `lzcat` (`-0`…`-9`, `-e`, `-C` check type,
+`-F xz|lzma`), `lzop` / `unlzop` / `lzopcat`, `uncompress`, `zip`, `unzip`,
+`cpio` (newc, crc, odc, bin, ustar and tar, both ways), `ar` (create, replace,
+append, delete, move; GNU long names, deterministic headers unless `U`).
+`lzop` keeps its input unless given `-U`, as lzop does.
 
 **Processes and system:** `ps`, `pgrep`, `pkill`, `pidof`, `kill`, `killall`,
 `timeout`, `watch`, `uptime`, `free`, `nproc`, `env` (`-i`, `-u`, `NAME=value
