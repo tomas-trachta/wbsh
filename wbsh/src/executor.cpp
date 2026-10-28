@@ -491,10 +491,26 @@ namespace wbsh {
 		return info;
 	}
 
+	static DWORD placementFlags(const SpawnPlacement& placement) {
+		DWORD flags = 0;
+		if (placement.job != nullptr) flags |= CREATE_SUSPENDED;
+		if (placement.new_process_group) flags |= CREATE_NEW_PROCESS_GROUP;
+		return flags;
+	}
+
+	static void releasePlacedChild(const PROCESS_INFORMATION& process,
+	                               const SpawnPlacement& placement) {
+		if (placement.job == nullptr) return;
+
+		::AssignProcessToJobObject(placement.job, process.hProcess);
+		::ResumeThread(process.hThread);
+	}
+
 	// The inherits[] buffer is referenced by attr_list until
 	// DeleteProcThreadAttributeList runs, so it must live in this frame
 	// (not in a helper) — per the Win32 attribute-list ownership rules.
-	static HANDLE spawnWithHandles(SpawnCommand& command, const StdioHandles& stdio) {
+	static HANDLE spawnWithHandles(SpawnCommand& command, const StdioHandles& stdio,
+	                               const SpawnPlacement& placement = SpawnPlacement()) {
 		giveBackStdinReadAhead();
 		LPPROC_THREAD_ATTRIBUTE_LIST attr_list = allocAttrList();
 		if (attr_list == nullptr) return INVALID_HANDLE_VALUE;
@@ -510,7 +526,7 @@ namespace wbsh {
 		PROCESS_INFORMATION process{};
 		const BOOL created = ::CreateProcessW(command.exe.c_str(), command.cmdline.data(),
 			nullptr, nullptr, TRUE,
-			EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+			EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | placementFlags(placement),
 			command.envblock.data(), nullptr, &info.StartupInfo, &process);
 		freeAttrList(attr_list);
 
@@ -519,6 +535,7 @@ namespace wbsh {
 			return INVALID_HANDLE_VALUE;
 		}
 
+		releasePlacedChild(process, placement);
 		::CloseHandle(process.hThread);
 		return process.hProcess;
 	}
@@ -1121,7 +1138,8 @@ namespace wbsh {
 		return isFunction(name) || isBuiltin(name) || isAlias(name);
 	}
 
-	HANDLE Executor::spawnShellCommand(const std::vector<std::string>& argv) {
+	HANDLE Executor::spawnShellCommand(const std::vector<std::string>& argv,
+	                                   const SpawnPlacement& placement) {
 		const std::string self = getSelfExecutablePath();
 		const std::vector<std::string> child_argv = selfSpawnArgv(self, quotedCommandText(argv));
 
@@ -1131,17 +1149,18 @@ namespace wbsh {
 		command.cmdline  = buildCommandLine(child_argv);
 		command.envblock = buildEnvBlock(env_, overrides, /*include_unexported=*/true);
 
-		const HANDLE process = spawnWithHandles(command, currentStdio());
+		const HANDLE process = spawnWithHandles(command, currentStdio(), placement);
 		if (process == INVALID_HANDLE_VALUE) discardHistorySnapshot(overrides);
 		return process;
 	}
 
-	HANDLE Executor::spawnCommand(const std::vector<std::string>& argv) {
+	HANDLE Executor::spawnCommand(const std::vector<std::string>& argv,
+	                              const SpawnPlacement& placement) {
 		if (argv.empty()) return INVALID_HANDLE_VALUE;
 
 		std::fflush(stdout);
 		std::fflush(stderr);
-		if (runsInsideShell(argv[0])) return spawnShellCommand(argv);
+		if (runsInsideShell(argv[0])) return spawnShellCommand(argv, placement);
 
 		const std::string exec_path = findExecutable(argv[0]);
 		if (exec_path.empty()) {
@@ -1149,13 +1168,13 @@ namespace wbsh {
 			return INVALID_HANDLE_VALUE;
 		}
 
-		if (looksLikeShellScript(exec_path)) return spawnShellCommand(argv);
+		if (looksLikeShellScript(exec_path)) return spawnShellCommand(argv, placement);
 
 		const NameValueList no_assignments;
 		SpawnCommand command = makeSpawnCommand(
 			prepareExternalArgv(argv, exec_path, no_assignments), exec_path,
 			buildEnvBlock(env_, prepareExternalEnvOverrides(no_assignments)));
-		return spawnWithHandles(command, currentStdio());
+		return spawnWithHandles(command, currentStdio(), placement);
 	}
 
 	// A prefix assignment whose value fails to expand is dropped rather
