@@ -96,6 +96,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>16777216</StackReserveSize>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
@@ -116,6 +117,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>16777216</StackReserveSize>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
@@ -134,6 +136,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>16777216</StackReserveSize>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
@@ -154,6 +157,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>16777216</StackReserveSize>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
@@ -227,6 +231,8 @@
     <ClCompile Include="src\environment.cpp" />
     <ClCompile Include="src\expander.cpp" />
     <ClCompile Include="src\executor.cpp" />
+    <ClCompile Include="src\executor_callstack.cpp" />
+    <ClCompile Include="src\executor_traps.cpp" />
     <ClCompile Include="src\builtins.cpp" />
     <ClCompile Include="src\builtins_declare.cpp" />
     <ClCompile Include="src\builtins_read.cpp" />

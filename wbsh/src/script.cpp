@@ -369,6 +369,7 @@ namespace wbsh {
 		Executor exec(env);
 		exec.setSourceText(run.source);
 		absorbInheritedState(env, exec);
+		if (run.from_file) exec.beginScriptFrame(run.script_name);
 
 		const std::size_t error_offset = firstSyntaxErrorOffset(lex.errors(), parser.errors());
 		truncateAtSyntaxError(*root, parser, error_offset);
@@ -399,6 +400,7 @@ namespace wbsh {
 
 	int runScript(const ScriptRun& run) {
 		Lexer lex(run.source);
+		lex.startAtLine(run.first_line);
 		auto tokens = lex.tokenize();
 		const std::vector<Token> dumped_tokens = run.show_tokens ? tokens : std::vector<Token>{};
 

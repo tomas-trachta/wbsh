@@ -1,0 +1,54 @@
+=== BASH_REMATCH
+abc123 abc 123 n=3
+no match: n=0
+=== PIPESTATUS
+0 1 0
+0 1 0 7 n=4
+single: 1
+bang: 1
+if: 1
+brace: 0
+group stage: 0 1
+assignment: 4
+function: 3
+dbracket: 1
+pipefail: 0 1 0 status 1
+=== FUNCNAME, BASH_SOURCE, BASH_LINENO
+top: source=bash_runtime_vars.sh lineno=0
+main guard ok
+direct: show main / bash_runtime_vars.sh bash_runtime_vars.sh / 28 0
+nested: show outer main / bash_runtime_vars.sh bash_runtime_vars.sh bash_runtime_vars.sh / 27 29 0
+substituted: show main / bash_runtime_vars.sh bash_runtime_vars.sh / 30 0
+piped: show main / bash_runtime_vars.sh bash_runtime_vars.sh / 31 0
+lib top: source main / bash_runtime_vars_lib.sh bash_runtime_vars.sh
+in-lib: show source main / bash_runtime_vars.sh bash_runtime_vars_lib.sh bash_runtime_vars.sh / 3 35 0
+libf: show libf main / bash_runtime_vars.sh bash_runtime_vars_lib.sh bash_runtime_vars.sh / 2 36 0
+lib top: source wrap main / bash_runtime_vars_lib.sh bash_runtime_vars.sh bash_runtime_vars.sh
+in-lib: show source wrap main / bash_runtime_vars.sh bash_runtime_vars_lib.sh bash_runtime_vars.sh bash_runtime_vars.sh / 3 37 38 0
+after: main
+=== ERR trap
+ERR status=1 line=44
+ERR status=1 line=50
+brace goes on
+ERR status=1 line=51
+subshell done
+inside the subshell no trap
+ERR status=1 line=53
+ERR status=1 line=54
+ERR status=1 line=55
+ERR status=2 line=57
+--- set -E
+ERR status=1 line=56
+ERR status=2 line=60
+y=ERR status=1 line=61
+out
+ERR status=1 line=63
+ERR status=1 line=63
+status kept 1
+own ERR in h
+own ERR in h
+=== ERR trap and set -e
+brace with && survives
+bang survives
+trap before exit
+subshell exit 1

@@ -109,6 +109,8 @@ namespace wbsh {
 	class Lexer {
 	public:
 		explicit Lexer(std::string input);
+		/// Number lines from @p line: the text was cut out of a larger script.
+		void startAtLine(std::size_t line) { loc_.line = line; }
 
 		/// The result is always terminated with a TokKind::EndOfInput token.
 		std::vector<Token> tokenize();

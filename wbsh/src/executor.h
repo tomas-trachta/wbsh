@@ -243,9 +243,9 @@ namespace wbsh {
 
 		/// Install the trap action for @p sig. Replaces any prior action.
 		///
-		/// Only `EXIT` is fired (when a script, `-c` string, subshell,
-		/// command substitution or the REPL ends); signal-driven traps
-		/// need real signal plumbing on Windows (deferred).
+		/// `EXIT` fires when a script, `-c` string, subshell, command
+		/// substitution or the REPL ends, `ERR` after a failed command;
+		/// signal-driven traps need real signal plumbing on Windows (deferred).
 		void setTrap(const std::string& sig, std::string cmd) {
 			trap_handlers_[sig] = std::move(cmd);
 			lists_inherited_traps_ = false;
@@ -328,12 +328,14 @@ namespace wbsh {
 
 		// Re-entry from `source` / `.` and similar. The caller owns the
 		// AST and keeps it alive for the lifetime of the call.
-		int executeText(const std::string& source_text, const std::string& origin);
+		int executeText(const std::string& source_text, const std::string& origin,
+		                std::size_t first_line = 1);
 
 		// Run text the shell reads as input (a script, a REPL line, `eval`,
 		// `source`): under `set -v` each line is echoed to stderr as bash
 		// reads it, before the command on it runs.
-		int executeInputText(const std::string& source_text, const std::string& origin);
+		int executeInputText(const std::string& source_text, const std::string& origin,
+		                     std::size_t first_line = 1);
 		int executeInput(const Node& root, const std::string& source_text);
 
 		// Hand AST ownership to the executor by adopting the Arena that
@@ -442,8 +444,18 @@ namespace wbsh {
 		bool unsetFunction(const std::string& name);
 
 		int  sourceDepth() const { return source_depth_; }
-		void beginSource() { ++source_depth_; }
-		void endSource()   { --source_depth_; }
+		/// Enter / leave a `source`d @p file: also its FUNCNAME / BASH_SOURCE frame.
+		void beginSource(const std::string& file);
+		void endSource();
+
+		/// The `main` frame of FUNCNAME / BASH_SOURCE for a shell running script @p path.
+		void beginScriptFrame(const std::string& path);
+		/// A self-spawned subshell rebuilds its parent's call stack from the
+		/// FUNCNAME / BASH_SOURCE / BASH_LINENO arrays it inherited.
+		void adoptInheritedCallStack();
+		/// A name line and a file line per function defined in a file (WBSH_FUNCTION_FILES).
+		std::string serializeFunctionFiles() const;
+		void adoptInheritedFunctionFiles(const std::string& text);
 
 		// Run argv as a resolved command (function, builtin, or external) with
 		// `assigns` in its environment only, the way a `NAME=value cmd` prefix does.
@@ -533,12 +545,45 @@ namespace wbsh {
 			Node* root = nullptr;
 			std::string diagnostics;
 		};
-		ParsedText parseText(const std::string& source_text, const std::string& origin);
+
+		/// One FUNCNAME / BASH_SOURCE / BASH_LINENO entry: a function, a
+		/// `source`d file or the script itself (`main`).
+		struct CallFrame {
+			std::string name;
+			std::string source;
+			int line = 0;
+		};
+		void pushCallFrame(CallFrame frame);
+		void popCallFrame();
+		void publishCallStack();
+		std::string currentSourceFile() const;
+		std::string functionFile(const std::string& name) const;
+		int  runFunctionBody(const FunctionDef& def);
+
+		const ParsedText& parsedTrapAction(const std::string& action);
+		int  runTrapAction(const std::string& action);
+
+		// ERR fires where errexit is judged, once per failure: a compound
+		// command whose status came from an already judged inner command,
+		// or from the left of `&&` / `||` or a `!`, is not judged again.
+		bool handleCommandFailure(int status);
+		void fireErrTrap(int status);
+		int  finishLeafCommand(int status);
+		int  negateBangStatus(int status);
+		void setPipeStatus(const std::vector<int>& statuses);
+
+		// Without errtrace a function does not inherit the ERR trap; one it
+		// sets itself stays after it returns.
+		std::string suspendErrTrapForFunction();
+		void restoreErrTrapAfterFunction(std::string saved, bool kept);
+		ParsedText parseText(const std::string& source_text, const std::string& origin,
+		                     std::size_t first_line = 1);
 		int finishParsedText(const ParsedText& parsed, int status);
 		void  echoInputBefore(const List& list, std::size_t index);
 		void  echoInputUpTo(std::size_t end);
 
 		int execNode(const Node& n);
+		bool nodeTracksLineno(const Node& node) const;
 		int dispatchNode(const Node& n);
 		void exitOnFatalExpansionError();
 		int execList(const List& l);
@@ -655,6 +700,8 @@ namespace wbsh {
 			std::vector<std::string> saved_pos;
 			std::string saved_name;
 			std::unordered_map<std::string, const FunctionDef*> saved_funcs;
+			std::unordered_map<std::string, std::string> saved_function_files;
+			std::vector<CallFrame> saved_call_stack;
 			std::unordered_map<std::string, std::string> saved_traps;
 			bool saved_lists_inherited_traps = false;
 			SetOptions saved_options;
@@ -674,6 +721,7 @@ namespace wbsh {
 		struct SubshellScope {
 			Environment env;
 			std::unordered_map<std::string, const FunctionDef*> functions;
+			std::unordered_map<std::string, std::string> function_files;
 			std::unordered_map<std::string, std::string> aliases;
 			std::unordered_map<std::string, std::string> traps;
 			std::unordered_map<std::string, std::string> inherited_traps;
@@ -792,6 +840,8 @@ namespace wbsh {
 		std::unordered_map<std::string, BuiltinFn> builtins_;
 		std::unordered_map<std::string, PluginCommand> plugin_commands_;
 		std::unordered_map<std::string, const FunctionDef*> functions_;
+		std::unordered_map<std::string, std::string> function_files_;
+		std::vector<CallFrame> call_stack_;
 		std::unordered_map<std::string, std::string> aliases_;
 		HistoryList history_;
 		std::size_t history_saved_ = 0;
@@ -799,6 +849,8 @@ namespace wbsh {
 		std::unordered_map<std::string, std::string> trap_handlers_;
 		std::unordered_map<std::string, std::string> inherited_traps_;
 		bool lists_inherited_traps_ = false;
+		std::unordered_map<std::string, ParsedText> trap_asts_;
+		const std::string* frozen_lineno_source_ = nullptr;
 		std::vector<RedirState> exec_redir_journal_;
 		bool in_exit_trap_ = false;
 		int  exit_trap_status_ = 0;
@@ -832,6 +884,9 @@ namespace wbsh {
 		int  source_depth_ = 0;
 		std::vector<bool> compound_args_;
 		int  errexit_suppress_ = 0;
+		bool status_judged_ = false;
+		bool in_err_trap_ = false;
+		bool call_set_err_trap_ = false;
 		InputEcho input_echo_;
 		FlowSignal flow_;
 	};
