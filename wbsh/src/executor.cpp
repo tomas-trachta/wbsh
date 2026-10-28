@@ -1335,6 +1335,13 @@ namespace wbsh {
 		}
 	}
 
+	static std::string serializeDisabledBuiltins(const Executor& exec) {
+		const std::unordered_set<std::string>& disabled = exec.disabledBuiltins();
+		std::vector<std::string> names(disabled.begin(), disabled.end());
+		std::sort(names.begin(), names.end());
+		return joinWithSpaces(names);
+	}
+
 	NameValueList Executor::buildSelfSpawnOverrides() {
 		NameValueList overrides;
 
@@ -1358,6 +1365,8 @@ namespace wbsh {
 		if (!bindings.empty()) overrides.emplace_back("WBSH_BINDINGS", bindings);
 		const std::string completions = serializeCompletionSpecs(*this);
 		if (!completions.empty()) overrides.emplace_back("WBSH_COMPLETIONS", completions);
+		const std::string disabled = serializeDisabledBuiltins(*this);
+		if (!disabled.empty()) overrides.emplace_back("WBSH_DISABLED_BUILTINS", disabled);
 
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
@@ -2999,6 +3008,7 @@ namespace wbsh {
 		snap.functions = functions_;
 		snap.function_files = function_files_;
 		snap.aliases = aliases_;
+		snap.disabled_builtins = disabled_builtins_;
 		snap.traps = trap_handlers_;
 		snap.inherited_traps = inherited_traps_;
 		snap.lists_inherited_traps = lists_inherited_traps_;
@@ -3034,6 +3044,7 @@ namespace wbsh {
 		functions_ = std::move(snap.functions);
 		function_files_ = std::move(snap.function_files);
 		aliases_ = std::move(snap.aliases);
+		disabled_builtins_ = std::move(snap.disabled_builtins);
 		trap_handlers_ = std::move(snap.traps);
 		inherited_traps_ = std::move(snap.inherited_traps);
 		lists_inherited_traps_ = snap.lists_inherited_traps;
@@ -3604,8 +3615,34 @@ namespace wbsh {
 		return true;
 	}
 
-	bool Executor::isBuiltin(const std::string& name) const {
+	bool Executor::isKnownBuiltin(const std::string& name) const {
 		return builtins_.count(name) != 0 || plugin_commands_.count(name) != 0;
+	}
+
+	bool Executor::isBuiltin(const std::string& name) const {
+		return isKnownBuiltin(name) && disabled_builtins_.count(name) == 0;
+	}
+
+	void Executor::setBuiltinEnabled(const std::string& name, bool enabled) {
+		if (enabled) disabled_builtins_.erase(name);
+		else         disabled_builtins_.insert(name);
+	}
+
+	std::vector<std::string> Executor::allBuiltinNames() const {
+		std::vector<std::string> names;
+		names.reserve(builtins_.size() + plugin_commands_.size());
+		for (const auto& entry : builtins_) names.push_back(entry.first);
+		for (const auto& entry : plugin_commands_) names.push_back(entry.first);
+		return names;
+	}
+
+	std::vector<std::string> Executor::builtinNames() const {
+		std::vector<std::string> names = allBuiltinNames();
+		const auto disabled = [this](const std::string& name) {
+			return disabled_builtins_.count(name) != 0;
+		};
+		names.erase(std::remove_if(names.begin(), names.end(), disabled), names.end());
+		return names;
 	}
 
 	bool Executor::isFunction(const std::string& name) const {

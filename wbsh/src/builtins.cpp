@@ -2284,6 +2284,7 @@ namespace wbsh {
 		registerDeclarationBuiltins(exec);
 		registerReadBuiltin(exec);
 		registerUlimitBuiltin(exec);
+		registerEnableBuiltin(exec);
 		registerFcBuiltin(exec);
 		registerTestBuiltins(exec);
 	}
