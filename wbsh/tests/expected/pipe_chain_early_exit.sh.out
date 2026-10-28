@@ -1,0 +1,32 @@
+=== chains of builtin stages
+y
+y
+status 0
+y
+status 0
+n
+n
+status 0
+z
+z
+status 0
+=== functions, groups and subshells in the chain
+y
+y
+status 0
+y
+y
+status 0
+y
+y
+status 0
+y
+y
+status 0
+=== the pipeline's status and PIPESTATUS
+y
+last 0
+status 0
+y
+pipefail 141
+status 0
