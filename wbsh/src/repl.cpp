@@ -71,6 +71,7 @@ namespace wbsh {
 	static const int kSigintStatus = 130;
 	static const char* const kResetStyle = "\x1b[0m";
 	static const char* const kBranchStyle = "\x1b[33;1m";
+	static const char* const kDefaultHistorySize = "5000";
 
 	struct ReplState {
 		std::string buffer;
@@ -78,7 +79,6 @@ namespace wbsh {
 		bool        history_recorded = false;
 		bool        waiting_for_more = false;
 		bool        color_ok = false;
-		std::string histfile;
 #ifdef _WIN32
 		HANDLE h_in       = INVALID_HANDLE_VALUE;
 		HANDLE h_out      = INVALID_HANDLE_VALUE;
@@ -600,6 +600,7 @@ namespace wbsh {
 	static void initConsoleAndSignals(ReplState& state) {
 #ifdef _WIN32
 		installCtrlCHandler();
+		installHistoryCloseHandler();
 		::SetConsoleOutputCP(CP_UTF8);
 		captureConsoleModes(state);
 		if (stdinIsTty() && stdoutIsTty()) {
@@ -690,17 +691,38 @@ namespace wbsh {
 		}
 	}
 
-	static void initHistFile(Environment& env, Executor& exec, ReplState& state) {
+	// As bash does for an interactive shell, with wbsh's longer default.
+	static void initHistoryVariables(Environment& env) {
 		const std::string home_dir = env.get("HOME");
-		state.histfile = env.get("HISTFILE");
-		if (state.histfile.empty() && !home_dir.empty()) {
-			state.histfile = home_dir + "/.wbsh_history";
-			env.set("HISTFILE", state.histfile);
+		if (!env.has("HISTFILE") && !home_dir.empty()) {
+			env.set("HISTFILE", home_dir + "/.wbsh_history");
 		}
 
-		if (!state.histfile.empty()) {
-			exec.loadHistoryFromFile(exec.pathConv().toWin32(state.histfile));
-		}
+		if (!env.has("HISTSIZE")) env.set("HISTSIZE", kDefaultHistorySize);
+		if (!env.has("HISTFILESIZE")) env.set("HISTFILESIZE", env.get("HISTSIZE"));
+	}
+
+	static std::string historyFilePath(Executor& exec) {
+		const std::string histfile = exec.env().get("HISTFILE");
+		if (histfile.empty()) return {};
+
+		return exec.pathConv().toWin32(histfile);
+	}
+
+	static void trimHistoryFileToSize(Executor& exec, const std::string& path) {
+		const long long limit = historyLimit(exec.env().get("HISTFILESIZE"));
+		if (path.empty() || limit < 0) return;
+
+		trimHistoryFile(path, static_cast<std::size_t>(limit));
+	}
+
+	// Read after the rc file, so a HISTFILE set there is the one used.
+	static void loadHistory(Executor& exec) {
+		const std::string path = historyFilePath(exec);
+		if (path.empty()) return;
+
+		exec.loadHistoryFromFile(path);
+		trimHistoryFileToSize(exec, path);
 	}
 
 	static void sourceWbshrc(const Environment& env, Executor& exec) {
@@ -730,10 +752,14 @@ namespace wbsh {
 		exec.executeText(command, "WBSH_INIT_COMMAND");
 	}
 
-	static void saveHistory(Executor& exec, const ReplState& state) {
-		if (!state.histfile.empty()) {
-			exec.saveHistoryToFile(exec.pathConv().toWin32(state.histfile));
-		}
+	static void saveNewHistory(Executor& exec) {
+		commitHistory(exec, historyFilePath(exec));
+	}
+
+	static void finishHistory(Executor& exec) {
+		const std::string path = historyFilePath(exec);
+		commitHistory(exec, path);
+		trimHistoryFileToSize(exec, path);
 	}
 
 	static void runTrap(Executor& exec, const char* signal_name, const char* origin) {
@@ -815,10 +841,35 @@ namespace wbsh {
 		appendHistoryLine(state.history_entry, state.buffer, line);
 	}
 
+	static bool historyWanted(Executor& exec, const std::string& entry) {
+		if (!exec.env().options().history) return false;
+
+		const Environment& env = exec.env();
+		const HistoryFilter filter = { env.get("HISTCONTROL"), env.get("HISTIGNORE") };
+		const auto& history = exec.history();
+		return historyAccepts(filter, entry, history.empty() ? std::string() : history.back());
+	}
+
 	static void recordHistoryEntry(Executor& exec, ReplState& state) {
-		state.history_recorded = !state.history_entry.empty();
-		exec.addHistoryEntry(std::move(state.history_entry));
+		const std::string entry = std::move(state.history_entry);
 		state.history_entry.clear();
+		state.history_recorded = historyWanted(exec, entry);
+		if (!state.history_recorded) return;
+
+		const HistoryFilter filter = { exec.env().get("HISTCONTROL"), std::string() };
+		if (historyErasesDuplicates(filter)) exec.eraseHistoryEntries(entry);
+
+		exec.addHistoryEntry(entry);
+		holdUnsavedHistory(historyFilePath(exec), entry);
+	}
+
+	// The entry goes to the history file as soon as its status is known,
+	// so other shells and a closed window keep it.
+	static void finishCommandHistory(Executor& exec, ReplState& state) {
+		if (state.history_recorded) exec.markLastHistoryStatus(exec.lastStatus());
+
+		state.history_recorded = false;
+		saveNewHistory(exec);
 	}
 
 	static void appendToBuffer(ReplState& state, const std::string& line) {
@@ -897,16 +948,16 @@ namespace wbsh {
 		exec.setLastStatus(kSigintStatus);
 	}
 
-	static int exitOnEof(Executor& exec, const ReplState& state) {
+	static int exitOnEof(Executor& exec) {
 		std::fputc('\n', stdout);
 		const int status = exec.fireExitTrap(exec.lastStatus());
-		saveHistory(exec, state);
+		finishHistory(exec);
 		return status;
 	}
 
-	static int exitWithStatus(Executor& exec, const ReplState& state, int exit_status) {
+	static int exitWithStatus(Executor& exec, int exit_status) {
 		const int status = exec.fireExitTrap(exit_status);
-		saveHistory(exec, state);
+		finishHistory(exec);
 		return status;
 	}
 
@@ -931,13 +982,14 @@ namespace wbsh {
 		initConsoleAndSignals(state);
 		initShellDefaults(env, state);
 		printBanner(state);
-		initHistFile(env, exec, state);
+		initHistoryVariables(env);
 
 		sourceWbshrc(env, exec);
+		loadHistory(exec);
 		runInitCommand(env, exec);
 		int init_status = 0;
 		if (shellExited(exec, init_status)) {
-			saveHistory(exec, state);
+			finishHistory(exec);
 			return init_status;
 		}
 
@@ -958,18 +1010,15 @@ namespace wbsh {
 			if (status == LineStatus::kEof) {
 				if (abandonPendingInput(state)) continue;
 
-				return exitOnEof(exec, state);
+				return exitOnEof(exec);
 			}
 
 			runLine(exec, state, line);
 
 			int exit_status = 0;
-			if (shellExited(exec, exit_status)) return exitWithStatus(exec, state, exit_status);
+			if (shellExited(exec, exit_status)) return exitWithStatus(exec, exit_status);
 
-			if (state.history_recorded) {
-				exec.markLastHistoryStatus(exec.lastStatus());
-				state.history_recorded = false;
-			}
+			finishCommandHistory(exec, state);
 		}
 	}
 

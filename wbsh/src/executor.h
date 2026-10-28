@@ -22,6 +22,7 @@
 #include "ast.h"
 #include "environment.h"
 #include "expander.h"
+#include "history.h"
 #include "pathconv.h"
 
 #ifdef _WIN32
@@ -169,18 +170,25 @@ namespace wbsh {
 		}
 		const std::unordered_map<std::string, std::string>& aliases() const { return aliases_; }
 
-		// history_ and history_status_ are strictly parallel: same size,
-		// same indexing. history_status_[i] is the exit code of the most
-		// recent execution of history_[i] (0 = success, anything else =
+		// history() and historyStatus() are strictly parallel: same size,
+		// same indexing. historyStatus()[i] is the exit code of the most
+		// recent execution of history()[i] (0 = success, anything else =
 		// failure). Entries loaded from legacy on-disk format default to 0.
-		const std::vector<std::string>& history() const { return history_; }
-		const std::vector<int>& historyStatus() const { return history_status_; }
+		// The list keeps at most HISTSIZE entries.
+		const std::vector<std::string>& history() const { return history_.commands; }
+		const std::vector<int>& historyStatus() const { return history_.statuses; }
 		void  addHistoryEntry(std::string line);
+		void  eraseHistoryEntries(const std::string& line);
 		void  markLastHistoryStatus(int status);
 		void  setHistoryEntryStatus(std::size_t index, int status);
-		void  clearHistory() { history_.clear(); history_status_.clear(); }
+		void  clearHistory();
+		// Entries read from a file count as already saved there.
 		bool  loadHistoryFromFile(const std::string& path);
 		bool  saveHistoryToFile(const std::string& path) const;
+		// Writes the whole list, after which every entry counts as saved.
+		bool  writeHistory(const std::string& path);
+		// Appends the entries added since the last load, write or append.
+		bool  appendNewHistory(const std::string& path);
 
 		// dir_stack_.front() is the current directory; entries below are
 		// previously-pushed dirs (POSIX form).
@@ -757,8 +765,8 @@ namespace wbsh {
 		std::unordered_map<std::string, PluginCommand> plugin_commands_;
 		std::unordered_map<std::string, const FunctionDef*> functions_;
 		std::unordered_map<std::string, std::string> aliases_;
-		std::vector<std::string> history_;
-		std::vector<int>         history_status_;
+		HistoryList history_;
+		std::size_t history_saved_ = 0;
 		std::vector<std::string> dir_stack_;
 		std::unordered_map<std::string, std::string> trap_handlers_;
 		std::unordered_map<std::string, std::string> inherited_traps_;

@@ -57,7 +57,6 @@ namespace wbsh {
 	static const int kStatusCommandNotFound = 127;
 	static const long long kMillisPerMinute = 60000;
 	static const std::size_t kShebangProbeBytes = 256;
-	static const std::size_t kMaxHistory = 5000;
 
 	static const std::string kDevFdPrefix  = "/dev/fd/";
 	static const std::string kDevTcpPrefix = "/dev/tcp/";
@@ -74,20 +73,6 @@ namespace wbsh {
 	};
 
 	static const char* const kExecutableExtensions[] = { ".exe", ".cmd", ".bat", "" };
-
-	// On-disk history format:
-	//
-	//   #!wbsh-history-v3
-	//   <status>\t<command>
-	//   <status>\t<command>
-	//   ...
-	//
-	// A command typed over several lines is one entry, so v3 writes a
-	// newline in it as \n and a backslash as \\. v2 files (the same lines,
-	// nothing escaped) and legacy files (no header, one command per line,
-	// status 0) still load, which keeps old ~/.wbsh_history files working.
-	static const char* const kHistoryV2Header = "#!wbsh-history-v2";
-	static const char* const kHistoryV3Header = "#!wbsh-history-v3";
 
 	namespace executor_detail {
 #ifdef _WIN32
@@ -3141,139 +3126,93 @@ namespace wbsh {
 		return final_status;
 	}
 
-	static void trimToMaxHistory(std::vector<std::string>& cmds, std::vector<int>& statuses) {
-		if (cmds.size() <= kMaxHistory) return;
+	static void eraseHistoryRange(HistoryList& list, std::size_t first, std::size_t count) {
+		const auto from = static_cast<std::ptrdiff_t>(first);
+		const auto to = static_cast<std::ptrdiff_t>(first + count);
+		list.commands.erase(list.commands.begin() + from, list.commands.begin() + to);
+		list.statuses.erase(list.statuses.begin() + from, list.statuses.begin() + to);
+	}
 
-		const std::size_t drop = cmds.size() - kMaxHistory;
-		cmds.erase(cmds.begin(), cmds.begin() + static_cast<std::ptrdiff_t>(drop));
-		if (statuses.size() >= drop) {
-			statuses.erase(statuses.begin(), statuses.begin() + static_cast<std::ptrdiff_t>(drop));
-		} else {
-			statuses.clear();
-		}
+	static void forgetSavedEntries(std::size_t& saved, std::size_t first, std::size_t count) {
+		if (saved <= first) return;
+
+		const std::size_t saved_in_range = saved - first;
+		saved -= count < saved_in_range ? count : saved_in_range;
+	}
+
+	static void trimHistoryTo(HistoryList& list, std::size_t& saved, long long limit) {
+		if (limit < 0 || list.commands.size() <= static_cast<std::size_t>(limit)) return;
+
+		const std::size_t drop = list.commands.size() - static_cast<std::size_t>(limit);
+		eraseHistoryRange(list, 0, drop);
+		forgetSavedEntries(saved, 0, drop);
 	}
 
 	void Executor::addHistoryEntry(std::string line) {
 		if (line.empty()) return;
-		if (!history_.empty() && history_.back() == line) return;
 
-		history_.push_back(std::move(line));
-		history_status_.push_back(0);
-		trimToMaxHistory(history_, history_status_);
+		history_.commands.push_back(std::move(line));
+		history_.statuses.push_back(0);
+		trimHistoryTo(history_, history_saved_, historyLimit(env_.get("HISTSIZE")));
 	}
 
-	void Executor::markLastHistoryStatus(int status) {
-		if (history_status_.empty()) return;
-		history_status_.back() = status;
-	}
-
-	void Executor::setHistoryEntryStatus(std::size_t index, int status) {
-		if (index >= history_status_.size()) return;
-		history_status_[index] = status;
-	}
-
-	static void stripLineEnding(std::string& line) {
-		while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-	}
-
-	static bool parseHistoryV2Line(const std::string& line, int& status, std::string& command) {
-		const std::size_t tab = line.find('\t');
-		if (tab == std::string::npos) return false;
-		if (!parseInt(line.substr(0, tab), status)) return false;
-
-		command = line.substr(tab + 1);
-		return !command.empty();
-	}
-
-	static std::string escapeHistoryCommand(const std::string& command) {
-		std::string escaped;
-		escaped.reserve(command.size());
-		for (const char letter : command) {
-			if (letter == '\\') {
-				escaped += "\\\\";
-			} else if (letter == '\n') {
-				escaped += "\\n";
-			} else if (letter != '\r') {
-				escaped.push_back(letter);
-			}
-		}
-
-		return escaped;
-	}
-
-	static std::string unescapeHistoryCommand(const std::string& text) {
-		std::string command;
-		command.reserve(text.size());
-		for (std::size_t i = 0; i < text.size(); ++i) {
-			if (text[i] != '\\' || i + 1 >= text.size()) {
-				command.push_back(text[i]);
+	void Executor::eraseHistoryEntries(const std::string& line) {
+		std::size_t i = 0;
+		while (i < history_.commands.size()) {
+			if (history_.commands[i] != line) {
+				++i;
 				continue;
 			}
 
-			++i;
-			command.push_back(text[i] == 'n' ? '\n' : text[i]);
+			eraseHistoryRange(history_, i, 1);
+			forgetSavedEntries(history_saved_, i, 1);
 		}
-
-		return command;
 	}
 
-	enum class HistoryFormat { kLegacy, kV2, kV3 };
-
-	static HistoryFormat historyFormatOf(const std::string& first_line) {
-		if (first_line == kHistoryV3Header) return HistoryFormat::kV3;
-		if (first_line == kHistoryV2Header) return HistoryFormat::kV2;
-
-		return HistoryFormat::kLegacy;
+	void Executor::markLastHistoryStatus(int status) {
+		if (history_.statuses.empty()) return;
+		history_.statuses.back() = status;
 	}
 
-	static bool parseHistoryLine(const std::string& line, HistoryFormat format,
-	                             int& status, std::string& command) {
-		status = 0;
-		command = line;
-		if (format == HistoryFormat::kLegacy) return true;
-		if (!parseHistoryV2Line(line, status, command)) return false;
+	void Executor::setHistoryEntryStatus(std::size_t index, int status) {
+		if (index >= history_.statuses.size()) return;
+		history_.statuses[index] = status;
+	}
 
-		if (format == HistoryFormat::kV3) command = unescapeHistoryCommand(command);
-		return true;
+	void Executor::clearHistory() {
+		history_.commands.clear();
+		history_.statuses.clear();
+		history_saved_ = 0;
 	}
 
 	bool Executor::loadHistoryFromFile(const std::string& path) {
-		std::ifstream file(utf8ToPath(path));
-		if (!file) return false;
+		HistoryList loaded;
+		if (!readHistoryFile(path, loaded)) return false;
 
-		std::string line;
-		bool header_checked = false;
-		HistoryFormat format = HistoryFormat::kLegacy;
-		while (std::getline(file, line)) {
-			stripLineEnding(line);
-			if (!header_checked) {
-				header_checked = true;
-				format = historyFormatOf(line);
-				if (format != HistoryFormat::kLegacy) continue;
-			}
-
-			int status = 0;
-			std::string command;
-			if (line.empty() || !parseHistoryLine(line, format, status, command)) continue;
-
-			history_.push_back(std::move(command));
-			history_status_.push_back(status);
-		}
-
-		trimToMaxHistory(history_, history_status_);
+		history_.commands.insert(history_.commands.end(), loaded.commands.begin(),
+			loaded.commands.end());
+		history_.statuses.insert(history_.statuses.end(), loaded.statuses.begin(),
+			loaded.statuses.end());
+		history_saved_ = history_.commands.size();
+		trimHistoryTo(history_, history_saved_, historyLimit(env_.get("HISTSIZE")));
 		return true;
 	}
 
 	bool Executor::saveHistoryToFile(const std::string& path) const {
-		std::ofstream file(utf8ToPath(path), std::ios::trunc | std::ios::binary);
-		if (!file) return false;
+		return writeHistoryFile(path, history_, 0);
+	}
 
-		file << kHistoryV3Header << '\n';
-		for (std::size_t i = 0; i < history_.size(); ++i) {
-			const int status = (i < history_status_.size()) ? history_status_[i] : 0;
-			file << status << '\t' << escapeHistoryCommand(history_[i]) << '\n';
-		}
+	bool Executor::writeHistory(const std::string& path) {
+		if (!saveHistoryToFile(path)) return false;
 
+		history_saved_ = history_.commands.size();
+		return true;
+	}
+
+	bool Executor::appendNewHistory(const std::string& path) {
+		if (!appendHistoryFile(path, history_, history_saved_)) return false;
+
+		history_saved_ = history_.commands.size();
 		return true;
 	}
 
