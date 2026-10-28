@@ -22,6 +22,7 @@
 #endif
 
 #include <cstddef>
+#include <deque>
 #include <filesystem>
 #include <set>
 #include <string>
@@ -59,15 +60,20 @@ namespace wbsh {
 	// <DEL> <TAB> <ENTER> <ESC> <C-x> <M-x> <M-BS>.
 	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args);
 
+	enum class LineStatus {
+		kLine,          // Enter: the typed line is in `out`
+		kEof,           // Ctrl-D on an empty line, or stdin closed
+		kInterrupted,   // Ctrl-C: the line is abandoned
+	};
+
 	// One instance per REPL session: keeps the edit buffer, cursor, history
 	// scroll position, and Tab state across readLine() calls.
 	class LineEditor {
 	public:
 		LineEditor(Environment& env, Executor& exec);
 
-		// Returns true on Enter with the typed line in `out` (without the
-		// newline), false on EOF (Ctrl-D on an empty line, or stdin closed).
-		bool readLine(const std::string& prompt, std::string& out);
+		// The typed line goes to `out` without its newline.
+		LineStatus readLine(const std::string& prompt, std::string& out);
 
 		// Test hook behind `__lineedit`: types `keys` into an empty line
 		// with the console left alone, and describes the line it ends with.
@@ -75,8 +81,9 @@ namespace wbsh {
 
 	private:
 		void resetLine(const std::string& prompt);
-		bool readLineRaw(const std::string& prompt, std::string& out);
-		bool readLineCooked(std::string& out);
+		LineStatus readLineRaw(const std::string& prompt, std::string& out);
+		LineStatus readLineCooked(std::string& out);
+		LineStatus lineStatus(const std::string& out, bool eof) const;
 
 #ifdef _WIN32
 		void handleAltKeyUp(const ::KEY_EVENT_RECORD& key);
@@ -88,9 +95,13 @@ namespace wbsh {
 		bool handleNavigationKey(const ::KEY_EVENT_RECORD& key,
 		                         std::string& out, bool& done, bool& was_tab);
 		void insertReceivedChar(wchar_t ch);
-		void replayKey(const std::string& key, std::string& out, bool& done, bool& eof);
-		void replayText(const std::string& text, std::string& out, bool& done, bool& eof);
-		void handleInterrupt();
+		bool nextKeyDown(::KEY_EVENT_RECORD& key);
+		bool takeReplayKey(::KEY_EVENT_RECORD& key);
+		std::string replayCharacter(wchar_t ch);
+		std::string describeReplay(const std::string& out, bool finished, bool eof) const;
+		// False when the input ran out before a key finished the line.
+		bool editUntilDone(std::string& out, bool& eof);
+		void handleInterrupt(bool& done);
 		void handleEofOrDelete(bool& done, bool& eof);
 		void moveCursorBack();
 		void moveCursorForward();
@@ -204,6 +215,10 @@ namespace wbsh {
 		Environment& env_;
 		Executor& exec_;
 		bool headless_ = false;
+		bool interrupted_ = false;
+#ifdef _WIN32
+		std::deque<::KEY_EVENT_RECORD> replay_keys_;
+#endif
 
 		std::size_t history_pos_ = 0;        // 0 = current edit, 1 = last entry, ...
 		std::string saved_partial_;          // buffer at the moment user started scrolling

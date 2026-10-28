@@ -1,0 +1,16 @@
+=== Ctrl-C ends the line
+interrupt
+interrupt
+interrupt
+=== Ctrl-C in reverse search ends the line too; Ctrl-G only leaves the search
+interrupt
+[x][]
+[x][]
+accept [echo hello]
+[echo hel][lo]
+=== the other line endings are unchanged
+accept [echo hi]
+accept []
+eof
+[ab][]
+[ls -la][]

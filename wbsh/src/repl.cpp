@@ -696,17 +696,17 @@ namespace wbsh {
 		}
 	}
 
-#ifdef _WIN32
-	static void restoreConsoleModes(const ReplState& state) {
-		if (state.h_out != INVALID_HANDLE_VALUE) ::SetConsoleMode(state.h_out, state.good_out_mode);
-		if (state.h_in  != INVALID_HANDLE_VALUE) ::SetConsoleMode(state.h_in,  state.good_in_mode);
-	}
-
 	static void runTrap(Executor& exec, const char* signal_name, const char* origin) {
 		if (!exec.hasTrap(signal_name)) return;
 
 		const std::string action = exec.trapAction(signal_name);
 		exec.executeText(action, origin);
+	}
+
+#ifdef _WIN32
+	static void restoreConsoleModes(const ReplState& state) {
+		if (state.h_out != INVALID_HANDLE_VALUE) ::SetConsoleMode(state.h_out, state.good_out_mode);
+		if (state.h_in  != INVALID_HANDLE_VALUE) ::SetConsoleMode(state.h_in,  state.good_in_mode);
 	}
 
 	static void handlePendingCtrlC(Executor& exec, ReplState& state) {
@@ -831,6 +831,15 @@ namespace wbsh {
 		return true;
 	}
 
+	// Ctrl-C at a prompt arrives as a key in raw mode, so the editor has
+	// already echoed ^C; the rest is what a SIGINT at the prompt does.
+	static void abandonInterruptedInput(Executor& exec, ReplState& state) {
+		state.buffer.clear();
+		state.waiting_for_more = false;
+		runTrap(exec, "INT", "<trap INT>");
+		exec.setLastStatus(kSigintStatus);
+	}
+
 	static int exitOnEof(Executor& exec, const ReplState& state) {
 		std::fputc('\n', stdout);
 		const int status = exec.fireExitTrap(exec.lastStatus());
@@ -883,7 +892,13 @@ namespace wbsh {
 
 			const std::string prompt = buildPrompt(env, exec, state);
 			std::string line;
-			if (!editor.readLine(prompt, line)) {
+			const LineStatus status = editor.readLine(prompt, line);
+			if (status == LineStatus::kInterrupted) {
+				abandonInterruptedInput(exec, state);
+				continue;
+			}
+
+			if (status == LineStatus::kEof) {
 				if (abandonPendingInput(state)) continue;
 
 				return exitOnEof(exec, state);
