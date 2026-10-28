@@ -1,0 +1,27 @@
+=== spaces and other specials get backslashes
+[cd a\ b/][]
+[cat it\'s\ here.txt ][]
+[cat cost\$1.txt ][]
+[cat x\&y.txt ][]
+=== a quoted or escaped word completes inside its quotes
+[cd "My Documents/][]
+[cat "My Documents/report one.txt" ][]
+[cat 'My Documents/report one.txt' ][]
+[cat 'it'\''s here.txt' ][]
+[cat My\ Documents/report\ ][]
+[cat My\ Documents/report\ two.txt ][]
+[cat "cost\$1.txt" ][]
+=== the common part of several matches, without closing the quote
+[ls "M][]
+[ls My\ Documents/][]
+=== case does not have to match, and the line takes the file's case
+[cat Readme.md ][]
+[cd My\ Documents/][]
+[cd Music/][]
+[cat readme][]
+=== after = only the value is completed
+[make --file=Readme.md ][]
+[X=Readme.md ][]
+[P=/nonexistent:Readme.md ][]
+=== the list shows file names without their directory
+report one.txt  report two.txt

@@ -121,6 +121,11 @@ readline:
 | `Ctrl-C`                             | abandon the line |
 | `Ctrl-D` (empty line)                | exit |
 
+Completed file names are quoted the way the word was typed (`"My Doc` →
+`"My Documents/`) or get backslashes (`My\ Documents/`), the value after `=`
+completes on its own (`--file=./sr`), and names match regardless of case
+(`set completion-ignore-case off` in `~/.inputrc` to change that).
+
 `Esc` followed by a key works as Alt with it; AltGr characters type as usual.
 Bindings can be changed with `bind` (`bind -p` lists them, `bind -l` the
 commands, `bind -x` runs a shell command with `READLINE_LINE` /
