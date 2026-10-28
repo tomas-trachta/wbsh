@@ -373,14 +373,14 @@ namespace wbsh {
 		const DWORD error = ::GetLastError();
 		if (error == 0) return {};
 
-		LPSTR buffer = nullptr;
-		const DWORD length = ::FormatMessageA(
+		LPWSTR buffer = nullptr;
+		const DWORD length = ::FormatMessageW(
 			FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
 			| FORMAT_MESSAGE_IGNORE_INSERTS,
-			nullptr, error, 0, reinterpret_cast<LPSTR>(&buffer), 0, nullptr);
+			nullptr, error, 0, reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
 
 		std::string message;
-		if (buffer != nullptr && length != 0) message.assign(buffer, length);
+		if (buffer != nullptr && length != 0) message = wideToUtf8(std::wstring(buffer, length));
 		if (buffer != nullptr) ::LocalFree(buffer);
 
 		while (!message.empty()
@@ -2158,7 +2158,7 @@ namespace wbsh {
 		if (flowPending()) return status;
 
 		for (const auto& temp_file : expander_.drainTempFilesSince(proc_subst_watermark)) {
-			std::remove(temp_file.c_str());
+			removeFile(temp_file);
 		}
 
 		setLastStatus(status);
@@ -3754,7 +3754,7 @@ namespace wbsh {
 		const std::string capture_path = makeTempFile();
 		if (capture_path.empty()) return {};
 
-		const int capture_fd = _open(capture_path.c_str(),
+		const int capture_fd = _wopen(utf8ToFileWide(capture_path).c_str(),
 			_O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE);
 		if (capture_fd < 0) {
 			removeFile(capture_path);

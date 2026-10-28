@@ -203,12 +203,16 @@ namespace wbsh {
 	}
 #endif /* _WIN32 */
 
+	// MSVC's `struct stat` is `struct _stat64i32` under another name.
 	bool statPath(const std::string& win32_path, struct stat& info) {
-		if (::stat(win32_path.c_str(), &info) == 0) return true;
 #ifdef _WIN32
+		const std::wstring wide = utf8ToWide(win32_path);
+		auto* wide_info = reinterpret_cast<struct _stat64i32*>(&info);
+		if (::_wstat64i32(wide.c_str(), wide_info) == 0) return true;
+
 		return statFromAttributes(win32_path, info);
 #else
-		return false;
+		return ::stat(win32_path.c_str(), &info) == 0;
 #endif /* _WIN32 */
 	}
 
@@ -228,11 +232,11 @@ namespace wbsh {
 
 	static std::string getTempDir() {
 #ifdef _WIN32
-		char buffer[MAX_PATH];
-		const DWORD length = ::GetTempPathA(MAX_PATH, buffer);
+		wchar_t buffer[MAX_PATH + 1];
+		const DWORD length = ::GetTempPathW(MAX_PATH + 1, buffer);
 		if (length == 0 || length > MAX_PATH) return {};
 
-		std::string dir(buffer, length);
+		std::string dir = wideToUtf8(std::wstring(buffer, length));
 		while (!dir.empty() && (dir.back() == '\\' || dir.back() == '/')) dir.pop_back();
 		return dir;
 #else
@@ -243,10 +247,11 @@ namespace wbsh {
 #ifdef _WIN32
 	// "X:\" of the current drive, or empty when it cannot be told.
 	static std::string currentDriveRoot() {
-		char buffer[MAX_PATH];
-		const DWORD length = ::GetCurrentDirectoryA(MAX_PATH, buffer);
-		if (length >= 3 && buffer[1] == ':') return std::string(1, buffer[0]) + ":\\";
-		return {};
+		wchar_t buffer[MAX_PATH];
+		const DWORD length = ::GetCurrentDirectoryW(MAX_PATH, buffer);
+		if (length < 3 || length >= MAX_PATH || buffer[1] != L':') return {};
+
+		return std::string(1, static_cast<char>(buffer[0])) + ":\\";
 	}
 #endif /* _WIN32 */
 

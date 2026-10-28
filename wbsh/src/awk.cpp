@@ -42,7 +42,7 @@ namespace wbsh {
 		static bool loadProgramFile(Executor& exec, const std::string& path,
 				Invocation& invocation) {
 			const std::string native = exec.pathConv().toWin32(path);
-			std::ifstream file(native, std::ios::binary);
+			std::ifstream file(utf8ToPath(native), std::ios::binary);
 			if (!file) {
 				std::fprintf(stderr, "awk: cannot open program file: %s\n", path.c_str());
 				return false;
