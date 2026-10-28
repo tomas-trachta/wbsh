@@ -55,7 +55,7 @@ get the shape of the codebase:
 | Literal search | `wbsh/src/strsearch.cpp/h` | Boyer-Moore-Horspool for one needle, Aho-Corasick for many, with ASCII case folding. `grep` runs metachar-free patterns through it and uses it as a required-literal prefilter in front of the regex. |
 | Devices | `wbsh/src/devices.cpp/h` | Pipe-backed `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/full` for redirections and the coreutils' file opening. |
 | CLI | `wbsh/src/main.cpp`, `wbsh/src/script.cpp` | Entry point: UTF-8 argv decoding, flag dispatch, the non-interactive run / dump driver. |
-| REPL | `wbsh/src/repl.cpp`, `wbsh/src/lineedit.cpp` | Interactive loop: console / VT mode setup, prompt expansion, raw-mode line editor (history, completion, `Ctrl-R`, inline predictions). |
+| REPL | `wbsh/src/repl.cpp`, `wbsh/src/prompt.cpp/h`, `wbsh/src/lineedit.cpp` | Interactive loop: console / VT mode setup, prompt escapes and promptvars expansion, PROMPT_COMMAND, raw-mode line editor (history, completion, `Ctrl-R`, inline predictions). |
 | Setup | `wbsh/src/setup.cpp` | Startup environment seeding: registry PATH merge, git / docker install discovery, `WBSH_*` state inheritance from a parent wbsh. |
 | Debug | `wbsh/src/printer.cpp` | Token / AST pretty-printer for the `-t` and default (no-`-r`) dump modes. |
 | Support | `wbsh/src/fnmatch.h`, `wbsh/src/numparse.h`, `wbsh/src/optscan.h`, `wbsh/src/regexutil.h`, `wbsh/src/source.h` | Leaf headers: glob matcher, error-as-value numeric parsing, getopt_long-style option scanning, error-as-value regex adapters, source locations. |

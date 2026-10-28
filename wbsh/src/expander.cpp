@@ -1041,13 +1041,23 @@ namespace wbsh {
 	std::string Expander::expandHeredoc(const std::string& body, bool quoted) {
 		if (quoted) return body;
 
+		return expandInterpolated(body, heredocEscapes);
+	}
+
+	// As bash's promptvars: the decoded prompt is expanded as a
+	// double-quoted string, where a backslash also quotes `"`.
+	std::string Expander::expandPromptText(const std::string& text) {
+		return expandInterpolated(text, doubleQuoteEscapes);
+	}
+
+	std::string Expander::expandInterpolated(const std::string& body, bool (*escapes)(char)) {
 		std::string out;
 		const std::size_t end = body.size();
 		std::size_t i = 0;
 		while (i < end && !aborting()) {
 			const char c = body[i];
 			if (c == '\\' && i + 1 < end) {
-				expandBackslash(body, i, heredocEscapes, out);
+				expandBackslash(body, i, escapes, out);
 				continue;
 			}
 
@@ -1904,13 +1914,24 @@ namespace wbsh {
 		return key;
 	}
 
+	// `${x@P}`: the value as a prompt string -- escapes decoded and, with
+	// promptvars, expanded.
+	std::string Expander::promptTransform(const std::string& value) {
+		PromptRequest request;
+		if (sub_ != nullptr) request.counts = sub_->promptCounts();
+		request.for_expansion = env_.shopts().promptvars;
+
+		const std::string decoded = decodePromptEscapes(value, env_, path_conv_, request);
+		return request.for_expansion ? expandPromptText(decoded) : decoded;
+	}
+
 	std::string Expander::transformValue(char letter, const std::string& value) {
 		switch (letter) {
 		case 'U': return applyCaseConv(value, '^', true, {});
 		case 'u': return applyCaseConv(value, '^', false, {});
 		case 'L': return applyCaseConv(value, ',', true, {});
 		case 'E': return interpretAnsiC(value);
-		case 'P': return expandPromptEscapes(value, env_, path_conv_);
+		case 'P': return promptTransform(value);
 		default:  return shellQuoteAlways(value);
 		}
 	}

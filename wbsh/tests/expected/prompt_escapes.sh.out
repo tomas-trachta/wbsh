@@ -1,0 +1,57 @@
+=== counters and fixed text
+[0] [1] [1] [wbsh]
+\l ok
+=== \nnn is an octal character code; \\ a backslash; unknown escapes stay
+ABC \ \q !1
+=== the date and time escapes
+times ok
+\D{%Y} ok
+\D{} is the locale time
+\D
+=== the version escapes
+versions ok
+=== \$ is $, or # in an elevated shell
+\$ ok
+=== promptvars: parameter, command and arithmetic expansion after the escapes
+hello world cmd 42 back
+\u then $name ok
+=== text from an escape is not expanded again
+prompt_$HOME_dir
+=== a backslash quotes $ ` " and itself in the expansion
+a$b `c` "d" e\f
+=== with promptvars off only the escapes are decoded
+$name $ A
+promptvars      off
+=== an interactive shell: PS1 expansion, \#, \!, PROMPT_COMMAND
+[1:1:2]$ one
+[2:2:2]$ two
+[3:3:2]$ 
+(exit 0)
+--- $? is not changed by the prompt's command substitution
+[]$ []$ status=1
+[]$ []$ status=0
+[]$ 
+(exit 0)
+--- PROMPT_COMMAND runs before each primary prompt and keeps $?
+[p]$ <pc>
+[p]$ <pc>
+[p]$ status=1
+<pc>
+[p]$ 
+(exit 0)
+--- an array PROMPT_COMMAND runs every element
+[p]$ first
+second
+[p]$ body
+first
+second
+[p]$ 
+(exit 0)
+--- PROMPT_COMMAND is not run before a continuation prompt
+[p]$ <pc>
+[p]$ > > inside
+<pc>
+[p]$ 
+(exit 0)
+--- exit in PROMPT_COMMAND ends the shell
+[p]$ (exit 7)

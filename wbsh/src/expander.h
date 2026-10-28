@@ -16,6 +16,7 @@
 #include "ast.h"
 #include "environment.h"
 #include "pathconv.h"
+#include "prompt.h"
 
 #include <cstdint>
 #include <string>
@@ -54,6 +55,8 @@ namespace wbsh {
 		 * rest of the word.
 		 */
 		virtual bool interrupted() const { return false; }
+		/** The counters `\j`, `\!` and `\#` show in a prompt string. */
+		virtual PromptCounts promptCounts() const { return {}; }
 	};
 
 	/**
@@ -125,6 +128,9 @@ namespace wbsh {
 		 *               processed inline.
 		 */
 		std::string expandHeredoc(const std::string& body, bool quoted);
+
+		/** A prompt string's promptvars expansion: as inside double quotes. */
+		std::string expandPromptText(const std::string& text);
 
 		long long evalArith(const std::string& body);
 
@@ -389,6 +395,10 @@ namespace wbsh {
 		std::string runCmdSubst(const std::string& body);
 		std::string interpretAnsiC(const std::string& body);
 
+		// `$` and backquote expansion of a heredoc body or a prompt;
+		// `escapes` says which characters a backslash quotes.
+		std::string expandInterpolated(const std::string& body, bool (*escapes)(char));
+
 		// Helpers for expandHeredoc — one per `$X` / backquote shape.
 		// Each takes the body, the cursor `i` (advanced through the
 		// matched span), and the output buffer.
@@ -427,6 +437,7 @@ namespace wbsh {
 		std::vector<std::string> transformList(const ListParam& p, const std::string& letter,
 		                                       std::vector<std::string> elems);
 		std::string transformValue(char letter, const std::string& value);
+		std::string promptTransform(const std::string& value);
 		std::string assignmentText(const std::string& name, const std::string& value) const;
 		std::vector<std::string> keyValueWords(const std::string& name) const;
 		void failBadSubstitution(const std::string& body);
