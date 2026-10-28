@@ -120,6 +120,7 @@
     <ClCompile Include="src\awk_regex.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_value.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_cpio.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_ar.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_misc.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_wget.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\curl_options.cpp"><Filter>Source Files</Filter></ClCompile>

@@ -1,7 +1,6 @@
 /**
  * @file coreutils_cpio.cpp
- * @brief cpio (read newc / crc / odc, write newc) and ar (read-only:
- *        list, extract, print; GNU and BSD long names). cpio streams its
+ * @brief cpio (read newc / crc / odc, write newc). cpio streams its
  *        archives one member at a time in both directions.
  */
 
@@ -60,15 +59,8 @@ namespace wbsh {
 			bool failed = false;
 		};
 
-		struct ArMember {
-			std::string name;
-			std::uint64_t size = 0;
-			const std::uint8_t* data = nullptr;
-		};
-
 	}  // namespace cpio_detail
 
-	using cpio_detail::ArMember;
 	using cpio_detail::CpioEntry;
 	using cpio_detail::CpioMode;
 	using cpio_detail::CpioOptions;
@@ -80,22 +72,7 @@ namespace wbsh {
 	static const std::uint32_t kTypeSymlink   = 0120000;
 	static const std::size_t kNewcHeader = 110;
 	static const std::size_t kOdcHeader  = 76;
-	static const std::size_t kArHeader   = 60;
 	static const char kTrailer[] = "TRAILER!!!";
-
-	static bool readWhole(Executor& exec, const std::string& path,
-	                      std::vector<std::uint8_t>& bytes) {
-		std::FILE* in = path.empty() || path == "-" ? stdin : fopenNative(exec, path, "rb");
-		if (in == nullptr) return false;
-
-		std::uint8_t chunk[65536];
-		for (std::size_t got = 0; (got = std::fread(chunk, 1, sizeof(chunk), in)) != 0;) {
-			bytes.insert(bytes.end(), chunk, chunk + got);
-		}
-
-		if (in != stdin) std::fclose(in);
-		return true;
-	}
 
 	static std::uint64_t numberField(const std::uint8_t* field, std::size_t width, int base) {
 		unsigned long long value = 0;
@@ -498,143 +475,8 @@ namespace wbsh {
 		return readCpio(exec, options);
 	}
 
-	static std::string arFieldText(const std::uint8_t* field, std::size_t width) {
-		std::string text(reinterpret_cast<const char*>(field), width);
-		while (!text.empty() && text.back() == ' ') text.pop_back();
-		return text;
-	}
-
-	static std::string longArName(const std::string& table, std::size_t offset) {
-		if (offset >= table.size()) return std::string();
-		const std::size_t end = table.find_first_of("/\n", offset);
-		return table.substr(offset, end == std::string::npos ? std::string::npos : end - offset);
-	}
-
-	// GNU stores long names as "/OFFSET" into the "//" member; BSD as
-	// "#1/LENGTH" with the name at the start of the member's data.
-	static std::string resolveArName(std::string name, const std::string& long_names,
-	                                 ArMember& member) {
-		unsigned long long reference = 0;
-		if (name.size() > 1 && name[0] == '/' && parseULL(name.substr(1), reference)) {
-			return longArName(long_names, static_cast<std::size_t>(reference));
-		}
-
-		if (name.compare(0, 3, "#1/") == 0 && parseULL(name.substr(3), reference)) {
-			const std::string bsd(reinterpret_cast<const char*>(member.data),
-				static_cast<std::size_t>(reference));
-			member.data += reference;
-			member.size -= reference;
-			return bsd;
-		}
-
-		if (!name.empty() && name.back() == '/') name.pop_back();
-		return name;
-	}
-
-	static bool nextArMember(const std::vector<std::uint8_t>& archive, std::size_t& at,
-	                         std::string& long_names, ArMember& member) {
-		while (at + kArHeader <= archive.size()) {
-			const std::uint8_t* header = archive.data() + at;
-			std::string name = arFieldText(header, 16);
-			unsigned long long size = 0;
-			parseULL(arFieldText(header + 48, 10), size);
-			const std::size_t data_at = at + kArHeader;
-			if (data_at + size > archive.size()) return false;
-
-			at = data_at + static_cast<std::size_t>(size) + (size % 2);
-			if (name == "//") {
-				const char* data = reinterpret_cast<const char*>(archive.data() + data_at);
-				long_names.assign(data, static_cast<std::size_t>(size));
-				continue;
-			}
-
-			if (name == "/" || name == "/SYM64/" || name == "__.SYMDEF") continue;
-
-			member.data = archive.data() + data_at;
-			member.size = size;
-			member.name = resolveArName(name, long_names, member);
-			return true;
-		}
-
-		return false;
-	}
-
-	static bool arSelected(const std::vector<std::string>& names, const std::string& name) {
-		if (names.empty()) return true;
-		for (const std::string& wanted : names) {
-			if (wanted == name) return true;
-		}
-
-		return false;
-	}
-
-	static char arAction(const std::string& op) {
-		for (const char action : { 'x', 'p', 't' }) {
-			if (op.find(action) != std::string::npos) return action;
-		}
-
-		return '\0';
-	}
-
-	static bool loadArchive(Executor& exec, const std::string& path,
-	                        std::vector<std::uint8_t>& archive) {
-		if (readWhole(exec, path, archive) && archive.size() >= 8
-		    && std::memcmp(archive.data(), "!<arch>\n", 8) == 0) {
-			return true;
-		}
-
-		perr("ar", path + ": not an archive");
-		return false;
-	}
-
-	static bool handleArMember(Executor& exec, const ArMember& member, char action, bool verbose) {
-		const std::size_t size = static_cast<std::size_t>(member.size);
-		if (action == 't' || verbose) {
-			std::printf("%s%s\n", action == 'x' && verbose ? "x - " : "", member.name.c_str());
-		}
-
-		if (action == 'p') std::fwrite(member.data, 1, size, stdout);
-		if (action != 'x') return true;
-
-		std::FILE* out = fopenNative(exec, member.name, "wb");
-		if (out == nullptr) {
-			perr("ar", member.name + ": " + std::strerror(errno));
-			return false;
-		}
-
-		std::fwrite(member.data, 1, size, out);
-		std::fclose(out);
-		return true;
-	}
-
-	static int builtin_ar(Executor& exec, const std::vector<std::string>& args) {
-		const char action = args.size() >= 2 ? arAction(args[0]) : '\0';
-		if (action == '\0') {
-			perr("ar", "usage: ar -t|-x|-p [-v] ARCHIVE [MEMBER]... (read-only)");
-			return 1;
-		}
-
-		std::vector<std::uint8_t> archive;
-		if (!loadArchive(exec, args[1], archive)) return 1;
-
-		const bool verbose = args[0].find('v') != std::string::npos;
-		const std::vector<std::string> wanted(args.begin() + 2, args.end());
-		std::size_t at = 8;
-		std::string long_names;
-		ArMember member;
-		int status = 0;
-		while (nextArMember(archive, at, long_names, member)) {
-			if (!arSelected(wanted, member.name)) continue;
-			if (!handleArMember(exec, member, action, verbose)) status = 1;
-		}
-
-		std::fflush(stdout);
-		return status;
-	}
-
-	void registerCpioBuiltins(Executor& exec) {
+	void registerCpioBuiltin(Executor& exec) {
 		exec.registerBuiltin("cpio", builtin_cpio);
-		exec.registerBuiltin("ar",   builtin_ar);
 	}
 
 }  // namespace wbsh

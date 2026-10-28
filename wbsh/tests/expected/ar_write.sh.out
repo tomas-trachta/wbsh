@@ -1,0 +1,104 @@
+=== create
+a.o
+b.o
+!<arch>
+a.o/            0           0     0     644     6         `
+alpha
+b.o/            0           0     0     644     7         `
+bravo!
+
+=== creating message, quick append
+wbsh: ar: creating new.a
+a.o
+b.o
+a.o
+=== long names
+!<arch>
+//                                              50        `
+a_very_long_member_name.o/
+another_long_object.o/
+a.o/            0           0     0     644     6         `
+alpha
+/0              0           0     0     644     12        `
+long member
+/27             0           0     0     644     12        `
+second long
+
+a.o
+a_very_long_member_name.o
+another_long_object.o
+second long
+=== replace
+r - a.o
+a - c.o
+ALPHA
+
+<c.o>
+
+charlie
+=== positioning
+c.o a.o b.o 
+m - b.o
+c.o b.o a.o 
+b.o a.o c.o 
+d.o b.o a.o c.o 
+r - b.o
+d.o a.o c.o b.o 
+=== delete
+d - b.o
+No member named `missing.o'
+d.o a.o c.o 
+=== dash form
+rw-r--r-- 0/0 6 d.o
+rw-r--r-- 0/0 8 c.o
+a.o
+=== extract
+long member
+x - d.o
+x - a.o
+x - c.o
+a.o
+a_very_long_member_name.o
+c.o
+d.o
+=== real dates
+c.o/            981173106   0     0     100644  8         `
+rw-r--r-- 0/0 8 c.o
+unchanged older
+r - c.o
+981173200
+=== BSD long names
+bsd_long_name_here.o
+short.o
+BSD!
+!<arch>
+//                                              22        `
+bsd_long_name_here.o/
+/0              0           0     0     644     5         `
+BSD!
+
+short.o/        0           0     0     644     4         `
+abc
+a.o/            0           0     0     644     6         `
+ALPHA
+=== errors
+wbsh: ar: nothere.a: No such file or directory
+status 1
+wbsh: ar: nothere.a: No such file or directory
+status 1
+wbsh: ar: nothere.o: No such file or directory
+status 1
+wbsh: ar: a.o: not an archive
+status 1
+wbsh: ar: no entry nothere.o in archive lib.a
+status 1
+wbsh: ar: no entry nothere.o in archive
+status 1
+wbsh: ar: invalid option -- 'z'
+wbsh: ar: usage: ar [-]{d|m|p|q|r|s|t|x}[abcDiosuUv] [MEMBER] ARCHIVE [FILE]...
+status 1
+wbsh: ar: two different operation options specified
+wbsh: ar: usage: ar [-]{d|m|p|q|r|s|t|x}[abcDiosuUv] [MEMBER] ARCHIVE [FILE]...
+status 1
+d.o a.o c.o 
+=== done
