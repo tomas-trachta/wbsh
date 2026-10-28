@@ -143,10 +143,12 @@
     <ClCompile Include="src\pathconv.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\consolekeys.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\keymap.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\keymap_vi.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit_commands.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit_complete.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit_readline.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lineedit_vi.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\textcells.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\fnmatch.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\utf8.cpp"><Filter>Source Files</Filter></ClCompile>

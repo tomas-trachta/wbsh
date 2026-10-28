@@ -28,6 +28,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -181,6 +182,9 @@ namespace wbsh {
 		EditCommand commandNamed(const std::string& name) const;
 		EditCommand basicCommandNamed(const std::string& name) const;
 		EditCommand readlineCommandNamed(const std::string& name) const;
+		EditCommand viCommandNamed(const std::string& name) const;
+		void lookUpKeys(const std::string& keys);
+		void runEditCommand(const std::string& name, EditCommand command);
 		void typeMacro(const std::string& text);
 		void runShellBinding(const std::string& command);
 		void recordUndo(const UndoPoint& before, const std::string& name);
@@ -281,7 +285,10 @@ namespace wbsh {
 		void tabInsert();
 		void unixFilenameRubout();
 
-		enum class PendingKey { kNone, kQuotedInsert, kSearchForward, kSearchBackward };
+		enum class PendingKey {
+			kNone, kQuotedInsert, kSearchForward, kSearchBackward,
+			kViCharSearch, kViChangeChar, kViSetMark, kViGotoMark,
+		};
 		bool takePendingKey(const std::string& keys);
 		void searchCharacter(const std::string& target, bool forward);
 		void searchHistory(bool older, bool anchored);
@@ -291,6 +298,72 @@ namespace wbsh {
 		void copyToKillRing(const std::string& text);
 		void overwriteChars(const std::string& text);
 		void loadOperateNext();
+
+		// lineedit_vi.cpp: vi's insert and command modes.
+		void emacsEditingMode();
+		void viAppendEol();
+		void viAppendMode();
+		void viArgDigit();
+		void viBackwardBigword();
+		void viChangeCase();
+		void viChangeChar();
+		void viChangeTo();
+		void viCharSearch();
+		void viColumn();
+		void viDelete();
+		void viDeleteTo();
+		void viEditingMode();
+		void viEndBigword();
+		void viEndWord();
+		void viEofMaybe();
+		void viFetchHistory();
+		void viFirstPrint();
+		void viForwardBigword();
+		void viGotoMark();
+		void viInsertBeg();
+		void viInsertionMode();
+		void viMatch();
+		void viMovementMode();
+		void viNextWord();
+		void viPrevWord();
+		void viPut();
+		void viRedo();
+		void viReplace();
+		void viRubout();
+		void viSearch();
+		void viSearchAgain();
+		void viSetMark();
+		void viSubst();
+		void viYankArg();
+		void viYankTo();
+
+		Keymap& activeKeymap() const;
+		void resetViState();
+		std::size_t takeCount();
+		bool viKeepsCount(const std::string& name) const;
+		void viSettleCursor();
+		void viRunWithOperator(const std::string& name, EditCommand command);
+		void viOperateOverMotion(const std::string& name, EditCommand command);
+		void viChangeWords(bool big, std::size_t times);
+		void viStartOperator(const std::string& op);
+		void viCancelOperator();
+		void viApplyOperator(std::size_t from, std::size_t to, bool inclusive);
+		void viOperatorKey(const std::string& op, char to_end);
+		void viEnterInsert();
+		std::size_t clustersAhead(std::size_t from, std::size_t count) const;
+		void viReplaceCharacters(const std::string& with);
+		void viFindCharacter(char kind, const std::string& target);
+		bool viStepToCharacter(char kind, const std::string& target);
+		bool takeViPendingKey(PendingKey pending, const std::string& keys);
+		void viJumpToMark(char letter);
+		void viSearchHistory(bool older);
+		void viRecordKeys(const std::string& keys);
+		void viAfterKeys();
+		bool viSplitsMetaKey(const std::string& keys);
+		KeyLookup viSettlePrefix(KeyLookup found, const Keymap& keymap, const std::string& keys,
+		                         KeyBinding& binding) const;
+		bool readMinibuffer(const std::string& lead, std::string& text);
+		bool collectMinibuffer();
 
 		// PowerShell-style inline prediction: refreshSuggestion() fills
 		// suggestion_ from history when the cursor sits at end-of-buffer
@@ -437,6 +510,23 @@ namespace wbsh {
 		std::string menu_word_;
 		Tok menu_tok_;
 		std::size_t operate_next_ = static_cast<std::size_t>(-1);
+
+		// vi: command mode or insert mode, a count being typed, an
+		// operator waiting for its motion, the last f/F/t/T and `/` search,
+		// marks, and the keys of the change being made and the last one.
+		bool vi_command_ = false;
+		std::size_t vi_count_ = 0;
+		std::string vi_operator_;
+		std::size_t vi_operator_count_ = 0;
+		char vi_search_kind_ = 0;
+		std::string vi_search_char_;
+		std::string vi_search_text_;
+		bool vi_search_older_ = true;
+		std::map<char, std::size_t> vi_marks_;
+		std::vector<std::string> vi_keys_;
+		std::vector<std::string> vi_last_change_;
+		bool vi_change_ = false;
+		bool vi_replaying_ = false;
 
 		std::vector<std::string> kill_ring_;
 		std::size_t kill_ring_top_ = 0;

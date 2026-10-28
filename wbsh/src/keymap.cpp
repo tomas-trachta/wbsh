@@ -44,7 +44,15 @@ namespace wbsh {
 			"revert-line", "self-insert", "set-mark", "tab-insert", "transpose-chars",
 			"transpose-words", "undo", "unix-filename-rubout", "unix-line-discard",
 			"unix-word-rubout", "upcase-word", "yank", "yank-last-arg", "yank-nth-arg",
-			"yank-pop", nullptr,
+			"yank-pop", "emacs-editing-mode", "vi-editing-mode", "vi-movement-mode",
+			"vi-insertion-mode", "vi-append-mode", "vi-insert-beg", "vi-append-eol",
+			"vi-replace", "vi-change-char", "vi-delete", "vi-rubout", "vi-subst",
+			"vi-delete-to", "vi-change-to", "vi-yank-to", "vi-put", "vi-change-case",
+			"vi-redo", "vi-yank-arg", "vi-next-word", "vi-prev-word", "vi-end-word",
+			"vi-forward-bigword", "vi-backward-bigword", "vi-end-bigword", "vi-arg-digit",
+			"vi-first-print", "vi-column", "vi-match", "vi-char-search", "vi-goto-mark",
+			"vi-set-mark", "vi-fetch-history", "vi-search", "vi-search-again",
+			"vi-eof-maybe", nullptr,
 		};
 
 		struct DefaultBinding {
@@ -319,16 +327,32 @@ namespace wbsh {
 
 	}  // namespace keymap_detail
 
-	Keymap::Keymap() {
+	Keymap::Keymap(KeymapKind kind) {
+		if (kind != KeymapKind::kEmacs) {
+			for (const auto& entry : viKeymapDefaults(kind)) {
+				bindings_[entry.first] = { KeyBinding::Kind::kCommand, entry.second };
+			}
+
+			return;
+		}
+
 		for (const keymap_detail::DefaultBinding& entry : keymap_detail::kEmacsBindings) {
 			bindings_[entry.keys] = { KeyBinding::Kind::kCommand, entry.command };
 		}
 
 		bindings_[std::string(1, '\0')] = { KeyBinding::Kind::kCommand, "set-mark" };
-
+		bindings_["\x1b\n"] = { KeyBinding::Kind::kCommand, "vi-editing-mode" };
 		for (const keymap_detail::DefaultVariable& entry : keymap_detail::kVariables) {
 			variables_[entry.name] = entry.value;
 		}
+	}
+
+	bool Keymap::exactBinding(const std::string& keys, KeyBinding& binding) const {
+		const auto found = bindings_.find(keys);
+		if (found == bindings_.end()) return false;
+
+		binding = found->second;
+		return true;
 	}
 
 	KeyLookup Keymap::lookup(const std::string& keys, KeyBinding& binding) const {
@@ -387,6 +411,7 @@ namespace wbsh {
 				list.emplace_back(keymap_detail::kCommandNames[i]);
 			}
 
+			std::sort(list.begin(), list.end());
 			return list;
 		}();
 		return names;
@@ -440,13 +465,31 @@ namespace wbsh {
 			return { KeyBinding::Kind::kCommand, value.substr(0, end) };
 		}
 
-		static bool applySet(const std::string& line) {
+		static Keymap* keymapNamed(const std::string& name) {
+			if (name == "emacs" || name == "emacs-standard") return &shellKeymap();
+			const bool command = name == "vi" || name == "vi-command" || name == "vi-move";
+			if (command) return &viCommandKeymap();
+			if (name == "vi-insert") return &viInsertKeymap();
+
+			return nullptr;
+		}
+
+		// `set keymap NAME` turns the lines after it to that keymap.
+		static bool applySet(const std::string& line, Keymap*& keymap) {
 			const std::string rest = trimmed(line.substr(4));
 			const std::size_t space = rest.find_first_of(" \t");
 			const std::string name = rest.substr(0, space);
 			const std::string value = space == std::string::npos
 				? "on" : trimmed(rest.substr(space));
-			shellKeymap().setVariable(name, value);
+			if (name == "keymap") {
+				Keymap* named = keymapNamed(lowered(value));
+				if (named != nullptr) keymap = named;
+				return true;
+			}
+
+			const bool mode = name == "editing-mode";
+			shellKeymap().setVariable(name, mode ? lowered(value) : value);
+			if (mode) keymap = &editingKeymap();
 			return true;
 		}
 
@@ -458,7 +501,7 @@ namespace wbsh {
 		// As readline, a function the editor does not have leaves the key
 		// as it was without a word, so a .bashrc or .inputrc written for
 		// bash loads cleanly.
-		static bool applyBindingLine(const std::string& line, std::string& error) {
+		static bool applyBindingLine(const std::string& line, Keymap& keymap, std::string& error) {
 			std::string keys;
 			std::size_t colon = 0;
 			if (!readKeyPart(line, keys, colon, error)) return false;
@@ -468,7 +511,7 @@ namespace wbsh {
 				return true;
 			}
 
-			shellKeymap().bind(keys, binding);
+			keymap.bind(keys, binding);
 			return true;
 		}
 
@@ -481,7 +524,8 @@ namespace wbsh {
 		// application, which wbsh answers to as both Bash and wbsh.
 		static bool conditionHolds(const std::string& condition, Executor& exec) {
 			const std::string lower = lowered(trimmed(condition));
-			if (lower.compare(0, 5, "mode=") == 0) return lower.substr(5) == "emacs";
+			const std::string mode = viEditing() ? "vi" : "emacs";
+			if (lower.compare(0, 5, "mode=") == 0) return lower.substr(5) == mode;
 			if (lower.compare(0, 5, "term=") == 0) {
 				const std::string term = lowered(exec.env().get("TERM"));
 				return !term.empty() && term.compare(0, lower.size() - 5, lower.substr(5)) == 0;
@@ -495,6 +539,14 @@ namespace wbsh {
 		}
 
 		static void readInitFile(const std::string& path, Executor& exec, int depth);
+
+		static bool applyInitLine(const std::string& raw, Keymap*& keymap, std::string& error) {
+			const std::string line = trimmed(raw);
+			if (line.empty() || line[0] == '#') return true;
+			if (startsWithSet(line)) return applySet(line, keymap);
+
+			return applyBindingLine(line, *keymap, error);
+		}
 
 		static void applyDirective(const std::string& line, std::vector<Conditional>& stack,
 		                           Executor& exec, int depth) {
@@ -518,6 +570,7 @@ namespace wbsh {
 			std::ifstream file(utf8ToPath(path), std::ios::binary);
 			std::string raw;
 			std::vector<Conditional> stack;
+			Keymap* keymap = &editingKeymap();
 			while (std::getline(file, raw)) {
 				const std::string line = trimmed(raw);
 				if (line.empty() || line[0] == '#') continue;
@@ -527,18 +580,19 @@ namespace wbsh {
 				}
 
 				std::string error;
-				if (active(stack)) applyInputrcLine(line, error);
+				if (active(stack)) applyInitLine(line, keymap, error);
 			}
 		}
 
 	}  // namespace keymap_detail
 
-	bool applyInputrcLine(const std::string& raw, std::string& error) {
-		const std::string line = keymap_detail::trimmed(raw);
-		if (line.empty() || line[0] == '#') return true;
-		if (keymap_detail::startsWithSet(line)) return keymap_detail::applySet(line);
+	bool applyInputrcLine(const std::string& line, Keymap& keymap, std::string& error) {
+		Keymap* target = &keymap;
+		return keymap_detail::applyInitLine(line, target, error);
+	}
 
-		return keymap_detail::applyBindingLine(line, error);
+	bool applyInputrcLine(const std::string& line, std::string& error) {
+		return applyInputrcLine(line, editingKeymap(), error);
 	}
 
 	void loadInputrc(Executor& exec) {
@@ -551,22 +605,23 @@ namespace wbsh {
 		}
 
 		keymap_detail::readInitFile(exec.pathConv().toWin32(path), exec, 0);
+		syncEditingOptions(exec.env());
 	}
 
 	namespace bind_detail {
 
 		struct BindRequest {
+			Keymap* keymap = nullptr;
 			std::string keymap_prefix;
-			std::vector<std::string> lines;
 		};
 
 		static void printErr(const std::string& message) {
 			std::fprintf(stderr, "wbsh: bind: %s\n", message.c_str());
 		}
 
-		static std::vector<std::string> keysFor(const std::string& command) {
+		static std::vector<std::string> keysFor(const Keymap& keymap, const std::string& command) {
 			std::vector<std::string> keys;
-			for (const auto& entry : shellKeymap().bindings()) {
+			for (const auto& entry : keymap.bindings()) {
 				const KeyBinding& binding = entry.second;
 				if (binding.kind == KeyBinding::Kind::kCommand && binding.value == command) {
 					keys.push_back(entry.first);
@@ -580,9 +635,9 @@ namespace wbsh {
 			for (const std::string& name : editingCommandNames()) std::printf("%s\n", name.c_str());
 		}
 
-		static void listCommands(bool readable) {
+		static void listCommands(const Keymap& keymap, bool readable) {
 			for (const std::string& name : editingCommandNames()) {
-				const std::vector<std::string> keys = keysFor(name);
+				const std::vector<std::string> keys = keysFor(keymap, name);
 				if (keys.empty()) {
 					if (readable) std::printf("# %s (not bound)\n", name.c_str());
 					else std::printf("%s is not bound to any keys\n", name.c_str());
@@ -608,8 +663,8 @@ namespace wbsh {
 			}
 		}
 
-		static void listOfKind(KeyBinding::Kind kind, bool readable) {
-			for (const auto& entry : shellKeymap().bindings()) {
+		static void listOfKind(const Keymap& keymap, KeyBinding::Kind kind, bool readable) {
+			for (const auto& entry : keymap.bindings()) {
 				if (entry.second.kind != kind) continue;
 
 				const std::string keys = keymap_detail::describeKeys(entry.first);
@@ -626,13 +681,13 @@ namespace wbsh {
 			}
 		}
 
-		static int query(const std::string& name) {
+		static int query(const Keymap& keymap, const std::string& name) {
 			if (!keymap_detail::isCommandName(name)) {
 				printErr("`" + name + "': unknown function name");
 				return 1;
 			}
 
-			const std::vector<std::string> keys = keysFor(name);
+			const std::vector<std::string> keys = keysFor(keymap, name);
 			if (keys.empty()) {
 				std::printf("%s is not bound to any keys.\n", name.c_str());
 				return 1;
@@ -648,20 +703,20 @@ namespace wbsh {
 			return 0;
 		}
 
-		static int unbindCommand(const std::string& name) {
+		static int unbindCommand(Keymap& keymap, const std::string& name) {
 			if (!keymap_detail::isCommandName(name)) {
 				printErr("`" + name + "': unknown function name");
 				return 1;
 			}
 
-			for (const std::string& key : keysFor(name)) shellKeymap().unbind(key);
+			for (const std::string& key : keysFor(keymap, name)) keymap.unbind(key);
 			return 0;
 		}
 
 		static int removeKeys(const BindRequest& request, const std::string& spec) {
 			const std::string text = spec.size() >= 2 && spec.front() == '"' && spec.back() == '"'
 				? spec.substr(1, spec.size() - 2) : spec;
-			shellKeymap().unbind(request.keymap_prefix + keymap_detail::translateEscapes(text));
+			request.keymap->unbind(request.keymap_prefix + keymap_detail::translateEscapes(text));
 			return 0;
 		}
 
@@ -682,7 +737,7 @@ namespace wbsh {
 			}
 
 			const KeyBinding binding = { KeyBinding::Kind::kShellCommand, command };
-			shellKeymap().bind(request.keymap_prefix + keys, binding);
+			request.keymap->bind(request.keymap_prefix + keys, binding);
 			return 0;
 		}
 
@@ -694,35 +749,36 @@ namespace wbsh {
 			}
 
 			std::string error;
-			if (applyInputrcLine(adjusted, error)) return 0;
+			if (applyInputrcLine(adjusted, *request.keymap, error)) return 0;
 
 			printErr(error);
 			return 1;
 		}
 
 		static bool setKeymap(BindRequest& request, const std::string& name) {
-			if (name == "emacs" || name == "emacs-standard") request.keymap_prefix.clear();
-			else if (name == "emacs-meta") request.keymap_prefix = "\x1b";
+			request.keymap_prefix.clear();
+			request.keymap = &shellKeymap();
+			if (name == "emacs-meta") request.keymap_prefix = "\x1b";
 			else if (name == "emacs-ctlx") request.keymap_prefix = "\x18";
-			else return false;
+			else request.keymap = keymap_detail::keymapNamed(name);
 
-			return true;
+			return request.keymap != nullptr;
 		}
 
 	}  // namespace bind_detail
 
 	namespace bind_detail {
 
-		static int runListing(char option) {
+		static int runListing(char option, const Keymap& keymap) {
 			switch (option) {
-			case 'l': listNames();                                      return 0;
-			case 'p': listCommands(true);                               return 0;
-			case 'P': listCommands(false);                              return 0;
-			case 's': listOfKind(KeyBinding::Kind::kMacro, true);         return 0;
-			case 'S': listOfKind(KeyBinding::Kind::kMacro, false);        return 0;
-			case 'X': listOfKind(KeyBinding::Kind::kShellCommand, true);  return 0;
-			case 'v': listVariables(true);                              return 0;
-			case 'V': listVariables(false);                             return 0;
+			case 'l': listNames();                                              return 0;
+			case 'p': listCommands(keymap, true);                               return 0;
+			case 'P': listCommands(keymap, false);                              return 0;
+			case 's': listOfKind(keymap, KeyBinding::Kind::kMacro, true);        return 0;
+			case 'S': listOfKind(keymap, KeyBinding::Kind::kMacro, false);       return 0;
+			case 'X': listOfKind(keymap, KeyBinding::Kind::kShellCommand, true); return 0;
+			case 'v': listVariables(true);                                      return 0;
+			case 'V': listVariables(false);                                     return 0;
 			default:  return -1;
 			}
 		}
@@ -732,13 +788,14 @@ namespace wbsh {
 			switch (option) {
 			case 'm':
 				if (setKeymap(request, value)) return 0;
+				request.keymap = &editingKeymap();
 				printErr("`" + value + "': invalid keymap name");
 				return 1;
 			case 'f':
 				keymap_detail::readInitFile(exec.pathConv().toWin32(value), exec, 0);
 				return 0;
-			case 'q': return query(value);
-			case 'u': return unbindCommand(value);
+			case 'q': return query(*request.keymap, value);
+			case 'u': return unbindCommand(*request.keymap, value);
 			case 'r': return removeKeys(request, value);
 			case 'x': return bindShellCommand(request, value);
 			default:  return -1;
@@ -755,7 +812,7 @@ namespace wbsh {
 			for (std::size_t k = 1; k < flags.size(); ++k) {
 				const char option = flags[k];
 				if (!takesArgument(option)) {
-					const int status = runListing(option);
+					const int status = runListing(option, *request.keymap);
 					if (status < 0) {
 						printErr("-" + std::string(1, option) + ": invalid option");
 						return 2;
@@ -854,24 +911,37 @@ namespace wbsh {
 			+ bind_detail::changedVariables(defaults);
 	}
 
-	int bindBuiltin(Executor& exec, const std::vector<std::string>& args) {
-		bind_detail::BindRequest request;
-		int status = 0;
-		bool options_done = false;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (!options_done && arg == "--") {
-				options_done = true;
-				continue;
+	namespace bind_detail {
+
+		static int runBind(Executor& exec, const std::vector<std::string>& args) {
+			BindRequest request;
+			request.keymap = &editingKeymap();
+			int status = 0;
+			bool options_done = false;
+			for (std::size_t i = 0; i < args.size(); ++i) {
+				const std::string& arg = args[i];
+				if (!options_done && arg == "--") {
+					options_done = true;
+					continue;
+				}
+
+				const bool option = !options_done && arg.size() > 1 && arg[0] == '-';
+				const int result = option ? runOptions(arg, args, i, request, exec)
+				                          : applyLine(request, arg);
+				if (result == 2) return 2;
+				if (result != 0) status = 1;
 			}
 
-			const bool option = !options_done && arg.size() > 1 && arg[0] == '-';
-			const int result = option ? bind_detail::runOptions(arg, args, i, request, exec)
-			                          : bind_detail::applyLine(request, arg);
-			if (result == 2) return 2;
-			if (result != 0) status = 1;
+			return status;
 		}
 
+	}  // namespace bind_detail
+
+	// A `set editing-mode` among the lines changes `set -o vi` with it.
+	int bindBuiltin(Executor& exec, const std::vector<std::string>& args) {
+		const bool vi_before = viEditing();
+		const int status = bind_detail::runBind(exec, args);
+		if (viEditing() != vi_before) syncEditingOptions(exec.env());
 		return status;
 	}
 

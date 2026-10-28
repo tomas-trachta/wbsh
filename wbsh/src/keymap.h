@@ -12,10 +12,12 @@
 
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wbsh {
 
+	class Environment;
 	class Executor;
 
 	struct KeyBinding {
@@ -34,12 +36,20 @@ namespace wbsh {
 		kBound,     // a binding for exactly these keys
 	};
 
-	/** The shell's bindings and readline variables, starting from readline's emacs keymap. */
+	enum class KeymapKind {
+		kEmacs,
+		kViInsert,
+		kViCommand,
+	};
+
+	/** The shell's bindings and readline variables, starting from one of readline's keymaps. */
 	class Keymap {
 	public:
-		Keymap();
+		explicit Keymap(KeymapKind kind = KeymapKind::kEmacs);
 
 		KeyLookup lookup(const std::string& keys, KeyBinding& binding) const;
+		/** The binding of exactly @p keys, whether or not longer keys start with them. */
+		bool exactBinding(const std::string& keys, KeyBinding& binding) const;
 		void bind(const std::string& keys, const KeyBinding& binding);
 		void unbind(const std::string& keys);
 		const std::map<std::string, KeyBinding>& bindings() const { return bindings_; }
@@ -54,7 +64,20 @@ namespace wbsh {
 		std::map<std::string, std::string> variables_;
 	};
 
+	/** The emacs keymap, which also holds the readline variables. */
 	Keymap& shellKeymap();
+	Keymap& viInsertKeymap();
+	Keymap& viCommandKeymap();
+
+	/** The keymap a new line starts in: emacs, or vi's insert keymap with editing-mode vi. */
+	Keymap& editingKeymap();
+	bool viEditing();
+
+	/** Sets `set -o vi` / `set -o emacs` from readline's editing-mode. */
+	void syncEditingOptions(Environment& env);
+
+	/** readline's default bindings of a vi keymap, as keys and command names. */
+	const std::vector<std::pair<std::string, std::string>>& viKeymapDefaults(KeymapKind kind);
 
 	/** The editing commands a key can be bound to, as `bind -l` lists them. */
 	const std::vector<std::string>& editingCommandNames();
@@ -64,6 +87,7 @@ namespace wbsh {
 
 	/** One inputrc line (`"\C-t": transpose-chars`, `set bell-style none`); false with @p error. */
 	bool applyInputrcLine(const std::string& line, std::string& error);
+	bool applyInputrcLine(const std::string& line, Keymap& keymap, std::string& error);
 
 	/**
 	 * The shell's changes to the default keymap as `bind` commands, which a
