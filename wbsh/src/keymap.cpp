@@ -83,7 +83,7 @@ namespace wbsh {
 
 		static const DefaultVariable kVariables[] = {
 			{ "bell-style", "audible" },
-			{ "completion-ignore-case", "off" },
+			{ "completion-ignore-case", "on" },
 			{ "editing-mode", "emacs" },
 			{ "mark-directories", "on" },
 			{ "show-all-if-ambiguous", "off" },

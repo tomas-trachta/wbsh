@@ -244,11 +244,15 @@ namespace wbsh {
 		void insertClipboardText();
 
 		struct Tok {
-			std::size_t start;   // byte offset in buffer_
-			std::size_t end;
-			bool first;          // true = command-position word
+			std::size_t start = 0;          // byte offset in buffer_ of the whole word
+			std::size_t end = 0;            // the cursor
+			bool first = true;              // true = command-position word
+			std::size_t insert_start = 0;   // where a completion replaces the line
+			char quote = 0;                 // the quote still open at the cursor
+			std::string word;               // the text being completed, quotes removed
 		};
 		Tok currentToken() const;
+		void insertMatch(const Tok& tok, const std::string& match, bool whole);
 		std::vector<std::string> completionsFor(const std::string& prefix,
 		                                        bool command_pos);
 		std::vector<std::string> commandCompletions(const std::string& prefix);
@@ -357,6 +361,10 @@ namespace wbsh {
 		// progress means "show me all matches".
 		bool last_was_tab_ = false;
 		std::string last_tab_word_;
+
+		// The last matches were file names: they are quoted for the shell
+		// when inserted and listed by their last path component.
+		bool filename_matches_ = false;
 
 		// Current ghost-text inline prediction (the tail past the
 		// cursor), rendered in dim style by redraw(). Empty when no
