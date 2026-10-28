@@ -1,0 +1,24 @@
+=== 1. TEMP with diacritics
+[captured]
+hi
+mktemp ok
+mktemp -d ok
+procsub
+heredoc inside
+rc=0
+=== 2. file tests on a non-ASCII name
+non-empty
+not executable
+regular file
+newer than a missing file
+1
+6
+directory
+adresář_ディレクトリ
+soubor_ž_文字.txt
+obsah
+read-only
+writable
+=== 3. scripts and sources with non-ASCII names
+skript_č_脚本.sh
+ran unicode_temp.sh

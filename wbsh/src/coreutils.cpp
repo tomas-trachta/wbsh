@@ -1269,9 +1269,9 @@ namespace wbsh {
 
 	static std::string windowsComputerName() {
 #ifdef _WIN32
-		char name[256];
-		DWORD length = sizeof(name);
-		if (::GetComputerNameA(name, &length) != 0) return std::string(name, length);
+		wchar_t name[MAX_COMPUTERNAME_LENGTH + 1];
+		DWORD length = MAX_COMPUTERNAME_LENGTH + 1;
+		if (::GetComputerNameW(name, &length) != 0) return wideToUtf8(std::wstring(name, length));
 #endif
 		return {};
 	}
@@ -2622,7 +2622,9 @@ namespace wbsh {
 		ULARGE_INTEGER avail{};
 		ULARGE_INTEGER total{};
 		ULARGE_INTEGER free_bytes{};
-		if (::GetDiskFreeSpaceExA(root.c_str(), &avail, &total, &free_bytes) == 0) return false;
+		const std::wstring wide_root = utf8ToWide(root);
+		const BOOL got = ::GetDiskFreeSpaceExW(wide_root.c_str(), &avail, &total, &free_bytes);
+		if (got == 0) return false;
 
 		const std::uintmax_t total_bytes = total.QuadPart;
 		const std::uintmax_t avail_bytes = avail.QuadPart;
@@ -2678,7 +2680,7 @@ namespace wbsh {
 	static bool statOnePath(Executor& exec, const std::string& path) {
 		const std::string native = exec.pathConv().toWin32(path);
 		struct stat info {};
-		if (::stat(native.c_str(), &info) != 0) {
+		if (!statPath(native, info)) {
 			perr("stat", withErrno(path));
 			return false;
 		}
@@ -2723,7 +2725,8 @@ namespace wbsh {
 	static bool chmodOnePath(Executor& exec, const std::string& path, bool writable) {
 		const std::string native = exec.pathConv().toWin32(path);
 #ifdef _WIN32
-		DWORD attributes = ::GetFileAttributesA(native.c_str());
+		const std::wstring wide = utf8ToFileWide(native);
+		DWORD attributes = ::GetFileAttributesW(wide.c_str());
 		if (attributes == INVALID_FILE_ATTRIBUTES) {
 			perr("chmod", path + ": not found");
 			return false;
@@ -2731,7 +2734,7 @@ namespace wbsh {
 
 		if (writable) attributes &= ~FILE_ATTRIBUTE_READONLY;
 		else          attributes |= FILE_ATTRIBUTE_READONLY;
-		if (::SetFileAttributesA(native.c_str(), attributes) != 0) return true;
+		if (::SetFileAttributesW(wide.c_str(), attributes) != 0) return true;
 
 		perr("chmod", path + ": cannot change");
 		return false;
@@ -2784,14 +2787,16 @@ namespace wbsh {
 #ifdef _WIN32
 	static bool createWindowsLink(const std::string& native_target, const std::string& native_link,
 	                              bool symbolic) {
+		const std::wstring wide_target = utf8ToFileWide(native_target);
+		const std::wstring wide_link = utf8ToFileWide(native_link);
 		if (!symbolic) {
-			return ::CreateHardLinkA(native_link.c_str(), native_target.c_str(), nullptr) != 0;
+			return ::CreateHardLinkW(wide_link.c_str(), wide_target.c_str(), nullptr) != 0;
 		}
 
 		DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
 		std::error_code ec;
-		if (fs::is_directory(native_target, ec)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
-		return ::CreateSymbolicLinkA(native_link.c_str(), native_target.c_str(), flags) != 0;
+		if (fs::is_directory(utf8ToPath(native_target), ec)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+		return ::CreateSymbolicLinkW(wide_link.c_str(), wide_target.c_str(), flags) != 0;
 	}
 #endif
 
@@ -2807,7 +2812,7 @@ namespace wbsh {
 		const std::string& link = opts.operands[1];
 		const std::string native_target = exec.pathConv().toWin32(target);
 		const std::string native_link = exec.pathConv().toWin32(link);
-		if (opts.force) ::DeleteFileA(native_link.c_str());
+		if (opts.force) ::DeleteFileW(utf8ToFileWide(native_link).c_str());
 		if (createWindowsLink(native_target, native_link, opts.symbolic)) return 0;
 
 		std::fprintf(stderr, "wbsh: ln: %s -> %s failed (err=%lu)\n",
@@ -3072,10 +3077,18 @@ namespace wbsh {
 	                                      const std::string& base_dir) {
 		if (template_arg.find('/') != std::string::npos
 		    || template_arg.find('\\') != std::string::npos) {
-			return fs::path(toNative(exec, template_arg));
+			return toNative(exec, template_arg);
 		}
 
-		return fs::path(toNative(exec, base_dir)) / template_arg;
+		return toNative(exec, base_dir) / utf8ToPath(template_arg);
+	}
+
+	static unsigned long long processIdForSeed() {
+#ifdef _WIN32
+		return ::GetCurrentProcessId();
+#else
+		return static_cast<unsigned long long>(::getpid());
+#endif /* _WIN32 */
 	}
 
 	static std::string randomMktempSuffix(std::size_t xcount, int attempt) {
@@ -3085,7 +3098,7 @@ namespace wbsh {
 
 		const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
 		unsigned long long mix = static_cast<unsigned long long>(ticks)
-			^ (static_cast<unsigned long long>(::GetCurrentProcessId()) << 32)
+			^ (processIdForSeed() << 32)
 			^ static_cast<unsigned long long>(attempt) * 0x9E3779B97F4A7C15ULL;
 
 		std::string suffix(xcount, 'X');
@@ -3104,7 +3117,7 @@ namespace wbsh {
 			const std::string name = prefix + randomMktempSuffix(kSiblingTempPlaceholders, attempt);
 			temp = directory / utf8ToPath(name);
 
-			std::FILE* stream = ::_wfopen(temp.c_str(), L"wbx");
+			std::FILE* stream = openUtf8(pathToUtf8(temp), "wbx");
 			if (stream != nullptr) return stream;
 			if (errno != EEXIST) return nullptr;
 		}
@@ -3116,12 +3129,10 @@ namespace wbsh {
 		std::error_code ec;
 		if (make_dir) return fs::create_directory(utf8ToPath(candidate), ec) && !ec;
 
-		const HANDLE handle = ::CreateFileW(utf8ToFileWide(candidate).c_str(),
-			GENERIC_WRITE, 0, nullptr,
-			CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (handle == INVALID_HANDLE_VALUE) return false;
+		std::FILE* stream = openUtf8(candidate, "wbx");
+		if (stream == nullptr) return false;
 
-		::CloseHandle(handle);
+		std::fclose(stream);
 		return true;
 	}
 

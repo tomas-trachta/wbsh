@@ -2732,19 +2732,19 @@ namespace wbsh {
 
 #ifdef _WIN32
 	static bool createTempFile(std::string& out_path) {
-		char dir[MAX_PATH];
-		const DWORD dir_length = ::GetTempPathA(MAX_PATH, dir);
+		wchar_t dir[MAX_PATH + 1];
+		const DWORD dir_length = ::GetTempPathW(MAX_PATH + 1, dir);
 		if (dir_length == 0 || dir_length > MAX_PATH) return false;
 
-		char path[MAX_PATH];
-		if (::GetTempFileNameA(dir, "wbsh", 0, path) == 0) return false;
+		wchar_t path[MAX_PATH];
+		if (::GetTempFileNameW(dir, L"wbsh", 0, path) == 0) return false;
 
-		out_path = path;
+		out_path = wideToUtf8(path);
 		return true;
 	}
 
 	static void writeFileBytes(const std::string& path, const std::string& bytes) {
-		std::ofstream file(path, std::ios::binary | std::ios::trunc);
+		std::ofstream file(utf8ToPath(path), std::ios::binary | std::ios::trunc);
 		file.write(bytes.data(), bytes.size());
 	}
 #endif /* _WIN32 */

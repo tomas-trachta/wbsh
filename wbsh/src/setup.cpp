@@ -111,15 +111,20 @@ namespace wbsh {
 		return std::filesystem::exists(path, ec) && !std::filesystem::is_directory(path, ec);
 	}
 
+	static std::string environmentUtf8(const char* name) {
+		const wchar_t* value = ::_wgetenv(utf8ToWide(name).c_str());
+		return value == nullptr ? std::string() : wideToUtf8(value);
+	}
+
 	static std::vector<std::string> probeToolDirs(const ToolDirProbe* probes,
 	                                              const char* marker_exe) {
 		std::vector<std::string> hits;
 		for (int i = 0; probes[i].env_var != nullptr; ++i) {
-			const char* base = std::getenv(probes[i].env_var);
-			if (base == nullptr) continue;
+			const std::string base = environmentUtf8(probes[i].env_var);
+			if (base.empty()) continue;
 
-			std::string dir = std::string(base) + probes[i].suffix;
-			if (fileExists(std::filesystem::path(dir) / marker_exe)) hits.push_back(std::move(dir));
+			std::string dir = base + probes[i].suffix;
+			if (fileExists(utf8ToPath(dir) / marker_exe)) hits.push_back(std::move(dir));
 		}
 
 		return hits;
