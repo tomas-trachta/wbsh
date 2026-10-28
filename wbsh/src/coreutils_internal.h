@@ -68,6 +68,19 @@ namespace wbsh {
 	/// what stands in the way. Links are removed, never followed.
 	bool removeFileOrEmptyDirectory(const std::filesystem::path& native, std::error_code& ec);
 
+	struct ProcessInfo {
+		unsigned long pid = 0;
+		unsigned long parent_pid = 0;
+		unsigned long threads = 0;
+		std::string name;
+	};
+
+	/// Every running process (Toolhelp snapshot order).
+	std::vector<ProcessInfo> listProcesses();
+
+	/// The command line @p pid was started with; empty when Windows refuses to tell.
+	std::string processCommandLine(unsigned long pid);
+
 	/// Append every line of `path` ("-" = stdin) to `lines`, stripping
 	/// the trailing `\n` / `\r\n`. Returns false if the file can't be
 	/// opened (errno is set).
@@ -141,6 +154,8 @@ namespace wbsh {
 	void registerHashBuiltins(Executor& exec);
 
 	void registerProcessBuiltins(Executor& exec);
+
+	void registerPsBuiltin(Executor& exec);
 
 	void registerSystemExtraBuiltins(Executor& exec);
 

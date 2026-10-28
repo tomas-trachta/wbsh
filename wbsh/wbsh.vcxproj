@@ -257,6 +257,7 @@
     <ClCompile Include="src\devices.cpp" />
     <ClCompile Include="src\coreutils_system.cpp" />
     <ClCompile Include="src\coreutils_process.cpp" />
+    <ClCompile Include="src\coreutils_ps.cpp" />
     <ClCompile Include="src\fzf.cpp" />
     <ClCompile Include="src\termreq.cpp" />
     <ClCompile Include="src\tmux.cpp" />

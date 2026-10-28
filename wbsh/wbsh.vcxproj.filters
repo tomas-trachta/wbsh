@@ -100,6 +100,7 @@
     <ClCompile Include="src\devices.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_system.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_process.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_ps.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\pathconv.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\consolekeys.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit.cpp"><Filter>Source Files</Filter></ClCompile>

@@ -1,0 +1,49 @@
+=== -p selects, exits 1 when nothing matches
+ps -p $$ finds the shell
+missing pid: 1
+PID PPID USER TIME COMMAND
+bare pid operand works
+wbsh
+=== -o
+wbsh
+PID wbsh
+PID The Command
+PID PPID USER COMMAND ELAPSED TIME RSS VSZ %CPU %MEM STAT NLWP
+wbsh
+args shows the command line
+ppid is a number
+owner of the shell is known
+=== standard formats
+UID PID PPID C STIME TTY TIME CMD
+UID PID PPID C SZ RSS PSR STIME TTY TIME CMD
+F S UID PID PPID C PRI NI ADDR SZ WCHAN TTY TIME CMD
+USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+UID PID PPID C STIME TTY TIME CMD
+PID PPID USER TIME COMMAND
+=== selection
+--ppid finds the background job
+wbsh
+wbsh
+-e lists the shell
+-N leaves the shell out
+-u finds the shell
+=== pgrep / pkill -f
+pgrep -f finds the job
+pgrep -a shows its command line
+pkill -f: 0
+after pkill: 1
+=== --sort
+descending
+ascending
+=== errors
+wbsh: ps: unknown user-defined format specifier "foo"
+rc=1
+wbsh: ps: invalid option -- 'z'
+rc=1
+wbsh: ps: unknown sort specifier "nope"
+rc=1
+wbsh: ps: process ID list syntax error
+rc=1
+wbsh: ps: option requires an argument -- 'p'
+rc=1

@@ -3311,6 +3311,7 @@ namespace wbsh {
 		registerGrepBuiltins(exec);
 		registerSystemBuiltins(exec);
 		registerProcessBuiltins(exec);
+		registerPsBuiltin(exec);
 		registerSystemExtraBuiltins(exec);
 		registerFileOpsBuiltins(exec);
 		registerRemoveBuiltin(exec);
