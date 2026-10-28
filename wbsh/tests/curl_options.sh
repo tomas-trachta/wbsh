@@ -102,10 +102,10 @@ curl -s -o "$tmp/one" -o "$tmp/two" "$BASE/ok" "$BASE/status/202"
 cat "$tmp/one" "$tmp/two"
 
 echo "=== cookies"
-curl -s -b 'k=v' "$BASE/echo" | grep Cookie
+curl -s -b 'k=v' "$BASE/echo" | grep Cookie | show
 curl -s -c "$tmp/jar" "$BASE/cookie" > /dev/null
 grep session "$tmp/jar" | cut -f1,6,7
-curl -s -b "$tmp/jar" "$BASE/echo" | grep Cookie
+curl -s -b "$tmp/jar" "$BASE/echo" | grep Cookie | show
 
 echo "=== verbose, dump-header, head"
 curl -sv "$BASE/ok" 2>&1 >/dev/null | grep -E '^[<>]' | show
@@ -124,7 +124,7 @@ curl -s "file://$tmp/up.txt"
 
 echo "=== config file"
 printf 'silent\nheader = "X-Config: 1"\nurl = %s/echo\n' "$BASE" > "$tmp/cfg"
-curl -K "$tmp/cfg" | grep X-Config
+curl -K "$tmp/cfg" | grep X-Config | show
 
 httpd_stop
 rm -rf "$tmp"
