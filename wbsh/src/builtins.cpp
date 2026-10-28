@@ -201,15 +201,22 @@ namespace wbsh {
 		return true;
 	}
 
+	// Only a word made entirely of option letters is an option: `-n: x`
+	// is an argument to print.
+	static bool isEchoOptionWord(const std::string& word) {
+		if (word.size() < 2 || word[0] != '-') return false;
+
+		return word.find_first_not_of("neE", 1) == std::string::npos;
+	}
+
 	static bool applyEchoFlags(const std::string& flag, bool& newline, bool& interpret) {
-		if (flag.size() < 2) return false;
+		if (!isEchoOptionWord(flag)) return false;
 
 		for (std::size_t k = 1; k < flag.size(); ++k) {
 			switch (flag[k]) {
 			case 'n': newline = false;  break;
 			case 'e': interpret = true;  break;
-			case 'E': interpret = false; break;
-			default:  return false;
+			default:  interpret = false; break;
 			}
 		}
 
