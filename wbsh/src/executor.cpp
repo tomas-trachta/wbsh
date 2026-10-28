@@ -47,6 +47,7 @@
 #include "parser.h"
 #include "regexutil.h"
 #include "stdinsync.h"
+#include "testops.h"
 
 namespace wbsh {
 
@@ -2742,52 +2743,13 @@ namespace wbsh {
 
 	namespace executor_detail {
 		struct DBracketContext {
+			Executor& exec;
 			Expander& expander;
-			const PathConv& path_conv;
-			Environment& env;
 			bool nocasematch;
 		};
 	}
 
 	using executor_detail::DBracketContext;
-
-	static bool evalDBracketVarSet(const std::string& lhs, Environment& env) {
-		const std::size_t bracket = lhs.find('[');
-		if (bracket == std::string::npos || lhs.empty() || lhs.back() != ']') {
-			if (env.isIndexedArray(lhs) || env.isAssocArray(lhs)) return true;
-			return env.has(lhs);
-		}
-
-		const std::string name = lhs.substr(0, bracket);
-		const std::string subscript = lhs.substr(bracket + 1, lhs.size() - bracket - 2);
-		if (const auto* assoc = env.getAssocArray(name)) return assoc->count(subscript) != 0;
-		if (const auto* indexed = env.getIndexedArray(name)) {
-			long long index = 0;
-			return parseLL(subscript, index) && indexed->count(index) != 0;
-		}
-
-		return false;
-	}
-
-	static bool evalDBracketUnaryTest(char op, const std::string& lhs, const DBracketContext& ctx) {
-		if (op == 'v') return evalDBracketVarSet(lhs, ctx.env);
-		if (op == 'z') return lhs.empty();
-		if (op == 'n') return !lhs.empty();
-
-		const std::string path = ctx.path_conv.toWin32(lhs);
-		struct stat info {};
-		const bool exists = statPath(path, info);
-		switch (op) {
-		case 'e': return exists;
-		case 'f': return exists && (info.st_mode & S_IFMT) == S_IFREG;
-		case 'd': return exists && (info.st_mode & S_IFMT) == S_IFDIR;
-		case 's': return exists && info.st_size > 0;
-		case 'r': return exists && (info.st_mode & 0444) != 0;
-		case 'w': return exists && (info.st_mode & 0222) != 0;
-		case 'x': return exists && (info.st_mode & 0111) != 0;
-		default:  return false;
-		}
-	}
 
 	static bool isDBracketPatternOp(const std::string& op) {
 		return op == "==" || op == "=" || op == "!=";
@@ -2800,10 +2762,6 @@ namespace wbsh {
 	static bool isDBracketArithOp(const std::string& op) {
 		return op == "-eq" || op == "-ne" || op == "-lt"
 		    || op == "-le" || op == "-gt" || op == "-ge";
-	}
-
-	static bool isDBracketFileOp(const std::string& op) {
-		return op == "-ef" || op == "-nt" || op == "-ot";
 	}
 
 	static bool evalDBracketStringOp(const std::string& op, const std::string& lhs,
@@ -2825,11 +2783,12 @@ namespace wbsh {
 		return searchRegex(lhs, re);
 	}
 
-	static bool evalDBracketArithOp(const std::string& op,
-	                                const std::string& lhs, const std::string& rhs) {
+	// `[[ ]]` evaluates both sides of -eq and friends as arithmetic.
+	static bool evalDBracketArithOp(const std::string& op, const std::string& lhs,
+	                                const std::string& rhs, Expander& expander) {
 		long long left = 0;
 		long long right = 0;
-		if (!parseLL(lhs, left) || !parseLL(rhs, right)) return false;
+		if (!expander.tryEvalArith(lhs, left) || !expander.tryEvalArith(rhs, right)) return false;
 
 		if (op == "-eq") return left == right;
 		if (op == "-ne") return left != right;
@@ -2837,28 +2796,6 @@ namespace wbsh {
 		if (op == "-le") return left <= right;
 		if (op == "-gt") return left >  right;
 		return left >= right;
-	}
-
-	static bool evalDBracketFileOp(const std::string& op,
-	                               const std::string& lhs, const std::string& rhs,
-	                               const PathConv& path_conv) {
-		const std::string lhs_path = path_conv.toWin32(lhs);
-		const std::string rhs_path = path_conv.toWin32(rhs);
-		struct stat lhs_info{};
-		struct stat rhs_info{};
-		const bool lhs_exists = statPath(lhs_path, lhs_info);
-		const bool rhs_exists = statPath(rhs_path, rhs_info);
-
-		if (op == "-nt") {
-			return lhs_exists && (!rhs_exists || lhs_info.st_mtime > rhs_info.st_mtime);
-		}
-
-		if (op == "-ot") {
-			return rhs_exists && (!lhs_exists || lhs_info.st_mtime < rhs_info.st_mtime);
-		}
-
-		return lhs_exists && rhs_exists
-			&& lhs_info.st_dev == rhs_info.st_dev && lhs_info.st_ino == rhs_info.st_ino;
 	}
 
 	// The `==` / `!=` right side is a pattern in which only unquoted
@@ -2880,8 +2817,8 @@ namespace wbsh {
 		}
 
 		if (expr.op == "=~") return evalDBracketRegexOp(lhs, rhs, ctx.nocasematch);
-		if (isDBracketArithOp(expr.op)) return evalDBracketArithOp(expr.op, lhs, rhs);
-		if (isDBracketFileOp(expr.op)) return evalDBracketFileOp(expr.op, lhs, rhs, ctx.path_conv);
+		if (isDBracketArithOp(expr.op)) return evalDBracketArithOp(expr.op, lhs, rhs, ctx.expander);
+		if (isFileCompareOperator(expr.op)) return evalFileCompare(ctx.exec, expr.op, lhs, rhs);
 		return false;
 	}
 
@@ -2889,9 +2826,7 @@ namespace wbsh {
 		const std::string lhs = ctx.expander.expandStringValue(expr.lhs);
 		if (ctx.expander.failed()) return false;
 		if (expr.op.empty()) return !lhs.empty();
-		if (expr.op.size() == 2 && expr.op[0] == '-') {
-			return evalDBracketUnaryTest(expr.op[1], lhs, ctx);
-		}
+		if (isUnaryTestOperator(expr.op)) return evalUnaryTestOperator(ctx.exec, expr.op[1], lhs);
 
 		return evalDBracketBinary(expr, lhs, ctx);
 	}
@@ -2914,7 +2849,7 @@ namespace wbsh {
 
 		int status = 1;
 		if (ok && dc.root != nullptr) {
-			const DBracketContext ctx{ expander_, path_conv_, env_, env_.nocasematch() };
+			const DBracketContext ctx{ *this, expander_, env_.nocasematch() };
 			status = evalDBracketExpr(*dc.root, ctx) ? 0 : 1;
 		}
 

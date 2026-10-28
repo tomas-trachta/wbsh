@@ -1,0 +1,65 @@
+=== 1. -a, -o, !, ( ) in test and [
+and ok
+rc=0
+and false rc=1
+or ok
+not ok
+parens ok
+not parens rc=1
+two strings -a rc=1
+two strings -o rc=0
+mixed ok
+group of one
+lone bang is a string
+lone -n is a string
+three equal signs
+=== 2. errors
+wbsh: [: a: unary operator expected
+rc=2
+wbsh: [: x: integer expression expected
+rc=2
+wbsh: [: too many arguments
+rc=2
+wbsh: [: (: unary operator expected
+rc=2
+wbsh: test: -q: unary operator expected
+rc=2
+wbsh: [: missing `]'
+rc=2
+=== 3. file tests
+#! script is executable
+plain text is not
+directory is searchable
+-s ok
+-e -d -f ok
+plain file is not a link
+missing is not a link
+plain file is not a pipe
+plain file is not a socket
+/dev/null is a char device
+nor a block device
+no setgid/setuid/sticky
+owned
+file is not a terminal
+stdin is a pipe
+=== 4. -nt -ot -ef in test and [[
+[ -nt ok
+[ -ot ok
+[ -nt missing ok
+[ -ot missing ok
+[ -ef ok
+[ -ef different
+[[ -nt -ot ok
+[[ -ef ok
+=== 5. [[ ]] options, terminals, files
+errexit on
+errexit off
+unknown option is off
+pipefail off
+[[ -t ]] file is not a terminal
+[[ -x ]] ok
+[[ -L ]] ok
+[[ -c ]] ok
+[[ -eq ]] is arithmetic
+[[ -v ]] ok
+[ -v ] ok

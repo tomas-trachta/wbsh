@@ -1193,81 +1193,6 @@ namespace wbsh {
 		return exec.callBuiltin(args[0], { args.begin() + 1, args.end() });
 	}
 
-	static int evalUnaryFileTest(char op, const std::string& raw_path, const PathConv& pc) {
-		const std::string path = pc.toWin32(raw_path);
-		struct stat info {};
-		const bool exists = statPath(path, info);
-		switch (op) {
-		case 'e': return exists ? 0 : 1;
-		case 'f': return (exists && (info.st_mode & S_IFMT) == S_IFREG) ? 0 : 1;
-		case 'd': return (exists && (info.st_mode & S_IFMT) == S_IFDIR) ? 0 : 1;
-		case 's': return (exists && info.st_size > 0) ? 0 : 1;
-		case 'r': return (exists && (info.st_mode & 0444) != 0) ? 0 : 1;
-		case 'w': return (exists && (info.st_mode & 0222) != 0) ? 0 : 1;
-		case 'x': return (exists && (info.st_mode & 0111) != 0) ? 0 : 1;
-		default:  return 2;
-		}
-	}
-
-	static int evalUnaryTest(const std::vector<std::string>& args, const PathConv& pc) {
-		if (args[0].size() != 2 || args[0][0] != '-') return 2;
-
-		const char op = args[0][1];
-		if (op == 'z') return args[1].empty() ? 0 : 1;
-		if (op == 'n') return args[1].empty() ? 1 : 0;
-		return evalUnaryFileTest(op, args[1], pc);
-	}
-
-	static int evalNumericTest(const std::string& op, long long left, long long right) {
-		if (op == "-eq") return left == right ? 0 : 1;
-		if (op == "-ne") return left != right ? 0 : 1;
-		if (op == "-lt") return left <  right ? 0 : 1;
-		if (op == "-le") return left <= right ? 0 : 1;
-		if (op == "-gt") return left >  right ? 0 : 1;
-		if (op == "-ge") return left >= right ? 0 : 1;
-		return 2;
-	}
-
-	static int evalBinaryTest(const std::vector<std::string>& args) {
-		const std::string& left  = args[0];
-		const std::string& op    = args[1];
-		const std::string& right = args[2];
-		if (op == "=" || op == "==") return left == right ? 0 : 1;
-		if (op == "!=")              return left != right ? 0 : 1;
-		if (op == "<")               return left <  right ? 0 : 1;
-		if (op == ">")               return left >  right ? 0 : 1;
-
-		bool left_ok = false;
-		bool right_ok = false;
-		const long long left_value  = toIntSafe(left, left_ok);
-		const long long right_value = toIntSafe(right, right_ok);
-		if (!left_ok || !right_ok) return 2;
-
-		return evalNumericTest(op, left_value, right_value);
-	}
-
-	static int evalTest(const std::vector<std::string>& args, const PathConv& pc) {
-		if (args.empty()) return 1;
-
-		if (args[0] == "!" && args.size() > 1) {
-			const std::vector<std::string> rest(args.begin() + 1, args.end());
-			const int result = evalTest(rest, pc);
-			if (result == 2) return 2;
-			return result == 0 ? 1 : 0;
-		}
-
-		switch (args.size()) {
-		case 1:  return args[0].empty() ? 1 : 0;
-		case 2:  return evalUnaryTest(args, pc);
-		case 3:  return evalBinaryTest(args);
-		default: return 2;
-		}
-	}
-
-	static int builtin_test(Executor& exec, const std::vector<std::string>& args) {
-		return evalTest(args, exec.pathConv());
-	}
-
 	namespace shopt_detail {
 		enum class Mode { ListAll, Set, Unset, Query };
 	}  // namespace shopt_detail
@@ -2505,16 +2430,6 @@ namespace wbsh {
 		return status;
 	}
 
-	static int builtin_lbracket(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty() || args.back() != "]") {
-			printerr("[: missing closing `]'");
-			return 2;
-		}
-
-		const std::vector<std::string> body(args.begin(), args.end() - 1);
-		return evalTest(body, exec.pathConv());
-	}
-
 	void registerCoreBuiltins(Executor& exec) {
 		exec.registerBuiltin(":",        builtin_colon);
 		exec.registerBuiltin("true",     builtin_true);
@@ -2536,8 +2451,6 @@ namespace wbsh {
 		exec.registerBuiltin("type",     builtin_type);
 		exec.registerBuiltin("command",  builtin_command);
 		exec.registerBuiltin("builtin",  builtin_builtin);
-		exec.registerBuiltin("test",     builtin_test);
-		exec.registerBuiltin("[",        builtin_lbracket);
 		exec.registerBuiltin("alias",    builtin_alias);
 		exec.registerBuiltin("unalias",  builtin_unalias);
 		exec.registerBuiltin("history",  builtin_history);
@@ -2566,6 +2479,7 @@ namespace wbsh {
 		exec.registerBuiltin("disown",   builtin_disown);
 		registerDeclarationBuiltins(exec);
 		registerReadBuiltin(exec);
+		registerTestBuiltins(exec);
 	}
 
 }  // namespace wbsh
