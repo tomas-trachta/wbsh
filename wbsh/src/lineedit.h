@@ -115,6 +115,8 @@ namespace wbsh {
 		void moveCursorForward();
 		void moveCursorHome();
 		void moveCursorEnd();
+		void moveToLineEnd();
+		void appendLineText(std::string& out) const;
 
 		// One keystroke inside the reverse-search modal. Returns true to
 		// keep looping, false to exit. Sets `cancel` on Esc / Ctrl-G /

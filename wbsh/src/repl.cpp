@@ -43,6 +43,7 @@
 #include "ast.h"
 #include "environment.h"
 #include "executor.h"
+#include "history.h"
 #include "lexer.h"
 #include "lineedit.h"
 #include "numparse.h"
@@ -73,6 +74,8 @@ namespace wbsh {
 
 	struct ReplState {
 		std::string buffer;
+		std::string history_entry;
+		bool        history_recorded = false;
 		bool        waiting_for_more = false;
 		bool        color_ok = false;
 		std::string histfile;
@@ -89,6 +92,14 @@ namespace wbsh {
 	static bool stderrIsTty() {
 #ifdef _WIN32
 		return _isatty(_fileno(stderr)) != 0;
+#else
+		return false;
+#endif /* _WIN32 */
+	}
+
+	static bool stdinIsTty() {
+#ifdef _WIN32
+		return _isatty(_fileno(stdin)) != 0;
 #else
 		return false;
 #endif /* _WIN32 */
@@ -545,8 +556,10 @@ namespace wbsh {
 		    || message.find("expected command")  != std::string::npos;
 	}
 
-	static bool looksIncomplete(const std::vector<LexError>& lex_errs,
+	static bool looksIncomplete(const std::string& text, const std::vector<LexError>& lex_errs,
 	                            const std::vector<ParseError>& parse_errs) {
+		if (endsWithLineContinuation(text)) return true;
+
 		for (const auto& error : lex_errs) {
 			if (error.message.find("unterminated") != std::string::npos) return true;
 		}
@@ -589,8 +602,10 @@ namespace wbsh {
 		installCtrlCHandler();
 		::SetConsoleOutputCP(CP_UTF8);
 		captureConsoleModes(state);
-		setupConsoleWindow();
-		setupConsoleFont(state.h_out);
+		if (stdinIsTty() && stdoutIsTty()) {
+			setupConsoleWindow();
+			setupConsoleFont(state.h_out);
+		}
 #else
 		state.color_ok = true;
 #endif /* _WIN32 */
@@ -728,6 +743,12 @@ namespace wbsh {
 		exec.executeText(action, origin);
 	}
 
+	static void discardPendingInput(ReplState& state) {
+		state.buffer.clear();
+		state.history_entry.clear();
+		state.waiting_for_more = false;
+	}
+
 #ifdef _WIN32
 	static void restoreConsoleModes(const ReplState& state) {
 		if (state.h_out != INVALID_HANDLE_VALUE) ::SetConsoleMode(state.h_out, state.good_out_mode);
@@ -737,8 +758,7 @@ namespace wbsh {
 	static void handlePendingCtrlC(Executor& exec, ReplState& state) {
 		if (!takeCtrlC()) return;
 
-		state.buffer.clear();
-		state.waiting_for_more = false;
+		discardPendingInput(state);
 		std::fputc('\n', stdout);
 		runTrap(exec, "INT", "<trap INT>");
 		exec.setLastStatus(kSigintStatus);
@@ -791,6 +811,16 @@ namespace wbsh {
 		line = expanded;
 	}
 
+	static void collectHistoryLine(ReplState& state, const std::string& line) {
+		appendHistoryLine(state.history_entry, state.buffer, line);
+	}
+
+	static void recordHistoryEntry(Executor& exec, ReplState& state) {
+		state.history_recorded = !state.history_entry.empty();
+		exec.addHistoryEntry(std::move(state.history_entry));
+		state.history_entry.clear();
+	}
+
 	static void appendToBuffer(ReplState& state, const std::string& line) {
 		if (!state.buffer.empty()) state.buffer.push_back('\n');
 		state.buffer += line;
@@ -815,24 +845,28 @@ namespace wbsh {
 		}
 	}
 
+	// The text ends in a newline, as bash's input does, so a here-document
+	// whose terminator line has not been typed yet reads as unfinished.
 	static void parseAndMaybeExecute(Executor& exec, ReplState& state) {
-		Lexer lex(state.buffer);
+		const std::string text = state.buffer + "\n";
+		Lexer lex(text);
 		auto tokens = lex.tokenize();
-		Parser parser(std::move(tokens), state.buffer);
+		Parser parser(std::move(tokens), text);
 		auto root = parser.parseProgram();
 
-		if (looksIncomplete(lex.errors(), parser.errors())) {
+		if (looksIncomplete(state.buffer, lex.errors(), parser.errors())) {
 			state.waiting_for_more = true;
 			return;
 		}
 
 		state.waiting_for_more = false;
+		recordHistoryEntry(exec, state);
 		printLexParseErrors(lex.errors(), parser.errors());
 
 		if (root && parser.errors().empty() && lex.errors().empty()) {
 			exec.adoptArena(parser.takeArena());
-			exec.setSourceText(state.buffer);
-			exec.executeInput(*root, state.buffer);
+			exec.setSourceText(text);
+			exec.executeInput(*root, text);
 		}
 
 		state.buffer.clear();
@@ -850,8 +884,7 @@ namespace wbsh {
 	static bool abandonPendingInput(ReplState& state) {
 		if (state.buffer.empty()) return false;
 
-		state.buffer.clear();
-		state.waiting_for_more = false;
+		discardPendingInput(state);
 		std::fputc('\n', stdout);
 		return true;
 	}
@@ -859,8 +892,7 @@ namespace wbsh {
 	// Ctrl-C at a prompt arrives as a key in raw mode, so the editor has
 	// already echoed ^C; the rest is what a SIGINT at the prompt does.
 	static void abandonInterruptedInput(Executor& exec, ReplState& state) {
-		state.buffer.clear();
-		state.waiting_for_more = false;
+		discardPendingInput(state);
 		runTrap(exec, "INT", "<trap INT>");
 		exec.setLastStatus(kSigintStatus);
 	}
@@ -880,7 +912,7 @@ namespace wbsh {
 
 	static void runLine(Executor& exec, ReplState& state, std::string& line) {
 		if (!state.waiting_for_more) maybeExpandHistory(exec.history(), line);
-		if (!line.empty()) exec.addHistoryEntry(line);
+		collectHistoryLine(state, line);
 		appendToBuffer(state, line);
 
 		emitShellMark(state, "C");
@@ -934,8 +966,9 @@ namespace wbsh {
 			int exit_status = 0;
 			if (shellExited(exec, exit_status)) return exitWithStatus(exec, state, exit_status);
 
-			if (!state.waiting_for_more && !line.empty()) {
+			if (state.history_recorded) {
 				exec.markLastHistoryStatus(exec.lastStatus());
+				state.history_recorded = false;
 			}
 		}
 	}

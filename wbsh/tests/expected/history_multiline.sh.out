@@ -1,0 +1,55 @@
+=== loops, functions, pipes and case statements become one entry
+    1  for i in 1 2; do echo $i; done
+    2  f() { echo x; }
+    3  if true; then echo y; fi
+    4  echo 1 | cat
+    5  case x in x) echo matched; ;; esac
+    6  for j in 1; do echo $j; done
+    7  arr=(1 2)
+    8  (echo sub; )
+    9  { echo brace; }
+   10  history > "$HOME/listing"
+=== quotes, here-docs, comments and backslash-newlines
+    1  cat <<END
+hello
+
+END
+    2  echo "a
+
+b"
+    3  if true # comment
+then echo c; fi
+    4  echo a b
+    5  history > "$HOME/listing"
+=== the commands themselves ran
+$ > > > hello
+$ > > a
+b
+$ > > c
+$ > a b
+$ $ 
+=== the history file escapes newlines and backslashes
+#!wbsh-history-v3
+0<TAB>cat <<END\nhello\n\nEND
+0<TAB>echo "a\n\nb"
+0<TAB>if true # comment\nthen echo c; fi
+0<TAB>echo a b
+0<TAB>history > "$HOME/listing"
+=== a later session reads the entries back whole
+    1  cat <<END
+hello
+
+END
+    2  echo "a
+
+=== an older v2 history file still loads
+    1  echo old\none
+    2  false
+    3  history > "$HOME/listing"
+#!wbsh-history-v3
+=== Ctrl-D in a continuation drops the half-typed entry
+    1  history > "$HOME/listing"
+=== Up recalls a multi-line entry whole
+accept [cat <<END
+x
+END]
