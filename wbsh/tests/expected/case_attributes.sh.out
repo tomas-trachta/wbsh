@@ -1,0 +1,36 @@
+=== 1. declare -l / -u convert every assignment
+abc
+ABC
+ABCDEF
+hello
+XYZ
+TWO
+ČŘŽ čřž
+qq
+declare -l lo="abc"
+declare -u up="TWO"
+=== 2. arrays
+A B
+A B C D
+VAL
+=== 3. switching attributes
+Mixed
+AGAIN
+mixed
+MiXeD
+AbC
+=== 4. compound assignments keep their order
+declare -a a=([0]="b" [3]="c")
+declare -a a2=([2]="x" [3]="y" [4]="z")
+declare -a a3=([0]="p" [1]="s" [2]="t" [5]="q" [6]="r")
+declare -a a3=([0]="p" [1]="s" [2]="t" [5]="q" [6]="r" [7]="u" [9]="v" [10]="w")
+v1 v2
+=== 5. assignments in one command apply left to right
+b=1
+6 6
+w=1
+v
+command sees q=1
+p after the command: unset
+function sees q=2
+x=1

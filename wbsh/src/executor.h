@@ -503,12 +503,16 @@ namespace wbsh {
 			std::string value;
 			bool append = false;    ///< true for `name[k]+=value`
 		};
+		struct ArrayItem {
+			bool has_key = false;  ///< written `[key]=value`
+			std::string key;
+			std::string value;
+		};
 		struct ArrayAssign  {
 			std::string name;
 			bool sparse = false;   ///< true iff any keyed item is present
 			bool append = false;   ///< true for `name+=(...)`
-			std::vector<std::pair<std::string, std::string>> keyed;   // key,value
-			std::vector<std::string> items;                            // unkeyed
+			std::vector<ArrayItem> items;  ///< in source order
 		};
 		struct SimpleCmdAssigns {
 			std::vector<ScalarAssign> scalar;
@@ -628,7 +632,9 @@ namespace wbsh {
 		// Helpers for execSimpleCommand. Each returns true / a status; on a
 		// recoverable expansion error they print a diagnostic and return false
 		// (or the appropriate non-zero status).
-		bool expandSimpleCmdAssigns(const SimpleCommand& sc, SimpleCmdAssigns& out);
+		bool expandSimpleCmdAssigns(const SimpleCommand& sc, SimpleCmdAssigns& out, bool bare);
+		bool expandOneAssign(const Assignment& assignment, SimpleCmdAssigns& out, bool bare,
+		                     std::vector<std::pair<std::string, Environment::VarState>>& prior);
 		bool expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv,
 		                         std::vector<bool>& compound);
 		std::string expandDeclarationArg(const DeclarationArg& arg);
