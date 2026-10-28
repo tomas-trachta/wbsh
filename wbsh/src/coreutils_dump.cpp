@@ -1,7 +1,7 @@
 /**
  * @file coreutils_dump.cpp
  * @brief Byte dumps: od (POSIX / GNU types) and hexdump / hd (the BSD
- *        canned formats).
+ *        canned formats, and `-e` / `-f` format strings).
  *
  * Input is streamed row by row across every named file, so `-N` on an
  * endless source such as /dev/urandom stops when it should.
@@ -18,6 +18,8 @@
 #include <vector>
 
 #include "executor.h"
+#include "hexdump_format.h"
+#include "optscan.h"
 
 namespace wbsh {
 
@@ -48,6 +50,8 @@ namespace wbsh {
 			std::size_t row_bytes = 16;
 			std::vector<OdType> types;
 			std::vector<char> hex_formats;
+			std::vector<std::string> format_strings;
+			bool custom_format = false;
 			std::vector<std::string> files;
 		};
 
@@ -60,10 +64,19 @@ namespace wbsh {
 			bool failed = false;
 		};
 
+		struct FormatRun {
+			std::vector<unsigned char> block;
+			std::vector<unsigned char> previous;
+			unsigned long long address = 0;
+			bool have_previous = false;
+			bool squeezing = false;
+		};
+
 	}  // namespace dump_detail
 
 	using dump_detail::DumpInput;
 	using dump_detail::DumpOptions;
+	using dump_detail::FormatRun;
 	using dump_detail::OdKind;
 	using dump_detail::OdType;
 
@@ -587,44 +600,92 @@ namespace wbsh {
 		return rightTrimmed(line);
 	}
 
-	static bool applyHexdumpFlags(const std::string& cluster, DumpOptions& options) {
-		for (std::size_t k = 1; k < cluster.size(); ++k) {
-			const char flag = cluster[k];
-			if (flag == 'v') {
-				options.all_rows = true;
-				continue;
-			}
+	static const std::vector<OptDef> kHexdumpOptionDefs = {
+		{ 'b', 'b', "one-byte-octal",    OptArg::None },
+		{ 'c', 'c', "one-byte-char",     OptArg::None },
+		{ 'C', 'C', "canonical",         OptArg::None },
+		{ 'd', 'd', "two-bytes-decimal", OptArg::None },
+		{ 'o', 'o', "two-bytes-octal",   OptArg::None },
+		{ 'x', 'x', "two-bytes-hex",     OptArg::None },
+		{ 'e', 'e', "format",            OptArg::Required },
+		{ 'f', 'f', "format-file",       OptArg::Required },
+		{ 'n', 'n', "length",            OptArg::Required },
+		{ 's', 's', "skip",              OptArg::Required },
+		{ 'v', 'v', "no-squeezing",      OptArg::None },
+	};
 
-			if (std::strchr("Cbcdox", flag) == nullptr) return false;
-			options.hex_formats.push_back(flag);
+	static std::vector<std::string> cannedFormatStrings(char flag) {
+		static const char kEnd[] = "\"%07.7_Ax\n\"";
+		switch (flag) {
+		case 'b': return { kEnd, "\"%07.7_ax \" 16/1 \"%03o \" \"\\n\"" };
+		case 'c': return { kEnd, "\"%07.7_ax \" 16/1 \"%3_c \" \"\\n\"" };
+		case 'd': return { kEnd, "\"%07.7_ax \" 8/2 \"  %05u \" \"\\n\"" };
+		case 'o': return { kEnd, "\"%07.7_ax \" 8/2 \" %06o \" \"\\n\"" };
+		case 'x': return { kEnd, "\"%07.7_ax \" 8/2 \"   %04x \" \"\\n\"" };
+		case 'C':
+			return {
+				"\"%08.8_Ax\n\"",
+				"\"%08.8_ax  \" 8/1 \"%02x \" \"  \" 8/1 \"%02x \" ",
+				"\"  |\" 16/1 \"%_p\" \"|\\n\"",
+			};
+		default:  return { kEnd, "\"%07.7_ax \" 8/2 \"%04x \" \"\\n\"" };
+		}
+	}
+
+	static void addCannedFormat(char flag, DumpOptions& options) {
+		const std::vector<std::string> strings = cannedFormatStrings(flag);
+		options.hex_formats.push_back(flag);
+		options.format_strings.insert(options.format_strings.end(), strings.begin(), strings.end());
+	}
+
+	static bool addFormatFile(Executor& exec, const std::string& path, DumpOptions& options) {
+		std::vector<std::string> lines;
+		if (!readAllLines(exec, path, lines)) {
+			perr("hexdump", path + ": " + std::strerror(errno));
+			return false;
+		}
+
+		for (const std::string& line : lines) {
+			const std::size_t start = line.find_first_not_of(" \t\r\v\f");
+			if (start == std::string::npos || line[start] == '#') continue;
+			options.format_strings.push_back(line.substr(start));
 		}
 
 		return true;
 	}
 
-	static bool parseHexdumpArgs(const std::vector<std::string>& args, DumpOptions& options) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			std::string value;
-			if (takeDumpValue(args, i, 'n', value)) {
-				if (!parseByteSize(value, options.limit)) return false;
-				continue;
-			}
+	static bool applyHexdumpHit(Executor& exec, const OptHit& hit, DumpOptions& options) {
+		switch (hit.id) {
+		case 'v':
+			options.all_rows = true;
+			return true;
+		case 'n':
+			return parseByteSize(hit.value, options.limit);
+		case 's':
+			return parseByteSize(hit.value, options.skip);
+		case 'e':
+			options.custom_format = true;
+			options.format_strings.push_back(hit.value);
+			return true;
+		case 'f':
+			options.custom_format = true;
+			return addFormatFile(exec, hit.value, options);
+		default:
+			addCannedFormat(static_cast<char>(hit.id), options);
+			return true;
+		}
+	}
 
-			if (takeDumpValue(args, i, 's', value)) {
-				if (!parseByteSize(value, options.skip)) return false;
-				continue;
-			}
+	static bool parseHexdumpArgs(Executor& exec, const std::vector<std::string>& args,
+	                             DumpOptions& options) {
+		OptScanResult scan;
+		if (!scanOptions("hexdump", args, kHexdumpOptionDefs, scan)) return false;
 
-			if (arg == "-e" || arg == "-f") {
-				perr("hexdump", "custom format strings are not supported");
-				return false;
-			}
-
-			if (arg.size() < 2 || arg[0] != '-') options.files.push_back(arg);
-			else if (!applyHexdumpFlags(arg, options)) return false;
+		for (const OptHit& hit : scan.hits) {
+			if (!applyHexdumpHit(exec, hit, options)) return false;
 		}
 
+		options.files = scan.operands;
 		if (options.hex_formats.empty()) options.hex_formats.push_back('h');
 		if (options.files.empty()) options.files.push_back("-");
 		return true;
@@ -664,13 +725,89 @@ namespace wbsh {
 		return input.failed ? 1 : 0;
 	}
 
+	static bool buildFormatProgram(const DumpOptions& options, HexdumpProgram& program) {
+		for (const std::string& text : options.format_strings) {
+			std::string error;
+			if (addHexdumpFormat(program, text, error)) continue;
+
+			perr("hexdump", error);
+			return false;
+		}
+
+		finishHexdumpProgram(program);
+		return true;
+	}
+
+	static bool squeezedBlock(FormatRun& run, bool all_rows) {
+		const bool repeat = !all_rows && run.have_previous && run.block == run.previous;
+		if (repeat && !run.squeezing) std::fputs("*\n", stdout);
+		run.squeezing = repeat;
+		return repeat;
+	}
+
+	static void printFormattedBlock(const HexdumpProgram& program, const HexdumpBlock& block) {
+		std::string text;
+		renderHexdumpBlock(program, block, text);
+		std::fwrite(text.data(), 1, text.size(), stdout);
+	}
+
+	// A short final block is zero-padded and never squeezed; returns the
+	// offset just past the data.
+	static unsigned long long dumpFormattedBlocks(DumpInput& input, const DumpOptions& options,
+	                                              const HexdumpProgram& program) {
+		FormatRun run;
+		run.block.assign(program.block_size, 0);
+		run.address = options.skip;
+		while (program.block_size > 0 && !stdoutFailed()) {
+			std::fill(run.block.begin(), run.block.end(), 0);
+			const std::size_t got = readInput(input, run.block.data(), run.block.size(), "hexdump");
+			if (got == 0) break;
+
+			HexdumpBlock block;
+			block.data = run.block.data();
+			block.address = run.address;
+			block.data_end = run.address + got;
+			block.final = got < run.block.size();
+			const bool shown = block.final || !squeezedBlock(run, options.all_rows);
+			if (shown) printFormattedBlock(program, block);
+
+			run.address += got;
+			run.previous = run.block;
+			run.have_previous = true;
+			if (block.final) break;
+		}
+
+		return run.address;
+	}
+
+	static int runFormatProgram(Executor& exec, const DumpOptions& options) {
+		HexdumpProgram program;
+		if (!buildFormatProgram(options, program)) return 1;
+
+		DumpInput input;
+		input.exec = &exec;
+		input.files = options.files;
+		skipInput(input, options.skip, "hexdump");
+		input.remaining = options.limit;
+		const unsigned long long end = dumpFormattedBlocks(input, options, program);
+		closeCurrent(input);
+
+		std::string text;
+		if (end != 0) renderHexdumpEnd(program, end, text);
+		std::fwrite(text.data(), 1, text.size(), stdout);
+		std::fflush(stdout);
+		return input.failed ? 1 : 0;
+	}
+
 	static int builtin_hexdump(Executor& exec, const std::vector<std::string>& args) {
 		DumpOptions options;
-		if (!parseHexdumpArgs(args, options)) {
-			perr("hexdump", "usage: hexdump [-bcCdovx] [-n LENGTH] [-s OFFSET] [FILE]...");
+		if (!parseHexdumpArgs(exec, args, options)) {
+			perr("hexdump", "usage: hexdump [-bcCdovx] [-e FORMAT] [-f FILE] [-n LENGTH] "
+				"[-s OFFSET] [FILE]...");
 			return 1;
 		}
 
+		if (options.custom_format) return runFormatProgram(exec, options);
 		return runHexdump(exec, options);
 	}
 

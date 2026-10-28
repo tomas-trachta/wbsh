@@ -232,6 +232,7 @@
     <ClInclude Include="src\exitstatus.h" />
     <ClInclude Include="src\numparse.h" />
     <ClInclude Include="src\optscan.h" />
+    <ClInclude Include="src\hexdump_format.h" />
     <ClInclude Include="src\posixregex.h" />
     <ClInclude Include="src\posixregex_internal.h" />
     <ClInclude Include="src\regexutil.h" />
@@ -311,6 +312,7 @@
     <ClCompile Include="src\huffman.cpp" />
     <ClCompile Include="src\coreutils_filter.cpp" />
     <ClCompile Include="src\coreutils_dump.cpp" />
+    <ClCompile Include="src\hexdump_format.cpp" />
     <ClCompile Include="src\coreutils_fileops.cpp" />
     <ClCompile Include="src\coreutils_remove.cpp" />
     <ClCompile Include="src\coreutils_copy.cpp" />
