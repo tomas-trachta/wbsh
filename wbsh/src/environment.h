@@ -18,6 +18,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace wbsh {
@@ -345,6 +346,9 @@ namespace wbsh {
 
 		int          currentLineno() const   { return current_lineno_; }
 		void         setCurrentLineno(int n) { current_lineno_ = n; }
+		/// `$BASH_COMMAND`: the command running or about to run.
+		const std::string& currentCommand() const { return current_command_; }
+		void         setCurrentCommand(std::string text) { current_command_ = std::move(text); }
 
 	private:
 		bool rejectIfReadonly(const std::string& name) const;
@@ -387,6 +391,7 @@ namespace wbsh {
 		long long seconds_offset_ = 0;
 		unsigned int random_state_ = 0;
 		int current_lineno_ = 0;
+		std::string current_command_;
 	};
 
 }  // namespace wbsh

@@ -1,0 +1,71 @@
+=== DEBUG before each command
+dbg [:] line 6
+dbg [echo hi] line 7
+hi
+dbg [x=1] line 8
+dbg [for i in 1 2] line 9
+dbg [echo "i=$i"] line 9
+i=1
+dbg [for i in 1 2] line 9
+dbg [echo "i=$i"] line 9
+i=2
+dbg [case a in ] line 10
+dbg [echo case] line 10
+case
+dbg [[[ 1 == 1 ]]] line 11
+dbg [(( x++ ))] line 12
+dbg [true] line 13
+dbg [echo yes] line 13
+yes
+dbg [f] line 15
+in f
+dbg [echo a] line 16
+dbg [cat] line 16
+a
+dbg [y=$(echo sub)] line 17
+subshell
+dbg [trap - DEBUG] line 19
+=== DEBUG keeps $? and PIPESTATUS
+D $?=0 [true]
+D $?=0 [false]
+D $?=1 [true]
+D $?=1 [false]
+D $?=1 [echo "after: ${PIPESTATUS[*]}"]
+after: 0 1
+D $?=0 [trap - DEBUG]
+=== arithmetic for and while
+F [((j = 0))]
+F [((j < 2))]
+F [:]
+F [((j++))]
+F [((j < 2))]
+F [:]
+F [((j++))]
+F [((j < 2))]
+F [false]
+F [trap - DEBUG]
+=== functrace
+T [k]
+T [k]
+T [echo k]
+k
+T [v=$(echo inner)]
+T [echo "v=$v"]
+v=T [echo inner]
+inner
+T [trap - DEBUG]
+=== RETURN
+ret from g $?=0
+g status 3
+h runs
+a ret $?=1 cmd=false
+a status 1
+=== RETURN after source
+sourced
+ret source
+h runs
+h runs
+ret source
+=== BASH_COMMAND in the ERR trap
+err in [test -d /nonexistent_debug_return_traps]
+echo "$BASH_COMMAND"
