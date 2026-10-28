@@ -1,0 +1,26 @@
+=== a resize lays the line out again at the new width
+[echo this line is long][] @2:4
+$ \r\e[J$ e\r\e[3C\r\e[J$ ec\r\e[4C\r\e[J$ ech\r\e[5C\r\e[J$ echo\r\e[6C\r\e[J$ echo \r\e[7C\r\e[J$ echo t\r\e[8C\r\e[J$ echo th\r\e[9C\r\e[J$ echo thi\r\e[10C\r\e[J$ echo this\r\e[11C\r\e[J$ echo this \r\e[12C\r\e[J$ echo this l\r\e[13C\r\e[J$ echo this li\r\e[14C\r\e[J$ echo this lin\r\e[15C\r\e[J$ echo this line\r\e[16C\r\e[J$ echo this line \r\e[17C\r\e[J$ echo this line i\r\e[18C\r\e[J$ echo this line is\r\e[19C\r\e[J$ echo this line is \r\n
+\r\e[1A\r\e[J$ echo this line is l\r\e[1C\e[1A\r\e[J$ echo this line is lo\r\e[2C\e[1A\r\e[J$ echo this line is lon\r\e[3C\e[1A\r\e[J$ echo this line is long\r\e[4C\e[2A\r\e[J$ echo this line is long\r\e[4C\e[2A\r\e[J$ echo this line is longX\r\e[5C
+\r\e[1A\r\e[J$ echo this\r\e[1C\e[1A\r\e[J$ echo this \r\e[2C\e[1A\r\e[J$ echo this l\r\e[3C\e[1A\r\e[J$ echo this li\r\e[4C\e[1A\r\e[J$ echo this lin\r\e[5C\e[1A\r\e[J$ echo this line\r\e[6C\e[1A\r\e[J$ echo this line \r\e[7C\e[1A\r\e[J$ echo this line i\r\e[8C\e[1A\r\e[J$ echo this line is\r\e[9C\e[1A\r\e[J$ echo this line is \r\n
+\r\e[2A\r\e[J$ echo this line is l\r\e[1C\e[2A\r\e[J$ echo this line is lo\r\e[2C\e[2A\r\e[J$ echo this line is lon\r\e[3C\e[2A\r\e[J$ echo this line is long\r\e[4C\r\e[J$ echo this line is long\r\e[24C
+[echo hi][] @0:9
+COLUMNS=33
+=== a list of completion-query-items matches or more asks first
+Display all 120 possibilities? (y or n)
+1
+1
+[ls filex][] @0:8
+0
+0
+=== list columns are padded by cells
+zz.txt    žluť.txt  žába.txt
+zz.txt    žluť.txt  žába.txt
+=== command names include aliases and keywords
+[zzmyalias ][]
+[while ][]
+[function ][]
+[select ][]
+=== CRLF lines piped into an interactive shell lose the CR
+0000000   d   o   n   e  \n   [   a   b   c   ]  \n   l   a   s   t  \n
+0000020

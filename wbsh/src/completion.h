@@ -62,6 +62,9 @@ namespace wbsh {
 	CompletionResult generateCompletions(Executor& exec, const CompletionSpec& spec,
 	                                     const CompletionRequest& request);
 
+	/** The reserved words, as `compgen -k` lists them. */
+	std::vector<std::string> shellKeywords();
+
 	/** Whether @p text starts with @p prefix, ignoring case when completion-ignore-case is on. */
 	bool completionMatches(const std::string& text, const std::string& prefix);
 

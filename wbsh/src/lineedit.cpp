@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -334,11 +335,14 @@ namespace wbsh {
 
 		int byte;
 		while ((byte = std::fgetc(stdin)) != EOF) {
-			if (byte == '\n') return LineStatus::kLine;
+			if (byte == '\n') break;
 			out.push_back(static_cast<char>(byte));
 		}
 
-		return out.empty() ? LineStatus::kEof : LineStatus::kLine;
+		if (byte == EOF && out.empty()) return LineStatus::kEof;
+
+		if (!out.empty() && out.back() == '\r') out.pop_back();
+		return LineStatus::kLine;
 	}
 
 	LineStatus LineEditor::lineStatus() const {
@@ -378,6 +382,18 @@ namespace wbsh {
 		if (width <= 0) return kDefaultConsoleWidth;
 
 		return static_cast<std::size_t>(width);
+	}
+
+	// A resize reports the buffer, whose height is the scrollback; LINES
+	// counts the window's rows.
+	static int consoleLines(SHORT reported, bool replaying) {
+		if (replaying) return reported;
+
+		CONSOLE_SCREEN_BUFFER_INFO info{};
+		const HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
+		if (!::GetConsoleScreenBufferInfo(out, &info)) return reported;
+
+		return info.srWindow.Bottom - info.srWindow.Top + 1;
 	}
 
 	static std::string utf16ToUtf8(const WCHAR* units, int count) {
@@ -635,12 +651,12 @@ namespace wbsh {
 	std::string LineEditor::replayCharacter(wchar_t ch) {
 		WCHAR units[2] = { ch, 0 };
 		const bool high = ch >= 0xD800 && ch <= 0xDBFF;
-		const bool low_follows = !replay_keys_.empty()
-			&& replay_keys_.front().uChar.UnicodeChar >= 0xDC00
-			&& replay_keys_.front().uChar.UnicodeChar <= 0xDFFF;
+		const WCHAR next = replay_keys_.empty() || replay_keys_.front().EventType != KEY_EVENT
+			? 0 : replay_keys_.front().Event.KeyEvent.uChar.UnicodeChar;
+		const bool low_follows = next >= 0xDC00 && next <= 0xDFFF;
 		if (!high || !low_follows) return utf16ToUtf8(units, 1);
 
-		units[1] = replay_keys_.front().uChar.UnicodeChar;
+		units[1] = next;
 		replay_keys_.pop_front();
 		return utf16ToUtf8(units, 2);
 	}
@@ -999,7 +1015,7 @@ namespace wbsh {
 		raw_mode &= ~ENABLE_ECHO_INPUT;
 		raw_mode &= ~ENABLE_PROCESSED_INPUT;
 		raw_mode &= ~ENABLE_MOUSE_INPUT;
-		raw_mode &= ~ENABLE_WINDOW_INPUT;
+		raw_mode |= ENABLE_WINDOW_INPUT;
 		::SetConsoleMode(input, raw_mode);
 		return saved;
 	}
@@ -1144,17 +1160,31 @@ namespace wbsh {
 		dispatchKeys(meta ? keys_detail::kMetaPrefix + text : text);
 	}
 
-	// Key-ups only matter for Alt-code input; every other event is passed
-	// over. While replaying, the keys come from the replay queue instead
-	// of the console.
-	bool LineEditor::nextKeyDown(KEY_EVENT_RECORD& key) {
-		for (;;) {
-			if (headless_) return takeReplayKey(key);
-			if (redraw_due_ && !keysWaiting()) redraw();
+	// readline's answers: y, Y or Space say yes; n, N, Rubout, Esc, Ctrl-G
+	// or Ctrl-C say no; any other key rings the bell.
+	bool LineEditor::askYesNo() {
+		KEY_EVENT_RECORD key{};
+		while (nextKeyDown(key)) {
+			const WCHAR ch = key.uChar.UnicodeChar;
+			const WORD vk = key.wVirtualKeyCode;
+			if (ch == L'y' || ch == L'Y' || ch == L' ') return true;
 
-			INPUT_RECORD record;
-			if (!readInputRecord(::GetStdHandle(STD_INPUT_HANDLE), record)) return false;
-			if (typeahead_records_ > 0) --typeahead_records_;
+			const bool abort_key = keys_detail::isInterruptKey(key) || vk == VK_ESCAPE
+				|| (keys_detail::ctrlHeld(key) && vk == 'G');
+			if (ch == L'n' || ch == L'N' || vk == VK_BACK || abort_key) return false;
+
+			ding();
+		}
+
+		return false;
+	}
+
+	// Key-ups only matter for Alt-code input; a resize lays the line out
+	// again, and other events are passed over.
+	bool LineEditor::nextKeyDown(KEY_EVENT_RECORD& key) {
+		INPUT_RECORD record;
+		while (nextInputRecord(record)) {
+			if (record.EventType == WINDOW_BUFFER_SIZE_EVENT) resizeScreen(record);
 			if (refresh_detail::asksForRefresh(record)) refreshPrompt();
 			if (record.EventType != KEY_EVENT) continue;
 
@@ -1163,14 +1193,43 @@ namespace wbsh {
 
 			handleAltKeyUp(key);
 		}
+
+		return false;
 	}
 
-	bool LineEditor::takeReplayKey(KEY_EVENT_RECORD& key) {
+	// While replaying, the events come from the replay queue instead of
+	// the console.
+	bool LineEditor::nextInputRecord(INPUT_RECORD& record) {
+		if (headless_) return takeReplayRecord(record);
+		if (redraw_due_ && !keysWaiting()) redraw();
+
+		if (!readInputRecord(::GetStdHandle(STD_INPUT_HANDLE), record)) return false;
+		if (typeahead_records_ > 0) --typeahead_records_;
+		return true;
+	}
+
+	bool LineEditor::takeReplayRecord(INPUT_RECORD& record) {
 		if (replay_keys_.empty()) return false;
 
-		key = replay_keys_.front();
+		record = replay_keys_.front();
 		replay_keys_.pop_front();
 		return true;
+	}
+
+	// As readline after SIGWINCH: the console has rewrapped the line to
+	// the new width, so the cursor's row is counted again at that width
+	// before the line is drawn over. COLUMNS and LINES follow at once.
+	void LineEditor::resizeScreen(const INPUT_RECORD& record) {
+		const COORD size = record.Event.WindowBufferSizeEvent.dwSize;
+		if (headless_ && size.X > 0) forced_columns_ = static_cast<std::size_t>(size.X);
+
+		const std::size_t width = screenColumns();
+		const ScreenPos start = promptEnd(prompt_visible_, width);
+		last_cursor_row_ = settled(advanceOver(buffer_, cursor_, start, width), width).row;
+
+		env_.set("COLUMNS", std::to_string(width));
+		if (size.Y > 0) env_.set("LINES", std::to_string(consoleLines(size.Y, headless_)));
+		redraw();
 	}
 
 	bool LineEditor::editUntilDone() {
@@ -1327,18 +1386,45 @@ namespace wbsh {
 			return namedKey(name, 0, key) || altGrKey(name, key) || chordKey(name, key);
 		}
 
-		static void queueText(const std::string& text, std::deque<KEY_EVENT_RECORD>& queue) {
-			for (const wchar_t unit : widen(text)) queue.push_back(pressOf(0, unit, 0));
+		static INPUT_RECORD keyRecord(const KEY_EVENT_RECORD& key) {
+			INPUT_RECORD record{};
+			record.EventType = KEY_EVENT;
+			record.Event.KeyEvent = key;
+			return record;
 		}
 
-		static void queueToken(const std::string& token, std::deque<KEY_EVENT_RECORD>& queue) {
-			KEY_EVENT_RECORD key{};
-			if (keyFor(token, key)) {
-				queue.push_back(key);
-				return;
+		// <RESIZE:COLUMNS>: the screen changes to that width.
+		static bool resizeFor(const std::string& token, INPUT_RECORD& record) {
+			const std::string prefix = "<RESIZE:";
+			if (token.size() <= prefix.size() + 1 || token.compare(0, prefix.size(), prefix) != 0) {
+				return false;
 			}
 
-			queueText(token, queue);
+			long long columns = 0;
+			const std::size_t digits = token.size() - prefix.size() - 1;
+			const std::string number = token.substr(prefix.size(), digits);
+			if (!parseLL(number, columns) || columns <= 0 || columns > SHRT_MAX) return false;
+
+			record = INPUT_RECORD{};
+			record.EventType = WINDOW_BUFFER_SIZE_EVENT;
+			record.Event.WindowBufferSizeEvent.dwSize = { static_cast<SHORT>(columns), 0 };
+			return true;
+		}
+
+		static void queueText(const std::string& text, std::deque<INPUT_RECORD>& queue) {
+			for (const wchar_t unit : widen(text)) queue.push_back(keyRecord(pressOf(0, unit, 0)));
+		}
+
+		static void queueToken(const std::string& token, std::deque<INPUT_RECORD>& queue) {
+			KEY_EVENT_RECORD key{};
+			INPUT_RECORD resize{};
+			if (keyFor(token, key)) {
+				queue.push_back(keyRecord(key));
+			} else if (resizeFor(token, resize)) {
+				queue.push_back(resize);
+			} else {
+				queueText(token, queue);
+			}
 		}
 
 	}  // namespace replay_detail
@@ -1391,6 +1477,7 @@ namespace wbsh {
 	void LineEditor::emit(const std::string&) {}
 	void LineEditor::redraw() {}
 	void LineEditor::redrawWhenIdle() {}
+	bool LineEditor::askYesNo() { return true; }
 	std::string LineEditor::readBracketedPaste() { return {}; }
 	void LineEditor::moveToLineEnd() {}
 	void LineEditor::showPrompt() {}

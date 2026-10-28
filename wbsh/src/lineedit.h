@@ -71,7 +71,8 @@ namespace wbsh {
 	// literal text or, in angle brackets, a named key -- LEFT RIGHT UP DOWN
 	// HOME END BS DEL TAB ENTER ESC -- or a character, either with C- / M- /
 	// C-M- in front (<C-LEFT>, <M-.>, <C-_>), or <AltGr-x> for a character
-	// typed with AltGr. Before the keys, `-p PROMPT` sets the prompt,
+	// typed with AltGr; <RESIZE:N> makes the screen N columns wide. Before
+	// the keys, `-p PROMPT` sets the prompt,
 	// `-c COLUMNS` a screen width (the cursor's cell is then reported as
 	// @row:col), and `-o` prints what the editor wrote.
 	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args);
@@ -145,7 +146,9 @@ namespace wbsh {
 		void dispatchKeyDown(const ::KEY_EVENT_RECORD& key);
 		std::string wideCharacter(wchar_t ch);
 		bool nextKeyDown(::KEY_EVENT_RECORD& key);
-		bool takeReplayKey(::KEY_EVENT_RECORD& key);
+		bool nextInputRecord(::INPUT_RECORD& record);
+		bool takeReplayRecord(::INPUT_RECORD& record);
+		void resizeScreen(const ::INPUT_RECORD& record);
 		::DWORD pendingInputRecords() const;
 		bool keysWaiting() const;
 		bool isPastedLineBreak(const ::KEY_EVENT_RECORD& key) const;
@@ -328,6 +331,9 @@ namespace wbsh {
 		void applyCompletion(const Tok& tok,
 		                     const std::vector<std::string>& matches);
 		void printMatches(const std::vector<std::string>& matches);
+		bool confirmLongList(std::size_t count);
+		void listMatches(const std::vector<std::string>& matches);
+		bool askYesNo();
 		std::string longestCommonPrefix(const std::vector<std::string>& words);
 
 		Environment& env_;
@@ -341,7 +347,7 @@ namespace wbsh {
 		bool eof_ = false;
 		std::string accepted_;
 #ifdef _WIN32
-		std::deque<::KEY_EVENT_RECORD> replay_keys_;
+		std::deque<::INPUT_RECORD> replay_keys_;
 		::DWORD cooked_input_mode_ = 0;
 		::DWORD typeahead_records_ = 0;   // input queued before the prompt was shown
 #endif

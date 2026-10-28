@@ -158,6 +158,10 @@ namespace wbsh {
 
 	}  // namespace completion_detail
 
+	std::vector<std::string> shellKeywords() {
+		return completion_detail::fromTable(completion_detail::kKeywords);
+	}
+
 	namespace completion_detail {
 
 		static std::string withoutExecutableSuffix(const std::string& name) {
@@ -197,7 +201,7 @@ namespace wbsh {
 			std::vector<std::string> names = keysOf(exec.aliases());
 			const std::vector<std::string> builtins = exec.builtinNames();
 			const std::vector<std::string> functions = exec.functionNames();
-			const std::vector<std::string> keywords = fromTable(kKeywords);
+			const std::vector<std::string> keywords = shellKeywords();
 			const std::vector<std::string> path = pathCommands(exec);
 			for (const auto* list : { &builtins, &functions, &keywords, &path }) {
 				names.insert(names.end(), list->begin(), list->end());
@@ -337,7 +341,7 @@ namespace wbsh {
 			if (action == "function")  return exec.functionNames();
 			if (action == "hostname")  return oneName(env.get("COMPUTERNAME"));
 			if (action == "job")       return jobNames(exec, false);
-			if (action == "keyword")   return fromTable(kKeywords);
+			if (action == "keyword")   return shellKeywords();
 			if (action == "running")   return jobNames(exec, true);
 			if (action == "setopt")    return optionNames(false);
 			if (action == "shopt")     return optionNames(true);
