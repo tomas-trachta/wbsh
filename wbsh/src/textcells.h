@@ -15,6 +15,14 @@
 
 namespace wbsh {
 
+	struct TextCluster {
+		std::size_t end;     ///< Byte offset just past the cluster.
+		std::size_t width;   ///< Console cells it takes: 0, 1 or 2.
+	};
+
+	/** The grapheme cluster starting at @p pos, which must be inside @p text. */
+	TextCluster clusterAt(const std::string& text, std::size_t pos);
+
 	/** Bytes in the UTF-8 sequence at @p pos; 1 for a malformed byte. */
 	std::size_t codePointLength(const std::string& text, std::size_t pos);
 

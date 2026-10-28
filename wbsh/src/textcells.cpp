@@ -87,6 +87,11 @@ namespace wbsh {
 
 	} /* namespace textcells_detail */
 
+	TextCluster clusterAt(const std::string& text, std::size_t pos) {
+		const textcells_detail::Cluster cluster = textcells_detail::clusterAt(text, pos);
+		return { cluster.end, cluster.width };
+	}
+
 	std::size_t codePointLength(const std::string& text, std::size_t pos) {
 		if (pos >= text.size()) return 0;
 

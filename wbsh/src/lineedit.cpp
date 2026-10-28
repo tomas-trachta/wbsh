@@ -317,44 +317,91 @@ namespace wbsh {
 		::WriteFile(out, text.data(), static_cast<DWORD>(text.size()), &wrote, nullptr);
 	}
 
+	struct ScreenPos {
+		std::size_t row;
+		std::size_t col;
+	};
+
+	// Where writing text[0, end) from `pos` leaves the cursor on a screen
+	// `width` cells wide. A cluster that does not fit on the row moves
+	// whole to the next one, as the console wraps it, and `col == width`
+	// is the pending wrap after a row's last cell.
+	static ScreenPos advanceOver(const std::string& text, std::size_t end, ScreenPos pos,
+	                             std::size_t width) {
+		std::size_t at = 0;
+		while (at < end && at < text.size()) {
+			if (text[at] == '\n') {
+				pos = { pos.row + 1, 0 };
+				++at;
+				continue;
+			}
+
+			const TextCluster cluster = clusterAt(text, at);
+			if (pos.col + cluster.width > width) pos = { pos.row + 1, 0 };
+			pos.col += cluster.width;
+			at = cluster.end;
+		}
+
+		return pos;
+	}
+
+	static ScreenPos settled(ScreenPos pos, std::size_t width) {
+		if (pos.col < width) return pos;
+
+		return { pos.row + 1, 0 };
+	}
+
+	static std::string withCrLf(const std::string& text) {
+		std::string out;
+		out.reserve(text.size());
+		for (const char letter : text) {
+			if (letter == '\n') out.push_back('\r');
+			out.push_back(letter);
+		}
+
+		return out;
+	}
+
+	void LineEditor::appendLineText(std::string& out) const {
+		out += withCrLf(buffer_);
+		if (suggestion_.empty()) return;
+
+		out += kDimStyle;
+		out += withCrLf(suggestion_);
+		out += kResetStyle;
+	}
+
+	// A line that ends exactly at the right edge leaves the console's
+	// cursor waiting on that edge; the CRLF puts it on the row below,
+	// where the layout counts it.
 	void LineEditor::redraw() {
 		const std::size_t width = consoleWidth();
 		refreshSuggestion();
+
+		const ScreenPos start = { prompt_visible_len_ / width, prompt_visible_len_ % width };
+		const ScreenPos cursor = settled(advanceOver(buffer_, cursor_, start, width), width);
+		const ScreenPos text_end = advanceOver(buffer_, buffer_.size(), start, width);
+		const ScreenPos end = advanceOver(suggestion_, suggestion_.size(), text_end, width);
 
 		std::string out;
 		appendCursorUp(out, last_cursor_row_);
 		out += kEraseToEnd;
 		out += prompt_raw_;
-		out += buffer_;
-		if (!suggestion_.empty()) {
-			out += kDimStyle;
-			out += suggestion_;
-			out += kResetStyle;
-		}
-
-		// After emitting buffer + suggestion, the cursor sits at column
-		// (prompt_visible_len_ + buffer.cols + suggestion.cols) modulo
-		// width, on a row that many rows below the prompt's first row --
-		// except for the "deferred wrap" case where the content fills
-		// exactly to the right edge: in VT mode the cursor stays at the
-		// boundary column until the next char arrives, so we emit \r\n
-		// to materialise the wrap and land on a fresh row.
-		const std::size_t buffer_cols     = displayWidth(buffer_, buffer_.size());
-		const std::size_t suggestion_cols = displayWidth(suggestion_, suggestion_.size());
-		const std::size_t end_cols  = prompt_visible_len_ + buffer_cols + suggestion_cols;
-		const std::size_t want_cols = prompt_visible_len_ + displayWidth(buffer_, cursor_);
-		const std::size_t end_row   = end_cols / width;
-		const std::size_t want_row  = want_cols / width;
-		const std::size_t want_col  = want_cols % width;
-		const bool at_boundary = end_cols > 0 && (end_cols % width) == 0;
-		if (at_boundary) out += "\r\n";
+		appendLineText(out);
+		if (end.col >= width) out += "\r\n";
 
 		out += "\r";
-		if (end_row > want_row) appendCursorUp(out, end_row - want_row);
-		appendCursorRight(out, want_col);
+		appendCursorUp(out, settled(end, width).row - cursor.row);
+		appendCursorRight(out, cursor.col);
 
-		last_cursor_row_ = want_row;
+		last_cursor_row_ = cursor.row;
 		emit(out);
+	}
+
+	void LineEditor::moveToLineEnd() {
+		cursor_ = buffer_.size();
+		redraw();
+		emit("\x1b[J");
 	}
 
 	void LineEditor::refreshSuggestion() {
@@ -494,9 +541,8 @@ namespace wbsh {
 	// The whole line stays on screen with ^C after it, as readline leaves
 	// it; the ghost-text prediction behind the cursor is wiped first.
 	void LineEditor::handleInterrupt(bool& done) {
-		cursor_ = buffer_.size();
-		redraw();
-		emit("\x1b[J^C\r\n");
+		moveToLineEnd();
+		emit("^C\r\n");
 
 		interrupted_ = true;
 		done = true;
@@ -538,7 +584,10 @@ namespace wbsh {
 		cursor_ = buffer_.size();
 	}
 
+	// The output starts below the whole line, not below the row the
+	// cursor was on, and without the ghost-text prediction.
 	void LineEditor::handleEnter(std::string& out, bool& done) {
+		moveToLineEnd();
 		emit("\r\n");
 		out = buffer_;
 		done = true;

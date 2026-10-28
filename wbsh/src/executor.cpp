@@ -76,15 +76,17 @@ namespace wbsh {
 
 	// On-disk history format:
 	//
-	//   #!wbsh-history-v2
+	//   #!wbsh-history-v3
 	//   <status>\t<command>
 	//   <status>\t<command>
 	//   ...
 	//
-	// Legacy files (no header, one command per line) still load: each line
-	// becomes an entry with status 0 ("treat as OK"). This keeps existing
-	// ~/.wbsh_history files working across the upgrade.
+	// A command typed over several lines is one entry, so v3 writes a
+	// newline in it as \n and a backslash as \\. v2 files (the same lines,
+	// nothing escaped) and legacy files (no header, one command per line,
+	// status 0) still load, which keeps old ~/.wbsh_history files working.
 	static const char* const kHistoryV2Header = "#!wbsh-history-v2";
+	static const char* const kHistoryV3Header = "#!wbsh-history-v3";
 
 	namespace executor_detail {
 #ifdef _WIN32
@@ -3161,28 +3163,76 @@ namespace wbsh {
 		return !command.empty();
 	}
 
+	static std::string escapeHistoryCommand(const std::string& command) {
+		std::string escaped;
+		escaped.reserve(command.size());
+		for (const char letter : command) {
+			if (letter == '\\') {
+				escaped += "\\\\";
+			} else if (letter == '\n') {
+				escaped += "\\n";
+			} else if (letter != '\r') {
+				escaped.push_back(letter);
+			}
+		}
+
+		return escaped;
+	}
+
+	static std::string unescapeHistoryCommand(const std::string& text) {
+		std::string command;
+		command.reserve(text.size());
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			if (text[i] != '\\' || i + 1 >= text.size()) {
+				command.push_back(text[i]);
+				continue;
+			}
+
+			++i;
+			command.push_back(text[i] == 'n' ? '\n' : text[i]);
+		}
+
+		return command;
+	}
+
+	enum class HistoryFormat { kLegacy, kV2, kV3 };
+
+	static HistoryFormat historyFormatOf(const std::string& first_line) {
+		if (first_line == kHistoryV3Header) return HistoryFormat::kV3;
+		if (first_line == kHistoryV2Header) return HistoryFormat::kV2;
+
+		return HistoryFormat::kLegacy;
+	}
+
+	static bool parseHistoryLine(const std::string& line, HistoryFormat format,
+	                             int& status, std::string& command) {
+		status = 0;
+		command = line;
+		if (format == HistoryFormat::kLegacy) return true;
+		if (!parseHistoryV2Line(line, status, command)) return false;
+
+		if (format == HistoryFormat::kV3) command = unescapeHistoryCommand(command);
+		return true;
+	}
+
 	bool Executor::loadHistoryFromFile(const std::string& path) {
 		std::ifstream file(utf8ToPath(path));
 		if (!file) return false;
 
 		std::string line;
 		bool header_checked = false;
-		bool v2 = false;
+		HistoryFormat format = HistoryFormat::kLegacy;
 		while (std::getline(file, line)) {
 			stripLineEnding(line);
 			if (!header_checked) {
 				header_checked = true;
-				if (line == kHistoryV2Header) {
-					v2 = true;
-					continue;
-				}
+				format = historyFormatOf(line);
+				if (format != HistoryFormat::kLegacy) continue;
 			}
 
-			if (line.empty()) continue;
-
 			int status = 0;
-			std::string command = line;
-			if (v2 && !parseHistoryV2Line(line, status, command)) continue;
+			std::string command;
+			if (line.empty() || !parseHistoryLine(line, format, status, command)) continue;
 
 			history_.push_back(std::move(command));
 			history_status_.push_back(status);
@@ -3193,13 +3243,13 @@ namespace wbsh {
 	}
 
 	bool Executor::saveHistoryToFile(const std::string& path) const {
-		std::ofstream file(utf8ToPath(path), std::ios::trunc);
+		std::ofstream file(utf8ToPath(path), std::ios::trunc | std::ios::binary);
 		if (!file) return false;
 
-		file << kHistoryV2Header << '\n';
+		file << kHistoryV3Header << '\n';
 		for (std::size_t i = 0; i < history_.size(); ++i) {
 			const int status = (i < history_status_.size()) ? history_status_[i] : 0;
-			file << status << '\t' << history_[i] << '\n';
+			file << status << '\t' << escapeHistoryCommand(history_[i]) << '\n';
 		}
 
 		return true;
