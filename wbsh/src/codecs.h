@@ -3,8 +3,9 @@
 /**
  * @file codecs.h
  * @brief One entry point per direction for every compressed format the
- *        bundled tools read: gzip, bzip2, xz, lzma and compress (.Z).
- *        The stream functions keep memory bounded whatever the data size.
+ *        bundled tools read: gzip, bzip2, xz, lzma, lzop and compress (.Z),
+ *        all but the last of which they also write. The stream functions
+ *        keep memory bounded whatever the data size.
  */
 
 #include <cstddef>
@@ -14,6 +15,8 @@
 #include <vector>
 
 #include "bytestream.h"
+#include "lzop.h"
+#include "xz_encoder.h"
 
 namespace wbsh {
 
@@ -23,6 +26,7 @@ namespace wbsh {
 		Bzip2,
 		Xz,
 		Lzma,
+		Lzop,
 		Compress,
 	};
 
@@ -47,9 +51,25 @@ namespace wbsh {
 		virtual bool finish() = 0;
 	};
 
-	/// Only gzip, bzip2 and Codec::None (a pass-through) can be written; the
-	/// others give nullptr and an @p error.
+	struct CompressSettings {
+		int level = 6;
+		bool extreme = false;
+		XzCheck check = XzCheck::Crc64;
+	};
+
+	/// False for compress (.Z), which is only read.
+	bool canCompress(Codec codec);
+
+	/// Codec::None is a pass-through; a codec canCompress refuses gives
+	/// nullptr and an @p error.
+	std::unique_ptr<Compressor> makeCompressor(Codec codec, const CompressSettings& settings,
+	                                           ByteSink& out, std::string& error);
+
+	/// makeCompressor at @p level with the other settings at their defaults.
 	std::unique_ptr<Compressor> makeCompressor(Codec codec, int level, ByteSink& out, std::string& error);
+
+	/// An lzop writer with header fields and checksums chosen by the caller.
+	std::unique_ptr<Compressor> makeLzopCompressor(const LzopWriteOptions& options, ByteSink& out);
 
 	/// decompressStream over a buffer, appending to @p out.
 	bool decompressWith(Codec codec, const std::uint8_t* in, std::size_t size,

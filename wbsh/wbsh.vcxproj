@@ -232,6 +232,7 @@
     <ClInclude Include="src\exitstatus.h" />
     <ClInclude Include="src\numparse.h" />
     <ClInclude Include="src\optscan.h" />
+    <ClInclude Include="src\hexdump_format.h" />
     <ClInclude Include="src\posixregex.h" />
     <ClInclude Include="src\posixregex_internal.h" />
     <ClInclude Include="src\regexutil.h" />
@@ -294,6 +295,7 @@
     <ClCompile Include="src\posixregex_pike.cpp" />
     <ClCompile Include="src\strsearch.cpp" />
     <ClCompile Include="src\coreutils_cpio.cpp" />
+    <ClCompile Include="src\coreutils_ar.cpp" />
     <ClCompile Include="src\coreutils_misc.cpp" />
     <ClCompile Include="src\coreutils_wget.cpp" />
     <ClCompile Include="src\coreutils_pager.cpp" />
@@ -303,13 +305,21 @@
     <ClCompile Include="src\coreutils_compress.cpp" />
     <ClCompile Include="src\codecs.cpp" />
     <ClCompile Include="src\bytestream.cpp" />
+    <ClCompile Include="src\lzo.cpp" />
+    <ClCompile Include="src\lzop.cpp" />
     <ClCompile Include="src\lzw.cpp" />
     <ClCompile Include="src\xz.cpp" />
     <ClCompile Include="src\bzip2.cpp" />
     <ClCompile Include="src\deflate.cpp" />
+    <ClCompile Include="src\lzma_encoder.cpp" />
+    <ClCompile Include="src\lzma_matchfinder.cpp" />
+    <ClCompile Include="src\lzma_parser.cpp" />
+    <ClCompile Include="src\lzma_prices.cpp" />
+    <ClCompile Include="src\xz_encoder.cpp" />
     <ClCompile Include="src\huffman.cpp" />
     <ClCompile Include="src\coreutils_filter.cpp" />
     <ClCompile Include="src\coreutils_dump.cpp" />
+    <ClCompile Include="src\hexdump_format.cpp" />
     <ClCompile Include="src\coreutils_fileops.cpp" />
     <ClCompile Include="src\coreutils_remove.cpp" />
     <ClCompile Include="src\coreutils_copy.cpp" />

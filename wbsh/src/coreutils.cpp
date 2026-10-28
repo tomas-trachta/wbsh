@@ -3388,7 +3388,8 @@ namespace wbsh {
 		registerPagerBuiltins(exec);
 		registerWgetBuiltin(exec);
 		registerMiscBuiltins(exec);
-		registerCpioBuiltins(exec);
+		registerCpioBuiltin(exec);
+		registerArBuiltin(exec);
 		registerSedBuiltin(exec);
 		registerGrepBuiltins(exec);
 		registerSystemBuiltins(exec);

@@ -12,8 +12,11 @@
 #include "bzip2.h"
 #include "deflate.h"
 #include "inflate.h"
+#include "lzma_encoder.h"
+#include "lzop.h"
 #include "lzw.h"
 #include "xz.h"
+#include "xz_encoder.h"
 
 namespace wbsh {
 
@@ -89,6 +92,43 @@ namespace wbsh {
 
 		private:
 			Bzip2Encoder encoder_;
+		};
+
+		class LzopCompressor : public Compressor {
+		public:
+			LzopCompressor(ByteSink& out, const LzopWriteOptions& options)
+				: encoder_(out, options) {}
+
+			bool write(const std::uint8_t* data, std::size_t size) override {
+				return encoder_.write(data, size);
+			}
+
+			bool finish() override { return encoder_.finish(); }
+
+		private:
+			LzopEncoder encoder_;
+		};
+
+		class XzCompressor : public Compressor {
+		public:
+			XzCompressor(ByteSink& out, const CompressSettings& settings)
+				: encoder_(out, lzmaPreset(settings.level, settings.extreme), settings.check) {}
+			bool write(const std::uint8_t* data, std::size_t size) override { return encoder_.write(data, size); }
+			bool finish() override { return encoder_.finish(); }
+
+		private:
+			XzEncoder encoder_;
+		};
+
+		class LzmaCompressor : public Compressor {
+		public:
+			LzmaCompressor(ByteSink& out, const CompressSettings& settings)
+				: encoder_(out, lzmaPreset(settings.level, settings.extreme)) {}
+			bool write(const std::uint8_t* data, std::size_t size) override { return encoder_.write(data, size); }
+			bool finish() override { return encoder_.finish(); }
+
+		private:
+			LzmaAloneEncoder encoder_;
 		};
 
 		class PlainCompressor : public Compressor {
@@ -227,6 +267,7 @@ namespace wbsh {
 		if (size >= 2 && data[0] == 0x1F && data[1] == 0x9D) return Codec::Compress;
 		if (size >= 3 && std::memcmp(data, "BZh", 3) == 0) return Codec::Bzip2;
 		if (size >= 6 && std::memcmp(data, "\xFD" "7zXZ", 6) == 0) return Codec::Xz;
+		if (size >= 9 && std::memcmp(data, "\x89" "LZO\0\r\n\x1A\n", 9) == 0) return Codec::Lzop;
 		if (plausibleLzmaHeader(data, size)) return Codec::Lzma;
 		return Codec::None;
 	}
@@ -253,6 +294,7 @@ namespace wbsh {
 
 		if (endsWith(path, ".xz") || endsWith(path, ".txz")) return Codec::Xz;
 		if (endsWith(path, ".lzma") || endsWith(path, ".tlz")) return Codec::Lzma;
+		if (endsWith(path, ".lzo") || endsWith(path, ".tzo")) return Codec::Lzop;
 		if (endsWith(path, ".Z") || endsWith(path, ".taZ")) return Codec::Compress;
 		return Codec::None;
 	}
@@ -267,6 +309,8 @@ namespace wbsh {
 				return unxzStream(in, out, error);
 			case Codec::Lzma:
 				return unlzmaStream(in, out, error);
+			case Codec::Lzop:
+				return unlzopStream(in, out, LzopReadOptions(), error);
 			case Codec::Compress:
 				return uncompressStream(in, out, error);
 			default:
@@ -274,18 +318,45 @@ namespace wbsh {
 		}
 	}
 
-	std::unique_ptr<Compressor> makeCompressor(Codec codec, int level, ByteSink& out, std::string& error) {
+	static LzopWriteOptions lzopLevelOptions(int level) {
+		LzopWriteOptions options;
+		options.level = level;
+		return options;
+	}
+
+	bool canCompress(Codec codec) {
+		return codec != Codec::Compress;
+	}
+
+	std::unique_ptr<Compressor> makeCompressor(Codec codec, const CompressSettings& settings,
+	                                           ByteSink& out, std::string& error) {
 		switch (codec) {
 			case Codec::Gzip:
-				return std::make_unique<codecs_detail::GzipCompressor>(out, level);
+				return std::make_unique<codecs_detail::GzipCompressor>(out, settings.level);
 			case Codec::Bzip2:
-				return std::make_unique<codecs_detail::Bzip2Compressor>(out, level);
+				return std::make_unique<codecs_detail::Bzip2Compressor>(out, settings.level);
+			case Codec::Xz:
+				return std::make_unique<codecs_detail::XzCompressor>(out, settings);
+			case Codec::Lzma:
+				return std::make_unique<codecs_detail::LzmaCompressor>(out, settings);
+			case Codec::Lzop:
+				return makeLzopCompressor(lzopLevelOptions(settings.level), out);
 			case Codec::None:
 				return std::make_unique<codecs_detail::PlainCompressor>(out);
 			default:
 				error = "compression to this format is not supported";
 				return nullptr;
 		}
+	}
+
+	std::unique_ptr<Compressor> makeCompressor(Codec codec, int level, ByteSink& out, std::string& error) {
+		CompressSettings settings;
+		settings.level = level;
+		return makeCompressor(codec, settings, out, error);
+	}
+
+	std::unique_ptr<Compressor> makeLzopCompressor(const LzopWriteOptions& options, ByteSink& out) {
+		return std::make_unique<codecs_detail::LzopCompressor>(out, options);
 	}
 
 	bool decompressWith(Codec codec, const std::uint8_t* in, std::size_t size,

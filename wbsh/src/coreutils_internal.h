@@ -150,7 +150,9 @@ namespace wbsh {
 
 	void registerMiscBuiltins(Executor& exec);
 
-	void registerCpioBuiltins(Executor& exec);
+	void registerCpioBuiltin(Executor& exec);
+
+	void registerArBuiltin(Executor& exec);
 
 	void registerSedBuiltin(Executor& exec);
 

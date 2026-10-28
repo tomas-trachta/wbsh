@@ -46,6 +46,7 @@
     <ClInclude Include="src\exitstatus.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\numparse.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\optscan.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\hexdump_format.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\posixregex.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\posixregex_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\regexutil.h"><Filter>Header Files</Filter></ClInclude>
@@ -120,6 +121,7 @@
     <ClCompile Include="src\awk_regex.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\awk_value.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_cpio.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_ar.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_misc.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_wget.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\curl_options.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -134,13 +136,21 @@
     <ClCompile Include="src\coreutils_compress.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\codecs.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\bytestream.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzo.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzop.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lzw.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\xz.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\bzip2.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\deflate.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzma_encoder.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzma_matchfinder.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzma_parser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzma_prices.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\xz_encoder.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\huffman.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_filter.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_dump.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\hexdump_format.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_fileops.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_remove.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_copy.cpp"><Filter>Source Files</Filter></ClCompile>

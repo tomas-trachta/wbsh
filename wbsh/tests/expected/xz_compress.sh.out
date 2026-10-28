@@ -1,0 +1,104 @@
+=== round trips
+xz empty.txt ok
+lzma empty.txt ok
+xz one.txt ok
+lzma one.txt ok
+xz text.txt ok
+lzma text.txt ok
+xz noise.bin ok
+lzma noise.bin ok
+xz mixed.bin ok
+lzma mixed.bin ok
+hi
+hi
+=== headers
+32
+23
+ fd 37 7a 58 5a 00 00 04 e6 d6 b4 46
+ 5d 00 00 80 00 ff ff ff ff ff ff ff ff
+ 5d 00 00 04 00
+=== sizes
+repetitive input shrinks
+incompressible input stays near its size
+level 0 finds the repeats
+=== levels and xz options
+xz -0 ok
+xz -1 ok
+xz -2 ok
+xz -3 ok
+xz -4 ok
+xz -5 ok
+xz -6 ok
+xz -e ok
+xz -3e ok
+lzma -1 ok
+x
+x
+=== check types
+none ok
+ 00
+crc32 ok
+ 01
+crc64 ok
+ 04
+sha256 ok
+ 0a
+ 01
+wbsh: xz: md5: Unsupported integrity check type
+rc=1
+=== damage is caught by the check
+wbsh: xz: bad.xz: checksum mismatch
+rc=1
+rc=0 without a check
+=== file handling
+f.txt.xz
+wbsh: xz: f.txt.xz already has .xz suffix -- unchanged
+rc=1
+unxz restored f.txt
+f.txt
+f.txt.xz
+wbsh: xz: f.txt.xz already exists; not overwritten
+rc=1
+forced over the old f.txt.xz
+test ok
+f.txt.xz:	OK
+f.txt.lzma
+unlzma restored f.txt
+f.txt
+f.txt.lzma
+xz -F lzma wrote .lzma
+xz reads .lzma too
+f.txt
+f.txt.lzma
+f.txt.xz
+lzma --format=xz wrote .xz
+x
+=== bad options
+wbsh: xz: zip: Unknown file format type
+rc=1
+wbsh: xz: raw streams are not supported
+rc=1
+wbsh: xz: invalid option -- 'Q'
+rc=1
+wbsh: gzip: invalid option -- 'e'
+rc=1
+=== tar
+tar -cJ wrote xz
+tree/
+tree/a.txt
+tree/sub/
+tree/sub/text.txt
+4
+tar --lzma wrote lzma
+4
+tar -a picked xz
+tar -a picked lzma
+tar -xJ ok
+wbsh: tar: writing this compression format is not supported
+rc=2
+=== streaming
+20000000
+y
+y
+y
+y

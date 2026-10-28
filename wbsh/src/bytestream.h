@@ -196,4 +196,7 @@ namespace wbsh {
 	/// zlib / gzip CRC-32; pass 0 to start, the previous result to continue.
 	std::uint32_t crc32Of(std::uint32_t crc, const std::uint8_t* data, std::size_t size);
 
+	/// The .xz CRC-64 (ECMA-182 polynomial, reflected); chained like crc32Of.
+	std::uint64_t crc64Of(std::uint64_t crc, const std::uint8_t* data, std::size_t size);
+
 }  // namespace wbsh

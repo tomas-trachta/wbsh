@@ -1,0 +1,182 @@
+=== round trips
+--- newc
+1024
+2 blocks
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+2 blocks
+hello
+deep file
+--- crc
+1024
+2 blocks
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+2 blocks
+hello
+deep file
+--- odc
+512
+1 blocks
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+1 blocks
+hello
+deep file
+--- bin
+512
+1 blocks
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+1 blocks
+hello
+deep file
+--- ustar
+4096
+7 blocks
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+7 blocks
+hello
+deep file
+--- tar
+4096
+7 blocks
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+tree
+tree/a.txt
+tree/sub
+tree/sub/b.txt
+7 blocks
+hello
+deep file
+=== format option spellings
+same bytes
+same bytes
+070701
+=== headers
+--- newc
+   0   7   0   7   0   1   0   0   0   0   0   0   0   1   0   0
+   0   0   8   1   A   4   0   0   0   0   0   0   0   0   0   0
+   0   0   0   0   0   0   0   0   0   0   0   0   0   1   3   A
+   7   B   8   3   7   2   0   0   0   0   0   0   0   6   0   0
+   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+*
+   0   0   0   0   0   B   0   0   0   0   0   0   0   0   t   r
+   e   e   /   a   .   t   x   t  \0  \0  \0  \0   h   e   l   l
+   o  \n
+--- crc
+   0   7   0   7   0   2   0   0   0   0   0   0   0   1   0   0
+   0   0   8   1   A   4   0   0   0   0   0   0   0   0   0   0
+   0   0   0   0   0   0   0   0   0   0   0   0   0   1   3   A
+   7   B   8   3   7   2   0   0   0   0   0   0   0   6   0   0
+   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+*
+   0   0   0   0   0   B   0   0   0   0   0   2   1   E   t   r
+   e   e   /   a   .   t   x   t  \0  \0  \0  \0   h   e   l   l
+   o  \n
+--- odc
+   0   7   0   7   0   7   0   0   0   0   0   0   0   0   0   0
+   0   1   1   0   0   6   4   4   0   0   0   0   0   0   0   0
+   0   0   0   0   0   0   0   0   0   1   0   0   0   0   0   0
+   0   7   2   3   6   7   0   1   5   6   2   0   0   0   0   1
+   3   0   0   0   0   0   0   0   0   0   0   6   t   r   e   e
+   /   a   .   t   x   t  \0   h   e   l   l   o  \n   0   7   0
+   7   0   7   0   0   0   0   0   0   0   0   0   0   0   2   0
+   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+   0   0
+--- bin
+ c7 71 00 00 01 00 a4 81 00 00 00 00 01 00 00 00
+ 7b 3a 72 83 0b 00 00 00 06 00 74 72 65 65 2f 61
+ 2e 74 78 74 00 00 68 65 6c 6c 6f 0a c7 71 00 00
+--- ustar
+   t   r   e   e   /   a   .   t   x   t  \0  \0  \0  \0  \0  \0
+  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0
+*
+  \0  \0  \0  \0   0   0   0   0   6   4   4  \0   0   0   0   0
+   0   0   0  \0   0   0   0   0   0   0   0  \0   0   0   0   0
+   0   0   0   0   0   0   6  \0   0   7   2   3   6   7   0   1
+   5   6   2  \0   0   1   3   0   0   0  \0       0  \0  \0  \0
+  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0
+*
+  \0   u   s   t   a   r  \0   0   0   r   o   o   t  \0  \0  \0
+  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0
+  \0  \0  \0  \0  \0  \0  \0  \0  \0   r   o   o   t  \0  \0  \0
+  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0
+  \0  \0  \0  \0  \0  \0  \0  \0  \0   0   0   0   0   0   0   0
+  \0   0   0   0   0   0   0   0  \0  \0  \0  \0  \0  \0  \0  \0
+  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0
+*
+--- tar
+   t   r   e   e   /   a   .   t   x   t  \0  \0  \0  \0  \0  \0
+  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0
+*
+  \0  \0  \0  \0   0   1   0   0   6   4   4  \0   0   0   0   0
+   0   0   0  \0   0   0   0   0   0   0   0  \0   0   0   0   0
+   0   0   0   0   0   0   6  \0   0   7   2   3   6   7   0   1
+   5   6   2  \0   0   0   6   5   1   2  \0       0  \0  \0  \0
+=== crc verification
+cpio: tree/a.txt: checksum error (0x200, should be 0x21e)
+1 blocks
+status 1
+Jello
+status 0
+Jello
+=== long names
+120
+10
+14
+far down
+cpio: tree/N/N.txt: file name too long
+6 blocks
+tree/a.txt
+tree/sub/b.txt
+=== backslash traversal
+cpio: ..\escaped.txt: refusing to write outside the current directory
+N blocks
+contained
+=== errors
+wbsh: cpio: invalid archive format 'zip'
+wbsh: cpio: usage: cpio -i|-o|-t [-dmuv] [-H FORMAT] [-F ARCHIVE] [PATTERN]...
+status 2
+cpio: nothere: No such file or directory
+1 blocks
+status 1
+1 blocks
+status 0
+wbsh: cpio: unrecognized archive format
+status 2
+=== done

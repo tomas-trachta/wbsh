@@ -2,10 +2,12 @@
  * @file coreutils_compress.cpp
  * @brief The single-file compressors, all sharing gzip's command-line
  *        behaviour: gzip / gunzip / zcat, bzip2 / bunzip2 / bzcat,
- *        xz / unxz / xzcat, lzma / unlzma / lzcat, uncompress.
+ *        xz / unxz / xzcat, lzma / unlzma / lzcat, lzop / unlzop / lzopcat,
+ *        uncompress.
  *
- * xz and lzma decompress only, as busybox's do; asking them to compress
- * says so instead of writing a file.
+ * xz and lzma also take xz's -e, -T, -C (check type) and -F (xz or lzma
+ * format). lzop keeps its input unless told -U and adds -o, -l, -C and -F,
+ * as lzop does. uncompress only decompresses.
  */
 
 #include "coreutils_internal.h"
@@ -20,6 +22,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -29,6 +32,9 @@
 #include "bytestream.h"
 #include "codecs.h"
 #include "executor.h"
+#include "filetimes.h"
+#include "lzop.h"
+#include "optscan.h"
 
 namespace wbsh {
 
@@ -58,15 +64,58 @@ namespace wbsh {
 			bool test = false;
 			bool quiet = false;
 			bool verbose = false;
+			bool extreme = false;
+			bool list = false;
+			bool checksum_packed = false;
+			bool skip_checksums = false;
 			int level = 6;
+			XzCheck check = XzCheck::Crc64;
+			Codec format = Codec::None;
 			std::string suffix;
+			std::string output;
 			std::vector<std::string> files;
+		};
+
+		struct CheckName {
+			const char* name;
+			XzCheck check;
+		};
+
+		struct FormatName {
+			const char* name;
+			Codec codec;
+		};
+
+		enum OptId {
+			kOptDecompress,
+			kOptCompress,
+			kOptStdout,
+			kOptKeep,
+			kOptForce,
+			kOptTest,
+			kOptQuiet,
+			kOptVerbose,
+			kOptFast,
+			kOptBest,
+			kOptSuffix,
+			kOptExtreme,
+			kOptCheck,
+			kOptFormat,
+			kOptIgnored,
+			kOptDelete,
+			kOptChecksumPacked,
+			kOptNoChecksum,
+			kOptList,
+			kOptOutput,
+			kOptLevel0,
 		};
 
 	}  // namespace compress_detail
 
+	using compress_detail::CheckName;
 	using compress_detail::CompressOptions;
 	using compress_detail::CompressTool;
+	using compress_detail::FormatName;
 	using compress_detail::SuffixRule;
 
 	static const SuffixRule kGzipSuffixes[] = {
@@ -88,6 +137,10 @@ namespace wbsh {
 		{ ".lzma", "" }, { ".tlz", ".tar" }, { nullptr, nullptr },
 	};
 
+	static const SuffixRule kLzopSuffixes[] = {
+		{ ".lzo", "" }, { ".tzo", ".tar" }, { nullptr, nullptr },
+	};
+
 	static const SuffixRule kCompressSuffixes[] = {
 		{ ".Z", "" }, { ".taZ", ".tar" }, { nullptr, nullptr },
 	};
@@ -105,55 +158,192 @@ namespace wbsh {
 		{ "lzma",       Codec::Lzma,     kLzmaSuffixes,     false, false, 6 },
 		{ "unlzma",     Codec::Lzma,     kLzmaSuffixes,     true,  false, 6 },
 		{ "lzcat",      Codec::Lzma,     kLzmaSuffixes,     true,  true,  6 },
+		{ "lzop",       Codec::Lzop,     kLzopSuffixes,     false, false, 3 },
+		{ "unlzop",     Codec::Lzop,     kLzopSuffixes,     true,  false, 3 },
+		{ "lzopcat",    Codec::Lzop,     kLzopSuffixes,     true,  true,  3 },
 		{ "uncompress", Codec::Compress, kCompressSuffixes, true,  false, 6 },
 	};
 
 	static const std::size_t kReadChunk = 64 * 1024;
 
-	static bool applyCompressFlag(char flag, CompressOptions& options) {
-		if (flag >= '1' && flag <= '9') {
-			options.level = flag - '0';
-			return true;
-		}
+	static const CheckName kCheckNames[] = {
+		{ "none", XzCheck::None }, { "crc32", XzCheck::Crc32 }, { "crc64", XzCheck::Crc64 },
+		{ "sha256", XzCheck::Sha256 },
+	};
 
-		switch (flag) {
-		case 'd': options.decompress = true; return true;
-		case 'c': options.to_stdout = true;  return true;
-		case 'k': options.keep = true;       return true;
-		case 'f': options.force = true;      return true;
-		case 't': options.test = true;       return true;
-		case 'q': options.quiet = true;      return true;
-		case 'v': options.verbose = true;    return true;
-		case 'n':
-		case 'N':
-		case 'z':
-			return true;
-		default:
-			return false;
+	static const FormatName kFormatNames[] = {
+		{ "auto", Codec::None }, { "xz", Codec::Xz }, { "lzma", Codec::Lzma },
+		{ "alone", Codec::Lzma },
+	};
+
+	static void addCommonDefs(std::vector<OptDef>& defs) {
+		defs.insert(defs.end(), {
+			{ compress_detail::kOptDecompress, 'd', "decompress", OptArg::None },
+			{ compress_detail::kOptDecompress, 0,   "uncompress", OptArg::None },
+			{ compress_detail::kOptCompress,   'z', "compress",   OptArg::None },
+			{ compress_detail::kOptStdout,     'c', "stdout",     OptArg::None },
+			{ compress_detail::kOptStdout,     0,   "to-stdout",  OptArg::None },
+			{ compress_detail::kOptKeep,       'k', "keep",       OptArg::None },
+			{ compress_detail::kOptForce,      'f', "force",      OptArg::None },
+			{ compress_detail::kOptTest,       't', "test",       OptArg::None },
+			{ compress_detail::kOptQuiet,      'q', "quiet",      OptArg::None },
+			{ compress_detail::kOptVerbose,    'v', "verbose",    OptArg::None },
+			{ compress_detail::kOptFast,       0,   "fast",       OptArg::None },
+			{ compress_detail::kOptBest,       0,   "best",       OptArg::None },
+			{ compress_detail::kOptSuffix,     'S', "suffix",     OptArg::Required },
+			{ compress_detail::kOptIgnored,    'n', "no-name",    OptArg::None },
+			{ compress_detail::kOptIgnored,    'N', "name",       OptArg::None },
+		});
+
+		for (int digit = 0; digit <= 9; ++digit) {
+			const auto name = static_cast<char>('0' + digit);
+			defs.push_back({ compress_detail::kOptLevel0 + digit, name, nullptr, OptArg::None });
 		}
 	}
 
-	static bool applyCompressCluster(const std::string& cluster, CompressOptions& options) {
-		for (std::size_t k = 1; k < cluster.size(); ++k) {
-			if (!applyCompressFlag(cluster[k], options)) return false;
-		}
-
-		return true;
+	static void addXzDefs(std::vector<OptDef>& defs) {
+		defs.insert(defs.end(), {
+			{ compress_detail::kOptExtreme, 'e', "extreme", OptArg::None },
+			{ compress_detail::kOptIgnored, 'T', "threads", OptArg::Required },
+			{ compress_detail::kOptCheck,   'C', "check",   OptArg::Required },
+			{ compress_detail::kOptFormat,  'F', "format",  OptArg::Required },
+		});
 	}
 
-	static bool applyLongCompressOption(const std::string& arg, CompressOptions& options) {
-		if (arg == "--decompress" || arg == "--uncompress") options.decompress = true;
-		else if (arg == "--stdout" || arg == "--to-stdout")  options.to_stdout = true;
-		else if (arg == "--keep")    options.keep = true;
-		else if (arg == "--force")   options.force = true;
-		else if (arg == "--test")    options.test = true;
-		else if (arg == "--quiet")   options.quiet = true;
-		else if (arg == "--verbose") options.verbose = true;
-		else if (arg == "--fast")    options.level = 1;
-		else if (arg == "--best")    options.level = 9;
-		else if (arg.compare(0, 9, "--suffix=") == 0) options.suffix = arg.substr(9);
-		else return arg == "--no-name" || arg == "--name";
-		return true;
+	static void addLzopDefs(std::vector<OptDef>& defs) {
+		defs.insert(defs.end(), {
+			{ compress_detail::kOptDelete,         'U', "delete",      OptArg::None },
+			{ compress_detail::kOptChecksumPacked, 'C', nullptr,       OptArg::None },
+			{ compress_detail::kOptNoChecksum,     'F', "no-checksum", OptArg::None },
+			{ compress_detail::kOptList,           'l', "list",        OptArg::None },
+			{ compress_detail::kOptOutput,         'o', "output",      OptArg::Required },
+		});
+	}
+
+	static bool inXzFamily(const CompressTool& tool) {
+		return tool.codec == Codec::Xz || tool.codec == Codec::Lzma;
+	}
+
+	static bool isLzop(const CompressTool& tool) {
+		return tool.codec == Codec::Lzop;
+	}
+
+	static std::vector<OptDef> buildCompressDefs(Codec family) {
+		std::vector<OptDef> defs;
+		addCommonDefs(defs);
+		if (family == Codec::Xz) addXzDefs(defs);
+		if (family == Codec::Lzop) addLzopDefs(defs);
+		return defs;
+	}
+
+	static const std::vector<OptDef>& compressOptionDefs(const CompressTool& tool) {
+		static const std::vector<OptDef> kXzDefs = buildCompressDefs(Codec::Xz);
+		static const std::vector<OptDef> kLzopDefs = buildCompressDefs(Codec::Lzop);
+		static const std::vector<OptDef> kOtherDefs = buildCompressDefs(Codec::None);
+		if (inXzFamily(tool)) return kXzDefs;
+		return isLzop(tool) ? kLzopDefs : kOtherDefs;
+	}
+
+	static bool applyCheckName(const CompressTool& tool, const std::string& name,
+	                           CompressOptions& options) {
+		for (const CheckName& entry : kCheckNames) {
+			if (name != entry.name) continue;
+			options.check = entry.check;
+			return true;
+		}
+
+		perr(tool.name, name + ": Unsupported integrity check type");
+		return false;
+	}
+
+	static bool applyFormatName(const CompressTool& tool, const std::string& name,
+	                            CompressOptions& options) {
+		for (const FormatName& entry : kFormatNames) {
+			if (name != entry.name) continue;
+			options.format = entry.codec;
+			return true;
+		}
+
+		if (name == "raw") {
+			perr(tool.name, "raw streams are not supported");
+		} else {
+			perr(tool.name, name + ": Unknown file format type");
+		}
+
+		return false;
+	}
+
+	static void applyFlagOption(int id, CompressOptions& options) {
+		switch (id) {
+			case compress_detail::kOptDecompress:
+				options.decompress = true;
+				break;
+			case compress_detail::kOptCompress:
+				options.decompress = false;
+				break;
+			case compress_detail::kOptStdout:
+				options.to_stdout = true;
+				break;
+			case compress_detail::kOptKeep:
+				options.keep = true;
+				break;
+			case compress_detail::kOptForce:
+				options.force = true;
+				break;
+			case compress_detail::kOptTest:
+				options.test = true;
+				break;
+			case compress_detail::kOptQuiet:
+				options.quiet = true;
+				break;
+			case compress_detail::kOptVerbose:
+				options.verbose = true;
+				break;
+			case compress_detail::kOptFast:
+				options.level = 1;
+				break;
+			case compress_detail::kOptBest:
+				options.level = 9;
+				break;
+			case compress_detail::kOptExtreme:
+				options.extreme = true;
+				break;
+			case compress_detail::kOptDelete:
+				options.keep = false;
+				break;
+			case compress_detail::kOptChecksumPacked:
+				options.checksum_packed = true;
+				break;
+			case compress_detail::kOptNoChecksum:
+				options.skip_checksums = true;
+				break;
+			case compress_detail::kOptList:
+				options.list = true;
+				break;
+			default:
+				if (id < compress_detail::kOptLevel0) break;
+				options.level = id - compress_detail::kOptLevel0;
+				break;
+		}
+	}
+
+	static bool applyCompressOption(const CompressTool& tool, const OptHit& hit,
+	                                CompressOptions& options) {
+		switch (hit.id) {
+			case compress_detail::kOptSuffix:
+				options.suffix = hit.value;
+				return true;
+			case compress_detail::kOptOutput:
+				options.output = hit.value;
+				return true;
+			case compress_detail::kOptCheck:
+				return applyCheckName(tool, hit.value, options);
+			case compress_detail::kOptFormat:
+				return applyFormatName(tool, hit.value, options);
+			default:
+				applyFlagOption(hit.id, options);
+				return true;
+		}
 	}
 
 	static bool parseCompressArgs(const CompressTool& tool, const std::vector<std::string>& args,
@@ -161,29 +351,28 @@ namespace wbsh {
 		options.decompress = tool.decompress;
 		options.to_stdout = tool.to_stdout;
 		options.level = tool.default_level;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "-S" && i + 1 < args.size()) {
-				options.suffix = args[++i];
-				continue;
-			}
+		options.keep = isLzop(tool);
 
-			if (arg.size() < 2 || arg[0] != '-') {
-				options.files.push_back(arg);
-				continue;
-			}
+		OptScanResult scanned;
+		if (!scanOptions(tool.name, args, compressOptionDefs(tool), scanned)) return false;
 
-			const bool known = arg[1] == '-'
-				? applyLongCompressOption(arg, options)
-				: applyCompressCluster(arg, options);
-			if (known) continue;
-
-			perr(tool.name, "invalid option -- '" + arg + "'");
-			return false;
+		for (const OptHit& hit : scanned.hits) {
+			if (!applyCompressOption(tool, hit, options)) return false;
 		}
 
-		if (options.test) options.decompress = true;
+		options.files = scanned.operands;
+		if (options.test || options.list) options.decompress = true;
 		return true;
+	}
+
+	// -F swaps in the other xz-family format along with its suffixes.
+	static CompressTool withFormat(const CompressTool& tool, Codec format) {
+		CompressTool active = tool;
+		if (format == Codec::None) return active;
+
+		active.codec = format;
+		active.suffixes = format == Codec::Lzma ? kLzmaSuffixes : kXzSuffixes;
+		return active;
 	}
 
 	static bool streamIsTerminal(std::FILE* stream) {
@@ -203,6 +392,7 @@ namespace wbsh {
 		case Codec::Bzip2:    return "bzip2";
 		case Codec::Xz:       return "xz";
 		case Codec::Lzma:     return "lzma";
+		case Codec::Lzop:     return "lzop";
 		case Codec::Compress: return "compress";
 		case Codec::None:
 		default:              return "known";
@@ -215,7 +405,18 @@ namespace wbsh {
 		std::string name;
 		std::uint64_t in_bytes = 0;
 		std::uint64_t out_bytes = 0;
+		std::string stored_name;
+		std::int64_t mtime = 0;
 	};
+
+	static bool runDecoder(const CodecRun& run, Codec codec, InputBuffer& in, ByteSink& out,
+	                       std::string& error) {
+		if (codec != Codec::Lzop) return decompressStream(codec, in, out, error);
+
+		LzopReadOptions read_options;
+		read_options.verify_checksums = !run.options.skip_checksums;
+		return unlzopStream(in, out, read_options, error);
+	}
 
 	static bool decodeStream(CodecRun& run, InputBuffer& in, ByteSink& out) {
 		Codec codec = detectCodec(in);
@@ -229,14 +430,38 @@ namespace wbsh {
 			return false;
 		}
 
-		if (decompressStream(codec, in, out, error)) return true;
+		if (runDecoder(run, codec, in, out, error)) return true;
 		if (!error.empty()) perr(run.tool.name, run.name + ": " + error);
 		return false;
 	}
 
+	static LzopWriteOptions lzopWriteOptions(const CodecRun& run) {
+		LzopWriteOptions write_options;
+		write_options.level = run.options.level;
+		write_options.checksum_plain = !run.options.skip_checksums;
+		write_options.checksum_packed = !run.options.skip_checksums && run.options.checksum_packed;
+		write_options.name = run.stored_name;
+		write_options.mtime = run.mtime;
+		return write_options;
+	}
+
+	static CompressSettings compressSettings(const CompressOptions& options) {
+		CompressSettings settings;
+		settings.level = options.level;
+		settings.extreme = options.extreme;
+		settings.check = options.check;
+		return settings;
+	}
+
+	static std::unique_ptr<Compressor> makeToolCompressor(const CodecRun& run, ByteSink& out,
+	                                                      std::string& error) {
+		if (isLzop(run.tool)) return makeLzopCompressor(lzopWriteOptions(run), out);
+		return makeCompressor(run.tool.codec, compressSettings(run.options), out, error);
+	}
+
 	static bool encodeStream(CodecRun& run, InputBuffer& in, ByteSink& out) {
 		std::string error;
-		const std::unique_ptr<Compressor> compressor = makeCompressor(run.tool.codec, run.options.level, out, error);
+		const std::unique_ptr<Compressor> compressor = makeToolCompressor(run, out, error);
 		if (!compressor) {
 			perr(run.tool.name, error + "; use -d to decompress");
 			return false;
@@ -264,28 +489,6 @@ namespace wbsh {
 		run.in_bytes = in.consumed();
 		run.out_bytes = counted.count();
 		return ok;
-	}
-
-	static int compressStdin(const CompressTool& tool, const CompressOptions& options) {
-		if (!options.decompress && !options.force && streamIsTerminal(stdout)) {
-			perr(tool.name, "compressed data not written to a terminal. "
-				"Use -f to force compression.");
-			return 1;
-		}
-
-		if (options.decompress && !options.force && streamIsTerminal(stdin)) {
-			perr(tool.name, "compressed data not read from a terminal. "
-				"Use -f to force decompression.");
-			return 1;
-		}
-
-		CodecRun run{ tool, options, "stdin" };
-		FileSink to_stdout(stdout);
-		NullSink discard;
-		ByteSink& out = options.test ? static_cast<ByteSink&>(discard) : to_stdout;
-		const bool ok = transformStream(run, stdin, out);
-		std::fflush(stdout);
-		return ok ? 0 : 1;
 	}
 
 	static bool endsWith(const std::string& text, const std::string& suffix) {
@@ -393,6 +596,44 @@ namespace wbsh {
 		if (!options.keep) fs::remove(source, ec);
 	}
 
+	static void reportDone(const CodecRun& run, const std::string& target) {
+		if (!isLzop(run.tool)) {
+			reportRatio(run.name, target, run.in_bytes, run.out_bytes, run.options.decompress);
+			return;
+		}
+
+		const char* action = run.options.decompress ? "decompressing" : "compressing";
+		std::fprintf(stderr, "%s %s into %s\n", action, run.name.c_str(), target.c_str());
+	}
+
+	static void printListHeader() {
+		std::printf("method      compressed  uncompr.  ratio uncompressed_name\n");
+	}
+
+	static bool listStream(const CodecRun& run, std::FILE* input, const std::string& shown) {
+		FileSource source(input);
+		InputBuffer in(source);
+		LzopSummary summary;
+		std::string error;
+		if (!scanLzopStream(in, summary, error)) {
+			perr(run.tool.name, run.name + ": " + error);
+			return false;
+		}
+
+		const double ratio = summary.unpacked == 0 ? 0.0
+			: 100.0 * static_cast<double>(summary.packed) / static_cast<double>(summary.unpacked);
+		std::printf("%-11s %10llu %9llu %5.1f%% %s\n", lzopMethodName(summary.method),
+			static_cast<unsigned long long>(summary.packed),
+			static_cast<unsigned long long>(summary.unpacked), ratio, shown.c_str());
+		return true;
+	}
+
+	static std::string listedName(const CompressTool& tool, const CompressOptions& options,
+	                              const std::string& path) {
+		std::string plain;
+		return plainName(tool, options, path, plain) ? plain : path;
+	}
+
 	static int streamToStdout(CodecRun& run, std::FILE* input) {
 		FileSink to_stdout(stdout);
 		NullSink discard;
@@ -402,18 +643,80 @@ namespace wbsh {
 		return ok ? 0 : 1;
 	}
 
+	static bool writesOutputFile(const CompressOptions& options) {
+		return !options.output.empty() && !options.to_stdout && !options.test && !options.list;
+	}
+
+	static bool stdinUsable(const CompressTool& tool, const CompressOptions& options) {
+		const bool to_terminal = !options.decompress && options.output.empty();
+		if (to_terminal && !options.force && streamIsTerminal(stdout)) {
+			perr(tool.name, "compressed data not written to a terminal. "
+				"Use -f to force compression.");
+			return false;
+		}
+
+		if (options.decompress && !options.force && streamIsTerminal(stdin)) {
+			perr(tool.name, "compressed data not read from a terminal. "
+				"Use -f to force decompression.");
+			return false;
+		}
+
+		return true;
+	}
+
+	static int compressStdin(Executor& exec, const CompressTool& tool,
+	                         const CompressOptions& options) {
+		if (!stdinUsable(tool, options)) return 1;
+
+		CodecRun run{ tool, options, "stdin" };
+		run.mtime = static_cast<std::int64_t>(std::time(nullptr));
+		if (options.list) return listStream(run, stdin, "-") ? 0 : 1;
+		if (writesOutputFile(options)) return storeStream(exec, run, stdin, options.output) ? 0 : 1;
+
+		FileSink to_stdout(stdout);
+		NullSink discard;
+		ByteSink& out = options.test ? static_cast<ByteSink&>(discard) : to_stdout;
+		const bool ok = transformStream(run, stdin, out);
+		std::fflush(stdout);
+		return ok ? 0 : 1;
+	}
+
+	static bool targetName(const CompressTool& tool, const CompressOptions& options,
+	                       const std::string& path, std::string& target) {
+		if (options.output.empty()) return outputName(tool, options, path, target);
+
+		target = options.output;
+		return true;
+	}
+
+	// What lzop records about its input: the bare file name and its mtime.
+	static void describeSource(Executor& exec, const std::string& path, CodecRun& run) {
+		std::error_code ec;
+		const fs::file_time_type stamp = fs::last_write_time(toNative(exec, path), ec);
+		if (!ec) run.mtime = dateFromFileTime(stamp).seconds;
+
+		const std::size_t slash = path.find_last_of("/\\");
+		run.stored_name = slash == std::string::npos ? path : path.substr(slash + 1);
+	}
+
+	static int streamFile(CodecRun& run, std::FILE* input) {
+		if (!run.options.list) return streamToStdout(run, input);
+		return listStream(run, input, listedName(run.tool, run.options, run.name)) ? 0 : 1;
+	}
+
 	static int processFile(Executor& exec, const CompressTool& tool, const CompressOptions& options,
 	                       const std::string& path) {
 		std::string target;
-		const bool in_place = !options.to_stdout && !options.test;
-		if (in_place && !outputName(tool, options, path, target)) return options.quiet ? 0 : 1;
+		const bool in_place = !options.to_stdout && !options.test && !options.list;
+		if (in_place && !targetName(tool, options, path, target)) return options.quiet ? 0 : 1;
 
 		std::FILE* input = openInput(exec, tool, path);
 		if (input == nullptr) return 1;
 
 		CodecRun run{ tool, options, path };
+		describeSource(exec, path, run);
 		if (!in_place) {
-			const int status = streamToStdout(run, input);
+			const int status = streamFile(run, input);
 			std::fclose(input);
 			return status;
 		}
@@ -423,20 +726,30 @@ namespace wbsh {
 		if (!stored) return 1;
 
 		finishInPlace(exec, path, target, options);
-		if (options.verbose) reportRatio(path, target, run.in_bytes, run.out_bytes, options.decompress);
+		if (options.verbose) reportDone(run, target);
 		return 0;
+	}
+
+	static bool outputFitsFiles(const CompressTool& tool, const CompressOptions& options) {
+		if (options.output.empty() || options.files.size() <= 1) return true;
+
+		perr(tool.name, "-o needs a single input file");
+		return false;
 	}
 
 	static int runCompressTool(Executor& exec, const CompressTool& tool,
 	                           const std::vector<std::string>& args) {
 		CompressOptions options;
-		if (!parseCompressArgs(tool, args, options)) return 1;
-		if (options.files.empty()) return compressStdin(tool, options);
+		if (!parseCompressArgs(tool, args, options) || !outputFitsFiles(tool, options)) return 1;
+		if (options.list) printListHeader();
+
+		const CompressTool active = withFormat(tool, options.format);
+		if (options.files.empty()) return compressStdin(exec, active, options);
 
 		int status = 0;
 		for (const std::string& file : options.files) {
-			const int file_status = file == "-" ? compressStdin(tool, options)
-				: processFile(exec, tool, options, file);
+			const int file_status = file == "-" ? compressStdin(exec, active, options)
+				: processFile(exec, active, options, file);
 			if (file_status != 0) status = file_status;
 		}
 
@@ -500,6 +813,18 @@ namespace wbsh {
 		return runCompressTool(exec, toolNamed("lzcat"), args);
 	}
 
+	static int builtin_lzop(Executor& exec, const std::vector<std::string>& args) {
+		return runCompressTool(exec, toolNamed("lzop"), args);
+	}
+
+	static int builtin_unlzop(Executor& exec, const std::vector<std::string>& args) {
+		return runCompressTool(exec, toolNamed("unlzop"), args);
+	}
+
+	static int builtin_lzopcat(Executor& exec, const std::vector<std::string>& args) {
+		return runCompressTool(exec, toolNamed("lzopcat"), args);
+	}
+
 	static int builtin_uncompress(Executor& exec, const std::vector<std::string>& args) {
 		return runCompressTool(exec, toolNamed("uncompress"), args);
 	}
@@ -517,6 +842,9 @@ namespace wbsh {
 		exec.registerBuiltin("lzma",       builtin_lzma);
 		exec.registerBuiltin("unlzma",     builtin_unlzma);
 		exec.registerBuiltin("lzcat",      builtin_lzcat);
+		exec.registerBuiltin("lzop",       builtin_lzop);
+		exec.registerBuiltin("unlzop",     builtin_unlzop);
+		exec.registerBuiltin("lzopcat",    builtin_lzopcat);
 		exec.registerBuiltin("uncompress", builtin_uncompress);
 	}
 

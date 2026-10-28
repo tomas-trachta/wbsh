@@ -1,0 +1,100 @@
+=== bytes per line
+68 65 6c 6c 6f 20 77 6f 72 6c 64 2c 20 74 68 69|
+73 20 69 73 20 68 65 78 64 75 6d 70 21 0a      |
+=== address and words
+0000000 6568 6c6c 206f 6f77 6c72 2c64 7420 6968|
+0000010 2073 7369 6820 7865 7564 706d 0a21     |
+=== one word per line
+64636261|
+68676665|
+00006a69|
+=== default format spelled out
+0000000 6568 6c6c 206f 6f77 6c72 2c64 7420 6968|
+0000010 2073 7369 6820 7865 7564 706d 0a21     |
+000001e|
+0
+=== canonical spelled out
+same as -C
+00000000  68 65 6c 6c 6f 20 77 6f  72 6c 64 2c 20 74 68 69  |hello world, thi|
+00000010  73 20 69 73 20 68 65 78  64 75 6d 70 21 0a        |s is hexdump!.|
+0000001e
+=== character conversions
+   a  \t   b  \0 177 200      \n|
+   ~                            |
+   a  ht   b nul del  80      lf|
+   ~                            |
+a.b... .|
+~|
+<x><y><z>
+=== integers
+    -1    -2   513  1027
+4294901759 67305985|
+-1 -1 -2 -1 1 2 3 4|
+377 377 376 377 001 002 003 004|
+04030201FFFEFFFF
+fffeffff 4030201|
+fffeffff|+67305985|
+=== floats
+1.000000
+1.5 1.500000e+00 1.500000E+00 1.5
+1.50
+=== strings
+[abcd][efgh]
+abc|def|gh|
+[ab        ]
+=== percent and escapes
+%41%	|
+%42%	|
+   \  \a   A  \a   B  \n
+=== skip and length
+6: world
+6/6: world
+end 11
+=== short final block
+0000000 6261 0063                              |
+0000003|
+0 61,62,63,64,|
+4 65,  ,  ,  ,|
+=== last unit fills the block
+01000000020000000300000004000000|
+1 2 3 4|
+=== squeezing
+0000000 00000000000000000000000000000000|
+*|
+0000040 7461696c                        |
+0000044|
+5
+=== format file
+000000   h  e  l  l  o     w  o  r  l  d  ,|
+000014      t  h  i  s     i  s     h  e  x|
+000030   d  u  m  p  ! lf                  |
+1e
+=== canned flags mixed with -e
+00000000  68 65 6c 6c 6f 20 77 6f  72 6c 64 2c 20 74 68 69  |hello world, thi|
+00000010  73 20 69 73 20 68 65 78  64 75 6d 70 21 0a        |s is hexdump!.|
+30
+00000000  68 65 6c 6c                                       |hell|
+4
+=== errors
+wbsh: hexdump: bad byte count for conversion character x
+status 1
+wbsh: hexdump: %s requires a precision or a byte count
+status 1
+wbsh: hexdump: byte count with multiple conversion characters
+status 1
+wbsh: hexdump: bad conversion character %y
+status 1
+wbsh: hexdump: bad conversion character %_z
+status 1
+wbsh: hexdump: bad conversion character %_aq
+status 1
+wbsh: hexdump: bad format {16/1 %x}
+status 1
+wbsh: hexdump: bad format {"%x}
+status 1
+wbsh: hexdump: bad byte count for conversion character c
+status 1
+wbsh: hexdump: missing.fmt: No such file or directory
+wbsh: hexdump: usage: hexdump [-bcCdovx] [-e FORMAT] [-f FILE] [-n LENGTH] [-s OFFSET] [FILE]...
+status 1
+=== done
