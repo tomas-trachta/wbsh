@@ -1,0 +1,30 @@
+=== wrapping cd in a same-named function
+wrapped cd ok
+directory changed
+back at start
+=== plain use
+hi
+a
+b
+pwd in substitution ok
+read status 0
+=== skips functions and aliases
+wrapped: through the function
+past the function
+past the alias
+=== errors
+wbsh: builtin: nosuch: not a shell builtin
+status 1
+wbsh: builtin: f: not a shell builtin
+status 1
+wbsh: builtin: -x: invalid option
+builtin: usage: builtin [shell-builtin [arg ...]]
+status 2
+status 0
+status 0
+after double dash
+=== type and control flow
+builtin
+return status 4
+exit status 5
+break left i=1
