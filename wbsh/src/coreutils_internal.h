@@ -171,6 +171,8 @@ namespace wbsh {
 	void registerSystemExtraBuiltins(Executor& exec);
 
 	void registerFileOpsBuiltins(Executor& exec);
+	/// coreutils_stat.cpp: touch, stat.
+	void registerStatBuiltins(Executor& exec);
 
 	void registerRemoveBuiltin(Executor& exec);
 
