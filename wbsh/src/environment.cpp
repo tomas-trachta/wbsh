@@ -109,6 +109,7 @@ namespace wbsh {
 			{ "expand_aliases", &ShoptFlags::expand_aliases },
 			{ "autocd",         &ShoptFlags::autocd },
 			{ "checkwinsize",   &ShoptFlags::checkwinsize },
+			{ "promptvars",     &ShoptFlags::promptvars },
 		};
 
 		return table;

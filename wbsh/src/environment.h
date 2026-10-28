@@ -69,6 +69,7 @@ namespace wbsh {
 		bool expand_aliases = true;
 		bool autocd         = false;
 		bool checkwinsize   = true;
+		bool promptvars     = true;
 	};
 
 	struct ShoptSpec {

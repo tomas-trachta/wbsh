@@ -211,6 +211,7 @@
     <ClInclude Include="src\completion.h" />
     <ClInclude Include="src\gitprompt.h" />
     <ClInclude Include="src\history.h" />
+    <ClInclude Include="src\prompt.h" />
     <ClInclude Include="src\repl.h" />
     <ClInclude Include="src\script.h" />
     <ClInclude Include="src\coreutils_internal.h" />
@@ -326,6 +327,7 @@
     <ClCompile Include="src\histexpand.cpp" />
     <ClCompile Include="src\history.cpp" />
     <ClCompile Include="src\historyfile.cpp" />
+    <ClCompile Include="src\prompt.cpp" />
     <ClCompile Include="src\repl.cpp" />
     <ClCompile Include="src\script.cpp" />
     <ClCompile Include="src\main.cpp" />

@@ -33,7 +33,6 @@
 
 #include <cctype>
 #include <cstdio>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -50,6 +49,7 @@
 #include "lineedit.h"
 #include "parser.h"
 #include "pathconv.h"
+#include "prompt.h"
 #include "setup.h"
 
 #if !defined(WBSH_VERSION_MAJOR) || !defined(WBSH_VERSION_MINOR) || !defined(WBSH_VERSION_PATCH)
@@ -69,14 +69,7 @@ namespace wbsh {
 	namespace fs = std::filesystem;
 
 	static const int kSigintStatus = 130;
-	static const char* const kResetStyle = "\x1b[0m";
-	static const char* const kBranchStyle = "\x1b[33;1m";
 	static const char* const kDefaultHistorySize = "5000";
-
-	// readline's marks around the prompt bytes that take no cells, which
-	// the line editor measures the prompt by.
-	static const char kPromptStartIgnore = '\x01';
-	static const char kPromptEndIgnore = '\x02';
 
 	struct ReplState {
 		std::string buffer;
@@ -158,146 +151,6 @@ namespace wbsh {
 		}
 	}
 #endif /* _WIN32 */
-
-	static const char* gitStateColor(const std::string& state) {
-		if (state == "merging" ||
-		    state == "rebasing" ||
-		    state == "cherry-picking" ||
-		    state == "reverting")  return "\x1b[31;1m";
-		if (state == "bisecting")  return "\x1b[35;1m";
-		if (state == "unstaged")   return "\x1b[31m";
-		if (state == "staged")     return "\x1b[32m";
-		if (state == "untracked")  return "\x1b[36m";
-		return "";
-	}
-
-	static std::string currentCwdAsUtf8() {
-		std::error_code ec;
-		const fs::path here = fs::current_path(ec);
-		return ec ? std::string(".") : pathToUtf8(here);
-	}
-
-	static std::string promptUser(const Environment& env) {
-		std::string user = env.get("USER");
-		if (user.empty()) user = env.get("USERNAME");
-		return user;
-	}
-
-	static std::string promptHost(const Environment& env, char form) {
-		std::string host = env.get("HOSTNAME");
-		if (host.empty()) host = env.get("COMPUTERNAME");
-		if (form == 'h') {
-			const std::size_t dot = host.find('.');
-			if (dot != std::string::npos) host.resize(dot);
-		}
-
-		return host;
-	}
-
-	static bool underHome(const std::string& posix, const std::string& home) {
-		return !home.empty() && posix.size() >= home.size()
-		    && posix.compare(0, home.size(), home) == 0
-		    && (posix.size() == home.size() || posix[home.size()] == '/');
-	}
-
-	static std::string promptCwdHome(const Environment& env, const PathConv& conv) {
-		const std::string posix = conv.toPosix(currentCwdAsUtf8());
-		const std::string home = env.get("HOME");
-		if (underHome(posix, home)) return "~" + posix.substr(home.size());
-
-		return posix;
-	}
-
-	static std::string promptCwdBasename(const PathConv& conv) {
-		const std::string posix = conv.toPosix(currentCwdAsUtf8());
-		const std::size_t slash = posix.rfind('/');
-		return slash == std::string::npos ? posix : posix.substr(slash + 1);
-	}
-
-	static std::string plainGitSegment(const GitInfo& info) {
-		std::string out = " (" + info.branch;
-		if (!info.state.empty()) out += " | " + info.state;
-		out += ")";
-		return out;
-	}
-
-	static std::string coloredGitSegment(const GitInfo& info) {
-		std::string out = " ";
-		out += kBranchStyle;
-		out += "(" + info.branch;
-		if (!info.state.empty()) {
-			out += " | ";
-			const char* state_color = gitStateColor(info.state);
-			if (*state_color != '\0') out += state_color;
-			out += info.state;
-			if (*state_color != '\0') out += kBranchStyle;
-		}
-
-		out += ")";
-		out += kResetStyle;
-		return out;
-	}
-
-	static std::string promptGitBranch(const Environment& env, const PathConv& conv,
-	                                   bool can_redraw) {
-		const GitInfo info = gitPromptInfo(env, conv, can_redraw);
-		if (info.branch.empty()) return {};
-		if (!stdoutIsTty()) return plainGitSegment(info);
-
-		return coloredGitSegment(info);
-	}
-
-	static std::string promptTimeHms() {
-		const std::time_t now = std::time(nullptr);
-		char text[16];
-		std::strftime(text, sizeof(text), "%H:%M:%S", std::localtime(&now));
-		return text;
-	}
-
-	static std::string expandPromptEscape(char code, const Environment& env,
-	                                      const PathConv& conv, bool can_redraw) {
-		switch (code) {
-		case 'n':  return "\n";
-		case 'r':  return "\r";
-		case 'a':  return "\a";
-		case 'e':  return "\x1b";
-		case '\\': return "\\";
-		case '$':  return "$";
-		case 's':  return "wbsh";
-		case '[':  return std::string(1, kPromptStartIgnore);
-		case ']':  return std::string(1, kPromptEndIgnore);
-		case 'u':  return promptUser(env);
-		case 'h':
-		case 'H':  return promptHost(env, code);
-		case 'w':  return promptCwdHome(env, conv);
-		case 'W':  return promptCwdBasename(conv);
-		case 'g':  return promptGitBranch(env, conv, can_redraw);
-		case 't':  return promptTimeHms();
-		default:   return std::string{ '\\', code };
-		}
-	}
-
-	// `can_redraw`: a prompt on a terminal can show `\g`'s dirty state late
-	// and be drawn again, so it does not wait long for `git status`.
-	static std::string expandPrompt(const std::string& ps, const Environment& env,
-	                                const PathConv& conv, bool can_redraw) {
-		std::string out;
-		for (std::size_t i = 0; i < ps.size(); ++i) {
-			if (ps[i] != '\\' || i + 1 >= ps.size()) {
-				out.push_back(ps[i]);
-				continue;
-			}
-
-			out += expandPromptEscape(ps[++i], env, conv, can_redraw);
-		}
-
-		return out;
-	}
-
-	std::string expandPromptEscapes(const std::string& ps, const Environment& env,
-			const PathConv& conv) {
-		return expandPrompt(ps, env, conv, false);
-	}
 
 	static bool parseErrorLooksIncomplete(const std::string& message) {
 		return message.find("expected `")        != std::string::npos
@@ -568,11 +421,40 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
-	static std::string buildPrompt(const Environment& env, const Executor& exec,
+	static std::string buildPrompt(const Environment& env, Executor& exec,
 	                               const ReplState& state) {
 		std::string ps_raw = state.waiting_for_more ? env.get("PS2") : env.get("PS1");
 		if (ps_raw.empty()) ps_raw = state.waiting_for_more ? "> " : "$ ";
-		return expandPrompt(ps_raw, env, exec.pathConv(), stdinIsTty() && stdoutIsTty());
+		return expandPromptString(exec, ps_raw, stdinIsTty() && stdoutIsTty());
+	}
+
+	// PROMPT_COMMAND runs before each primary prompt; as an array, every
+	// element runs in turn. `$?` is the same afterwards.
+	static std::vector<std::string> promptCommands(const Environment& env) {
+		std::vector<std::string> commands;
+		const Environment::IndexedArray* array = env.getIndexedArray("PROMPT_COMMAND");
+		if (array != nullptr) {
+			for (const auto& element : *array) commands.push_back(element.second);
+			return commands;
+		}
+
+		const std::string command = env.get("PROMPT_COMMAND");
+		if (!command.empty()) commands.push_back(command);
+		return commands;
+	}
+
+	static void runPromptCommand(Executor& exec, const ReplState& state) {
+		if (state.waiting_for_more) return;
+
+		const int status = exec.lastStatus();
+		for (const std::string& command : promptCommands(exec.env())) {
+			if (command.empty()) continue;
+
+			exec.executeText(command, "PROMPT_COMMAND");
+			if (exec.hasPendingExit()) return;
+		}
+
+		exec.setLastStatus(status);
 	}
 
 	// A continuation line that starts inside a quoted string keeps its
@@ -695,6 +577,7 @@ namespace wbsh {
 		}
 
 		state.waiting_for_more = false;
+		exec.advanceCommandNumber();
 		recordHistoryEntry(exec, state);
 		printLexParseErrors(lex.errors(), parser.errors());
 
@@ -786,6 +669,11 @@ namespace wbsh {
 		setGitStatusListener([] { LineEditor::requestPromptRefresh(); });
 		for (;;) {
 			pumpAsyncEvents(env, exec, state);
+			runPromptCommand(exec, state);
+
+			int prompt_exit = 0;
+			if (shellExited(exec, prompt_exit)) return exitWithStatus(exec, prompt_exit);
+
 			emitWorkingDirectory(state);
 			emitShellMark(state, "A");
 

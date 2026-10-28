@@ -144,10 +144,6 @@ namespace wbsh {
 	/// `declare -p`'s line for @p name (`declare -a a=([0]="x")`).
 	std::string declarationText(const Environment& env, const std::string& name);
 
-	/// @p ps with the prompt escapes (`\u`, `\w`, `\$`, ...) expanded.
-	std::string expandPromptEscapes(const std::string& ps, const Environment& env,
-		const PathConv& conv);
-
 	/**
 	 * @brief AST executor and runtime registry.
 	 *
@@ -421,6 +417,13 @@ namespace wbsh {
 		/// CommandSubstitutor: tell the Expander to stop expanding when
 		/// a `$(...)` body raised break / continue / return / exit.
 		bool interrupted() const override { return flowPending(); }
+		bool hasPendingExit() const { return flow_.kind == FlowSignal::Kind::Exit; }
+
+		PromptCounts promptCounts() const override {
+			return { jobs_.size(), history_.commands.size() + 1, command_number_ };
+		}
+		/// One more command read at the prompt, as `\#` counts them.
+		void advanceCommandNumber() { ++command_number_; }
 
 		// Scoped variable declaration. Used by the `local` builtin: records
 		// the prior state of `name` so it can be restored when the current
@@ -889,6 +892,7 @@ namespace wbsh {
 		bool call_set_err_trap_ = false;
 		InputEcho input_echo_;
 		FlowSignal flow_;
+		std::size_t command_number_ = 1;
 	};
 
 	void registerCoreBuiltins(Executor& exec);
