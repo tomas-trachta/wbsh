@@ -1,0 +1,25 @@
+=== 1. read then an external command
+l2
+l3
+p2
+p3
+=== 2. a redirection does not see an old read-ahead
+l1
+l1 o1 l2
+o1
+o2
+1
+l2
+l3
+=== 3. buffered builtins hand back what they did not use
+l1
+y=l2
+l2
+l3
+m=l1 z=l2
+l2
+l3
+rc=1 []
+=== 4. many reads from one file
+n=2000
+line number 2000

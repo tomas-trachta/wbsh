@@ -46,6 +46,7 @@
 #include "numparse.h"
 #include "parser.h"
 #include "regexutil.h"
+#include "stdinsync.h"
 
 namespace wbsh {
 
@@ -505,6 +506,7 @@ namespace wbsh {
 	// DeleteProcThreadAttributeList runs, so it must live in this frame
 	// (not in a helper) — per the Win32 attribute-list ownership rules.
 	static HANDLE spawnWithHandles(SpawnCommand& command, const StdioHandles& stdio) {
+		giveBackStdinReadAhead();
 		LPPROC_THREAD_ATTRIBUTE_LIST attr_list = allocAttrList();
 		if (attr_list == nullptr) return INVALID_HANDLE_VALUE;
 
@@ -1172,10 +1174,15 @@ namespace wbsh {
 		return copy;
 	}
 
+	static void beforeRepointing(int target) {
+		if (target == 0) resetStdinBuffer();
+	}
+
 	// The opened fd can already be `target` when target was closed.
 	static void moveFdTo(int fd, int target) {
 		if (fd == target) return;
 
+		beforeRepointing(target);
 		_dup2(fd, target);
 		_close(fd);
 	}
@@ -1361,6 +1368,7 @@ namespace wbsh {
 
 		if (spec == "-") {
 			saveFd(state, target);
+			beforeRepointing(target);
 			_close(target);
 			return true;
 		}
@@ -1375,6 +1383,7 @@ namespace wbsh {
 		if (from_fd == target) return true;
 
 		saveFd(state, target);
+		beforeRepointing(target);
 		if (_dup2(from_fd, target) == 0) return true;
 
 		std::fprintf(stderr, "wbsh: %d: Bad file descriptor\n", from_fd);
@@ -1450,6 +1459,7 @@ namespace wbsh {
 	}
 
 	static void restoreSavedFd(int fd, int backup) {
+		beforeRepointing(fd);
 		if (backup < 0) {
 			_close(fd);
 			return;
@@ -2152,6 +2162,7 @@ namespace wbsh {
 	                                    std::wstring& cmdline,
 	                                    std::wstring& envblock,
 	                                    int* exit_status) {
+		giveBackStdinReadAhead();
 		STARTUPINFOW info = inheritedStdioStartupInfo();
 		PROCESS_INFORMATION process{};
 		const BOOL created = ::CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, TRUE,

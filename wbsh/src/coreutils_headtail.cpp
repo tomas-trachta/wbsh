@@ -275,6 +275,16 @@ namespace wbsh {
 		}
 	}
 
+	// As GNU head does on a seekable input, leave the file positioned just
+	// after the last line printed, for whatever reads it next. From a pipe
+	// the read-ahead is gone, as with GNU head.
+	static void giveBackUnread(ChunkReader& reader) {
+		const std::size_t unread = reader.length - reader.position;
+		if (unread == 0) return;
+
+		_fseeki64(reader.stream, -static_cast<long long>(unread), SEEK_CUR);
+	}
+
 	static void headLines(std::FILE* stream, unsigned long long count) {
 		ChunkReader reader;
 		reader.stream = stream;
@@ -282,6 +292,8 @@ namespace wbsh {
 		for (unsigned long long printed = 0; printed < count && reader.readLine(line); ++printed) {
 			writeText(line);
 		}
+
+		giveBackUnread(reader);
 	}
 
 	static void headAllButLastLines(std::FILE* stream, unsigned long long count) {
