@@ -69,6 +69,7 @@ namespace wbsh {
 		case Node::Kind::FunctionDef: return "FunctionDef";
 		case Node::Kind::DBracket: return "DBracket";
 		case Node::Kind::ArithCommand: return "ArithCommand";
+		case Node::Kind::Coproc: return "Coproc";
 		}
 
 		return "?";
@@ -440,6 +441,7 @@ namespace wbsh {
 		if (checkReserved("[["))       return parseDBracket();
 		if (check(TokKind::DArithCmd)) return parseArithCommand();
 		if (checkReserved("function")) return parseFunctionKeyword();
+		if (checkReserved("coproc"))   return parseCoproc();
 		if (check(TokKind::LParen))    return parseSubshell();
 
 		if (atFunctionNameParens()) {
@@ -452,6 +454,48 @@ namespace wbsh {
 		}
 
 		return parseSimpleCommand();
+	}
+
+	static bool isShellName(const std::string& text) {
+		if (text.empty() || std::isdigit(static_cast<unsigned char>(text[0]))) return false;
+
+		for (char c : text) {
+			if (c != '_' && !std::isalnum(static_cast<unsigned char>(c))) return false;
+		}
+
+		return true;
+	}
+
+	// A NAME is taken only before a compound command; before a simple
+	// command the word is the command's own name, as in bash.
+	bool Parser::atCoprocName() const {
+		const Token& next = peek(1);
+		if (peek().kind != TokKind::Word || !isShellName(peek().text)) return false;
+		if (next.kind == TokKind::LParen || next.kind == TokKind::DArithCmd) return true;
+
+		static const char* const kCompoundStarts[] = {
+			"{", "if", "while", "until", "for", "select", "case", "[[",
+		};
+		for (const char* word : kCompoundStarts) {
+			if (isReserved(next, word)) return true;
+		}
+
+		return false;
+	}
+
+	NodePtr Parser::parseCoproc() {
+		const std::size_t start = srcOffsetHere();
+		auto node = arena_.make<CoprocCommand>();
+		node->loc = peek().loc;
+		advance();
+
+		if (atCoprocName()) node->name = advance().text;
+
+		node->command = parseCommand();
+		if (node->command == nullptr) error(peek(), "expected command after `coproc`");
+
+		stampSpan(*node, start);
+		return node;
 	}
 
 	NodePtr Parser::parseFunctionKeyword() {

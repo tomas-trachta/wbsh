@@ -109,6 +109,8 @@ namespace wbsh {
 		bool matchTimePrefix();
 		NodePtr parseCommand();
 		NodePtr parseFunctionKeyword();
+		NodePtr parseCoproc();
+		bool atCoprocName() const;
 		NodePtr parseSimpleCommand();
 		NodePtr parseBraceGroup();
 		NodePtr parseSubshell();

@@ -311,6 +311,12 @@ namespace wbsh {
 			writeLine(dump.os, depth, "ArithCommand " + command.expr);
 			return;
 		}
+		case Node::Kind::Coproc: {
+			const auto& coproc = static_cast<const CoprocCommand&>(node);
+			const std::string label = "Coproc " + coproc.name;
+			dumpExpandedBody(dump, label.c_str(), coproc.command, depth);
+			return;
+		}
 		}
 	}
 

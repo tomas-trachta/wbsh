@@ -135,7 +135,7 @@ namespace wbsh {
 
 	static bool isCommandPrefixWord(const Token& token) {
 		static const char* const kPrefixes[] = {
-			"!", "if", "then", "else", "elif", "do", "while", "until", "{", "time",
+			"!", "if", "then", "else", "elif", "do", "while", "until", "{", "time", "coproc",
 		};
 		for (const char* prefix : kPrefixes) {
 			if (isWordSpelled(token, prefix)) return true;

@@ -264,6 +264,12 @@ namespace wbsh {
 		dumpRedirs(os, depth + 1, command.redirs);
 	}
 
+	static void dumpCoproc(std::ostream& os, int depth, const CoprocCommand& coproc) {
+		indent(os, depth + 1);
+		os << "name=" << coproc.name << "\n";
+		if (coproc.command != nullptr) dumpNode(os, depth + 1, *coproc.command);
+	}
+
 	static void dumpCompoundWithRedirs(std::ostream& os, int depth, const Node* body,
 	                                   const std::vector<Redirection>& redirs) {
 		dumpListBody(os, depth + 1, body);
@@ -315,6 +321,9 @@ namespace wbsh {
 			return;
 		case Node::Kind::ArithCommand:
 			dumpArithCommand(os, depth, static_cast<const ArithCommand&>(node));
+			return;
+		case Node::Kind::Coproc:
+			dumpCoproc(os, depth, static_cast<const CoprocCommand&>(node));
 			return;
 		}
 	}
