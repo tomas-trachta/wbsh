@@ -217,11 +217,12 @@ namespace wbsh {
 		bool reverse = false;
 		bool sort_mtime = false;
 		bool sort_size = false;
-		bool classify = false;
 		bool recursive = false;
 		bool directory_itself = false;
 		bool use_color = false;
 		enum { Auto, Always, Never } color = Auto;
+		enum { NoIndicator, SlashIndicator, FileTypeIndicator, ClassifyIndicator }
+			indicator = NoIndicator;
 	};
 
 	struct LsEntry {
@@ -274,7 +275,8 @@ namespace wbsh {
 
 		std::error_code ec;
 		entry.status = fs::symlink_status(entry.full, ec);
-		entry.is_symlink = !ec && fs::is_symlink(entry.status);
+		entry.is_symlink = !ec && (fs::is_symlink(entry.status)
+			|| entry.status.type() == fs::file_type::junction);
 		const fs::file_status real = entry.is_symlink ? fs::status(entry.full, ec) : entry.status;
 		entry.is_dir = !ec && fs::is_directory(real);
 		if (!ec && fs::is_regular_file(entry.status)) {
@@ -305,10 +307,11 @@ namespace wbsh {
 		return std::string(code) + entry.name + "\x1b[0m";
 	}
 
-	static std::string classifySuffix(const LsEntry& entry) {
+	static std::string classifySuffix(const LsEntry& entry, const LsOpts& opts) {
+		if (opts.indicator == LsOpts::NoIndicator) return "";
+		if (entry.is_symlink) return opts.indicator == LsOpts::SlashIndicator ? "" : "@";
 		if (entry.is_dir) return "/";
-		if (entry.is_symlink) return "@";
-		if (entry.is_executable) return "*";
+		if (entry.is_executable && opts.indicator == LsOpts::ClassifyIndicator) return "*";
 		return "";
 	}
 
@@ -400,10 +403,11 @@ namespace wbsh {
 		if (opts.reverse) std::reverse(items.begin(), items.end());
 	}
 
-	static std::vector<std::string> lsLabels(const std::vector<LsEntry>& items) {
+	static std::vector<std::string> lsLabels(const std::vector<LsEntry>& items,
+	                                         const LsOpts& opts) {
 		std::vector<std::string> labels;
 		labels.reserve(items.size());
-		for (const auto& entry : items) labels.push_back(entry.name + classifySuffix(entry));
+		for (const auto& entry : items) labels.push_back(entry.name + classifySuffix(entry, opts));
 		return labels;
 	}
 
@@ -413,10 +417,10 @@ namespace wbsh {
 		return longest;
 	}
 
-	static void printOnePerLine(const std::vector<LsEntry>& items, bool use_color) {
+	static void printOnePerLine(const std::vector<LsEntry>& items, const LsOpts& opts) {
 		for (const auto& entry : items) {
-			std::fputs(colorize(entry, use_color).c_str(), stdout);
-			std::fputs(classifySuffix(entry).c_str(), stdout);
+			std::fputs(colorize(entry, opts.use_color).c_str(), stdout);
+			std::fputs(classifySuffix(entry, opts).c_str(), stdout);
 			std::fputc('\n', stdout);
 		}
 	}
@@ -426,7 +430,7 @@ namespace wbsh {
 	}
 
 	static void printGrid(const std::vector<LsEntry>& items, const std::vector<std::string>& labels,
-	                      bool use_color) {
+	                      const LsOpts& opts) {
 		const std::size_t pad  = longestLabel(labels) + 2;
 		const std::size_t cols = std::max<std::size_t>(1, consoleWidth() / pad);
 		const std::size_t rows = (items.size() + cols - 1) / cols;
@@ -436,8 +440,8 @@ namespace wbsh {
 				const std::size_t index = col * rows + row;
 				if (index >= items.size()) break;
 
-				const std::string shown = colorize(items[index], use_color)
-					+ classifySuffix(items[index]);
+				const std::string shown = colorize(items[index], opts.use_color)
+					+ classifySuffix(items[index], opts);
 				std::fputs(shown.c_str(), stdout);
 
 				const bool more_in_row = col + 1 < cols && (col + 1) * rows + row < items.size();
@@ -451,11 +455,11 @@ namespace wbsh {
 	static void printColumns(const std::vector<LsEntry>& items, const LsOpts& opts) {
 		if (items.empty()) return;
 		if (opts.one || !stdoutIsTty()) {
-			printOnePerLine(items, opts.use_color);
+			printOnePerLine(items, opts);
 			return;
 		}
 
-		printGrid(items, lsLabels(items), opts.use_color);
+		printGrid(items, lsLabels(items, opts), opts);
 	}
 
 	static std::string lsSizeText(const LsEntry& entry, const LsOpts& opts) {
@@ -476,67 +480,162 @@ namespace wbsh {
 		for (const auto& entry : items) {
 			const std::string size = lsSizeText(entry, opts);
 			const std::string padding(size_width - size.size(), ' ');
-			const std::string label = colorize(entry, opts.use_color) + classifySuffix(entry);
+			const std::string label = colorize(entry, opts.use_color)
+				+ classifySuffix(entry, opts);
 			std::fprintf(stdout, "%s 1 %s %s %s%s %s %s\n",
 				permString(entry).c_str(), user.c_str(), user.c_str(),
 				padding.c_str(), size.c_str(), formatMtime(entry.mtime).c_str(), label.c_str());
 		}
 	}
 
-	static bool applyLsLongOption(const std::string& arg, LsOpts& opts) {
-		if      (arg == "--color" || arg == "--color=auto")       opts.color = LsOpts::Auto;
-		else if (arg == "--color=always" || arg == "--color=yes") opts.color = LsOpts::Always;
-		else if (arg == "--color=never"  || arg == "--color=no")  opts.color = LsOpts::Never;
-		else if (arg == "--all")                                  opts.all = true;
-		else if (arg == "--human-readable")                       opts.human = true;
-		else if (arg == "--reverse")                              opts.reverse = true;
-		else if (arg == "--classify")                             opts.classify = true;
-		else if (arg == "--recursive")                            opts.recursive = true;
-		else if (arg == "--directory")                            opts.directory_itself = true;
-		else return false;
-		return true;
+	namespace ls_detail {
+
+		enum OptId {
+			kLsAll,
+			kLsLong,
+			kLsOnePerLine,
+			kLsHuman,
+			kLsReverse,
+			kLsSortTime,
+			kLsSortSize,
+			kLsClassify,
+			kLsSlash,
+			kLsFileType,
+			kLsIndicatorStyle,
+			kLsRecursive,
+			kLsDirectory,
+			kLsColor,
+		};
+
+	}  // namespace ls_detail
+
+	static const std::vector<OptDef>& lsOptionDefs() {
+		static const std::vector<OptDef> defs = {
+			{ ls_detail::kLsAll,            'a', "all",             OptArg::None },
+			{ ls_detail::kLsAll,            'A', "almost-all",      OptArg::None },
+			{ ls_detail::kLsLong,           'l', nullptr,           OptArg::None },
+			{ ls_detail::kLsOnePerLine,     '1', nullptr,           OptArg::None },
+			{ ls_detail::kLsHuman,          'h', "human-readable",  OptArg::None },
+			{ ls_detail::kLsReverse,        'r', "reverse",         OptArg::None },
+			{ ls_detail::kLsSortTime,       't', nullptr,           OptArg::None },
+			{ ls_detail::kLsSortSize,       'S', nullptr,           OptArg::None },
+			{ ls_detail::kLsClassify,       'F', "classify",        OptArg::Optional },
+			{ ls_detail::kLsSlash,          'p', nullptr,           OptArg::None },
+			{ ls_detail::kLsFileType,       0,   "file-type",       OptArg::None },
+			{ ls_detail::kLsIndicatorStyle, 0,   "indicator-style", OptArg::Required },
+			{ ls_detail::kLsRecursive,      'R', "recursive",       OptArg::None },
+			{ ls_detail::kLsDirectory,      'd', "directory",       OptArg::None },
+			{ ls_detail::kLsColor,          0,   "color",           OptArg::Optional },
+		};
+		return defs;
 	}
 
-	static bool applyLsShortFlags(const std::string& cluster, LsOpts& opts) {
-		for (std::size_t k = 1; k < cluster.size(); ++k) {
-			switch (cluster[k]) {
-			case 'a': case 'A': opts.all = true; break;
-			case 'l': opts.long_fmt = true; break;
-			case '1': opts.one = true; break;
-			case 'h': opts.human = true; break;
-			case 'r': opts.reverse = true; break;
-			case 't': opts.sort_mtime = true; break;
-			case 'S': opts.sort_size = true; break;
-			case 'F': opts.classify = true; break;
-			case 'R': opts.recursive = true; break;
-			case 'd': opts.directory_itself = true; break;
-			default:
-				std::fprintf(stderr, "wbsh: ls: unknown option -%c\n", cluster[k]);
-				return false;
-			}
+	static bool reportBadLsArgument(const std::string& value, const char* option) {
+		std::fprintf(stderr, "wbsh: ls: invalid argument '%s' for '--%s'\n",
+			value.c_str(), option);
+		return false;
+	}
+
+	static bool applyLsColor(const OptHit& hit, LsOpts& opts) {
+		const std::string& when = hit.value;
+		if (!hit.has_value || when == "auto" || when == "tty" || when == "if-tty") {
+			opts.color = LsOpts::Auto;
+		} else if (when == "always" || when == "yes" || when == "force") {
+			opts.color = LsOpts::Always;
+		} else if (when == "never" || when == "no" || when == "none") {
+			opts.color = LsOpts::Never;
+		} else {
+			return reportBadLsArgument(when, "color");
 		}
 
 		return true;
+	}
+
+	static bool applyLsClassify(const OptHit& hit, LsOpts& opts) {
+		const std::string& when = hit.value;
+		if (!hit.has_value || when == "always" || when == "yes" || when == "force") {
+			opts.indicator = LsOpts::ClassifyIndicator;
+		} else if (when == "auto" || when == "tty" || when == "if-tty") {
+			opts.indicator = stdoutIsTty() ? LsOpts::ClassifyIndicator : LsOpts::NoIndicator;
+		} else if (when == "never" || when == "no" || when == "none") {
+			opts.indicator = LsOpts::NoIndicator;
+		} else {
+			return reportBadLsArgument(when, "classify");
+		}
+
+		return true;
+	}
+
+	static bool applyLsIndicatorStyle(const std::string& style, LsOpts& opts) {
+		if (style == "none")           opts.indicator = LsOpts::NoIndicator;
+		else if (style == "slash")     opts.indicator = LsOpts::SlashIndicator;
+		else if (style == "file-type") opts.indicator = LsOpts::FileTypeIndicator;
+		else if (style == "classify")  opts.indicator = LsOpts::ClassifyIndicator;
+		else return reportBadLsArgument(style, "indicator-style");
+		return true;
+	}
+
+	static bool applyLsIndicatorOption(const OptHit& hit, LsOpts& opts) {
+		switch (hit.id) {
+			case ls_detail::kLsClassify:
+				return applyLsClassify(hit, opts);
+			case ls_detail::kLsSlash:
+				opts.indicator = LsOpts::SlashIndicator;
+				return true;
+			case ls_detail::kLsFileType:
+				opts.indicator = LsOpts::FileTypeIndicator;
+				return true;
+			case ls_detail::kLsIndicatorStyle:
+				return applyLsIndicatorStyle(hit.value, opts);
+			default:
+				return applyLsColor(hit, opts);
+		}
+	}
+
+	static bool applyLsOption(const OptHit& hit, LsOpts& opts) {
+		switch (hit.id) {
+			case ls_detail::kLsAll:
+				opts.all = true;
+				return true;
+			case ls_detail::kLsLong:
+				opts.long_fmt = true;
+				return true;
+			case ls_detail::kLsOnePerLine:
+				opts.one = true;
+				return true;
+			case ls_detail::kLsHuman:
+				opts.human = true;
+				return true;
+			case ls_detail::kLsReverse:
+				opts.reverse = true;
+				return true;
+			case ls_detail::kLsSortTime:
+				opts.sort_mtime = true;
+				return true;
+			case ls_detail::kLsSortSize:
+				opts.sort_size = true;
+				return true;
+			case ls_detail::kLsRecursive:
+				opts.recursive = true;
+				return true;
+			case ls_detail::kLsDirectory:
+				opts.directory_itself = true;
+				return true;
+			default:
+				return applyLsIndicatorOption(hit, opts);
+		}
 	}
 
 	static int parseLsArgs(const std::vector<std::string>& args,
 	                       LsOpts& opts, std::vector<std::string>& paths) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "--") {
-				takeRemainingOperands(args, i + 1, paths);
-				break;
-			}
+		OptScanResult scanned;
+		if (!scanOptions("ls", args, lsOptionDefs(), scanned)) return 2;
 
-			if (applyLsLongOption(arg, opts)) continue;
-			if (isShortFlagCluster(arg)) {
-				if (!applyLsShortFlags(arg, opts)) return 2;
-				continue;
-			}
-
-			paths.push_back(arg);
+		for (const OptHit& hit : scanned.hits) {
+			if (!applyLsOption(hit, opts)) return 2;
 		}
 
+		paths = scanned.operands;
 		if (paths.empty()) paths.push_back(".");
 		opts.use_color = opts.color == LsOpts::Always
 			|| (opts.color == LsOpts::Auto && stdoutIsTty());
