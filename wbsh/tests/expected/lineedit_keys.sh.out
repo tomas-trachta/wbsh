@@ -70,7 +70,7 @@ yank-pop can be found on "\ey".
 "\C-o": "zz"
 "\ez": "macro text"
 "\C-g": "READLINE_LINE=\"[$READLINE_LINE]\"; READLINE_POINT=2"
-42
+43
 set bell-style audible
 === bind -r and bind -u remove bindings
 [abcX][]

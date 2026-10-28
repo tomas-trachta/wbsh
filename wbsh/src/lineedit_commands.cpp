@@ -188,6 +188,7 @@ namespace wbsh {
 			{ "backward-word",            &LineEditor::backwardWord },
 			{ "beginning-of-history",     &LineEditor::beginningOfHistory },
 			{ "beginning-of-line",        &LineEditor::beginningOfLine },
+			{ "bracketed-paste-begin",    &LineEditor::bracketedPasteBegin },
 			{ "capitalize-word",          &LineEditor::capitalizeWord },
 			{ "clear-screen",             &LineEditor::clearScreen },
 			{ "complete",                 &LineEditor::complete },
@@ -277,7 +278,7 @@ namespace wbsh {
 		recordUndo(before, name);
 		last_command_ = name;
 		last_was_tab_ = name == "complete";
-		if (!done_) redraw();
+		if (!done_) redrawWhenIdle();
 	}
 
 	void LineEditor::typeMacro(const std::string& text) {
@@ -736,6 +737,15 @@ namespace wbsh {
 
 	void LineEditor::pasteFromClipboard() {
 		insertClipboardText();
+	}
+
+	void LineEditor::bracketedPasteBegin() {
+		insertChars(readBracketedPaste());
+	}
+
+	void LineEditor::typeText(const std::string& text) {
+		current_keys_ = text;
+		runCommand("self-insert");
 	}
 
 	void LineEditor::rereadInitFile() {

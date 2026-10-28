@@ -204,6 +204,22 @@ namespace wbsh {
 		while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
 	}
 
+	// Pasted lines stay lines of one command, which runs when Enter is
+	// pressed; a line break at the very end would run it at once.
+	static std::string pastedLines(const std::string& text) {
+		std::string lines;
+		lines.reserve(text.size());
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			const bool crlf = text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n';
+			if (crlf) continue;
+
+			lines.push_back(text[i] == '\r' ? '\n' : text[i]);
+		}
+
+		stripLineEnding(lines);
+		return lines;
+	}
+
 	static fs::path findGitEntry(fs::path& probe) {
 		std::error_code ec;
 		for (;;) {
@@ -493,7 +509,19 @@ namespace wbsh {
 		appendCursorRight(out, cursor.col);
 
 		last_cursor_row_ = cursor.row;
+		redraw_due_ = false;
 		emit(out);
+	}
+
+	// Keys already waiting -- a paste, or keys typed while the last ones
+	// were handled -- are all taken in before the line is drawn again.
+	void LineEditor::redrawWhenIdle() {
+		if (keysWaiting()) {
+			redraw_due_ = true;
+			return;
+		}
+
+		redraw();
 	}
 
 	// The whole prompt, the lines above its last one included, from where
@@ -564,27 +592,44 @@ namespace wbsh {
 		return true;
 	}
 
-	// Strip CR/LF: a multi-line paste would corrupt our single-line
-	// redraw. The user can press Enter themselves between lines.
-	static std::wstring withoutLineBreaks(const std::wstring& text) {
-		std::wstring filtered;
-		filtered.reserve(text.size());
-		for (const WCHAR unit : text) {
-			if (unit == L'\r' || unit == L'\n') continue;
-			filtered.push_back(unit);
-		}
-
-		return filtered;
-	}
-
 	void LineEditor::insertClipboardText() {
 		std::wstring text;
 		if (!readClipboardText(text)) return;
 
-		const std::wstring filtered = withoutLineBreaks(text);
-		if (filtered.empty()) return;
+		insertChars(pastedLines(utf16ToUtf8(text.data(), static_cast<int>(text.size()))));
+	}
 
-		insertChars(utf16ToUtf8(filtered.data(), static_cast<int>(filtered.size())));
+	// Inside \e[200~ ... \e[201~ every key is text: Enter is a line
+	// break, and nothing runs until the paste has ended.
+	std::string LineEditor::pastedKeyText(const KEY_EVENT_RECORD& key) {
+		const WCHAR ch = key.uChar.UnicodeChar;
+		if (key.wVirtualKeyCode == VK_RETURN || ch == L'\r' || ch == L'\n') return "\n";
+		if (key.wVirtualKeyCode == VK_ESCAPE || ch == 0x1b) return "\x1b";
+		if (ch >= 0x80) return wideCharacter(ch);
+		if (ch == L'\t' || ch >= 0x20) return std::string(1, static_cast<char>(ch));
+
+		return {};
+	}
+
+	static bool endsWith(const std::string& text, const std::string& tail) {
+		return text.size() >= tail.size()
+		    && text.compare(text.size() - tail.size(), tail.size(), tail) == 0;
+	}
+
+	std::string LineEditor::readBracketedPaste() {
+		static const std::string kPasteEnd = "\x1b[201~";
+
+		std::string text;
+		KEY_EVENT_RECORD key{};
+		while (nextKeyDown(key)) {
+			text += pastedKeyText(key);
+			if (!endsWith(text, kPasteEnd)) continue;
+
+			text.resize(text.size() - kPasteEnd.size());
+			break;
+		}
+
+		return pastedLines(text);
 	}
 
 	std::string LineEditor::replayCharacter(wchar_t ch) {
@@ -898,18 +943,69 @@ namespace wbsh {
 		return saved;
 	}
 
+	static bool bracketedPasteWanted() {
+		DWORD mode = 0;
+		const bool vt_output = ::GetConsoleMode(::GetStdHandle(STD_OUTPUT_HANDLE), &mode)
+			&& (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0;
+		return vt_output && shellKeymap().isOn("enable-bracketed-paste");
+	}
+
+	// A terminal in bracketed paste mode wraps what it pastes in
+	// \e[200~ ... \e[201~, which runs bracketed-paste-begin.
 	void LineEditor::enterRawMode() {
 		if (headless_) return;
 
 		cooked_input_mode_ = enterRawInputMode(::GetStdHandle(STD_INPUT_HANDLE));
 		refresh_detail::g_reading_keys.store(true);
+		if (bracketedPasteWanted()) emit("\x1b[?2004h");
 	}
 
 	void LineEditor::leaveRawMode() {
 		if (headless_) return;
 
+		if (bracketedPasteWanted()) emit("\x1b[?2004l");
 		refresh_detail::g_reading_keys.store(false);
 		::SetConsoleMode(::GetStdHandle(STD_INPUT_HANDLE), cooked_input_mode_);
+	}
+
+	DWORD LineEditor::pendingInputRecords() const {
+		if (headless_) return 0;
+
+		DWORD count = 0;
+		if (!::GetNumberOfConsoleInputEvents(::GetStdHandle(STD_INPUT_HANDLE), &count)) return 0;
+
+		return count;
+	}
+
+	bool LineEditor::keysWaiting() const {
+		return pendingInputRecords() > 0;
+	}
+
+	static bool keyDownQueued(HANDLE input) {
+		static const DWORD kPeekLimit = 64;
+
+		INPUT_RECORD records[kPeekLimit];
+		DWORD count = 0;
+		if (!::PeekConsoleInputW(input, records, kPeekLimit, &count)) return false;
+
+		for (DWORD i = 0; i < count; ++i) {
+			const INPUT_RECORD& record = records[i];
+			if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown) return true;
+		}
+
+		return false;
+	}
+
+	// A console that knows no bracketed paste types a paste as keys, all
+	// queued at once. An Enter with more keys already behind it is then a
+	// line break in the paste, not the user running the line -- unless
+	// the keys were typed ahead while the last command ran.
+	bool LineEditor::isPastedLineBreak(const KEY_EVENT_RECORD& key) const {
+		if (headless_ || typeahead_records_ > 0) return false;
+
+		const bool plain_enter = key.wVirtualKeyCode == VK_RETURN
+			&& !keys_detail::ctrlHeld(key) && !keys_detail::altHeld(key);
+		return plain_enter && keyDownQueued(::GetStdHandle(STD_INPUT_HANDLE));
 	}
 
 	void LineEditor::requestPromptRefresh() {
@@ -965,6 +1061,10 @@ namespace wbsh {
 		}
 
 		if (keys_detail::isEmptyAltGr(key)) return;
+		if (isPastedLineBreak(key)) {
+			typeText("\n");
+			return;
+		}
 
 		const std::string special = keys_detail::specialKey(key);
 		if (!special.empty()) {
@@ -989,9 +1089,11 @@ namespace wbsh {
 	bool LineEditor::nextKeyDown(KEY_EVENT_RECORD& key) {
 		for (;;) {
 			if (headless_) return takeReplayKey(key);
+			if (redraw_due_ && !keysWaiting()) redraw();
 
 			INPUT_RECORD record;
 			if (!readInputRecord(::GetStdHandle(STD_INPUT_HANDLE), record)) return false;
+			if (typeahead_records_ > 0) --typeahead_records_;
 			if (refresh_detail::asksForRefresh(record)) refreshPrompt();
 			if (record.EventType != KEY_EVENT) continue;
 
@@ -1032,6 +1134,7 @@ namespace wbsh {
 		}
 
 		enterRawMode();
+		typeahead_records_ = pendingInputRecords();
 		showPrompt();
 		editUntilDone();
 		leaveRawMode();
@@ -1226,6 +1329,8 @@ namespace wbsh {
 
 	void LineEditor::emit(const std::string&) {}
 	void LineEditor::redraw() {}
+	void LineEditor::redrawWhenIdle() {}
+	std::string LineEditor::readBracketedPaste() { return {}; }
 	void LineEditor::moveToLineEnd() {}
 	void LineEditor::showPrompt() {}
 	void LineEditor::appendLineText(std::string&) const {}

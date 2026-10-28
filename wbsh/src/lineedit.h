@@ -130,6 +130,10 @@ namespace wbsh {
 		std::string wideCharacter(wchar_t ch);
 		bool nextKeyDown(::KEY_EVENT_RECORD& key);
 		bool takeReplayKey(::KEY_EVENT_RECORD& key);
+		::DWORD pendingInputRecords() const;
+		bool keysWaiting() const;
+		bool isPastedLineBreak(const ::KEY_EVENT_RECORD& key) const;
+		std::string pastedKeyText(const ::KEY_EVENT_RECORD& key);
 		std::string replayCharacter(wchar_t ch);
 
 		// One keystroke inside the reverse-search modal. Returns true to
@@ -163,6 +167,9 @@ namespace wbsh {
 		void ding();
 
 		void redraw();
+		void redrawWhenIdle();
+		void typeText(const std::string& text);
+		std::string readBracketedPaste();
 		void emit(const std::string& text);
 		std::size_t screenColumns() const;
 		std::string describeCursorCell() const;
@@ -189,6 +196,7 @@ namespace wbsh {
 		void backwardWord();
 		void beginningOfHistory();
 		void beginningOfLine();
+		void bracketedPasteBegin();
 		void capitalizeWord();
 		void clearScreen();
 		void complete();
@@ -239,8 +247,8 @@ namespace wbsh {
 		void runReverseSearch();
 		void revsearchRefresh(const std::string& query, std::size_t match_index);
 
-		// Ctrl-V: CF_UNICODETEXT with newlines stripped, inserted at the
-		// cursor. Windows-only; a no-op stub elsewhere.
+		// Ctrl-V: CF_UNICODETEXT inserted at the cursor, its lines as
+		// lines of the one command. Windows-only; a no-op stub elsewhere.
 		void insertClipboardText();
 
 		struct Tok {
@@ -322,6 +330,7 @@ namespace wbsh {
 #ifdef _WIN32
 		std::deque<::KEY_EVENT_RECORD> replay_keys_;
 		::DWORD cooked_input_mode_ = 0;
+		::DWORD typeahead_records_ = 0;   // input queued before the prompt was shown
 #endif
 
 		std::size_t history_pos_ = 0;        // 0 = current edit, 1 = last entry, ...
@@ -341,6 +350,7 @@ namespace wbsh {
 		// back up this many rows before re-emitting, otherwise it leaves
 		// stale wrapped lines above and re-prints the prompt on each row.
 		std::size_t last_cursor_row_ = 0;
+		bool redraw_due_ = false;
 
 		// Keys typed so far toward a multi-key binding, the keys of the
 		// binding running now, and the commands that ran before and now:

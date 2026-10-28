@@ -1,0 +1,19 @@
+=== a bracketed paste is inserted whole and drawn once
+[echo x echo a
+echo b][]
+\r\e[Je\r\e[1C\r\e[Jec\r\e[2C\r\e[Jech\r\e[3C\r\e[Jecho\r\e[4C\r\e[Jecho \r\e[5C\r\e[Jecho x\r\e[6C\r\e[Jecho x \r\e[7C\r\e[Jecho x echo a\r\n
+echo b\r\e[6C
+=== Enter inside the paste is a line break; Enter after it runs the lines
+accept [for i in 1 2
+do echo $i; done]
+=== a line break at the end of the paste does not run it
+[ls -l][]
+=== keys inside the paste are text, not commands
+[ab	cd][]
+=== a paste is one change for undo
+[a ][]
+=== a paste cut short by the end of input keeps what came
+[partial][]
+=== bind lists the paste command and its variable
+bracketed-paste-begin can be invoked via "\e[200~".
+set enable-bracketed-paste on
