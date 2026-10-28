@@ -26,8 +26,8 @@ namespace wbsh {
 		static const char* const kCommandNames[] = {
 			"abort", "accept-line", "backward-char", "backward-delete-char",
 			"backward-kill-word", "backward-word", "beginning-of-history",
-			"beginning-of-line", "capitalize-word", "clear-screen", "complete",
-			"delete-char", "delete-horizontal-space", "downcase-word",
+			"beginning-of-line", "bracketed-paste-begin", "capitalize-word", "clear-screen",
+			"complete", "delete-char", "delete-horizontal-space", "downcase-word",
 			"edit-and-execute-command", "end-of-history", "end-of-line",
 			"forward-char", "forward-search-history", "forward-word", "insert-comment",
 			"kill-line", "kill-whole-line", "kill-word", "next-history",
@@ -74,6 +74,7 @@ namespace wbsh {
 			{ "\x1b[3~", "delete-char" },        { "\x1b[3;5~", "kill-word" },
 			{ "\x1b[1;5C", "forward-word" },     { "\x1b[1;5D", "backward-word" },
 			{ "\x1b[1;3C", "forward-word" },     { "\x1b[1;3D", "backward-word" },
+			{ "\x1b[200~", "bracketed-paste-begin" },
 		};
 
 		struct DefaultVariable {
@@ -85,6 +86,7 @@ namespace wbsh {
 			{ "bell-style", "audible" },
 			{ "completion-ignore-case", "on" },
 			{ "editing-mode", "emacs" },
+			{ "enable-bracketed-paste", "on" },
 			{ "mark-directories", "on" },
 			{ "show-all-if-ambiguous", "off" },
 		};
