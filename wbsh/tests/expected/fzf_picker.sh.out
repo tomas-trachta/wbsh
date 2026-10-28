@@ -1,0 +1,90 @@
+=== the selection scrolls past the rows on screen
+accept [3]
+accept [21]
+accept [11]
+accept [5]
+accept [100]
+accept [1]
+=== the list window follows the selection
+  10/10\r\n
+  2\e[0m\r\n
+  3\e[0m\r\n
+\e[7m> 4\e[0m\r\n
+\r\n
+
+=== rows wider than the screen are cut, so nothing wraps
+accept [00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003]
+\r\e[J> \r\n
+  3/3\r\n
+\e[7m> 000000000000000000000000000\e[0m\r\n
+  000000000000000000000000000\e[0m\r\n
+  000000000000000000000000000\e[0m\r\n
+\e[5A\r\e[J> 3\r\n
+  1/3\r\n
+\e[7m> 000000000000000000000000000\e[0m\r\n
+\e[3A\r\e[J> 3\r\n
+  1/3\r\n
+\e[7m> 000000000000000000000000000\e[0m\r\n
+\r\n
+
+accept [žluťoučký kůň úpěl ďábelské ódy]
+\r\e[J> \r\n
+  1/1\r\n
+\e[7m> žluťoučký kůň úpě\e[0m\r\n
+\e[3A\r\e[J> k\r\n
+  1/1\r\n
+\e[7m> žluťoučký \e[1;33mk\e[22;39můň úpě\e[0m\r\n
+\e[3A\r\e[J> k\r\n
+  1/1\r\n
+\e[7m> žluťoučký \e[1;33mk\e[22;39můň úpě\e[0m\r\n
+\r\n
+
+accept [日本語のファイル名.txt]
+\r\e[J> \r\n
+  1/1\r\n
+\e[7m> 日本語の\e[0m\r\n
+\e[3A\r\e[J> \r\n
+  1/1\r\n
+\e[7m> 日本語の\e[0m\r\n
+\r\n
+
+=== a long query shows its end
+\e[7m> \e[1;33ma\e[22;39m\e[1;33mb\e[22;39m\e[1;33mc\e[22;39m\e[1;33md\e[22;39m\e[1;33me\e[22;39m\e[1;33mf\e[22;39m\e[1;33mg\e[22;39m\e[1;33mh\e[22;39m\e[1;33mi\e[22;39m\e[0m\r\n
+\e[3A\r\e[J> efghijklm\r\n
+  1/1\r\n
+\e[7m> \e[1;33ma\e[22;39m\e[1;33mb\e[22;39m\e[1;33mc\e[22;39m\e[1;33md\e[22;39m\e[1;33me\e[22;39m\e[1;33mf\e[22;39m\e[1;33mg\e[22;39m\e[1;33mh\e[22;39m\e[1;33mi\e[22;39m\e[0m\r\n
+\r\n
+
+=== control characters take a cell instead of moving the cursor
+accept [a	b]
+\r\e[J> \r\n
+  1/1\r\n
+\e[7m> a b\e[0m\r\n
+\e[3A\r\e[J> \r\n
+  1/1\r\n
+\e[7m> a b\e[0m\r\n
+\r\n
+
+=== typing narrows, Backspace and Ctrl-U widen again
+accept [apple]
+accept [apricot]
+accept [cherry]
+abort
+abort
+=== non-ASCII queries
+accept [kůň]
+accept [😀 smile]
+=== the directory walk skips .git and node_modules
+\e[7A\r\e[J> \r\n
+  5/5\r\n
+\e[7m> README\e[0m\r\n
+  src\e[0m\r\n
+  src/main.c\e[0m\r\n
+  web\e[0m\r\n
+  web/app.js\e[0m\r\n
+\r\n
+
+accept [src/main.c]
+abort
+=== empty input still ends at once
+rc=1
