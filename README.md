@@ -106,12 +106,28 @@ readline:
 | `↑ / ↓`, `Ctrl-P / Ctrl-N`           | walk history |
 | `Ctrl-R` / `Ctrl-S`                  | search history backward / forward |
 | `Esc` / `Ctrl-G`                     | cancel the search |
+| `Alt-B / Alt-F`, `Ctrl-← / Ctrl-→`   | move by one word |
 | `Ctrl-U / Ctrl-K`                    | kill to start / end of line |
-| `Ctrl-W`                             | kill the previous word |
+| `Ctrl-W`                             | kill the previous whitespace-separated word |
+| `Alt-Backspace / Alt-D`, `Ctrl-Del`  | kill the previous / next word |
+| `Ctrl-Y`, `Alt-Y`                    | yank the last kill, then cycle older kills |
+| `Ctrl-T` / `Alt-T`                   | swap characters / words |
+| `Alt-U / Alt-L / Alt-C`              | upcase / downcase / capitalize the word |
+| `Ctrl-_`, `Ctrl-X Ctrl-U` / `Alt-R`  | undo / undo every change to the line |
+| `Alt-.` / `Alt-_`                    | insert the last word of the previous command (repeat: older ones) |
+| `Ctrl-X Ctrl-E`                      | edit the line in `$VISUAL` / `$EDITOR` (default notepad), then run it |
 | `Ctrl-V`                             | paste from the clipboard |
 | `Ctrl-L`                             | clear the screen |
 | `Ctrl-C`                             | abandon the line |
 | `Ctrl-D` (empty line)                | exit |
+
+`Esc` followed by a key works as Alt with it; AltGr characters type as usual.
+Bindings can be changed with `bind` (`bind -p` lists them, `bind -l` the
+commands, `bind -x` runs a shell command with `READLINE_LINE` /
+`READLINE_POINT`) and in `~/.inputrc` (or `$INPUTRC`), read before `.wbshrc`,
+with readline's syntax: `"\C-t": transpose-chars`, `Meta-q: upcase-word`,
+`"\ez": "macro text"`, `set bell-style none`, `$if mode=emacs` ... `$endif`,
+`$include`.
 
 ---
 

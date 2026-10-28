@@ -187,6 +187,7 @@
     <ClInclude Include="src\interrupt.h" />
     <ClInclude Include="src\pathconv.h" />
     <ClInclude Include="src\consolekeys.h" />
+    <ClInclude Include="src\keymap.h" />
     <ClInclude Include="src\lineedit.h" />
     <ClInclude Include="src\textcells.h" />
     <ClInclude Include="src\utf8.h" />
@@ -265,7 +266,9 @@
     <ClCompile Include="src\interrupt.cpp" />
     <ClCompile Include="src\pathconv.cpp" />
     <ClCompile Include="src\consolekeys.cpp" />
+    <ClCompile Include="src\keymap.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
+    <ClCompile Include="src\lineedit_commands.cpp" />
     <ClCompile Include="src\textcells.cpp" />
     <ClCompile Include="src\fnmatch.cpp" />
     <ClCompile Include="src\utf8.cpp" />

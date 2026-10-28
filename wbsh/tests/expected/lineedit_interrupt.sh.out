@@ -7,7 +7,7 @@ interrupt
 [x][]
 [x][]
 accept [echo hello]
-[echo hel][lo]
+[echo hell][o]
 === the other line endings are unchanged
 accept [echo hi]
 accept []

@@ -26,6 +26,7 @@
     <ClInclude Include="src\fnmatch.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\pathconv.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\consolekeys.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\keymap.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\lineedit.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\textcells.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\utf8.h"><Filter>Header Files</Filter></ClInclude>
@@ -103,7 +104,9 @@
     <ClCompile Include="src\coreutils_ps.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\pathconv.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\consolekeys.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\keymap.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lineedit_commands.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\textcells.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\fnmatch.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\utf8.cpp"><Filter>Source Files</Filter></ClCompile>

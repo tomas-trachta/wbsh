@@ -39,7 +39,6 @@ namespace wbsh {
 	static const char* const kDimStyle = "\x1b[90m";
 	static const char* const kResetStyle = "\x1b[0m";
 	static const char* const kEraseToEnd = "\r\x1b[J";
-	static const char* const kBell = "\a";
 
 #ifdef _WIN32
 	static bool stdinIsTty() {
@@ -84,13 +83,6 @@ namespace wbsh {
 		    || letter == '|' || letter == '&' || letter == ';'
 		    || letter == '<' || letter == '>'
 		    || letter == '(' || letter == ')';
-	}
-
-	// readline's word characters: letters and digits, with every byte of
-	// a non-ASCII character counted as a letter.
-	static bool isWordByte(char letter) {
-		const auto byte = static_cast<unsigned char>(letter);
-		return byte >= 0x80 || std::isalnum(byte) != 0;
 	}
 
 	static bool hasPrefix(const std::string& text, const std::string& prefix) {
@@ -243,6 +235,13 @@ namespace wbsh {
 		suggestion_cache_idx_ = kNoHistoryIndex;
 		revsearch_active_ = false;
 		interrupted_ = false;
+		done_ = false;
+		eof_ = false;
+		accepted_.clear();
+		pending_keys_.clear();
+		last_command_.clear();
+		undo_.clear();
+		insert_run_ = 0;
 		prompt_raw_ = prompt;
 
 #ifdef _WIN32
@@ -262,11 +261,29 @@ namespace wbsh {
 		return out.empty() ? LineStatus::kEof : LineStatus::kLine;
 	}
 
-	LineStatus LineEditor::lineStatus(const std::string& out, bool eof) const {
+	LineStatus LineEditor::lineStatus() const {
 		if (interrupted_) return LineStatus::kInterrupted;
-		if (eof && out.empty()) return LineStatus::kEof;
+		if (eof_ && accepted_.empty()) return LineStatus::kEof;
 
 		return LineStatus::kLine;
+	}
+
+	std::string LineEditor::describeReplay(bool finished) const {
+		if (!finished) {
+			return "[" + buffer_.substr(0, cursor_) + "][" + buffer_.substr(cursor_) + "]";
+		}
+
+		switch (lineStatus()) {
+		case LineStatus::kInterrupted: return "interrupt";
+		case LineStatus::kEof:         return "eof";
+		case LineStatus::kLine:        return "accept [" + accepted_ + "]";
+		default:                       return {};
+		}
+	}
+
+	std::vector<std::string> LineEditor::currentMatches(Tok& tok) {
+		const std::string prefix = buffer_.substr(tok.start, tok.end - tok.start);
+		return completionsFor(prefix, tok.first);
 	}
 
 #ifdef _WIN32
@@ -436,161 +453,6 @@ namespace wbsh {
 		insertChars(suggestion_);
 		suggestion_.clear();
 		return true;
-	}
-
-	void LineEditor::handleRightArrow() {
-		if (cursor_ < buffer_.size()) {
-			cursor_ = nextClusterEnd(buffer_, cursor_);
-			redraw();
-			return;
-		}
-
-		if (acceptInlineSuggestion()) redraw();
-	}
-
-	void LineEditor::moveCursorBack() {
-		if (cursor_ == 0) return;
-
-		cursor_ = previousClusterStart(buffer_, cursor_);
-		redraw();
-	}
-
-	void LineEditor::moveCursorForward() {
-		if (cursor_ >= buffer_.size()) return;
-
-		cursor_ = nextClusterEnd(buffer_, cursor_);
-		redraw();
-	}
-
-	void LineEditor::moveCursorHome() {
-		cursor_ = 0;
-		redraw();
-	}
-
-	void LineEditor::moveCursorEnd() {
-		cursor_ = buffer_.size();
-		redraw();
-	}
-
-	void LineEditor::insertChars(const std::string& text) {
-		buffer_.insert(cursor_, text);
-		cursor_ += text.size();
-	}
-
-	void LineEditor::handleBackspace() {
-		if (cursor_ == 0) return;
-
-		const std::size_t start = previousClusterStart(buffer_, cursor_);
-		buffer_.erase(start, cursor_ - start);
-		cursor_ = start;
-	}
-
-	void LineEditor::handleDelete() {
-		if (cursor_ >= buffer_.size()) return;
-
-		buffer_.erase(cursor_, nextClusterEnd(buffer_, cursor_) - cursor_);
-	}
-
-	void LineEditor::handleKillToEnd() {
-		buffer_.erase(cursor_);
-	}
-
-	void LineEditor::handleKillToStart() {
-		buffer_.erase(0, cursor_);
-		cursor_ = 0;
-	}
-
-	void LineEditor::handleKillWordBack() {
-		std::size_t start = cursor_;
-		while (start > 0 && isSpaceByte(buffer_[start - 1])) --start;
-		while (start > 0 && !isSpaceByte(buffer_[start - 1])) --start;
-
-		buffer_.erase(start, cursor_ - start);
-		cursor_ = start;
-	}
-
-	std::size_t LineEditor::wordStartBefore(std::size_t pos) const {
-		while (pos > 0 && !isWordByte(buffer_[pos - 1])) --pos;
-		while (pos > 0 && isWordByte(buffer_[pos - 1])) --pos;
-		return pos;
-	}
-
-	std::size_t LineEditor::wordEndAfter(std::size_t pos) const {
-		while (pos < buffer_.size() && !isWordByte(buffer_[pos])) ++pos;
-		while (pos < buffer_.size() && isWordByte(buffer_[pos])) ++pos;
-		return pos;
-	}
-
-	void LineEditor::handleKillAlnumWordBack() {
-		const std::size_t start = wordStartBefore(cursor_);
-		buffer_.erase(start, cursor_ - start);
-		cursor_ = start;
-	}
-
-	void LineEditor::handleKillAlnumWordForward() {
-		buffer_.erase(cursor_, wordEndAfter(cursor_) - cursor_);
-	}
-
-	void LineEditor::handleClearScreen() {
-		emit("\x1b[H\x1b[2J\x1b[3J");
-		requestScrollbackClear();
-		last_cursor_row_ = 0;
-		redraw();
-	}
-
-	// The whole line stays on screen with ^C after it, as readline leaves
-	// it; the ghost-text prediction behind the cursor is wiped first.
-	void LineEditor::handleInterrupt(bool& done) {
-		moveToLineEnd();
-		emit("^C\r\n");
-
-		interrupted_ = true;
-		done = true;
-	}
-
-	void LineEditor::handleEofOrDelete(bool& done, bool& eof) {
-		if (buffer_.empty()) {
-			eof = true;
-			done = true;
-			return;
-		}
-
-		handleDelete();
-		redraw();
-	}
-
-	void LineEditor::handleHistoryUp() {
-		const auto& history = exec_.history();
-		if (history.empty()) return;
-
-		if (history_pos_ == 0) saved_partial_ = buffer_;
-		if (history_pos_ < history.size()) ++history_pos_;
-
-		buffer_ = history[history.size() - history_pos_];
-		cursor_ = buffer_.size();
-	}
-
-	void LineEditor::handleHistoryDown() {
-		if (history_pos_ == 0) return;
-
-		const auto& history = exec_.history();
-		--history_pos_;
-		if (history_pos_ == 0) {
-			buffer_ = saved_partial_;
-		} else {
-			buffer_ = history[history.size() - history_pos_];
-		}
-
-		cursor_ = buffer_.size();
-	}
-
-	// The output starts below the whole line, not below the row the
-	// cursor was on, and without the ghost-text prediction.
-	void LineEditor::handleEnter(std::string& out, bool& done) {
-		moveToLineEnd();
-		emit("\r\n");
-		out = buffer_;
-		done = true;
 	}
 
 	// Where the command being completed starts and which words it has so
@@ -1528,7 +1390,7 @@ namespace wbsh {
 	void LineEditor::applyCompletion(const Tok& tok,
 	                                 const std::vector<std::string>& matches) {
 		if (matches.empty()) {
-			emit(kBell);
+			ding();
 			last_was_tab_ = false;
 			return;
 		}
@@ -1556,13 +1418,6 @@ namespace wbsh {
 		printMatches(matches);
 		last_was_tab_ = true;
 		last_tab_word_ = current;
-	}
-
-	void LineEditor::handleTab() {
-		const Tok tok = currentToken();
-		const std::string prefix = buffer_.substr(tok.start, tok.end - tok.start);
-		const std::vector<std::string> matches = completionsFor(prefix, tok.first);
-		applyCompletion(tok, matches);
 	}
 
 	static bool readClipboardText(std::wstring& text) {
@@ -1599,18 +1454,14 @@ namespace wbsh {
 		return filtered;
 	}
 
-	void LineEditor::pasteFromClipboard() {
+	void LineEditor::insertClipboardText() {
 		std::wstring text;
 		if (!readClipboardText(text)) return;
 
 		const std::wstring filtered = withoutLineBreaks(text);
 		if (filtered.empty()) return;
 
-		const std::string utf8 = utf16ToUtf8(filtered.data(), static_cast<int>(filtered.size()));
-		if (utf8.empty()) return;
-
-		insertChars(utf8);
-		redraw();
+		insertChars(utf16ToUtf8(filtered.data(), static_cast<int>(filtered.size())));
 	}
 
 	std::string LineEditor::replayCharacter(wchar_t ch) {
@@ -1626,14 +1477,10 @@ namespace wbsh {
 		return utf16ToUtf8(units, 2);
 	}
 
-	void LineEditor::insertWideCharFromConsole(wchar_t ch) {
-		const std::string utf8 = headless_
-			? replayCharacter(ch)
-			: readConsoleCharacter(::GetStdHandle(STD_INPUT_HANDLE), ch);
-		if (utf8.empty()) return;
+	std::string LineEditor::wideCharacter(wchar_t ch) {
+		if (headless_) return replayCharacter(ch);
 
-		insertChars(utf8);
-		redraw();
+		return readConsoleCharacter(::GetStdHandle(STD_INPUT_HANDLE), ch);
 	}
 
 	static std::size_t lastHistoryIndex(const std::vector<std::string>& history) {
@@ -1664,7 +1511,7 @@ namespace wbsh {
 	                                    std::size_t& match_index) {
 		const auto& history = exec_.history();
 		if (match_index == 0) {
-			emit(kBell);
+			ding();
 			return;
 		}
 
@@ -1672,7 +1519,7 @@ namespace wbsh {
 			? match_index - 1 : lastHistoryIndex(history);
 		const std::size_t next = findReverseSearchMatch(history, query, start, false);
 		if (next == history.size()) {
-			emit(kBell);
+			ding();
 			return;
 		}
 
@@ -1684,13 +1531,13 @@ namespace wbsh {
 	                                    std::size_t& match_index) {
 		const auto& history = exec_.history();
 		if (match_index >= history.size() || match_index + 1 >= history.size()) {
-			emit(kBell);
+			ding();
 			return;
 		}
 
 		const std::size_t next = findReverseSearchMatch(history, query, match_index + 1, true);
 		if (next == history.size()) {
-			emit(kBell);
+			ding();
 			return;
 		}
 
@@ -1700,7 +1547,7 @@ namespace wbsh {
 
 	void LineEditor::revsearchEraseQueryChar(std::string& query, std::size_t& match_index) {
 		if (query.empty()) {
-			emit(kBell);
+			ding();
 			return;
 		}
 
@@ -1721,28 +1568,104 @@ namespace wbsh {
 		revsearchRefresh(query, match_index);
 	}
 
-	// AltGr arrives as LEFT_CTRL + RIGHT_ALT with a layout-resolved char;
-	// without this check its LEFT_CTRL bit would read as Ctrl+<key>.
-	static bool isAltGrActive(const KEY_EVENT_RECORD& key) {
-		const DWORD altgr_bits = LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED;
-		return (key.dwControlKeyState & altgr_bits) == altgr_bits
-		    && key.uChar.UnicodeChar != 0;
-	}
+	namespace keys_detail {
 
-	static bool isCtrlPressed(const KEY_EVENT_RECORD& key) {
-		if (isAltGrActive(key)) return false;
+		static const DWORD kCtrlBits = LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED;
+		static const DWORD kAltBits = LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED;
+		static const char* const kMetaPrefix = "\x1b";
 
-		return (key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
-	}
+		static bool ctrlHeld(const KEY_EVENT_RECORD& key) {
+			return (key.dwControlKeyState & kCtrlBits) != 0;
+		}
 
-	// Alt as a modifier, not as the right half of AltGr (which arrives
-	// with LEFT_CTRL set as well).
-	static bool isAltPressed(const KEY_EVENT_RECORD& key) {
-		const DWORD state = key.dwControlKeyState;
-		if ((state & LEFT_ALT_PRESSED) != 0) return true;
+		static bool altHeld(const KEY_EVENT_RECORD& key) {
+			return (key.dwControlKeyState & kAltBits) != 0;
+		}
 
-		return (state & RIGHT_ALT_PRESSED) != 0 && (state & LEFT_CTRL_PRESSED) == 0;
-	}
+		static bool shiftHeld(const KEY_EVENT_RECORD& key) {
+			return (key.dwControlKeyState & SHIFT_PRESSED) != 0;
+		}
+
+		// Windows reports AltGr as Ctrl+Alt, so Ctrl+Alt with a character
+		// is that character from the layout's third level (a Czech @ or {),
+		// not a chord.
+		static bool typesLayoutCharacter(const KEY_EVENT_RECORD& key) {
+			return ctrlHeld(key) && altHeld(key) && key.uChar.UnicodeChar >= 0x20;
+		}
+
+		// AltGr on a key the layout gives nothing for.
+		static bool isEmptyAltGr(const KEY_EVENT_RECORD& key) {
+			const DWORD state = key.dwControlKeyState;
+			return (state & RIGHT_ALT_PRESSED) != 0 && (state & LEFT_CTRL_PRESSED) != 0
+			    && key.uChar.UnicodeChar == 0;
+		}
+
+		static bool isInterruptKey(const KEY_EVENT_RECORD& key) {
+			if (typesLayoutCharacter(key)) return false;
+
+			const bool ctrl_c = ctrlHeld(key) && !altHeld(key) && key.wVirtualKeyCode == 'C';
+			return key.uChar.UnicodeChar == 0x03 || ctrl_c;
+		}
+
+		static int modifierCode(const KEY_EVENT_RECORD& key) {
+			return 1 + (altHeld(key) ? 2 : 0) + (ctrlHeld(key) ? 4 : 0);
+		}
+
+		static std::string cursorKey(char final_byte, int modifier) {
+			if (modifier == 1) return std::string("\x1b[") + final_byte;
+
+			return "\x1b[1;" + std::to_string(modifier) + final_byte;
+		}
+
+		static std::string tildeKey(int number, int modifier) {
+			const std::string code = "\x1b[" + std::to_string(number);
+			if (modifier == 1) return code + "~";
+
+			return code + ";" + std::to_string(modifier) + "~";
+		}
+
+		// Ctrl+Backspace erases a word as Alt+Backspace does; Shift alone
+		// does not change a cursor key.
+		static std::string editingKey(const KEY_EVENT_RECORD& key) {
+			const bool meta = altHeld(key);
+			switch (key.wVirtualKeyCode) {
+			case VK_BACK:   return meta || ctrlHeld(key) ? "\x1b\x7f" : "\x7f";
+			case VK_TAB:    return shiftHeld(key) ? "\x1b[Z" : (meta ? "\x1b\t" : "\t");
+			case VK_RETURN: return meta ? "\x1b\r" : "\r";
+			case VK_ESCAPE: return kMetaPrefix;
+			default:        return {};
+			}
+		}
+
+		// The keys with no character of their own, spelled as xterm sends them.
+		static std::string specialKey(const KEY_EVENT_RECORD& key) {
+			const int modifier = modifierCode(key);
+			switch (key.wVirtualKeyCode) {
+			case VK_UP:     return cursorKey('A', modifier);
+			case VK_DOWN:   return cursorKey('B', modifier);
+			case VK_RIGHT:  return cursorKey('C', modifier);
+			case VK_LEFT:   return cursorKey('D', modifier);
+			case VK_HOME:   return cursorKey('H', modifier);
+			case VK_END:    return cursorKey('F', modifier);
+			case VK_INSERT: return tildeKey(2, modifier);
+			case VK_DELETE: return tildeKey(3, modifier);
+			case VK_PRIOR:  return tildeKey(5, modifier);
+			case VK_NEXT:   return tildeKey(6, modifier);
+			default:        return editingKey(key);
+			}
+		}
+
+		// Ctrl with a key Windows gives no character for.
+		static std::string controlCharacter(const KEY_EVENT_RECORD& key) {
+			const WORD vk = key.wVirtualKeyCode;
+			if (vk >= 'A' && vk <= 'Z') return std::string(1, static_cast<char>(vk - 'A' + 1));
+			if (vk == VK_SPACE || vk == '2') return std::string(1, '\0');
+			if (vk == VK_OEM_MINUS || vk == VK_OEM_2) return "\x1f";
+
+			return {};
+		}
+
+	}  // namespace keys_detail
 
 	static bool isPrintableAscii(WCHAR unit) {
 		return unit >= 0x20 && unit < 0x7F;
@@ -1751,28 +1674,34 @@ namespace wbsh {
 	bool LineEditor::revsearchHandleKey(const KEY_EVENT_RECORD& key,
 	                                    std::string& query,
 	                                    std::size_t& match_index,
-	                                    bool& cancel, bool& submit) {
-		const bool is_ctrl = isCtrlPressed(key);
+	                                    bool& cancel, bool& submit, bool& redispatch) {
+		const bool is_ctrl = keys_detail::ctrlHeld(key) && !keys_detail::typesLayoutCharacter(key);
+		const bool is_meta = keys_detail::altHeld(key) && !keys_detail::typesLayoutCharacter(key);
 		const WORD vk = key.wVirtualKeyCode;
 		const WCHAR ch = key.uChar.UnicodeChar;
 
 		if (vk == VK_RETURN) { submit = true; return false; }
 		if (vk == VK_ESCAPE) { cancel = true; return false; }
-		if (vk == VK_BACK)   { revsearchEraseQueryChar(query, match_index); return true; }
+		if (vk == VK_BACK && !is_ctrl && !is_meta) {
+			revsearchEraseQueryChar(query, match_index);
+			return true;
+		}
 
+		if (keys_detail::isInterruptKey(key)) { cancel = true; interrupted_ = true; return false; }
 		if (is_ctrl && vk == 'R') { revsearchStepOlder(query, match_index); return true; }
 		if (is_ctrl && vk == 'S') { revsearchStepNewer(query, match_index); return true; }
 		if (is_ctrl && vk == 'G') { cancel = true; return false; }
-		if (is_ctrl && vk == 'C') { cancel = true; interrupted_ = true; return false; }
-		if (is_ctrl) return false;
 
-		if (!isPrintableAscii(ch)) return false;
+		if (is_ctrl || is_meta || !isPrintableAscii(ch)) {
+			redispatch = true;
+			return false;
+		}
 
 		revsearchExtendQuery(query, static_cast<char>(ch), match_index);
 		return true;
 	}
 
-	void LineEditor::runReverseSearch(std::string& out, bool& done, bool& eof) {
+	void LineEditor::runReverseSearch() {
 		const std::string saved_buffer = buffer_;
 		const std::size_t saved_cursor = cursor_;
 		const std::string saved_prompt = prompt_raw_;
@@ -1785,16 +1714,16 @@ namespace wbsh {
 
 		bool cancel = false;
 		bool submit = false;
+		bool redispatch = false;
+		KEY_EVENT_RECORD key{};
 		bool looping = true;
 		while (looping) {
-			KEY_EVENT_RECORD key;
 			if (!nextKeyDown(key)) {
 				cancel = true;
-				eof = true;
 				break;
 			}
 
-			looping = revsearchHandleKey(key, query, match_index, cancel, submit);
+			looping = revsearchHandleKey(key, query, match_index, cancel, submit, redispatch);
 		}
 
 		prompt_raw_ = saved_prompt;
@@ -1809,8 +1738,9 @@ namespace wbsh {
 		emit(kEraseToEnd);
 		emit(prompt_raw_);
 		redraw();
-		if (interrupted_) handleInterrupt(done);
-		if (submit) handleEnter(out, done);
+		if (interrupted_) interrupt();
+		if (submit) acceptLine();
+		if (redispatch) dispatchKeyDown(key);
 	}
 
 	static DWORD enterRawInputMode(HANDLE input) {
@@ -1827,6 +1757,18 @@ namespace wbsh {
 		return saved;
 	}
 
+	void LineEditor::enterRawMode() {
+		if (headless_) return;
+
+		cooked_input_mode_ = enterRawInputMode(::GetStdHandle(STD_INPUT_HANDLE));
+	}
+
+	void LineEditor::leaveRawMode() {
+		if (headless_) return;
+
+		::SetConsoleMode(::GetStdHandle(STD_INPUT_HANDLE), cooked_input_mode_);
+	}
+
 	// Alt-code input (Alt + numpad digits) is delivered as a key-UP event
 	// for VK_MENU carrying the resolved Unicode char.
 	void LineEditor::handleAltKeyUp(const KEY_EVENT_RECORD& key) {
@@ -1835,81 +1777,34 @@ namespace wbsh {
 
 		const WCHAR unit = key.uChar.UnicodeChar;
 		const std::string utf8 = utf16ToUtf8(&unit, 1);
-		if (utf8.empty()) return;
-
-		insertChars(utf8);
-		redraw();
+		if (!utf8.empty()) dispatchKeys(utf8);
 	}
 
-	bool LineEditor::handleCtrlKey(const KEY_EVENT_RECORD& key,
-	                               std::string& out, bool& done, bool& eof) {
-		switch (key.wVirtualKeyCode) {
-		case 'C': handleInterrupt(done);                return true;
-		case 'D': handleEofOrDelete(done, eof);         return true;
-		case 'A': moveCursorHome();                     return true;
-		case 'E': moveCursorEnd();                      return true;
-		case 'K': handleKillToEnd();        redraw();   return true;
-		case 'U': handleKillToStart();      redraw();   return true;
-		case 'W': handleKillWordBack();     redraw();   return true;
-		case 'L': handleClearScreen();                  return true;
-		case 'B': moveCursorBack();                     return true;
-		case 'F': moveCursorForward();                  return true;
-		case 'P': handleHistoryUp();        redraw();   return true;
-		case 'N': handleHistoryDown();      redraw();   return true;
-		case 'V': pasteFromClipboard();                 return true;
-		case 'R': runReverseSearch(out, done, eof);     return true;
-		default:  return false;
-		}
-	}
-
-	bool LineEditor::handleAltKey(const KEY_EVENT_RECORD& key) {
-		switch (key.wVirtualKeyCode) {
-		case VK_BACK: handleKillAlnumWordBack();    redraw(); return true;
-		case 'D':     handleKillAlnumWordForward(); redraw(); return true;
-		case 'B':     cursor_ = wordStartBefore(cursor_); redraw(); return true;
-		case 'F':     cursor_ = wordEndAfter(cursor_);    redraw(); return true;
-		default:      return false;
-		}
-	}
-
-	bool LineEditor::handleNavigationKey(const KEY_EVENT_RECORD& key,
-	                                     std::string& out, bool& done, bool& was_tab) {
-		switch (key.wVirtualKeyCode) {
-		case VK_RETURN:  handleEnter(out, done);                       return true;
-		case VK_BACK:    handleBackspace();   redraw();                return true;
-		case VK_DELETE:  handleDelete();      redraw();                return true;
-		case VK_TAB:     handleTab();         redraw(); was_tab = true; return true;
-		case VK_LEFT:    moveCursorBack();                             return true;
-		case VK_RIGHT:   handleRightArrow();                           return true;
-		case VK_UP:      handleHistoryUp();   redraw();                return true;
-		case VK_DOWN:    handleHistoryDown(); redraw();                return true;
-		case VK_HOME:    moveCursorHome();                             return true;
-		case VK_END:     moveCursorEnd();                              return true;
-		default:                                                       return false;
-		}
-	}
-
-	void LineEditor::insertReceivedChar(WCHAR ch) {
-		if (ch == 0) return;
-
-		if (isPrintableAscii(ch)) {
-			insertChars(std::string(1, static_cast<char>(ch)));
-			redraw();
+	// Every key becomes the bytes a terminal would send for it, so the
+	// keymap sees Alt-b as ESC b and Up as ESC [ A, as readline does.
+	void LineEditor::dispatchKeyDown(const KEY_EVENT_RECORD& key) {
+		if (keys_detail::isInterruptKey(key)) {
+			interrupt();
 			return;
 		}
 
-		if (ch >= 0x80) insertWideCharFromConsole(ch);
-	}
+		if (keys_detail::isEmptyAltGr(key)) return;
 
-	void LineEditor::dispatchKeyDown(const KEY_EVENT_RECORD& key,
-	                                 std::string& out, bool& done, bool& eof) {
-		bool was_tab = false;
-		const bool handled = (isAltPressed(key) && handleAltKey(key))
-			|| handleNavigationKey(key, out, done, was_tab)
-			|| (isCtrlPressed(key) && handleCtrlKey(key, out, done, eof));
-		if (!handled) insertReceivedChar(key.uChar.UnicodeChar);
+		const std::string special = keys_detail::specialKey(key);
+		if (!special.empty()) {
+			dispatchKeys(special);
+			return;
+		}
 
-		last_was_tab_ = was_tab;
+		const WCHAR ch = key.uChar.UnicodeChar;
+		std::string text;
+		if (ch >= 0x80) text = wideCharacter(ch);
+		else if (ch != 0) text = std::string(1, static_cast<char>(ch));
+		else if (keys_detail::ctrlHeld(key)) text = keys_detail::controlCharacter(key);
+		if (text.empty()) return;
+
+		const bool meta = keys_detail::altHeld(key) && !keys_detail::typesLayoutCharacter(key);
+		dispatchKeys(meta ? keys_detail::kMetaPrefix + text : text);
 	}
 
 	// Key-ups only matter for Alt-code input; every other event is passed
@@ -1938,16 +1833,15 @@ namespace wbsh {
 		return true;
 	}
 
-	bool LineEditor::editUntilDone(std::string& out, bool& eof) {
-		bool done = false;
-		while (!done) {
+	bool LineEditor::editUntilDone() {
+		while (!done_) {
 			KEY_EVENT_RECORD key;
 			if (!nextKeyDown(key)) {
-				eof = true;
+				eof_ = true;
 				return false;
 			}
 
-			dispatchKeyDown(key, out, done, eof);
+			dispatchKeyDown(key);
 		}
 
 		return true;
@@ -1960,14 +1854,13 @@ namespace wbsh {
 			return readLineCooked(out);
 		}
 
-		const DWORD saved_in_mode = enterRawInputMode(input);
+		enterRawMode();
 		emit(prompt);
+		editUntilDone();
+		leaveRawMode();
 
-		bool eof = false;
-		editUntilDone(out, eof);
-
-		::SetConsoleMode(input, saved_in_mode);
-		return lineStatus(out, eof);
+		out = accepted_;
+		return lineStatus();
 	}
 
 	namespace replay_detail {
@@ -2013,36 +1906,27 @@ namespace wbsh {
 			return false;
 		}
 
-		static bool isLowerLetter(char letter) {
-			return letter >= 'a' && letter <= 'z';
+		static WORD chordVk(char letter) {
+			if (std::isalpha(static_cast<unsigned char>(letter)) != 0) {
+				return static_cast<WORD>(std::toupper(static_cast<unsigned char>(letter)));
+			}
+
+			if (letter == '_' || letter == '-') return VK_OEM_MINUS;
+			if (letter == '/') return VK_OEM_2;
+
+			return 0;
 		}
 
+		// What the console puts in uChar for the chord: a control code
+		// for Ctrl with a letter, `_` or `@`, nothing for Ctrl+/.
 		static WCHAR chordChar(char letter, bool ctrl) {
-			if (ctrl) return static_cast<WCHAR>(letter - 'a' + 1);
+			if (!ctrl) return static_cast<WCHAR>(static_cast<unsigned char>(letter));
+			const auto byte = static_cast<unsigned char>(letter);
+			if (std::isalpha(byte) != 0) return static_cast<WCHAR>(std::toupper(byte) - 'A' + 1);
+			if (letter == '_') return 0x1F;
+			if (letter == '/' || letter == '@' || letter == ' ') return 0;
 
 			return static_cast<WCHAR>(letter);
-		}
-
-		static bool chordKey(const std::string& name, KEY_EVENT_RECORD& key) {
-			if (name.size() < 3 || name[1] != '-') return false;
-			if (name[0] != 'C' && name[0] != 'M') return false;
-
-			const bool ctrl = name[0] == 'C';
-			const DWORD modifiers = ctrl ? LEFT_CTRL_PRESSED : LEFT_ALT_PRESSED;
-			const std::string rest = name.substr(2);
-			if (namedKey(rest, modifiers, key)) return true;
-			if (rest.size() != 1 || !isLowerLetter(rest[0])) return false;
-
-			const WORD vk = static_cast<WORD>(rest[0] - 'a' + 'A');
-			key = pressOf(vk, chordChar(rest[0], ctrl), modifiers);
-			return true;
-		}
-
-		static bool keyFor(const std::string& token, KEY_EVENT_RECORD& key) {
-			if (token.size() < 3 || token.front() != '<' || token.back() != '>') return false;
-
-			const std::string name = token.substr(1, token.size() - 2);
-			return namedKey(name, 0, key) || chordKey(name, key);
 		}
 
 		static std::wstring widen(const std::string& text) {
@@ -2053,6 +1937,53 @@ namespace wbsh {
 			std::wstring wide(static_cast<std::size_t>(length), L'\0');
 			::MultiByteToWideChar(CP_UTF8, 0, text.data(), count, wide.data(), length);
 			return wide;
+		}
+
+		static DWORD takeModifiers(std::string& name) {
+			DWORD modifiers = 0;
+			for (;;) {
+				if (name.size() > 2 && name.compare(0, 2, "C-") == 0) {
+					modifiers |= LEFT_CTRL_PRESSED;
+				} else if (name.size() > 2 && name.compare(0, 2, "M-") == 0) {
+					modifiers |= LEFT_ALT_PRESSED;
+				} else {
+					return modifiers;
+				}
+
+				name.erase(0, 2);
+			}
+		}
+
+		// <AltGr-@>: the character as a Czech keyboard types it, with the
+		// Ctrl and right Alt bits Windows reports for AltGr.
+		static bool altGrKey(const std::string& name, KEY_EVENT_RECORD& key) {
+			const std::string prefix = "AltGr-";
+			if (name.size() <= prefix.size()) return false;
+			if (name.compare(0, prefix.size(), prefix) != 0) return false;
+
+			const std::wstring wide = widen(name.substr(prefix.size()));
+			if (wide.size() != 1) return false;
+
+			key = pressOf(0, wide[0], LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED);
+			return true;
+		}
+
+		static bool chordKey(std::string name, KEY_EVENT_RECORD& key) {
+			const DWORD modifiers = takeModifiers(name);
+			if (modifiers == 0) return false;
+			if (namedKey(name, modifiers, key)) return true;
+			if (name.size() != 1) return false;
+
+			const bool ctrl = (modifiers & LEFT_CTRL_PRESSED) != 0;
+			key = pressOf(chordVk(name[0]), chordChar(name[0], ctrl), modifiers);
+			return true;
+		}
+
+		static bool keyFor(const std::string& token, KEY_EVENT_RECORD& key) {
+			if (token.size() < 3 || token.front() != '<' || token.back() != '>') return false;
+
+			const std::string name = token.substr(1, token.size() - 2);
+			return namedKey(name, 0, key) || altGrKey(name, key) || chordKey(name, key);
 		}
 
 		static void queueText(const std::string& text, std::deque<KEY_EVENT_RECORD>& queue) {
@@ -2071,32 +2002,17 @@ namespace wbsh {
 
 	}  // namespace replay_detail
 
-	std::string LineEditor::describeReplay(const std::string& out, bool finished, bool eof) const {
-		if (!finished) {
-			return "[" + buffer_.substr(0, cursor_) + "][" + buffer_.substr(cursor_) + "]";
-		}
-
-		switch (lineStatus(out, eof)) {
-		case LineStatus::kInterrupted: return "interrupt";
-		case LineStatus::kEof:         return "eof";
-		case LineStatus::kLine:        return "accept [" + out + "]";
-		default:                       return {};
-		}
-	}
-
 	std::string LineEditor::replayKeys(const std::vector<std::string>& keys) {
 		resetLine("");
 		replay_keys_.clear();
 		for (const std::string& token : keys) replay_detail::queueToken(token, replay_keys_);
 
 		headless_ = true;
-		std::string out;
-		bool eof = false;
-		const bool finished = editUntilDone(out, eof);
+		const bool finished = editUntilDone();
 		headless_ = false;
 
 		replay_keys_.clear();
-		return describeReplay(out, finished, eof);
+		return describeReplay(finished);
 	}
 
 #else  /* !_WIN32 */
@@ -2109,21 +2025,11 @@ namespace wbsh {
 
 	void LineEditor::emit(const std::string&) {}
 	void LineEditor::redraw() {}
-	void LineEditor::handleEnter(std::string&, bool& done) { done = true; }
-	void LineEditor::handleBackspace() {}
-	void LineEditor::handleDelete() {}
-	void LineEditor::handleTab() {}
-	void LineEditor::handleHistoryUp() {}
-	void LineEditor::handleHistoryDown() {}
-	void LineEditor::handleKillToEnd() {}
-	void LineEditor::handleKillToStart() {}
-	void LineEditor::handleKillWordBack() {}
-	void LineEditor::handleKillAlnumWordBack() {}
-	void LineEditor::handleKillAlnumWordForward() {}
-	std::size_t LineEditor::wordStartBefore(std::size_t pos) const { return pos; }
-	std::size_t LineEditor::wordEndAfter(std::size_t pos) const { return pos; }
-	void LineEditor::handleClearScreen() {}
-	void LineEditor::insertChars(const std::string&) {}
+	void LineEditor::moveToLineEnd() {}
+	void LineEditor::appendLineText(std::string&) const {}
+	bool LineEditor::editUntilDone() { return false; }
+	void LineEditor::leaveRawMode() {}
+	void LineEditor::enterRawMode() {}
 	LineEditor::Tok LineEditor::currentToken() const { return {0, 0, true}; }
 	std::vector<std::string> LineEditor::commandCompletions(const std::string&) { return {}; }
 	std::vector<std::string> LineEditor::pathCompletions(const std::string&) { return {}; }
@@ -2131,13 +2037,11 @@ namespace wbsh {
 	std::string LineEditor::longestCommonPrefix(const std::vector<std::string>&) { return {}; }
 	void LineEditor::printMatches(const std::vector<std::string>&) {}
 	void LineEditor::applyCompletion(const Tok&, const std::vector<std::string>&) {}
-	void LineEditor::pasteFromClipboard() {}
-	void LineEditor::insertWideCharFromConsole(wchar_t) {}
-	void LineEditor::runReverseSearch(std::string&, bool&, bool&) {}
+	void LineEditor::insertClipboardText() {}
+	void LineEditor::runReverseSearch() {}
 	void LineEditor::revsearchRefresh(const std::string&, std::size_t) {}
 	void LineEditor::refreshSuggestion() {}
 	bool LineEditor::acceptInlineSuggestion() { return false; }
-	void LineEditor::handleRightArrow() {}
 	std::string LineEditor::replayKeys(const std::vector<std::string>&) { return {}; }
 
 #endif /* _WIN32 */

@@ -65,6 +65,9 @@ namespace wbsh {
 	                                   const std::vector<std::string>& history,
 	                                   char starting_quote, HistorySubstitution& last);
 
+	/** The words of a history entry as word designators count them: quotes keep a word together. */
+	std::vector<std::string> historyWords(const std::string& entry);
+
 	/** The entries of a history file, oldest first, with each command's exit status. */
 	struct HistoryList {
 		std::vector<std::string> commands;

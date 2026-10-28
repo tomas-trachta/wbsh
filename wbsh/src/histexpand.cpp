@@ -655,6 +655,10 @@ namespace wbsh {
 
 	}  // namespace histexpand_detail
 
+	std::vector<std::string> historyWords(const std::string& entry) {
+		return histexpand_detail::wordsOf(entry);
+	}
+
 	HistoryExpansion expandHistoryLine(const std::string& line,
 	                                   const std::vector<std::string>& history,
 	                                   char starting_quote, HistorySubstitution& last) {
