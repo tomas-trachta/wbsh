@@ -707,6 +707,8 @@ namespace wbsh {
 			announceCommand("((" + static_cast<const ArithCommand&>(node).expr + "))");
 			if (flowPending()) return last_status_;
 			return finishLeafCommand(execArithCommand(static_cast<const ArithCommand&>(node)));
+		case Node::Kind::Coproc:
+			return execCoproc(static_cast<const CoprocCommand&>(node));
 		}
 
 		return 0;
@@ -750,6 +752,84 @@ namespace wbsh {
 		const int result = (body != nullptr) ? execNode(*body) : 0;
 		if (!flowPending()) status = result;
 	}
+
+#ifdef _WIN32
+	static int dupAboveUserFds(int fd);
+
+	struct CoprocPipes {
+		HANDLE shell_read = INVALID_HANDLE_VALUE;
+		HANDLE shell_write = INVALID_HANDLE_VALUE;
+		HANDLE child_in = INVALID_HANDLE_VALUE;
+		HANDLE child_out = INVALID_HANDLE_VALUE;
+	};
+
+	static bool createCoprocPipes(CoprocPipes& pipes) {
+		if (!::CreatePipe(&pipes.shell_read, &pipes.child_out, nullptr, 0)) return false;
+		if (::CreatePipe(&pipes.child_in, &pipes.shell_write, nullptr, 0)) return true;
+
+		::CloseHandle(pipes.shell_read);
+		::CloseHandle(pipes.child_out);
+		return false;
+	}
+
+	// The shell's ends become descriptors above the ones scripts use for
+	// themselves, as bash's do.
+	static int shellFdFor(HANDLE handle, int flags) {
+		const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(handle), flags | _O_BINARY);
+		if (fd < 0) {
+			::CloseHandle(handle);
+			return -1;
+		}
+
+		const int high = dupAboveUserFds(fd);
+		_close(fd);
+		return high;
+	}
+
+	void Executor::publishCoproc(const std::string& name, const CoprocPipes& pipes,
+	                             HANDLE process) {
+		const int read_fd = shellFdFor(pipes.shell_read, _O_RDONLY);
+		const int write_fd = shellFdFor(pipes.shell_write, _O_WRONLY);
+		env_.setIndexedArrayFromList(name, { std::to_string(read_fd), std::to_string(write_fd) });
+
+		const long long pid = static_cast<long long>(::GetProcessId(process));
+		env_.set(name + "_PID", std::to_string(pid));
+		env_.setLastBgPid(pid);
+
+		const int job_id = registerJob(process, pid, "coproc " + name);
+		if (env_.interactive()) std::fprintf(stderr, "[%d] %lld\n", job_id, pid);
+	}
+
+	// The coprocess reads what the shell writes to NAME[1] and writes what
+	// the shell reads from NAME[0]; it runs asynchronously, like `&`.
+	int Executor::execCoproc(const CoprocCommand& coproc) {
+		CoprocPipes pipes;
+		if (coproc.command == nullptr || !createCoprocPipes(pipes)) {
+			std::fprintf(stderr, "wbsh: coproc: cannot create pipes\n");
+			return 1;
+		}
+
+		std::fflush(stdout);
+		std::fflush(stderr);
+		const HANDLE process = launchPipelineElement(*coproc.command, pipes.child_in,
+			pipes.child_out, currentStdio().err);
+		::CloseHandle(pipes.child_in);
+		::CloseHandle(pipes.child_out);
+		if (process == INVALID_HANDLE_VALUE) {
+			::CloseHandle(pipes.shell_read);
+			::CloseHandle(pipes.shell_write);
+			return 1;
+		}
+
+		publishCoproc(coproc.name, pipes, process);
+		return 0;
+	}
+#else
+	int Executor::execCoproc(const CoprocCommand&) {
+		std::fprintf(stderr, "wbsh: coproc: not supported on this platform\n");
+		return 1;
+	}
+#endif
 
 #ifdef _WIN32
 	int Executor::launchBackgroundCommand(const Node& cmd) {

@@ -79,6 +79,7 @@ namespace wbsh {
 	};
 
 	class Executor;
+	struct CoprocPipes;
 	/// Signature of a registered shell builtin / coreutil. Plain function
 	/// pointer — every builtin in this codebase is a named static function
 	/// with no captured state, so a typed function pointer is enough.
@@ -633,6 +634,11 @@ namespace wbsh {
 		int execFunctionDef(const FunctionDef& fd);
 		int execDBracket(const DBracketCond& dc);
 		int execArithCommand(const ArithCommand& ac);
+		int execCoproc(const CoprocCommand& coproc);
+#ifdef _WIN32
+		void publishCoproc(const std::string& name, const CoprocPipes& pipes,
+		                   HANDLE process);
+#endif
 
 		// Loop-body epilogue: consume a Break / Continue signal aimed at
 		// the current loop and report what the loop should do next.

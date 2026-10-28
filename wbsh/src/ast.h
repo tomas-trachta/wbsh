@@ -104,6 +104,7 @@ namespace wbsh {
 			FunctionDef,    ///< `name() { … }` definition.
 			DBracket,       ///< `[[ … ]]` conditional.
 			ArithCommand,   ///< `(( … ))` arithmetic command.
+			Coproc,         ///< `coproc [NAME] command`.
 		};
 		Kind kind;
 		SourceLoc loc;
@@ -219,6 +220,12 @@ namespace wbsh {
 		ArithCommand() : Node(Kind::ArithCommand) {}
 		std::string expr;                   ///< Raw `(( … ))` body text.
 		std::vector<Redirection> redirs;
+	};
+
+	struct CoprocCommand : Node {
+		CoprocCommand() : Node(Kind::Coproc) {}
+		std::string name = "COPROC";
+		NodePtr command = nullptr;
 	};
 
 	struct CaseClause : Node {

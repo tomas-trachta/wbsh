@@ -39,6 +39,7 @@
 #include "inflate.h"
 #include "numparse.h"
 #include "optscan.h"
+#include "stdinsync.h"
 #include "termreq.h"
 
 namespace wbsh {
@@ -875,12 +876,28 @@ namespace wbsh {
 		}
 	}
 
+	// Like read(2), whatever has arrived is returned at once, and it is
+	// passed on before cat waits again: a coprocess or a slow pipe gets
+	// each line through instead of waiting for a full chunk or EOF.
+	static std::size_t readAvailable(std::FILE* stream, char* buffer, std::size_t size) {
+		const int buffered = stream == stdin ? stdinBufferedBytes() : 0;
+		if (buffered > 0) {
+			const std::size_t take = std::min(size, static_cast<std::size_t>(buffered));
+			return std::fread(buffer, 1, take, stream);
+		}
+
+		const int got = _read(_fileno(stream), buffer, static_cast<unsigned int>(size));
+		return got > 0 ? static_cast<std::size_t>(got) : 0;
+	}
+
 	static void catStream(std::FILE* stream, const CatOptions& opts, CatEmitState& state) {
 		char chunk[kStreamChunk];
 		while (!stdoutFailed()) {
-			const std::size_t got = std::fread(chunk, 1, sizeof(chunk), stream);
+			const std::size_t got = readAvailable(stream, chunk, sizeof(chunk));
 			if (got == 0) break;
+
 			catEmitChunk(chunk, got, opts, state);
+			std::fflush(stdout);
 		}
 	}
 
