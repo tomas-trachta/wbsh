@@ -25,7 +25,6 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
-#include <regex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -36,7 +35,7 @@
 #include "numparse.h"
 #include "optscan.h"
 #include "pathconv.h"
-#include "regexutil.h"
+#include "posixregex.h"
 #include "termreq.h"
 
 namespace wbsh {
@@ -258,11 +257,11 @@ namespace wbsh {
 		return false;
 	}
 
-	static bool nameMatches(const std::string& name, const std::regex& pattern, bool exact) {
+	static bool nameMatches(const std::string& name, const PosixRegex& pattern, bool exact) {
 		const std::string stem = processNameStem(name);
-		if (!exact) return searchRegex(stem, pattern) || searchRegex(name, pattern);
+		if (!exact) return pattern.test(stem) || pattern.test(name);
 
-		return matchRegex(stem, pattern) || matchRegex(name, pattern);
+		return pattern.matchesWhole(stem) || pattern.matchesWhole(name);
 	}
 
 	static std::string commandLineOrName(const ProcessInfo& process) {
@@ -270,12 +269,12 @@ namespace wbsh {
 		return line.empty() ? process.name : line;
 	}
 
-	static bool processMatches(const ProcessInfo& process, const std::regex& pattern,
+	static bool processMatches(const ProcessInfo& process, const PosixRegex& pattern,
 	                           const MatchOptions& options) {
 		if (!options.full) return nameMatches(process.name, pattern, options.exact);
 
 		const std::string line = commandLineOrName(process);
-		return options.exact ? matchRegex(line, pattern) : searchRegex(line, pattern);
+		return options.exact ? pattern.matchesWhole(line) : pattern.test(line);
 	}
 
 	static void keepNewestOrOldest(std::vector<ProcessInfo>& matches, bool newest) {
@@ -298,11 +297,11 @@ namespace wbsh {
 
 	static bool findMatchingProcesses(const MatchOptions& options, const char* cmd,
 	                                  std::vector<ProcessInfo>& matches) {
-		std::regex pattern;
-		const auto flags = options.ignore_case
-			? std::regex::extended | std::regex::icase
-			: std::regex::extended;
-		if (!compileRegex(pattern, options.pattern, flags)) {
+		RegexOptions regex_options;
+		regex_options.syntax = RegexSyntax::Extended;
+		regex_options.ignore_case = options.ignore_case;
+		PosixRegex pattern;
+		if (!pattern.compile(options.pattern, regex_options)) {
 			perr(cmd, "invalid pattern: " + options.pattern);
 			return false;
 		}

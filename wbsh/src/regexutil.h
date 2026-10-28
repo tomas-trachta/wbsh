@@ -2,7 +2,9 @@
 
 /**
  * @file regexutil.h
- * @brief Error-as-value adapters around std::regex.
+ * @brief Error-as-value adapters around std::regex, which only grep -P
+ *        (ECMAScript patterns) still uses; POSIX patterns go through
+ *        posixregex.h.
  *
  * std::regex reports invalid patterns (and pathological backtracking
  * during matching) exclusively by throwing std::regex_error — the
@@ -29,57 +31,24 @@ namespace wbsh {
 		}
 	}
 
-	/**
-	 * @brief regex_search that treats matcher failures as "no match".
-	 *
-	 * MSVC's matcher throws regex_error on backtracking complexity /
-	 * stack limits for adversarial pattern+input pairs; callers here
-	 * want "no match" rather than a crash in that case.
-	 */
-	inline bool searchRegex(const std::string& s, const std::regex& re,
-	                        std::smatch* m = nullptr) {
-		try {
-			if (m != nullptr) return std::regex_search(s, *m, re);
-			return std::regex_search(s, re);
-		} catch (const std::regex_error&) {
-			return false;
-		}
-	}
+	enum class RegexOutcome {
+		Match,
+		NoMatch,
+		/// MSVC's recursive matcher gave up (stack or complexity limit).
+		Failed,
+	};
 
-	/// searchRegex over [first, last) with explicit match flags (for
+	/// regex_search over [first, last) with explicit match flags (for
 	/// match_prev_avail when the range starts mid-subject).
-	inline bool searchRegexFlags(std::string::const_iterator first,
-	                             std::string::const_iterator last, const std::regex& re,
-	                             std::smatch& m, std::regex_constants::match_flag_type flags) {
+	inline RegexOutcome searchRegexOutcome(std::string::const_iterator first,
+	                                       std::string::const_iterator last, const std::regex& re,
+	                                       std::smatch& m,
+	                                       std::regex_constants::match_flag_type flags) {
 		try {
-			return std::regex_search(first, last, m, re, flags);
+			return std::regex_search(first, last, m, re, flags) ? RegexOutcome::Match
+				: RegexOutcome::NoMatch;
 		} catch (const std::regex_error&) {
-			return false;
-		}
-	}
-
-	/// regex_match (whole-subject) with the same "failure is no match" rule.
-	inline bool matchRegex(const std::string& s, const std::regex& re) {
-		try {
-			return std::regex_match(s, re);
-		} catch (const std::regex_error&) {
-			return false;
-		}
-	}
-
-	/**
-	 * @brief searchRegex over the [first, last) range of a string.
-	 *
-	 * Lets scanning loops advance through a subject without copying the
-	 * tail on every step. Positions in @p m are relative to @p first.
-	 */
-	inline bool searchRegex(std::string::const_iterator first,
-	                        std::string::const_iterator last,
-	                        const std::regex& re, std::smatch* m) {
-		try {
-			return std::regex_search(first, last, *m, re);
-		} catch (const std::regex_error&) {
-			return false;
+			return RegexOutcome::Failed;
 		}
 	}
 

@@ -82,9 +82,10 @@ namespace wbsh {
 		};
 
 		struct Matcher {
-			std::vector<std::regex> regexes;
-			std::regex selector;
-			bool have_selector = false;
+			PosixRegex regex;
+			bool posix = false;
+			std::vector<std::regex> perl;
+			mutable bool perl_failed = false;
 			LiteralSet literals;
 			bool literal_mode = false;
 			LiteralSet required;
@@ -478,12 +479,22 @@ namespace wbsh {
 		return pieces;
 	}
 
+	static bool isAscii(const std::string& text) {
+		for (const char c : text) {
+			if (static_cast<unsigned char>(c) >= 0x80) return false;
+		}
+
+		return true;
+	}
+
+	// LiteralSet folds ASCII only, so -i with other letters needs the regex.
 	static bool buildLiteralMatcher(const GrepOptions& options, Matcher& matcher) {
 		std::vector<std::string> needles;
 		for (const std::string& pattern : options.patterns) {
 			for (const std::string& piece : splitAlternatives(pattern, options.syntax)) {
 				std::string literal;
 				if (!literalPattern(piece, options.syntax, literal)) return false;
+				if (options.ignore_case && !isAscii(literal)) return false;
 				needles.push_back(literal);
 			}
 		}
@@ -596,7 +607,8 @@ namespace wbsh {
 	}
 
 	static void buildRequiredFilter(const GrepOptions& options, Matcher& matcher) {
-		if (options.syntax == Syntax::Perl || options.patterns.empty()) return;
+		const bool posix = options.syntax == Syntax::Basic || options.syntax == Syntax::Extended;
+		if (!posix || options.patterns.empty()) return;
 
 		const bool extended = options.syntax == Syntax::Extended;
 		std::vector<std::string> literals;
@@ -612,67 +624,71 @@ namespace wbsh {
 		matcher.have_required = true;
 	}
 
-	static std::string ecmascriptFor(const GrepOptions& options, const std::string& pattern) {
-		if (options.syntax == Syntax::Perl) return pattern;
-		return posixToEcmascript(pattern, options.syntax == Syntax::Extended);
+	static RegexWrap grepWrap(const GrepOptions& options) {
+		if (options.whole_line) return RegexWrap::Line;
+		if (options.word) return RegexWrap::Word;
+		return RegexWrap::None;
 	}
 
-	static bool hasBackReference(const std::string& ecmascript) {
-		for (std::size_t i = 0; i + 1 < ecmascript.size(); ++i) {
-			if (ecmascript[i] != '\\') continue;
-
-			const char next = ecmascript[++i];
-			if ((next >= '1' && next <= '9') || next == 'k') return true;
+	// All patterns become one expression, so a line is searched once and
+	// -o / --color get the leftmost-longest match across every pattern.
+	static std::string escapeBasic(const std::string& literal) {
+		std::string out;
+		for (const char c : literal) {
+			if (isSpecial(".[*^$\\", c)) out.push_back('\\');
+			out.push_back(c);
 		}
 
-		return false;
+		return out;
 	}
 
-	static std::regex::flag_type grepRegexFlags(const GrepOptions& options) {
-		const std::regex::flag_type flags = std::regex::ECMAScript;
-		return options.ignore_case ? flags | std::regex::icase : flags;
+	static std::vector<std::string> posixPatterns(const GrepOptions& options) {
+		if (options.syntax != Syntax::Fixed) return options.patterns;
+
+		std::vector<std::string> escaped;
+		for (const std::string& pattern : options.patterns) escaped.push_back(escapeBasic(pattern));
+		return escaped;
 	}
 
-	// All patterns as one alternation decide whether a line is selected in a
-	// single pass; the per-pattern regexes still find -o / --color spans.
-	static void buildSelector(const GrepOptions& options, Matcher& matcher) {
-		const bool single_search = options.patterns.size() == 1 && !options.whole_line;
-		if (options.word || single_search) return;
+	static bool buildPosixMatcher(const GrepOptions& options, Matcher& matcher) {
+		RegexOptions regex_options;
+		regex_options.syntax = options.syntax == Syntax::Extended ? RegexSyntax::Extended
+			: RegexSyntax::Basic;
+		regex_options.ignore_case = options.ignore_case;
+		regex_options.wrap = grepWrap(options);
+		if (!matcher.regex.compile(posixPatterns(options), regex_options)) {
+			perr("grep", matcher.regex.error());
+			return false;
+		}
 
-		std::string combined;
+		buildRequiredFilter(options, matcher);
+		return true;
+	}
+
+	static bool buildPerlMatcher(const GrepOptions& options, Matcher& matcher) {
+		const std::regex::flag_type flags = options.ignore_case
+			? std::regex::ECMAScript | std::regex::icase : std::regex::ECMAScript;
 		for (const std::string& pattern : options.patterns) {
-			const std::string ecmascript = ecmascriptFor(options, pattern);
-			if (hasBackReference(ecmascript)) return;
-			if (!combined.empty()) combined += '|';
-			combined += "(?:" + ecmascript + ")";
+			std::regex compiled;
+			if (!compileRegex(compiled, pattern, flags)) {
+				perr("grep", "invalid regular expression: " + pattern);
+				return false;
+			}
+
+			matcher.perl.push_back(compiled);
 		}
 
-		if (options.whole_line) combined = "^(?:" + combined + ")$";
-		matcher.have_selector = compileRegex(matcher.selector, combined, grepRegexFlags(options));
+		return true;
 	}
 
 	static bool buildMatcher(const GrepOptions& options, Matcher& matcher) {
 		matcher.word = options.word;
 		matcher.whole_line = options.whole_line;
 		if (buildLiteralMatcher(options, matcher)) return true;
+		if (options.syntax == Syntax::Perl) return buildPerlMatcher(options, matcher);
 
-		for (const std::string& pattern : options.patterns) {
-			std::regex compiled;
-			const bool ok = options.syntax == Syntax::Perl
-				? compileRegex(compiled, pattern, grepRegexFlags(options))
-				: compilePosixRegex(compiled, pattern, options.syntax == Syntax::Extended,
-					options.ignore_case);
-			if (!ok) {
-				perr("grep", "invalid regular expression: " + pattern);
-				return false;
-			}
-
-			matcher.regexes.push_back(compiled);
-		}
-
-		buildSelector(options, matcher);
-		buildRequiredFilter(options, matcher);
-		return true;
+		matcher.posix = true;
+		return buildPosixMatcher(options, matcher);
 	}
 
 	static bool isWordChar(char c) {
@@ -711,24 +727,36 @@ namespace wbsh {
 		return true;
 	}
 
-	static bool regexCandidate(const std::regex& re, const std::string& line, std::size_t from,
-	                           std::size_t& start, std::size_t& length) {
+	static bool posixMatch(const Matcher& matcher, const std::string& line, std::size_t from,
+	                       std::size_t& start, std::size_t& length) {
+		RegexMatch match;
+		if (!matcher.regex.search(line, from, match)) return false;
+
+		start = match.start(0);
+		length = match.length(0);
+		return true;
+	}
+
+	static bool perlCandidate(const Matcher& matcher, const std::regex& re, const std::string& line,
+	                          std::size_t from, std::size_t& start, std::size_t& length) {
 		std::smatch match;
 		const auto flags = from == 0 ? std::regex_constants::match_default
 			: std::regex_constants::match_prev_avail;
-		if (from > line.size()) return false;
 		const auto first = line.begin() + static_cast<std::ptrdiff_t>(from);
-		if (!searchRegexFlags(first, line.end(), re, match, flags)) return false;
+		const RegexOutcome outcome = searchRegexOutcome(first, line.end(), re, match, flags);
+		if (outcome == RegexOutcome::Failed) matcher.perl_failed = true;
+		if (outcome != RegexOutcome::Match) return false;
 
 		start = from + static_cast<std::size_t>(match.position(0));
 		length = static_cast<std::size_t>(match.length(0));
 		return true;
 	}
 
-	static bool patternMatch(const Matcher& matcher, std::size_t index, const std::string& line,
-	                         std::size_t from, std::size_t& start, std::size_t& length) {
+	static bool perlPatternMatch(const Matcher& matcher, const std::regex& re,
+	                             const std::string& line, std::size_t from, std::size_t& start,
+	                             std::size_t& length) {
 		for (std::size_t at = from; at <= line.size();) {
-			if (!regexCandidate(matcher.regexes[index], line, at, start, length)) return false;
+			if (!perlCandidate(matcher, re, line, at, start, length)) return false;
 			if (matchAcceptable(matcher, line, start, length)) return true;
 			if (matcher.whole_line) return false;
 			at = start + 1;
@@ -737,15 +765,15 @@ namespace wbsh {
 		return false;
 	}
 
-	static bool firstMatch(const Matcher& matcher, const std::string& line, std::size_t from,
-	                       std::size_t& start, std::size_t& length) {
-		if (matcher.literal_mode) return literalMatch(matcher, line, from, start, length);
-
+	static bool perlMatch(const Matcher& matcher, const std::string& line, std::size_t from,
+	                      std::size_t& start, std::size_t& length) {
 		bool found = false;
-		for (std::size_t k = 0; k < matcher.regexes.size(); ++k) {
+		for (const std::regex& re : matcher.perl) {
 			std::size_t candidate_start = 0;
 			std::size_t candidate_length = 0;
-			if (!patternMatch(matcher, k, line, from, candidate_start, candidate_length)) continue;
+			const bool hit = perlPatternMatch(matcher, re, line, from, candidate_start,
+				candidate_length);
+			if (!hit) continue;
 
 			const bool better = !found || candidate_start < start
 				|| (candidate_start == start && candidate_length > length);
@@ -758,10 +786,18 @@ namespace wbsh {
 		return found;
 	}
 
+	static bool firstMatch(const Matcher& matcher, const std::string& line, std::size_t from,
+	                       std::size_t& start, std::size_t& length) {
+		if (from > line.size()) return false;
+		if (matcher.literal_mode) return literalMatch(matcher, line, from, start, length);
+		if (matcher.posix) return posixMatch(matcher, line, from, start, length);
+		return perlMatch(matcher, line, from, start, length);
+	}
+
 	static bool anyMatch(const Matcher& matcher, const std::string& line) {
 		LiteralMatch hint;
 		if (matcher.have_required && !matcher.required.find(line, 0, hint)) return false;
-		if (matcher.have_selector) return searchRegex(line, matcher.selector);
+		if (matcher.posix) return matcher.regex.test(line);
 
 		std::size_t start = 0;
 		std::size_t length = 0;
@@ -771,6 +807,7 @@ namespace wbsh {
 	static bool lineSelected(const GrepRun& run, const std::string& line) {
 		return anyMatch(run.matcher, line) != run.options->invert;
 	}
+
 
 	static bool readLine(LineReader& reader, std::string& line, bool& terminated) {
 		line.clear();
@@ -1155,6 +1192,11 @@ namespace wbsh {
 		for (const std::string& operand : options.files) grepOperand(exec, run, operand);
 
 		std::fflush(stdout);
+		if (run.matcher.perl_failed) {
+			perr("grep", "-P: pattern exceeded the matcher's stack or complexity limit");
+			return kGrepError;
+		}
+
 		if (options.quiet && run.any_selected) return 0;
 		if (run.any_error) return kGrepError;
 		return run.any_selected ? 0 : 1;

@@ -3,7 +3,7 @@
  * @brief sed: the POSIX command set with the usual GNU extensions.
  *
  * Commands: { } = a b c d D g G h H i l n N p P q Q r t T w x y z : #,
- * and s with g, p, N, I and w flags. Addresses: N, $, /re/ (with I),
+ * and s with g, p, N, I, M and w flags. Addresses: N, $, /re/ (with I, M),
  * \cREc, first~step, addr1,addr2, addr1,+N, addr1,~N, 0,/re/ and !.
  * Options: -n -e -f -E/-r -s -i[SUFFIX] -z. Patterns go through
  * posixregex.h, so \n, \t, \w, \< \> and back-references work in both
@@ -29,7 +29,6 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
-#include <regex>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -38,7 +37,7 @@
 #include "numparse.h"
 #include "pathconv.h"
 #include "posixregex.h"
-#include "regexutil.h"
+#include "utf8.h"
 
 namespace wbsh {
 
@@ -112,7 +111,7 @@ namespace wbsh {
 
 		struct Program {
 			std::vector<Command> commands;
-			std::vector<std::regex> regexes;
+			std::vector<PosixRegex> regexes;
 			bool quiet = false;
 		};
 
@@ -174,7 +173,7 @@ namespace wbsh {
 			bool substituted = false;
 			bool quit = false;
 			int exit_code = 0;
-			const std::regex* last_regex = nullptr;
+			const PosixRegex* last_regex = nullptr;
 			std::vector<std::string> appends;
 			std::map<std::string, std::FILE*> write_files;
 			Output out;
@@ -260,17 +259,16 @@ namespace wbsh {
 		return true;
 	}
 
-	static bool addRegex(ScriptParser& p, const std::string& pattern, bool ignore_case,
+	static bool addRegex(ScriptParser& p, const std::string& pattern, RegexOptions options,
 	                     int& index) {
 		if (pattern.empty()) {
 			index = -1;
 			return true;
 		}
 
-		std::regex compiled;
-		if (!compilePosixRegex(compiled, pattern, p.extended, ignore_case)) {
-			return fail(p, "invalid regular expression: " + pattern);
-		}
+		options.syntax = p.extended ? RegexSyntax::Extended : RegexSyntax::Basic;
+		PosixRegex compiled;
+		if (!compiled.compile(pattern, options)) return fail(p, compiled.error());
 
 		p.program.regexes.push_back(compiled);
 		index = static_cast<int>(p.program.regexes.size()) - 1;
@@ -288,14 +286,15 @@ namespace wbsh {
 		std::string pattern;
 		if (!readDelimited(p, delimiter, pattern)) return false;
 
-		bool ignore_case = false;
+		RegexOptions options;
 		while (peek(p) == 'I' || peek(p) == 'M') {
-			ignore_case = ignore_case || peek(p) == 'I';
+			if (peek(p) == 'I') options.ignore_case = true;
+			else                options.multiline = true;
 			++p.at;
 		}
 
 		address.kind = AddressKind::Regex;
-		return addRegex(p, pattern, ignore_case, address.regex);
+		return addRegex(p, pattern, options, address.regex);
 	}
 
 	static bool parseAddress(ScriptParser& p, Address& address) {
@@ -437,15 +436,16 @@ namespace wbsh {
 		return true;
 	}
 
-	static bool applySubstFlag(char c, Substitution& subst, bool& ignore_case) {
+	static bool applySubstFlag(char c, Substitution& subst, RegexOptions& options) {
 		if (c == 'g')                  subst.global = true;
 		else if (c == 'p')             subst.print = true;
-		else if (c == 'i' || c == 'I') ignore_case = true;
-		else return c == 'm' || c == 'M' || c == 'e';
+		else if (c == 'i' || c == 'I') options.ignore_case = true;
+		else if (c == 'm' || c == 'M') options.multiline = true;
+		else return c == 'e';
 		return true;
 	}
 
-	static bool parseSubstFlags(ScriptParser& p, Substitution& subst, bool& ignore_case) {
+	static bool parseSubstFlags(ScriptParser& p, Substitution& subst, RegexOptions& options) {
 		for (;;) {
 			const char c = peek(p);
 			if (c == 'w') {
@@ -460,7 +460,7 @@ namespace wbsh {
 				continue;
 			}
 
-			if (!applySubstFlag(c, subst, ignore_case)) return true;
+			if (!applySubstFlag(c, subst, options)) return true;
 			++p.at;
 		}
 	}
@@ -475,9 +475,9 @@ namespace wbsh {
 		if (!readDelimited(p, delimiter, pattern)) return false;
 		if (!parseReplacement(p, delimiter, command.subst.replacement)) return false;
 
-		bool ignore_case = false;
-		if (!parseSubstFlags(p, command.subst, ignore_case)) return false;
-		return addRegex(p, pattern, ignore_case, command.subst.regex);
+		RegexOptions options;
+		if (!parseSubstFlags(p, command.subst, options)) return false;
+		return addRegex(p, pattern, options, command.subst.regex);
 	}
 
 	static bool readTransliterationSide(ScriptParser& p, char delimiter, std::string& out) {
@@ -716,23 +716,14 @@ namespace wbsh {
 		if (terminated) writeRaw(out, std::string(1, out.delimiter));
 	}
 
-	static const std::regex* resolveRegex(const Program& program, RunState& state, int index) {
+	static const PosixRegex* resolveRegex(const Program& program, RunState& state, int index) {
 		if (index >= 0) state.last_regex = &program.regexes[static_cast<std::size_t>(index)];
 		return state.last_regex;
 	}
 
-	static bool searchFrom(const std::string& text, std::size_t from, const std::regex& re,
-	                       std::smatch& match) {
-		const auto flags = from == 0 ? std::regex_constants::match_default
-			: std::regex_constants::match_prev_avail;
-		return searchRegexFlags(text.begin() + static_cast<std::ptrdiff_t>(from), text.end(), re,
-			match, flags);
-	}
-
 	static bool patternMatches(const Program& program, RunState& state, int regex) {
-		const std::regex* re = resolveRegex(program, state, regex);
-		std::smatch match;
-		return re != nullptr && searchFrom(state.pattern, 0, *re, match);
+		const PosixRegex* re = resolveRegex(program, state, regex);
+		return re != nullptr && re->test(state.pattern);
 	}
 
 	static bool matchSingle(const Program& program, RunState& state, LineSource& source,
@@ -838,17 +829,23 @@ namespace wbsh {
 		}
 	}
 
+	static std::string groupText(const std::string& subject, const RegexMatch& match, int group) {
+		return match.str(subject, static_cast<std::size_t>(group));
+	}
+
 	static std::string expandReplacement(const std::vector<ReplacementPiece>& pieces,
-	                                     const std::smatch& match) {
+	                                     const std::string& subject, const RegexMatch& match) {
 		std::string out;
 		PieceKind mode = PieceKind::CaseEnd;
 		PieceKind once = PieceKind::CaseEnd;
 		for (const ReplacementPiece& piece : pieces) {
 			switch (piece.kind) {
 			case PieceKind::Literal: appendConverted(out, piece.text, mode, once);          break;
-			case PieceKind::Whole:   appendConverted(out, match.str(0), mode, once);        break;
+			case PieceKind::Whole:
+				appendConverted(out, match.str(subject, 0), mode, once);
+				break;
 			case PieceKind::Group:
-				appendConverted(out, match.str(piece.group), mode, once);
+				appendConverted(out, groupText(subject, match, piece.group), mode, once);
 				break;
 			case PieceKind::UpperAll:
 			case PieceKind::LowerAll:
@@ -862,36 +859,39 @@ namespace wbsh {
 		return out;
 	}
 
+	static std::size_t copyOneChar(const std::string& pattern, std::size_t at,
+	                               std::string& result) {
+		const std::size_t length = utf8CharLength(pattern, at);
+		result.append(pattern, at, length);
+		return at + (length == 0 ? 1 : length);
+	}
+
 	// An empty match right where the previous match ended is skipped, as in
 	// GNU sed: s/x*/-/g turns "xy" into "-y-", not "--y-".
-	static bool substitute(const Substitution& subst, const std::regex& re, std::string& pattern) {
+	static bool substitute(const Substitution& subst, const PosixRegex& re, std::string& pattern) {
 		std::string result;
 		std::size_t from = 0;
 		std::size_t previous_end = std::string::npos;
 		long count = 0;
 		bool replaced = false;
-		std::smatch match;
-		while (from <= pattern.size() && searchFrom(pattern, from, re, match)) {
-			const std::size_t start = from + static_cast<std::size_t>(match.position(0));
-			const std::size_t length = static_cast<std::size_t>(match.length(0));
+		RegexMatch match;
+		while (from <= pattern.size() && re.search(pattern, from, match)) {
+			const std::size_t start = match.start(0);
+			const std::size_t length = match.length(0);
 			result.append(pattern, from, start - from);
 			if (length == 0 && start == previous_end) {
-				if (start < pattern.size()) result.push_back(pattern[start]);
-				from = start + 1;
+				from = copyOneChar(pattern, start, result);
 				continue;
 			}
 
 			previous_end = start + length;
 			++count;
 			const bool chosen = count == subst.nth || (subst.global && count > subst.nth);
-			result += chosen ? expandReplacement(subst.replacement, match) : match.str(0);
+			result += chosen ? expandReplacement(subst.replacement, pattern, match)
+				: match.str(pattern, 0);
 			replaced = replaced || chosen;
 			from = start + length;
-			if (length == 0) {
-				if (from < pattern.size()) result.push_back(pattern[from]);
-				++from;
-			}
-
+			if (length == 0) from = copyOneChar(pattern, from, result);
 			if (replaced && !subst.global) break;
 		}
 
@@ -923,7 +923,7 @@ namespace wbsh {
 
 	static void runSubstitution(const Program& program, RunState& state, Executor& exec,
 	                            const Command& command) {
-		const std::regex* re = resolveRegex(program, state, command.subst.regex);
+		const PosixRegex* re = resolveRegex(program, state, command.subst.regex);
 		if (re == nullptr) {
 			std::fprintf(stderr, "sed: no previous regular expression\n");
 			state.quit = true;

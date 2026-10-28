@@ -30,7 +30,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -47,7 +46,6 @@
 #include "numparse.h"
 #include "parser.h"
 #include "posixregex.h"
-#include "regexutil.h"
 #include "stdinsync.h"
 #include "testops.h"
 
@@ -2967,12 +2965,10 @@ namespace wbsh {
 		return false;
 	}
 
-	static std::vector<std::string> rematchGroups(const std::smatch& match) {
+	static std::vector<std::string> rematchGroups(const std::string& subject,
+	                                              const RegexMatch& match) {
 		std::vector<std::string> groups;
-		for (std::size_t k = 0; k < match.size(); ++k) {
-			groups.push_back(match[k].matched ? match[k].str() : std::string());
-		}
-
+		for (std::size_t k = 0; k < match.groups(); ++k) groups.push_back(match.str(subject, k));
 		return groups;
 	}
 
@@ -2981,16 +2977,19 @@ namespace wbsh {
 	// no match.
 	static bool evalDBracketRegexOp(const std::string& lhs, const std::string& rhs,
 	                                const DBracketContext& ctx) {
-		std::regex re;
-		if (!compilePosixRegex(re, rhs, true, ctx.nocasematch)) {
+		RegexOptions options;
+		options.syntax = RegexSyntax::Extended;
+		options.ignore_case = ctx.nocasematch;
+		PosixRegex re;
+		if (!re.compile(rhs, options)) {
 			ctx.invalid_regex = true;
 			return false;
 		}
 
-		std::smatch match;
-		const bool matched = searchRegex(lhs, re, &match);
+		RegexMatch match;
+		const bool matched = re.search(lhs, 0, match);
 		ctx.exec.env().setIndexedArrayFromList("BASH_REMATCH",
-			matched ? rematchGroups(match) : std::vector<std::string>());
+			matched ? rematchGroups(lhs, match) : std::vector<std::string>());
 		return matched;
 	}
 
