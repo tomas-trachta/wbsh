@@ -1,0 +1,36 @@
+A1
+A3
+b2
+[b]2
+a1
+a3
+b2
+1a
+2b
+3a
+a3
+a3
+X1
+sed: can't read 1d: No such file or directory
+a1
+b2
+a3
+=== in place
+<a>1
+<b>2
+<a>3
+<a>1
+<a>1
+<b>2
+<a>3
+(a>1
+<a>1
+=== errors
+wbsh: sed: invalid option -- 'Q'
+Usage: sed [OPTION]... {script-only-if-no-other-script} [input-file]...
+status 1
+wbsh: sed: unrecognized option '--bogus'
+Usage: sed [OPTION]... {script-only-if-no-other-script} [input-file]...
+status 1
+sed: no script specified
+status 1
