@@ -1347,8 +1347,11 @@ namespace wbsh {
 	bool Parser::tryParseRedirection(Redirection& out) {
 		const std::size_t saved = pos_;
 		int fd = -1;
+		std::string fd_variable;
 		if (peek().kind == TokKind::IoNumber) {
-			if (!parseInt(peek().text, fd)) fd = -1;
+			const std::string& text = peek().text;
+			if (text.front() == '{') fd_variable = text.substr(1, text.size() - 2);
+			else if (!parseInt(text, fd)) fd = -1;
 			advance();
 		}
 
@@ -1360,6 +1363,7 @@ namespace wbsh {
 		const TokKind kind = peek().kind;
 		out.op = redirOpForToken(kind);
 		out.fd = fd;
+		out.fd_variable = std::move(fd_variable);
 		advance();
 		if (peek().kind != TokKind::Word) {
 			error(peek(), "expected word after redirection operator");
