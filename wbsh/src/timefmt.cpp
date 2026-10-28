@@ -17,14 +17,12 @@ namespace wbsh {
 	// its invalid-parameter handler, so it is never passed through.
 	static const char* const kRuntimeConversions = "aAbBcCdDeFgGhHIjmMprRSTuUVwWxXyYzZ";
 
-	static std::tm localParts(std::time_t epoch) {
-		std::tm parts{};
+	static bool localParts(std::time_t epoch, std::tm& parts) {
 #ifdef _WIN32
-		if (localtime_s(&parts, &epoch) != 0) parts = std::tm{};
+		return localtime_s(&parts, &epoch) == 0;
 #else
-		localtime_r(&epoch, &parts);
+		return localtime_r(&epoch, &parts) != nullptr;
 #endif
-		return parts;
 	}
 
 	static std::string runtimeConversion(char conversion, const std::tm& parts) {
@@ -117,7 +115,9 @@ namespace wbsh {
 	}
 
 	std::string formatLocalTime(const std::string& format, std::time_t epoch) {
-		const std::tm parts = localParts(epoch);
+		std::tm parts{};
+		if (!localParts(epoch, parts)) return {};
+
 		std::string out;
 		for (std::size_t i = 0; i < format.size(); ++i) {
 			if (format[i] != '%' || i + 1 >= format.size()) {

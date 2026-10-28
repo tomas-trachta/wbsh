@@ -17,6 +17,7 @@ namespace wbsh {
 	 * (space-padded 24 / 12 hour), `%P` (lowercase am/pm) and the GNU flags
 	 * `-` (no padding), `_` (space padding), `0` (zero padding) and `^`
 	 * (upper case). A conversion the runtime does not know stays as written.
+	 * Empty when @p epoch has no local time (before 1970 on Windows).
 	 */
 	std::string formatLocalTime(const std::string& format, std::time_t epoch);
 
