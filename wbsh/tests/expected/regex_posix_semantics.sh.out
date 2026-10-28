@@ -1,0 +1,54 @@
+=== ERE { without an interval is literal
+a{b
+a{2
+a{2,3
+a{x}
+a{ 2}
+a{-1}
+ab{
+{
+{1}a
+X
+awk literal
+=~ literal
+=== real intervals still work
+aa
+aa
+aa
+a
+aaa
+aaa
+aaaa
+=== malformed intervals are errors
+wbsh: grep: Invalid content of \{\}
+rc=2
+wbsh: grep: Invalid content of \{\}
+wbsh: grep: Regular expression too big
+wbsh: grep: Unmatched \{
+=== leftmost-longest alternation
+X
+X
+abc
+[abcd]
+BASH_REMATCH[0]=abcd
+1 4
+2 <abc><abc>
+int
+integer
+<x=10>
+=== . and brackets match whole UTF-8 characters
+Xβγ
+α|β|γ|
+3
+1
+é
+α--δ
+ñandú
+x
+W
+Unïcödé
+naVE
+ž lu ť
+本日語
+x€y
+1
