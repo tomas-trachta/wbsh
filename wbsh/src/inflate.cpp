@@ -7,6 +7,8 @@
 
 #include <cstring>
 
+#include "bytestream.h"
+
 namespace wbsh {
 
 	static const int kMaxBits          = 15;
@@ -37,26 +39,24 @@ namespace wbsh {
 
 	namespace inflate_detail {
 		struct BitStream {
-			const std::uint8_t* in;
-			std::size_t in_len;
-			std::size_t in_pos = 0;
+			InputBuffer& in;
 			int bit_buffer = 0;
 			int bit_count = 0;
-			std::vector<std::uint8_t>& out;
+			LzWindow& out;
 			bool failed = false;
 
-			BitStream(const std::uint8_t* data, std::size_t length, std::vector<std::uint8_t>& sink)
-				: in(data), in_len(length), out(sink) {}
+			BitStream(InputBuffer& input, LzWindow& window) : in(input), out(window) {}
 
 			int bits(int need) {
 				long value = bit_buffer;
 				while (bit_count < need) {
-					if (in_pos >= in_len) {
+					const int byte = in.get();
+					if (byte < 0) {
 						failed = true;
 						return 0;
 					}
 
-					value |= static_cast<long>(in[in_pos++]) << bit_count;
+					value |= static_cast<long>(byte) << bit_count;
 					bit_count += 8;
 				}
 
@@ -136,21 +136,18 @@ namespace wbsh {
 		const int dist_symbol = decodeSymbol(stream, dist_table);
 		if (stream.failed || dist_symbol >= kDistSymbols) return false;
 		const int distance = kDistBase[dist_symbol] + stream.bits(kDistExtra[dist_symbol]);
-		if (static_cast<std::size_t>(distance) > stream.out.size()) return false;
-
-		const std::size_t base = stream.out.size() - distance;
-		for (int i = 0; i < length; ++i) stream.out.push_back(stream.out[base + i]);
-		return true;
+		if (stream.failed) return false;
+		return stream.out.copy(static_cast<std::size_t>(distance), static_cast<std::size_t>(length));
 	}
 
 	static int decodeBlockCodes(BitStream& stream, const Huffman& length_table,
 			const Huffman& dist_table) {
 		while (true) {
 			const int symbol = decodeSymbol(stream, length_table);
-			if (stream.failed) return -1;
+			if (stream.failed || !stream.out.ok()) return -1;
 			if (symbol == kEndOfBlock) return 0;
 			if (symbol < kEndOfBlock) {
-				stream.out.push_back(static_cast<std::uint8_t>(symbol));
+				stream.out.put(static_cast<std::uint8_t>(symbol));
 				continue;
 			}
 
@@ -161,18 +158,21 @@ namespace wbsh {
 	static int inflateStoredBlock(BitStream& stream) {
 		stream.bit_buffer = 0;
 		stream.bit_count = 0;
-		if (stream.in_pos + 4 > stream.in_len) return -1;
 
-		const int length = stream.in[stream.in_pos] | (stream.in[stream.in_pos + 1] << 8);
-		const int complement = stream.in[stream.in_pos + 2] | (stream.in[stream.in_pos + 3] << 8);
-		stream.in_pos += 4;
+		std::uint8_t header[4];
+		if (!stream.in.readExact(header, sizeof(header))) return -1;
+
+		const int length = header[0] | (header[1] << 8);
+		const int complement = header[2] | (header[3] << 8);
 		if ((length & 0xFFFF) != ((~complement) & 0xFFFF)) return -1;
-		if (stream.in_pos + length > stream.in_len) return -1;
 
-		stream.out.insert(stream.out.end(), stream.in + stream.in_pos,
-			stream.in + stream.in_pos + length);
-		stream.in_pos += length;
-		return 0;
+		for (int k = 0; k < length; ++k) {
+			const int byte = stream.in.get();
+			if (byte < 0) return -1;
+			stream.out.put(static_cast<std::uint8_t>(byte));
+		}
+
+		return stream.out.ok() ? 0 : -1;
 	}
 
 	static void buildFixedTables(Huffman& length_table, Huffman& dist_table) {
@@ -276,9 +276,8 @@ namespace wbsh {
 		}
 	}
 
-	bool inflateRawConsumed(const std::uint8_t* in, std::size_t in_len,
-	                        std::vector<std::uint8_t>& out, std::size_t& consumed) {
-		BitStream stream(in, in_len, out);
+	bool inflateStream(InputBuffer& in, LzWindow& out) {
+		BitStream stream(in, out);
 		bool last = false;
 		while (!last) {
 			last = stream.bits(1) != 0;
@@ -287,7 +286,18 @@ namespace wbsh {
 			if (inflateBlock(stream, type) != 0 || stream.failed) return false;
 		}
 
-		consumed += stream.in_pos;
+		return out.flush();
+	}
+
+	bool inflateRawConsumed(const std::uint8_t* in, std::size_t in_len,
+	                        std::vector<std::uint8_t>& out, std::size_t& consumed) {
+		MemorySource source(in, in_len);
+		InputBuffer input(source);
+		VectorSink sink(out);
+		LzWindow window(sink, kDeflateWindow);
+		if (!inflateStream(input, window)) return false;
+
+		consumed += static_cast<std::size_t>(input.consumed());
 		return true;
 	}
 

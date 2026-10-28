@@ -192,6 +192,8 @@
     <ClInclude Include="src\textcells.h" />
     <ClInclude Include="src\utf8.h" />
     <ClInclude Include="src\awk.h" />
+    <ClInclude Include="src\pager_feed.h" />
+    <ClInclude Include="src\bytestream.h" />
     <ClInclude Include="src\curl_internal.h" />
     <ClInclude Include="src\bcnum.h" />
     <ClInclude Include="src\bc_internal.h" />
@@ -265,10 +267,12 @@
     <ClCompile Include="src\coreutils_misc.cpp" />
     <ClCompile Include="src\coreutils_wget.cpp" />
     <ClCompile Include="src\coreutils_pager.cpp" />
+    <ClCompile Include="src\pager_feed.cpp" />
     <ClCompile Include="src\coreutils_patch.cpp" />
     <ClCompile Include="src\coreutils_tar.cpp" />
     <ClCompile Include="src\coreutils_compress.cpp" />
     <ClCompile Include="src\codecs.cpp" />
+    <ClCompile Include="src\bytestream.cpp" />
     <ClCompile Include="src\lzw.cpp" />
     <ClCompile Include="src\xz.cpp" />
     <ClCompile Include="src\bzip2.cpp" />

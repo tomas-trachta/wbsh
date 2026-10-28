@@ -10,35 +10,52 @@
 
 #include <algorithm>
 
+#include "bytestream.h"
+
 namespace wbsh {
 
 	namespace lzw_detail {
 
+		// Eight codes of `width` bits fill exactly `width` bytes, so the input
+		// is read one group at a time.
 		struct CodeReader {
-			const std::uint8_t* data = nullptr;
+			InputBuffer* in = nullptr;
+			std::uint8_t group[16] = {};
 			std::size_t bit_count = 0;
 			std::size_t position = 0;
 			int width = 9;
 			std::size_t codes_in_group = 0;
 
+			bool loadGroup() {
+				bit_count = 0;
+				position = 0;
+				while (bit_count < static_cast<std::size_t>(width) * 8) {
+					const int byte = in->get();
+					if (byte < 0) break;
+					group[bit_count / 8] = static_cast<std::uint8_t>(byte);
+					bit_count += 8;
+				}
+
+				return bit_count != 0;
+			}
+
 			bool next(std::uint32_t& code) {
+				if (codes_in_group == 0 && !loadGroup()) return false;
 				if (position + static_cast<std::size_t>(width) > bit_count) return false;
 
 				const std::size_t byte = position >> 3;
-				std::uint32_t window = data[byte];
+				std::uint32_t window = group[byte];
 				for (std::size_t extra = 1; extra <= 2 && (byte + extra) * 8 < bit_count; ++extra) {
-					window |= static_cast<std::uint32_t>(data[byte + extra]) << (8 * extra);
+					window |= static_cast<std::uint32_t>(group[byte + extra]) << (8 * extra);
 				}
 
 				code = (window >> (position & 7)) & ((1u << width) - 1);
 				position += static_cast<std::size_t>(width);
-				++codes_in_group;
+				codes_in_group = (codes_in_group + 1) % 8;
 				return true;
 			}
 
 			void skipRestOfGroup() {
-				const std::size_t used = codes_in_group % 8;
-				if (used != 0) position += (8 - used) * static_cast<std::size_t>(width);
 				codes_in_group = 0;
 			}
 		};
@@ -86,15 +103,15 @@ namespace wbsh {
 		return (1u << kInitialWidth) - 1;
 	}
 
-	static bool readHeader(const std::uint8_t* in, std::size_t size, int& max_width,
-	                       bool& block_mode, std::string& error) {
-		if (size < 3 || in[0] != 0x1F || in[1] != 0x9D) {
+	static bool readHeader(InputBuffer& in, int& max_width, bool& block_mode, std::string& error) {
+		std::uint8_t header[3];
+		if (!in.readExact(header, sizeof(header)) || header[0] != 0x1F || header[1] != 0x9D) {
 			error = "not in compress format";
 			return false;
 		}
 
-		max_width = in[2] & 0x1F;
-		block_mode = (in[2] & 0x80) != 0;
+		max_width = header[2] & 0x1F;
+		block_mode = (header[2] & 0x80) != 0;
 		if (max_width >= kInitialWidth && max_width <= 16) return true;
 
 		error = "unsupported code width";
@@ -127,23 +144,21 @@ namespace wbsh {
 		++dictionary.next_free;
 	}
 
-	bool uncompressData(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
-	                    std::string& error) {
-		int max_width = 0;
-		bool block_mode = false;
-		if (!readHeader(in, size, max_width, block_mode, error)) return false;
+	static const std::size_t kOutputBatch = 64 * 1024;
 
+	static bool emitString(const std::vector<std::uint8_t>& stack, std::vector<std::uint8_t>& batch,
+	                       ByteSink& out) {
+		batch.insert(batch.end(), stack.rbegin(), stack.rend());
+		if (batch.size() < kOutputBatch) return true;
+
+		const bool ok = out.write(batch.data(), batch.size());
+		batch.clear();
+		return ok;
+	}
+
+	static bool decodeCodes(CodeReader& reader, Dictionary& dictionary, int max_width, bool block_mode,
+	                        ByteSink& out, std::string& error) {
 		const std::uint32_t max_code = 1u << max_width;
-		Dictionary dictionary;
-		dictionary.prefix.assign(max_code, 0);
-		dictionary.suffix.assign(max_code, 0);
-		dictionary.next_free = block_mode ? 257 : 256;
-		dictionary.limit = initialLimit();
-
-		CodeReader reader;
-		reader.data = in + 3;
-		reader.bit_count = (size - 3) * 8;
-
 		std::uint32_t previous = 0;
 		if (!reader.next(previous)) return true;
 		if (previous >= 256) {
@@ -152,11 +167,11 @@ namespace wbsh {
 		}
 
 		std::uint8_t first = static_cast<std::uint8_t>(previous);
-		out.push_back(first);
+		std::vector<std::uint8_t> batch(1, first);
 		std::vector<std::uint8_t> stack;
 		for (std::uint32_t code = 0;;) {
 			growWidthIfFull(reader, dictionary, max_width, max_code);
-			if (!reader.next(code)) return true;
+			if (!reader.next(code)) return batch.empty() || out.write(batch.data(), batch.size());
 			if (code == kClearCode && block_mode) {
 				clearDictionary(reader, dictionary);
 				continue;
@@ -167,10 +182,35 @@ namespace wbsh {
 				return false;
 			}
 
-			out.insert(out.end(), stack.rbegin(), stack.rend());
+			if (!emitString(stack, batch, out)) return false;
 			addEntry(dictionary, previous, first, max_code);
 			previous = code;
 		}
+	}
+
+	bool uncompressStream(InputBuffer& in, ByteSink& out, std::string& error) {
+		int max_width = 0;
+		bool block_mode = false;
+		if (!readHeader(in, max_width, block_mode, error)) return false;
+
+		const std::uint32_t max_code = 1u << max_width;
+		Dictionary dictionary;
+		dictionary.prefix.assign(max_code, 0);
+		dictionary.suffix.assign(max_code, 0);
+		dictionary.next_free = block_mode ? 257 : 256;
+		dictionary.limit = initialLimit();
+
+		CodeReader reader;
+		reader.in = &in;
+		return decodeCodes(reader, dictionary, max_width, block_mode, out, error);
+	}
+
+	bool uncompressData(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
+	                    std::string& error) {
+		MemorySource source(in, size);
+		InputBuffer input(source);
+		VectorSink sink(out);
+		return uncompressStream(input, sink, error);
 	}
 
 }  // namespace wbsh

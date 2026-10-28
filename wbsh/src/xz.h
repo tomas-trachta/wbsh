@@ -11,7 +11,16 @@
 #include <string>
 #include <vector>
 
+#include "bytestream.h"
+
 namespace wbsh {
+
+	/// Decodes every concatenated .xz stream from @p in into @p out as it
+	/// goes; @p error stays empty when @p out stopped taking output.
+	bool unxzStream(InputBuffer& in, ByteSink& out, std::string& error);
+
+	/// Decodes one .lzma ("LZMA alone") stream from @p in into @p out.
+	bool unlzmaStream(InputBuffer& in, ByteSink& out, std::string& error);
 
 	/// Decodes every concatenated .xz stream in @p in, appending to @p out.
 	/// On failure returns false and says why in @p error.

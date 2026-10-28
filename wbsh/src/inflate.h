@@ -11,8 +11,17 @@
 
 namespace wbsh {
 
-	/// Decodes a raw DEFLATE bitstream (RFC 1951, not the gzip / zlib
-	/// wrapper) and appends to `out`. False on malformed input.
+	class InputBuffer;
+	class LzWindow;
+
+	inline constexpr std::size_t kDeflateWindow = 32768;
+
+	/// Decodes one raw DEFLATE stream (RFC 1951, not the gzip / zlib wrapper)
+	/// from @p in into @p out, reading nothing past its final block's last
+	/// byte. False on malformed input or when the sink stops taking output.
+	bool inflateStream(InputBuffer& in, LzWindow& out);
+
+	/// Decodes a raw DEFLATE bitstream held in memory and appends to `out`.
 	bool inflateRaw(const std::uint8_t* in, std::size_t in_len, std::vector<std::uint8_t>& out);
 
 	/// inflateRaw that also adds the number of input bytes the stream took,

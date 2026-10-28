@@ -46,6 +46,8 @@
     <ClInclude Include="src\strsearch.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\strscan.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\awk.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\pager_feed.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\bytestream.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\curl_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\bcnum.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\bc_internal.h"><Filter>Header Files</Filter></ClInclude>
@@ -108,10 +110,12 @@
     <ClCompile Include="src\curl_http.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\curl_writeout.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_pager.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\pager_feed.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_patch.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_tar.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_compress.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\codecs.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\bytestream.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lzw.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\xz.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\bzip2.cpp"><Filter>Source Files</Filter></ClCompile>

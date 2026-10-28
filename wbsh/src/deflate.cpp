@@ -7,6 +7,8 @@
 
 #include "deflate.h"
 
+#include "bytestream.h"
+
 #include <algorithm>
 
 #include "huffman.h"
@@ -483,36 +485,139 @@ namespace wbsh {
 		writeTokens(writer, tokens, dynamic);
 	}
 
+	// Bytes kept unprocessed until more input arrives: the longest match plus
+	// the lazy look at the next position.
+	static const std::size_t kLookahead = kMaxMatch + kMinMatch + 1;
+	static const std::size_t kSlideAfter = 1024 * 1024;
+
+	// Highly repetitive input yields few tokens per byte; capping a block's
+	// input too keeps the encoder's buffer small.
+	static const std::size_t kMaxBlockBytes = 1024 * 1024;
+
+	struct DeflateEncoder::State {
+		std::vector<std::uint8_t> data;
+		std::vector<std::uint8_t> bytes;
+		BitWriter writer;
+		MatchFinder finder;
+		std::vector<Token> tokens;
+		std::size_t position = 0;
+		std::size_t block_start = 0;
+		std::uint64_t total = 0;
+		int level = 6;
+	};
+
+	DeflateEncoder::DeflateEncoder(ByteSink& out, int level) : out_(out), state_(std::make_unique<State>()) {
+		State& state = *state_;
+		state.level = level;
+		state.writer.out = &state.bytes;
+		state.finder.head.assign(static_cast<std::size_t>(1) << kHashBits, -1);
+		state.finder.previous.assign(kWindowSize, -1);
+		state.finder.tuning = tuningFor(level);
+	}
+
+	DeflateEncoder::~DeflateEncoder() = default;
+
+	bool DeflateEncoder::drain() {
+		std::vector<std::uint8_t>& bytes = state_->bytes;
+		const bool ok = bytes.empty() || out_.write(bytes.data(), bytes.size());
+		bytes.clear();
+		return ok;
+	}
+
+	static int shiftedPosition(int position, int shift) {
+		return position >= shift ? position - shift : -1;
+	}
+
+	// Drops input more than a window behind, in whole windows so that the
+	// previous-position table, indexed modulo the window, stays valid.
+	static void slideWindow(DeflateEncoder::State& state) {
+		if (state.block_start < kSlideAfter + 2 * static_cast<std::size_t>(kWindowSize)) return;
+
+		const std::size_t keep_from = state.block_start - kWindowSize;
+		const std::size_t shift = keep_from - keep_from % kWindowSize;
+		state.data.erase(state.data.begin(), state.data.begin() + static_cast<std::ptrdiff_t>(shift));
+		state.position -= shift;
+		state.block_start -= shift;
+
+		const int amount = static_cast<int>(shift);
+		for (int& entry : state.finder.head) entry = shiftedPosition(entry, amount);
+		for (int& entry : state.finder.previous) entry = shiftedPosition(entry, amount);
+	}
+
+	bool DeflateEncoder::emitBlock(bool final_block) {
+		State& state = *state_;
+		writeBlock(state.writer, state.tokens, state.data.data() + state.block_start,
+			state.position - state.block_start, final_block);
+		state.tokens.clear();
+		state.block_start = state.position;
+		if (!drain()) return false;
+
+		slideWindow(state);
+		return true;
+	}
+
+	bool DeflateEncoder::emitStored(bool final_block) {
+		State& state = *state_;
+		const std::size_t size = state.data.size();
+		if (!final_block && size < kStoredMax) return true;
+
+		const std::size_t take = final_block ? size : size - size % kStoredMax;
+		writeStoredBlocks(state.writer, state.data.data(), take, final_block);
+		state.data.erase(state.data.begin(), state.data.begin() + static_cast<std::ptrdiff_t>(take));
+		return drain();
+	}
+
+	static std::size_t tokenizeLimit(const DeflateEncoder::State& state, bool final_block) {
+		const std::size_t size = state.data.size();
+		if (final_block) return size;
+		return size > kLookahead ? size - kLookahead : 0;
+	}
+
+	bool DeflateEncoder::tokenize(bool final_block) {
+		State& state = *state_;
+		state.finder.data = state.data.data();
+		state.finder.size = state.data.size();
+
+		while (state.position < tokenizeLimit(state, final_block)) {
+			state.position = tokenizeStep(state.finder, state.position, state.tokens);
+			const bool full = state.tokens.size() >= kBlockTokens
+				|| state.position - state.block_start >= kMaxBlockBytes;
+			if (!full || state.position >= state.data.size()) continue;
+			if (!emitBlock(false)) return false;
+
+			state.finder.data = state.data.data();
+			state.finder.size = state.data.size();
+		}
+
+		return true;
+	}
+
+	bool DeflateEncoder::write(const std::uint8_t* data, std::size_t size) {
+		State& state = *state_;
+		state.data.insert(state.data.end(), data, data + size);
+		state.total += size;
+		if (state.level <= 0) return emitStored(false);
+		return tokenize(false);
+	}
+
+	bool DeflateEncoder::finish() {
+		State& state = *state_;
+		if (state.level <= 0 || state.total == 0) {
+			if (!emitStored(true)) return false;
+		} else if (!tokenize(true) || !emitBlock(true)) {
+			return false;
+		}
+
+		state.writer.alignToByte();
+		return drain();
+	}
+
 	void deflateRaw(const std::uint8_t* data, std::size_t size, int level,
 	                std::vector<std::uint8_t>& out) {
-		BitWriter writer;
-		writer.out = &out;
-		if (level <= 0 || size == 0) {
-			writeStoredBlocks(writer, data, size, true);
-			return;
-		}
-
-		MatchFinder finder;
-		finder.data = data;
-		finder.size = size;
-		finder.head.assign(static_cast<std::size_t>(1) << kHashBits, -1);
-		finder.previous.assign(kWindowSize, -1);
-		finder.tuning = tuningFor(level);
-
-		std::vector<Token> tokens;
-		std::size_t block_start = 0;
-		std::size_t position = 0;
-		while (position < size) {
-			position = tokenizeStep(finder, position, tokens);
-			if (tokens.size() < kBlockTokens && position < size) continue;
-
-			const bool final_block = position >= size;
-			writeBlock(writer, tokens, data + block_start, position - block_start, final_block);
-			tokens.clear();
-			block_start = position;
-		}
-
-		writer.alignToByte();
+		VectorSink sink(out);
+		DeflateEncoder encoder(sink, level);
+		encoder.write(data, size);
+		encoder.finish();
 	}
 
 }  // namespace wbsh
