@@ -44,6 +44,7 @@
 #include "environment.h"
 #include "executor.h"
 #include "history.h"
+#include "keymap.h"
 #include "lexer.h"
 #include "lineedit.h"
 #include "parser.h"
@@ -879,6 +880,7 @@ namespace wbsh {
 		printBanner(state);
 		initHistoryVariables(env);
 
+		loadInputrc(exec);
 		sourceWbshrc(env, exec);
 		loadHistory(exec);
 		runInitCommand(env, exec);

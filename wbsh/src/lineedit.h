@@ -2,19 +2,22 @@
 
 /**
  * @file lineedit.h
- * @brief Interactive line editor with history, kill ring, and completion.
+ * @brief Interactive line editor with readline's emacs keys, history, and completion.
  *
- * Reads one line of input at a time. On a real TTY console it runs
- * the raw editor loop with cursor movement, backspace, persistent
- * history (up/down), Tab completion (filename, command, and
- * per-tool), kill-to-end / kill-to-start, clipboard paste, and
- * Unicode-aware redraw. On a non-TTY stdin (piped scripts, tests) it
- * falls back to a line-buffered `fgetc` loop so existing scripted
- * usage works unchanged.
+ * Reads one line of input at a time. On a real TTY console it runs the
+ * raw editor loop: every key is turned into the bytes a terminal sends
+ * for it and looked up in the shell's keymap (keymap.h), whose bindings
+ * name readline commands -- cursor and word motion, the kill ring and
+ * yank, undo, transposition and case changes, history and reverse
+ * search, Tab completion, yank-last-arg, edit-and-execute -- or type a
+ * macro, or run a shell command. On a non-TTY stdin (piped scripts,
+ * tests) it falls back to a line-buffered `fgetc` loop so existing
+ * scripted usage works unchanged.
  */
 
 #include "environment.h"
 #include "executor.h"
+#include "keymap.h"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -64,8 +67,10 @@ namespace wbsh {
 	                                 const std::string& prefix);
 
 	// `__lineedit KEY...`: replays keys through a fresh LineEditor. A KEY is
-	// literal text or one of <LEFT> <RIGHT> <UP> <DOWN> <HOME> <END> <BS>
-	// <DEL> <TAB> <ENTER> <ESC> <C-x> <M-x> <M-BS>.
+	// literal text or, in angle brackets, a named key -- LEFT RIGHT UP DOWN
+	// HOME END BS DEL TAB ENTER ESC -- or a character, either with C- / M- /
+	// C-M- in front (<C-LEFT>, <M-.>, <C-_>), or <AltGr-x> for a character
+	// typed with AltGr.
 	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args);
 
 	enum class LineStatus {
@@ -75,7 +80,7 @@ namespace wbsh {
 	};
 
 	// One instance per REPL session: keeps the edit buffer, cursor, history
-	// scroll position, and Tab state across readLine() calls.
+	// scroll position, kill ring and Tab state across readLine() calls.
 	class LineEditor {
 	public:
 		LineEditor(Environment& env, Executor& exec);
@@ -88,89 +93,131 @@ namespace wbsh {
 		std::string replayKeys(const std::vector<std::string>& keys);
 
 	private:
+		struct UndoPoint {
+			std::string buffer;
+			std::size_t cursor;
+		};
+
+		using EditCommand = void (LineEditor::*)();
+
 		void resetLine(const std::string& prompt);
 		LineStatus readLineRaw(const std::string& prompt, std::string& out);
 		LineStatus readLineCooked(std::string& out);
-		LineStatus lineStatus(const std::string& out, bool eof) const;
+		LineStatus lineStatus() const;
+		std::string describeReplay(bool finished) const;
 
 #ifdef _WIN32
 		void handleAltKeyUp(const ::KEY_EVENT_RECORD& key);
-		void dispatchKeyDown(const ::KEY_EVENT_RECORD& key,
-		                     std::string& out, bool& done, bool& eof);
-		bool handleCtrlKey(const ::KEY_EVENT_RECORD& key,
-		                   std::string& out, bool& done, bool& eof);
-		bool handleAltKey(const ::KEY_EVENT_RECORD& key);
-		bool handleNavigationKey(const ::KEY_EVENT_RECORD& key,
-		                         std::string& out, bool& done, bool& was_tab);
-		void insertReceivedChar(wchar_t ch);
+		void dispatchKeyDown(const ::KEY_EVENT_RECORD& key);
+		std::string wideCharacter(wchar_t ch);
 		bool nextKeyDown(::KEY_EVENT_RECORD& key);
 		bool takeReplayKey(::KEY_EVENT_RECORD& key);
 		std::string replayCharacter(wchar_t ch);
-		std::string describeReplay(const std::string& out, bool finished, bool eof) const;
-		// False when the input ran out before a key finished the line.
-		bool editUntilDone(std::string& out, bool& eof);
-		void handleInterrupt(bool& done);
-		void handleEofOrDelete(bool& done, bool& eof);
-		void moveCursorBack();
-		void moveCursorForward();
-		void moveCursorHome();
-		void moveCursorEnd();
-		void moveToLineEnd();
-		void appendLineText(std::string& out) const;
 
 		// One keystroke inside the reverse-search modal. Returns true to
 		// keep looping, false to exit. Sets `cancel` on Esc / Ctrl-G /
-		// Ctrl-C (restore the pre-search buffer) and `submit` on Enter.
+		// Ctrl-C (restore the pre-search buffer), `submit` on Enter, and
+		// `redispatch` for any other editing key, which then runs as usual.
 		bool revsearchHandleKey(const ::KEY_EVENT_RECORD& key,
 		                        std::string& query, std::size_t& match_index,
-		                        bool& cancel, bool& submit);
+		                        bool& cancel, bool& submit, bool& redispatch);
 		void revsearchStepOlder(const std::string& query, std::size_t& match_index);
 		void revsearchStepNewer(const std::string& query, std::size_t& match_index);
 		void revsearchEraseQueryChar(std::string& query, std::size_t& match_index);
 		void revsearchExtendQuery(std::string& query, char letter, std::size_t& match_index);
 #endif
 
+		// False when the input ran out before a key finished the line.
+		bool editUntilDone();
+		void leaveRawMode();
+		void enterRawMode();
+
+		// Keys arrive as the bytes a terminal sends; they collect until
+		// they name a binding, or cannot start one any more.
+		void dispatchKeys(const std::string& keys);
+		void runBinding(const KeyBinding& binding);
+		void runCommand(const std::string& name);
+		EditCommand commandNamed(const std::string& name) const;
+		void typeMacro(const std::string& text);
+		void runShellBinding(const std::string& command);
+		void recordUndo(const UndoPoint& before, const std::string& name);
+		void ding();
+
 		void redraw();
 		void emit(const std::string& text);
-		void handleEnter(std::string& out, bool& done);
-		void handleBackspace();
-		void handleDelete();
-		void handleTab();
-		void handleHistoryUp();
-		void handleHistoryDown();
-		void handleKillToEnd();
-		void handleKillToStart();
-		void handleKillWordBack();
-		void handleKillAlnumWordBack();
-		void handleKillAlnumWordForward();
+		void moveToLineEnd();
+		void appendLineText(std::string& out) const;
+		void insertChars(const std::string& text);
+		void killRange(std::size_t start, std::size_t end, bool prepend);
+		void insertYanked(const std::string& text, std::size_t& start, std::size_t& end);
 		std::size_t wordStartBefore(std::size_t pos) const;
 		std::size_t wordEndAfter(std::size_t pos) const;
-		void handleClearScreen();
-		void insertChars(const std::string& text);
+		void changeWordCase(int mode);
+		void showHistoryEntry(std::size_t back);
+		void interrupt();
+
+		// The commands keys are bound to, named as in readline.
+		void abortKeys();
+		void acceptLine();
+		void backwardChar();
+		void backwardDeleteChar();
+		void backwardKillWord();
+		void backwardWord();
+		void beginningOfHistory();
+		void beginningOfLine();
+		void capitalizeWord();
+		void clearScreen();
+		void complete();
+		void deleteChar();
+		void deleteHorizontalSpace();
+		void downcaseWord();
+		void editAndExecuteCommand();
+		void endOfHistory();
+		void endOfLine();
+		void forwardChar();
+		void forwardSearchHistory();
+		void forwardWord();
+		void insertComment();
+		void killLine();
+		void killWholeLine();
+		void killWord();
+		void nextHistory();
+		void pasteFromClipboard();
+		void possibleCompletions();
+		void previousHistory();
+		void rereadInitFile();
+		void reverseSearchHistory();
+		void revertLine();
+		void selfInsert();
+		void transposeChars();
+		void transposeWords();
+		void undo();
+		void unixLineDiscard();
+		void unixWordRubout();
+		void upcaseWord();
+		void yank();
+		void yankLastArg();
+		void yankNthArg();
+		void yankPop();
 
 		// PowerShell-style inline prediction: refreshSuggestion() fills
 		// suggestion_ from history when the cursor sits at end-of-buffer
-		// outside the reverse-search modal. Right-arrow at end-of-line
+		// outside the reverse-search modal. forward-char at end-of-line
 		// absorbs the suggestion instead of moving.
 		void refreshSuggestion();
 		bool acceptInlineSuggestion();
-		void handleRightArrow();
 
 		// Ctrl-R modal: the search prompt replaces the normal one; printable
 		// chars extend the query, Ctrl-R/Ctrl-S iterate matches, Enter
 		// accepts and submits, Esc/Ctrl-G cancels, any other editing key
 		// accepts the match and returns to normal editing. Windows-only;
 		// a no-op stub elsewhere.
-		void runReverseSearch(std::string& out, bool& done, bool& eof);
+		void runReverseSearch();
 		void revsearchRefresh(const std::string& query, std::size_t match_index);
 
 		// Ctrl-V: CF_UNICODETEXT with newlines stripped, inserted at the
 		// cursor. Windows-only; a no-op stub elsewhere.
-		void pasteFromClipboard();
-		// Wide-char input >= 0x80: emitted as UTF-8, fetching the low
-		// surrogate from the console input queue when `ch` is a high
-		// surrogate. Windows-only; a no-op stub elsewhere.
-		void insertWideCharFromConsole(wchar_t ch);
+		void insertClipboardText();
 
 		struct Tok {
 			std::size_t start;   // byte offset in buffer_
@@ -222,6 +269,7 @@ namespace wbsh {
 		void appendRefsFromGit(const std::string& kind, std::vector<std::string>& names);
 		std::vector<std::string> gitRefTargets(bool tags_and_remotes, bool guesses);
 		std::vector<std::string> gitRemotes();
+		std::vector<std::string> currentMatches(Tok& tok);
 		void applyCompletion(const Tok& tok,
 		                     const std::vector<std::string>& matches);
 		void printMatches(const std::vector<std::string>& matches);
@@ -231,8 +279,12 @@ namespace wbsh {
 		Executor& exec_;
 		bool headless_ = false;
 		bool interrupted_ = false;
+		bool done_ = false;
+		bool eof_ = false;
+		std::string accepted_;
 #ifdef _WIN32
 		std::deque<::KEY_EVENT_RECORD> replay_keys_;
+		::DWORD cooked_input_mode_ = 0;
 #endif
 
 		std::size_t history_pos_ = 0;        // 0 = current edit, 1 = last entry, ...
@@ -248,6 +300,27 @@ namespace wbsh {
 		// back up this many rows before re-emitting, otherwise it leaves
 		// stale wrapped lines above and re-prints the prompt on each row.
 		std::size_t last_cursor_row_ = 0;
+
+		// Keys typed so far toward a multi-key binding, the keys of the
+		// binding running now, and the commands that ran before and now:
+		// consecutive kills join, yank-pop and yank-last-arg follow on.
+		std::string pending_keys_;
+		std::string current_keys_;
+		std::string last_command_;
+		int macro_depth_ = 0;
+
+		std::vector<std::string> kill_ring_;
+		std::size_t kill_ring_top_ = 0;
+		std::size_t yank_start_ = 0;
+		std::size_t yank_end_ = 0;
+		std::size_t last_arg_back_ = 0;
+		std::size_t last_arg_start_ = 0;
+		std::size_t last_arg_end_ = 0;
+
+		// The line before each change, newest last; a run of typed
+		// characters is one change.
+		std::vector<UndoPoint> undo_;
+		std::size_t insert_run_ = 0;
 
 		// Tab-tracking: two consecutive tabs at the same word with no
 		// progress means "show me all matches".

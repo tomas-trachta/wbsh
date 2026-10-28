@@ -30,6 +30,7 @@
 
 #include "executor.h"
 #include "exitstatus.h"
+#include "keymap.h"
 #include "lexer.h"
 #include "lineedit.h"
 #include "numparse.h"
@@ -2468,6 +2469,7 @@ namespace wbsh {
 		exec.registerBuiltin("__revsearch", builtin_revsearch);
 		exec.registerBuiltin("__predict",   builtin_predict);
 		exec.registerBuiltin("__lineedit",  lineEditBuiltin);
+		exec.registerBuiltin("bind",        bindBuiltin);
 		exec.registerBuiltin("__histstat",  builtin_histstat);
 		exec.registerBuiltin("trap",     builtin_trap);
 		exec.registerBuiltin("getopts",  builtin_getopts);

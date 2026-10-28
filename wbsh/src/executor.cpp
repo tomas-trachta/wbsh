@@ -42,6 +42,7 @@
 #include "devices.h"
 #include "exitstatus.h"
 #include "fnmatch.h"
+#include "keymap.h"
 #include "lexer.h"
 #include "numparse.h"
 #include "parser.h"
@@ -1028,6 +1029,8 @@ namespace wbsh {
 		if (!arrays.empty()) overrides.emplace_back("WBSH_ARRAYS", arrays);
 		const std::string attributes = serializeAttributes();
 		if (!attributes.empty()) overrides.emplace_back("WBSH_ATTRIBUTES", attributes);
+		const std::string bindings = serializeKeyBindings();
+		if (!bindings.empty()) overrides.emplace_back("WBSH_BINDINGS", bindings);
 
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
