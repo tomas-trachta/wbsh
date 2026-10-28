@@ -16,7 +16,9 @@
 #include <string>
 #include <vector>
 
+#include "completion.h"
 #include "keymap.h"
+#include "numparse.h"
 #include "pathconv.h"
 #include "strscan.h"
 #include "textcells.h"
@@ -422,6 +424,11 @@ namespace wbsh {
 
 	std::vector<std::string> LineEditor::commandCompletions(const std::string& prefix) {
 		std::set<std::string> names;
+		for (const auto& alias : exec_.aliases()) {
+			if (matchesPrefix(alias.first, prefix)) names.insert(alias.first);
+		}
+
+		insertWithPrefix(names, shellKeywords(), prefix);
 		insertWithPrefix(names, exec_.builtinNames(), prefix);
 		insertWithPrefix(names, exec_.functionNames(), prefix);
 		insertWithPrefix(names, pathCommandNames(), prefix);
@@ -1186,7 +1193,30 @@ namespace wbsh {
 		const std::size_t cursor = cursor_;
 		moveToLineEnd();
 		emit("\r\n");
+		if (confirmLongList(all_matches.size())) listMatches(all_matches);
 
+		cursor_ = cursor;
+		showPrompt();
+		redraw();
+	}
+
+	// As readline's completion-query-items: a list this long is shown
+	// only when the user says so; 0 never asks.
+	bool LineEditor::confirmLongList(std::size_t count) {
+		static const long long kDefaultQueryItems = 100;
+
+		long long limit = kDefaultQueryItems;
+		const std::string setting = shellKeymap().variable("completion-query-items");
+		if (!parseLL(setting, limit)) limit = kDefaultQueryItems;
+		if (limit <= 0 || static_cast<long long>(count) < limit) return true;
+
+		emit("Display all " + std::to_string(count) + " possibilities? (y or n)");
+		const bool shown = askYesNo();
+		emit("\r\n");
+		return shown;
+	}
+
+	void LineEditor::listMatches(const std::vector<std::string>& all_matches) {
 		const std::vector<std::string> matches = filename_matches_
 			? complete_detail::shownNames(all_matches) : all_matches;
 		const std::size_t pad = longestLength(matches) + 2;
@@ -1195,10 +1225,6 @@ namespace wbsh {
 		for (std::size_t row = 0; row < rows; ++row) {
 			emit(matchesRow(matches, row, rows, cols, pad) + "\r\n");
 		}
-
-		cursor_ = cursor;
-		showPrompt();
-		redraw();
 	}
 
 	void LineEditor::applyCompletion(const Tok& tok,
