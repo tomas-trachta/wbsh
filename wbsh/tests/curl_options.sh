@@ -77,7 +77,7 @@ curl -sS --retry 3 "$BASE/flaky"
 echo "rc=$?"
 
 echo "=== proxy"
-curl -s -x "$BASE" http://example.invalid/echo | head -1
+curl -s -x "$BASE" http://example.invalid/echo | head -1 | show
 
 echo "=== multipart forms"
 printf 'file content\n' > "$tmp/up.txt"
