@@ -422,6 +422,14 @@ namespace wbsh {
 		std::string stripSuffix(const std::string& val, const std::string& pat, bool greedy);
 		std::string applyCaseConv(const std::string& val, char op, bool all,
 		                          const std::string& pat);
+		// The `${name@X}` transformations.
+		std::string transformParam(const ParamOpCtx& ctx, const std::string& letter);
+		std::vector<std::string> transformList(const ListParam& p, const std::string& letter,
+		                                       std::vector<std::string> elems);
+		std::string transformValue(char letter, const std::string& value);
+		std::string assignmentText(const std::string& name, const std::string& value) const;
+		std::vector<std::string> keyValueWords(const std::string& name) const;
+		void failBadSubstitution(const std::string& body);
 		std::string expandParamWordArg(const std::string& body);
 		std::string expandPatternArg(const std::string& body);
 		void appendPatternExpansion(const std::string& body, std::size_t& i, bool in_dq,

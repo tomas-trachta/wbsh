@@ -49,6 +49,8 @@ namespace wbsh::declare_detail {
 		bool readonly_on    = false;
 		bool readonly_off   = false;
 		bool n_flag         = false;
+		bool nameref_on     = false;
+		bool nameref_off    = false;
 		bool variables_only = false;
 	};
 
@@ -79,7 +81,11 @@ namespace wbsh::declare_detail {
 			case 'F': opts.function_names = true; break;
 			case 'g': opts.global = true; break;
 			case 'p': opts.print = true; break;
-			case 'n': opts.n_flag = true; break;
+			case 'n':
+				opts.n_flag = true;
+				if (on) opts.nameref_on = true;
+				else    opts.nameref_off = true;
+				break;
 			case 'v': opts.variables_only = true; break;
 			case 'r':
 				if (on) opts.readonly_on = true;
@@ -195,20 +201,7 @@ namespace wbsh::declare_detail {
 
 	static bool isKnownVariable(const Environment& env, const std::string& name) {
 		return env.has(name) || env.isExported(name) || env.isReadonly(name)
-			|| env.attributes(name) != 0;
-	}
-
-	static std::string attributeLetters(const Environment& env, const std::string& name) {
-		const unsigned attrs = env.attributes(name);
-		std::string letters;
-		if (env.isIndexedArray(name))      letters += 'a';
-		if (env.isAssocArray(name))        letters += 'A';
-		if ((attrs & kAttrInteger) != 0)   letters += 'i';
-		if (env.isReadonly(name))          letters += 'r';
-		if (env.isExported(name))          letters += 'x';
-		if ((attrs & kAttrLowercase) != 0) letters += 'l';
-		if ((attrs & kAttrUppercase) != 0) letters += 'u';
-		return letters;
+			|| env.attributes(name) != 0 || env.isNameref(name);
 	}
 
 	static std::string doubleQuoted(const std::string& text) {
@@ -260,8 +253,16 @@ namespace wbsh::declare_detail {
 		return false;
 	}
 
+	static std::string namerefLine(const Environment& env, const std::string& name) {
+		const std::string target = env.namerefTarget(name);
+		const std::string line = "declare -n " + name;
+		return target.empty() ? line : line + "=" + doubleQuoted(target);
+	}
+
 	static std::string declareLine(const Environment& env, const std::string& name) {
-		const std::string letters = attributeLetters(env, name);
+		if (env.isNameref(name)) return namerefLine(env, name);
+
+		const std::string letters = env.attributeLetters(name);
 		std::string line = "declare -" + (letters.empty() ? std::string("-") : letters) + " " + name;
 		if (!env.has(name)) return line;
 
@@ -271,6 +272,8 @@ namespace wbsh::declare_detail {
 	}
 
 	static std::string listingLine(const Environment& env, const std::string& name) {
+		if (env.isNameref(name)) return name + "=" + shellQuoteForReuse(env.namerefTarget(name));
+
 		std::string array;
 		if (arrayText(env, name, array)) return name + "=" + array;
 		return name + "=" + shellQuoteForReuse(env.get(name));
@@ -291,6 +294,7 @@ namespace wbsh::declare_detail {
 		insertKeys(names, env.vars());
 		insertKeys(names, env.indexedArrays());
 		insertKeys(names, env.assocArrays());
+		insertKeys(names, env.namerefs());
 		names.insert(env.exportedSet().begin(), env.exportedSet().end());
 		names.insert(env.readonlySet().begin(), env.readonlySet().end());
 		return { names.begin(), names.end() };
@@ -298,10 +302,11 @@ namespace wbsh::declare_detail {
 
 	static bool hasFilter(const Options& opts) {
 		return opts.add_attrs != 0 || opts.indexed || opts.assoc || opts.export_on
-			|| opts.readonly_on;
+			|| opts.readonly_on || opts.nameref_on;
 	}
 
 	static bool matchesFilter(const Environment& env, const Options& opts, const std::string& name) {
+		if (opts.nameref_on) return env.isNameref(name);
 		if (opts.indexed && !env.isIndexedArray(name)) return false;
 		if (opts.assoc && !env.isAssocArray(name)) return false;
 		if (opts.export_on && !env.isExported(name)) return false;
@@ -341,7 +346,7 @@ namespace wbsh::declare_detail {
 
 		for (const std::string& name : names) {
 			if (!matchesFilter(env, opts, name)) continue;
-			if (plain && !env.has(name)) continue;
+			if (plain && !env.has(name) && !env.isNameref(name)) continue;
 
 			printLine(plain ? listingLine(env, name) : declareLine(env, name));
 		}
@@ -546,9 +551,68 @@ namespace wbsh::declare_detail {
 		return status;
 	}
 
-	static int reportNamerefUnsupported(const Command& cmd) {
-		std::fprintf(stderr, "wbsh: %s: -n: name references are not supported\n", cmd.name);
-		return 2;
+	static bool isValidRefTarget(const std::string& target) {
+		Operand probe;
+		return target.empty() || (parseOperand(target, probe) && !probe.has_value);
+	}
+
+	// Without a value, a variable that already holds one keeps it as its target.
+	static std::string namerefTargetFor(const Environment& env, const Operand& op) {
+		if (op.has_value) return op.value;
+		if (env.isNameref(op.name)) return env.namerefTarget(op.name);
+
+		const auto found = env.vars().find(op.name);
+		return found == env.vars().end() ? std::string() : found->second;
+	}
+
+	static int reportBadRefTarget(const Command& cmd, const std::string& target) {
+		std::fprintf(stderr, "wbsh: %s: `%s': invalid variable name for name reference\n",
+			cmd.name, target.c_str());
+		return 1;
+	}
+
+	static int reportSelfReference(const Command& cmd, const std::string& name) {
+		std::fprintf(stderr, "wbsh: %s: %s: nameref variable self references not allowed\n",
+			cmd.name, name.c_str());
+		return 1;
+	}
+
+	static int declareNamerefOperand(Executor& exec, const Command& cmd, const Operand& op,
+			bool make_local) {
+		if (op.has_subscript) return reportBadRefTarget(cmd, op.text);
+		if (make_local) exec.makeLocal(op.name);
+
+		Environment& env = exec.env();
+		const std::string target = namerefTargetFor(env, op);
+		if (!isValidRefTarget(target)) return reportBadRefTarget(cmd, target);
+		if (target == op.name) return reportSelfReference(cmd, op.name);
+
+		env.setNameref(op.name, target);
+		return 0;
+	}
+
+	static int removeNamerefOperand(Executor& exec, const Operand& op) {
+		exec.env().clearNameref(op.name);
+		if (op.has_value) exec.env().set(op.name, op.value);
+		return 0;
+	}
+
+	static int declareNamerefs(Executor& exec, const Command& cmd, const Options& opts,
+			const std::vector<std::string>& args, std::size_t first, bool make_local) {
+		int status = 0;
+		for (std::size_t i = first; i < args.size(); ++i) {
+			Operand op;
+			if (!parseOperand(args[i], op)) {
+				status = reportInvalidIdentifier(cmd, args[i]);
+				continue;
+			}
+
+			const int result = opts.nameref_off ? removeNamerefOperand(exec, op)
+				: declareNamerefOperand(exec, cmd, op, make_local);
+			if (result != 0) status = result;
+		}
+
+		return status;
 	}
 
 	static int runDeclare(Executor& exec, const Command& cmd, const std::vector<std::string>& args,
@@ -558,12 +622,15 @@ namespace wbsh::declare_detail {
 		const int status = parseOptions(cmd, args, opts, first);
 		if (status != 0) return status;
 
-		if (opts.n_flag) return reportNamerefUnsupported(cmd);
 		if (opts.functions || opts.function_names) return declareFunctions(exec, opts, args, first);
 		if (first == args.size()) return listDeclarations(exec, opts, locals_only);
 		if (opts.print) return printNamedDeclarations(exec, cmd, args, first);
 
 		const bool make_local = locals_only || (exec.funcDepth() > 0 && !opts.global);
+		if (opts.nameref_on || opts.nameref_off) {
+			return declareNamerefs(exec, cmd, opts, args, first, make_local);
+		}
+
 		return declareOperands(exec, cmd, opts, args, first, make_local);
 	}
 
@@ -604,7 +671,12 @@ namespace wbsh::declare_detail {
 			return 1;
 		}
 
-		if (!opts.variables_only && !opts.n_flag && !isKnownVariable(env, text)) {
+		if (opts.n_flag) {
+			env.unsetNameref(text);
+			return 0;
+		}
+
+		if (!opts.variables_only && !isKnownVariable(env, text)) {
 			exec.unsetFunction(text);
 			return 0;
 		}
@@ -673,6 +745,10 @@ namespace wbsh::declare_detail {
 }  // namespace wbsh::declare_detail
 
 namespace wbsh {
+
+	std::string declarationText(const Environment& env, const std::string& name) {
+		return declare_detail::declareLine(env, name);
+	}
 
 	void registerDeclarationBuiltins(Executor& exec) {
 		exec.registerBuiltin("declare",  declare_detail::builtin_declare);

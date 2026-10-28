@@ -179,6 +179,14 @@ namespace wbsh {
 		return quoted;
 	}
 
+	std::string shellQuoteAlways(const std::string& word) {
+		for (const char c : word) {
+			if (isControlChar(c)) return ansiCQuote(word);
+		}
+
+		return shellQuoteSingle(word);
+	}
+
 	std::string shellQuoteForReuse(const std::string& word) {
 		if (word.empty()) return "''";
 
@@ -2631,13 +2639,19 @@ namespace wbsh {
 		return true;
 	}
 
+	// A nameref loop variable is pointed at each word in turn.
+	static void setLoopVariable(Environment& env, const std::string& name, const std::string& value) {
+		if (env.isNameref(name)) env.setNameref(name, value);
+		else env.set(name, value);
+	}
+
 	int Executor::runForLoop(const ForClause& clause) {
 		int status = 0;
 		std::vector<std::string> values;
 		if (!expandForWordList(clause, values, &status)) return status;
 
 		for (const auto& value : values) {
-			env_.set(clause.var, value);
+			setLoopVariable(env_, clause.var, value);
 			runBody(clause.body, status);
 			if (loopEnds(dispatchLoopFlow())) break;
 		}
@@ -3292,6 +3306,10 @@ namespace wbsh {
 		for (const std::string& name : names) {
 			const std::string letters = attributeOptionLetters(env_, name);
 			if (!letters.empty()) out += "declare -" + letters + " " + name + "\n";
+		}
+
+		for (const auto& entry : sortedKeys(env_.namerefs())) {
+			out += "declare -n " + entry + "=" + shellQuoteSingle(env_.namerefTarget(entry)) + "\n";
 		}
 
 		return out;

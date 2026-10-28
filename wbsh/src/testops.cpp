@@ -29,7 +29,7 @@ namespace wbsh::testops_detail {
 
 	namespace fs = std::filesystem;
 
-	static const char kUnaryLetters[] = "abcdefghkLNOGprsStuwxznvo";
+	static const char kUnaryLetters[] = "abcdefghkLNOGprsStuwxznvoR";
 
 	static const char* const kCharDevices[] = {
 		"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full", "/dev/tty",
@@ -225,6 +225,7 @@ namespace wbsh {
 			case 'z':
 			case 'n': return testops_detail::evalStringOperator(op, operand);
 			case 'v': return testops_detail::isSetVariable(exec.env(), operand);
+			case 'R': return exec.env().isNameref(operand);
 			case 'o': return testops_detail::isOptionOn(exec.env(), operand);
 			case 't': return testops_detail::isTerminalFd(operand);
 			default:  return testops_detail::evalFileOperator(exec, op, operand);

@@ -125,6 +125,17 @@ namespace wbsh {
 	/// that is safe, else single-quoted, or `$'...'` with control characters.
 	std::string shellQuoteForReuse(const std::string& word);
 
+	/// @p word always quoted, as `${x@Q}` shows it: single-quoted, or
+	/// `$'...'` with control characters.
+	std::string shellQuoteAlways(const std::string& word);
+
+	/// `declare -p`'s line for @p name (`declare -a a=([0]="x")`).
+	std::string declarationText(const Environment& env, const std::string& name);
+
+	/// @p ps with the prompt escapes (`\u`, `\w`, `\$`, ...) expanded.
+	std::string expandPromptEscapes(const std::string& ps, const Environment& env,
+		const PathConv& conv);
+
 	/**
 	 * @brief AST executor and runtime registry.
 	 *

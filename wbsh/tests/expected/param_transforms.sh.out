@@ -1,0 +1,64 @@
+=== 1. ${x@Q} ${x@E} ${x@P}
+'it'\''s'
+$'tab\there'
+[''] []
+aA	b
+$ \
+=== 2. ${x@U} ${x@u} ${x@L} ${x~} ${x~~}
+HELLO Hello hello Hello Hello HELLO
+hELLO hello HELLo
+ČřŽ ČŘŽ
+AB cD Ab cd AB CD
+=== 3. ${x@A} ${x@a}
+x='it'\''s'
+declare -i n='9'
+[] [i]
+a a
+declare -a arr=([0]="a" [1]="b c")
+'a' 'b c'
+'a' 'b c'
+set -- 'a' 'b c'
+=== 4. ${x@K} ${x@k}
+0 "x" 1 "y z"
+<0><x><1><y z>
+"a b" "1" c $'x\ty'
+'it'\''s'
+=== 5. unknown operators are bad substitutions
+wbsh: ${z@Z}: bad substitution
+status 1
+wbsh: ${z@}: bad substitution
+wbsh: ${z.y}: bad substitution
+=== 6. $"..." is a double-quoted string
+hello world
+=== 7. declare -i
+5
+9
+=== 8. declare -n
+1
+2 v
+declare -n r="v"
+-R r
+not -R v
+23
+a b c (3)
+3 b 0 1 2
+set by setv
+w v
+b
+a B c
+declare -n u="v"
+wbsh: declare: self: nameref variable self references not allowed
+rc=1
+wbsh: declare: `1a': invalid variable name for name reference
+rc=1
+5
+a B c
+subshell B
+cmdsubst 3
+loop: 23
+loop: set by setv
+v=unset
+declare -n r="v"
+declare -- r="v"
+wbsh: declare: r2: not found
+num still 5

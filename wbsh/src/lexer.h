@@ -158,6 +158,7 @@ namespace wbsh {
 		WordSegment readDoubleQuoted();
 		void readDoubleQuotedEscape(WordSegment& seg);
 		void readDollar(std::vector<WordSegment>& out);
+		void readLocalizedString(std::vector<WordSegment>& out);
 		void readDollarSingleQuoted(SourceLoc start, std::vector<WordSegment>& out);
 		void readSimpleDollarVar(char n1, std::vector<WordSegment>& out);
 		WordSegment readBacktick();
