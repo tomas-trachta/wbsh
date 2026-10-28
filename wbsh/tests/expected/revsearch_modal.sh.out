@@ -1,0 +1,32 @@
+=== the cursor sits where the query starts in the match
+[][ls -la /tmp]
+[echo hello ][world]
+=== non-ASCII characters extend the query
+[echo žluťoučký ][kůň]
+[echo ][žluťoučký kůň]
+=== the key that ends the search runs on the match
+[echoX][ hello world]
+[#][echo hello world]
+[echo hello world!][]
+[echo hello worl][]
+=== Enter runs the match; Ctrl-G goes back to the line typed before
+accept [grep foo bar.txt]
+[typed][]
+=== the search starts on the line typed so far
+[partial][]
+$ \r\e[J$ p\r\e[3C\r\e[J$ pa\r\e[4C\r\e[J$ par\r\e[5C\r\e[J$ part\r\e[6C\r\e[J$ parti\r\e[7C\r\e[J$ partia\r\e[8C\r\e[J$ partial\r\e[9C\r\e[J(reverse-i-search)`': partial\r\e[29C\r\e[J$ partial\r\e[9C\r\e[J$ partial\r\e[9C
+=== a failing query keeps the last match
+[echo ][hello world]
+[][]
+$ \r\e[J(reverse-i-search)`': \r\e[22C\r\e[J(reverse-i-search)`h': echo hello world\r\e[28C\r\e[J(reverse-i-search)`he': echo hello world\r\e[29C\a\r\e[J(failed reverse-i-search)`hex': echo hello world\r\e[37C\r\e[J$ \r\e[2C\r\e[J$ \r\e[2C
+[echo ][hello world]
+[typed][]
+=== Ctrl-R steps to older matches, Ctrl-S back to newer ones
+[][echo žluťoučký kůň]
+[][echo žluťoučký kůň]
+[][echo hello world]
+=== Ctrl-R on an empty query searches for the last query again
+[][echo hello world]
+=== a match that wraps is erased whole when the search moves on
+[][] @0:2
+$ \r\e[J(reverse-i-search)`': \r\e[2C\e[1A\r\e[J(reverse-i-search)`n': echo this is a rather long command line that wraps on a narrow screen\r\e[11C\e[4A\r\e[J(reverse-i-search)`na': echo this is a rather long command line that wraps on a narrow screen\r\e[4A\r\e[J(reverse-i-search)`nar': echo this is a rather long command line that wraps on a narrow screen\r\e[1C\e[4A\r\e[J(reverse-i-search)`narr': echo this is a rather long command line that wraps on a narrow screen\r\e[2C\e[4A\r\e[J(reverse-i-search)`narro': echo this is a rather long command line that wraps on a narrow screen\r\e[3C\e[4A\r\e[J(reverse-i-search)`narrow': echo this is a rather long command line that wraps on a narrow screen\r\e[4C\a\e[4A\r\e[J(reverse-i-search)`narrow': echo this is a rather long command line that wraps on a narrow screen\r\e[4C\e[4A\r\e[J$ \r\e[2C\r\e[J$ \r\e[2C

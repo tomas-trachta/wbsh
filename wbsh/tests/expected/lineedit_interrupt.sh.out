@@ -5,9 +5,9 @@ interrupt
 === Ctrl-C in reverse search ends the line too; Ctrl-G only leaves the search
 interrupt
 [x][]
-[x][]
+[echo ][hello]
 accept [echo hello]
-[echo hell][o]
+[l][s -la]
 === the other line endings are unchanged
 accept [echo hi]
 accept []
