@@ -1,0 +1,49 @@
+=== round trips of more data than any buffer
+gzip ok
+20000000
+bzip2 ok
+5000000
+5000000
+=== output starts before the input ends
+y
+y
+y
+y
+a line of compressible text
+=== concatenated members and streams
+first
+second
+one
+two
+kept
+=== errors
+wbsh: zcat: stdin: unexpected end of file
+rc=1
+wbsh: zcat: stdin: not in gzip format
+rc=1
+test ok
+=== xz filter chains, undone in reverse order
+015f3c7602e85f2d5a74e31b54241219  -
+015f3c7602e85f2d5a74e31b54241219  -
+015f3c7602e85f2d5a74e31b54241219  -
+=== tar, member by member
+src/
+src/small.txt
+src/sub/
+src/sub/big.txt
+tgz extract ok
+small
+4
+wbsh: tar: Unexpected EOF in archive
+wbsh: tar: Child returned status 1: unexpected end of file
+rc=2
+=== cpio
+src/small.txt
+src/sub/big.txt
+cpio extract ok
+=== pagers on an endless pipe
+y
+y
+y
+y
+x
