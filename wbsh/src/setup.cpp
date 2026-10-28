@@ -215,6 +215,19 @@ namespace wbsh {
 		env.exportVar("PWD");
 	}
 
+	static void addDiscoveredToolDirs(Environment& env, const PathConv& path_conv) {
+#ifdef _WIN32
+		prependDirsToPath(env, path_conv, registryPathDirs());
+#endif /* _WIN32 */
+		prependDirsToPath(env, path_conv, findGitDirs());
+		prependDirsToPath(env, path_conv, findGitUnixDirs());
+		prependDirsToPath(env, path_conv, findDockerDirs());
+	}
+
+	bool isChildShell(const Environment& env) {
+		return env.get("WBSH_SUBSHELL") == "1";
+	}
+
 	void prepareEnv(Environment& env) {
 		env.loadFromProcessEnv();
 
@@ -222,12 +235,7 @@ namespace wbsh {
 		const std::string path = env.get("PATH");
 		if (!path.empty()) env.set("PATH", path_conv.pathListWin32ToPosix(path));
 
-#ifdef _WIN32
-		prependDirsToPath(env, path_conv, registryPathDirs());
-#endif /* _WIN32 */
-		prependDirsToPath(env, path_conv, findGitDirs());
-		prependDirsToPath(env, path_conv, findGitUnixDirs());
-		prependDirsToPath(env, path_conv, findDockerDirs());
+		if (!isChildShell(env)) addDiscoveredToolDirs(env, path_conv);
 
 		seedHome(env, path_conv);
 		seedPwd(env, path_conv);
@@ -368,6 +376,9 @@ namespace wbsh {
 	}
 
 	void absorbInheritedState(Environment& env, Executor& exec) {
+		env.unset("WBSH_SUBSHELL");
+		env.unset("WBSH_UTIL_FILES");
+
 		const std::string local_names = env.get("WBSH_LOCAL_NAMES");
 		if (!local_names.empty()) {
 			env.unset("WBSH_LOCAL_NAMES");

@@ -13,6 +13,7 @@
 #include "executor.h"
 #include "interrupt.h"
 #include "pathconv.h"
+#include "setup.h"
 #include "wbshsdk.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -258,6 +259,24 @@ namespace wbsh {
 			rememberLoaded();
 		}
 
+		// A child shell loads exactly the files its parent had loaded, those
+		// from `utils load` included, and skips the folder scan.
+		static void loadInherited(Executor& exec, const std::string& files) {
+			if (files.empty() || !bindSdk(exec)) return;
+
+			std::size_t start = 0;
+			while (start < files.size()) {
+				std::size_t stop = files.find(';', start);
+				if (stop == std::string::npos) stop = files.size();
+
+				const std::wstring file = utf8ToPath(files.substr(start, stop - start)).wstring();
+				if (!file.empty()) g_sdk.load_file(file.c_str(), complain, nullptr);
+				start = stop + 1;
+			}
+
+			rememberLoaded();
+		}
+
 		static std::wstring absoluteUtilPath(const std::string& given) {
 			std::error_code ec;
 			const std::filesystem::path full = std::filesystem::absolute(utf8ToPath(given), ec);
@@ -354,6 +373,11 @@ namespace wbsh {
 	}
 
 	void loadUtils(Executor& exec) {
+		if (isChildShell(exec.env())) {
+			utils_detail::loadInherited(exec, exec.env().get("WBSH_UTIL_FILES"));
+			return;
+		}
+
 		if (!utils_detail::bindSdk(exec)) return;
 
 		utils_detail::loadEverything();
