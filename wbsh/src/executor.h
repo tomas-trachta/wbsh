@@ -1015,6 +1015,7 @@ namespace wbsh {
 	void registerReadBuiltin(Executor& exec);
 	void registerUlimitBuiltin(Executor& exec);
 	void registerEnableBuiltin(Executor& exec);
+	void registerTrapBuiltin(Executor& exec);
 	void registerFcBuiltin(Executor& exec);
 	void registerTestBuiltins(Executor& exec);
 	void registerCoreutils(Executor& exec);

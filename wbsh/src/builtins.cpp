@@ -1476,45 +1476,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	static std::string canonicalSignalName(std::string name) {
-		const bool prefixed = name.size() > 3
-			&& (name.compare(0, 3, "SIG") == 0 || name.compare(0, 3, "sig") == 0);
-		if (prefixed) name = name.substr(3);
-
-		for (char& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-		if (name == "0") name = "EXIT";
-		return name;
-	}
-
-	static int builtin_trap(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty() || (args.size() == 1 && args[0] == "-p")) {
-			for (const auto& entry : exec.listedTraps()) {
-				std::printf("trap -- '%s' %s\n", entry.second.c_str(), entry.first.c_str());
-			}
-
-			return 0;
-		}
-
-		if (args[0] == "-l") {
-			std::printf("EXIT INT TERM HUP QUIT\n");
-			return 0;
-		}
-
-		if (args.size() < 2) {
-			printerr("trap: usage: trap [-lp] [[ARG] SIG ...]");
-			return 2;
-		}
-
-		const std::string& action = args[0];
-		for (std::size_t i = 1; i < args.size(); ++i) {
-			const std::string signal = canonicalSignalName(args[i]);
-			if (action == "-") exec.clearTrap(signal);
-			else exec.setTrap(signal, action);
-		}
-
-		return 0;
-	}
-
 	namespace getopts_detail {
 		struct GetoptsCtx {
 			Executor& exec;
@@ -2333,7 +2294,6 @@ namespace wbsh {
 		exec.registerBuiltin("bind",        bindBuiltin);
 		exec.registerBuiltin("__histstat",  builtin_histstat);
 		exec.registerBuiltin("__ctrlc",     builtin_ctrlc);
-		exec.registerBuiltin("trap",     builtin_trap);
 		exec.registerBuiltin("getopts",  builtin_getopts);
 		exec.registerBuiltin("mapfile",  builtin_mapfile);
 		exec.registerBuiltin("readarray",builtin_mapfile);
@@ -2354,6 +2314,7 @@ namespace wbsh {
 		registerReadBuiltin(exec);
 		registerUlimitBuiltin(exec);
 		registerEnableBuiltin(exec);
+		registerTrapBuiltin(exec);
 		registerFcBuiltin(exec);
 		registerTestBuiltins(exec);
 	}

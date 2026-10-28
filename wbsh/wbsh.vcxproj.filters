@@ -72,6 +72,7 @@
     <ClCompile Include="src\environment.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\expander.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\builtins_trap.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\filetimes.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\dateparse.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_stat.cpp"><Filter>Source Files</Filter></ClCompile>
