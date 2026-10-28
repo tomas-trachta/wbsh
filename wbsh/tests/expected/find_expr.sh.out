@@ -1,0 +1,123 @@
+=== depth limits
+.
+.
+./a
+./other
+./a/b/Two.TXT
+./a/b/big
+./a/b/c
+a/b
+=== names and paths
+./a/x.txt
+./other/g.txt
+./a/b/Two.TXT
+./a/x.txt
+./other/g.txt
+./a/b/Two.TXT
+./a/b/big
+./a/b/c
+./a/b/Two.TXT
+a/x.txt
+a//empty
+=== operators
+./a/b/c
+./a/x.txt
+a/b/Two.TXT
+a/b/big
+a/empty
+a/x.txt
+a/b/big
+a/empty
+a/empty
+a/x.txt
+a/x.txt
+comma empty
+./a/empty
+./a/x.txt
+./other/g.txt
+=== types, sizes, emptiness
+a/empty
+a/b/big
+a/b/Two.TXT
+a/empty
+a/b/big
+a/b/c
+a/empty
+=== times
+a/newer
+a/x.txt
+a/x.txt
+a/x.txt
+a/x.txt
+=== regex and perm
+a/b/big
+a/empty
+a/b/big
+a/empty
+a/x.txt
+a/b/c
+a/x.txt
+a/x.txt
+=== print0, printf, fprint
+a/x.txt|
+./a/b|b|./a|a/b|.|2|d|755
+./a/empty|empty|./a|a/empty|.|2|f|644
+./a/x.txt|x.txt|./a|a/x.txt|.|2|f|644
+./a|a|.|a|.|1|d|755
+./other/g.txt|g.txt|./other|other/g.txt|.|2|f|644
+./other|other|.|other|.|1|d|755
+.|.|.||.|0|d|755
+6 x.txt |     6|
+tab	here\n % A
+a/empty
+=== exec
+found a/x.txt
+batch a/x.txt
+a/x.txt.bak
+b
+dir ./big ./Two.TXT
+dir ./empty ./x.txt
+a/x.txt
+< echo ... a/x.txt > ? 
+failing batch: 1
+find: 'nosuchcommand': No such file or directory
+missing command: 0
+=== quit
+a
+=== links
+find: File system loop detected; 'a/b/loop' is part of the same file system loop as 'a'.
+a/side/g.txt
+loop status: 1
+a/b/loop
+a/side
+a/side
+a/side/g.txt
+a/side
+=== delete
+find: cannot delete 'del/gone': Directory not empty
+non-empty: 1
+del
+del/keep
+del/keep/z
+find: The -delete action automatically turns on -depth, but -prune does nothing when -depth is in effect.  If you want to carry on anyway, just explicitly use the -depth option.
+prune with delete: 1
+del removed
+=== errors
+find: 'nonexistent': No such file or directory
+rc=1
+find: unknown predicate `-bogus'
+rc=1
+find: missing argument to `-name'
+rc=1
+find: invalid -size type `q'
+rc=1
+find: Unknown argument to -type: z
+rc=1
+find: invalid expression; I was expecting to find a ')' somewhere but did not see one.
+rc=1
+find: invalid expression; you have used a binary operator '-o' with nothing before it.
+rc=1
+find: Expected a positive decimal integer argument to -maxdepth, but got 'x'
+rc=1
+find: missing argument to `-exec'
+rc=1

@@ -58,6 +58,16 @@ namespace wbsh {
 	std::FILE* createSiblingTempFile(const std::filesystem::path& target, const std::string& prefix,
 	                                 std::filesystem::path& temp);
 
+	/// The words of @p argv single-quoted for the shell parser, joined by spaces.
+	std::string quoteShellArgv(const std::vector<std::string>& argv);
+
+	/// .exe / .bat / .cmd / .com / .ps1: what `ls` and `find -perm` treat as executable.
+	bool hasExecutableExtension(const std::filesystem::path& full);
+
+	/// Remove a file, link or empty directory, clearing a read-only attribute if that is
+	/// what stands in the way. Links are removed, never followed.
+	bool removeFileOrEmptyDirectory(const std::filesystem::path& native, std::error_code& ec);
+
 	/// Append every line of `path` ("-" = stdin) to `lines`, stripping
 	/// the trailing `\n` / `\r\n`. Returns false if the file can't be
 	/// opened (errno is set).
@@ -121,6 +131,8 @@ namespace wbsh {
 	void registerSedBuiltin(Executor& exec);
 
 	void registerGrepBuiltins(Executor& exec);
+
+	void registerFindBuiltin(Executor& exec);
 
 	void registerBcBuiltin(Executor& exec);
 

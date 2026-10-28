@@ -297,7 +297,7 @@ namespace wbsh {
 		return askUser("remove " + protection + fileKind(native, status) + " '" + shown + "'");
 	}
 
-	static bool removeOne(const fs::path& native, std::error_code& ec) {
+	bool removeFileOrEmptyDirectory(const fs::path& native, std::error_code& ec) {
 		if (fs::remove(native, ec)) return true;
 		if (ec != std::errc::permission_denied || !clearReadOnly(native)) return false;
 
@@ -319,7 +319,7 @@ namespace wbsh {
 		if (!confirmRemoval(native, shown, status, opts)) return Outcome::Kept;
 
 		std::error_code ec;
-		if (removeOne(native, ec)) {
+		if (removeFileOrEmptyDirectory(native, ec)) {
 			announceRemoved(shown, status, opts);
 			return Outcome::Removed;
 		}

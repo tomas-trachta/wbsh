@@ -1,7 +1,7 @@
 /**
  * @file coreutils_text.cpp
  * @brief Text-processing coreutils: uniq, cut, tee, paste,
- *        tac, rev, nl, grep, find, sed, fold, column, expand,
+ *        tac, rev, nl, fold, column, expand,
  *        unexpand, comm (awk lives in awk.cpp).
  */
 
@@ -1326,154 +1326,6 @@ namespace wbsh {
 		return status;
 	}
 
-	namespace find_detail {
-		struct FindOptions {
-			std::vector<std::string> roots;
-			std::string name_pat;
-			char type_filter = 0;   // 0 = any, 'f', 'd', 'l'
-			int max_depth = -1;
-		};
-	}  // namespace find_detail
-
-	using find_detail::FindOptions;
-
-	static int parseFindArgs(const std::vector<std::string>& args, FindOptions& options) {
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "-name" && i + 1 < args.size()) {
-				options.name_pat = args[++i];
-				continue;
-			}
-
-			if (arg == "-type" && i + 1 < args.size()) {
-				if (!args[i + 1].empty()) options.type_filter = args[i + 1][0];
-				++i;
-				continue;
-			}
-
-			if (arg == "-maxdepth" && i + 1 < args.size()) {
-				if (!parseInt(args[++i], options.max_depth)) {
-					perr("find", "bad -maxdepth");
-					return 1;
-				}
-
-				continue;
-			}
-
-			if (!arg.empty() && arg[0] == '-') {
-				std::fprintf(stderr, "wbsh: find: option %s not implemented\n", arg.c_str());
-				return 1;
-			}
-
-			options.roots.push_back(arg);
-		}
-
-		if (options.roots.empty()) options.roots.push_back(".");
-		return 0;
-	}
-
-	static bool isRegexMetaChar(char c) {
-		return c == '.' || c == '+' || c == '(' || c == ')' || c == '|'
-			|| c == '^' || c == '$' || c == '{' || c == '}' || c == '\\';
-	}
-
-	static std::string globToRegex(const std::string& glob) {
-		std::string pattern;
-		for (char c : glob) {
-			if (c == '*') {
-				pattern += ".*";
-			} else if (c == '?') {
-				pattern += ".";
-			} else if (isRegexMetaChar(c)) {
-				pattern.push_back('\\');
-				pattern.push_back(c);
-			} else {
-				pattern.push_back(c);
-			}
-		}
-
-		return pattern;
-	}
-
-	static bool findNameMatches(const std::string& name_pat, const std::string& name) {
-		if (name_pat.empty()) return true;
-
-		std::regex re;
-		if (!compileRegex(re, "^(?:" + globToRegex(name_pat) + ")$")) return false;
-		return searchRegex(name, re);
-	}
-
-	static bool findTypeMatches(char type_filter, const fs::path& path) {
-		if (type_filter == 0) return true;
-
-		std::error_code ec;
-		const auto status = fs::symlink_status(path, ec);
-		if (ec) return false;
-		if (type_filter == 'l') return fs::is_symlink(status);
-		if (type_filter == 'd') return fs::is_directory(status);
-		if (type_filter == 'f') return fs::is_regular_file(status);
-		return true;
-	}
-
-	static void printFindMatch(Executor& exec, const fs::path& path) {
-		std::printf("%s\n", exec.pathConv().toPosix(pathToUtf8(path)).c_str());
-	}
-
-	static void printFindRoot(Executor& exec, const FindOptions& options, const fs::path& native,
-			const std::string& root_arg) {
-		const std::string basename = pathToUtf8(native.filename());
-		const std::string root_basename = basename.empty() ? root_arg : basename;
-		if (!findTypeMatches(options.type_filter, native)) return;
-		if (!findNameMatches(options.name_pat, root_basename)) return;
-
-		printFindMatch(exec, native);
-	}
-
-	static void walkAndPrintFindMatches(Executor& exec, const FindOptions& options,
-			const fs::path& native, const std::string& root_arg) {
-		printFindRoot(exec, options, native, root_arg);
-
-		std::error_code ec;
-		if (!fs::is_directory(native, ec)) return;
-
-		fs::recursive_directory_iterator it(native,
-			fs::directory_options::skip_permission_denied, ec);
-		if (ec) return;
-
-		for (auto cur = it; cur != fs::recursive_directory_iterator(); cur.increment(ec)) {
-			if (ec) break;
-			if (options.max_depth >= 0 && cur.depth() >= options.max_depth) {
-				cur.disable_recursion_pending();
-			}
-
-			const fs::path path = cur->path();
-			if (!findTypeMatches(options.type_filter, path)) continue;
-			if (!findNameMatches(options.name_pat, pathToUtf8(path.filename()))) continue;
-			printFindMatch(exec, path);
-		}
-	}
-
-	static int builtin_find(Executor& exec, const std::vector<std::string>& args) {
-		FindOptions options;
-		if (int status = parseFindArgs(args, options); status != 0) return status;
-
-		int status = 0;
-		for (const auto& root : options.roots) {
-			std::error_code ec;
-			const fs::path native = toNative(exec, root);
-			if (!fs::exists(native, ec)) {
-				std::fprintf(stderr, "wbsh: find: %s: no such file or directory\n", root.c_str());
-				status = 1;
-				continue;
-			}
-
-			walkAndPrintFindMatches(exec, options, native, root);
-		}
-
-		std::fflush(stdout);
-		return status;
-	}
-
 	struct FoldOptions {
 		int width = kFoldDefaultWidth;
 		bool wrap_spaces = false;
@@ -1906,7 +1758,6 @@ namespace wbsh {
 		exec.registerBuiltin("expand",   builtin_expand);
 		exec.registerBuiltin("unexpand", builtin_unexpand);
 		exec.registerBuiltin("comm",     builtin_comm);
-		exec.registerBuiltin("find",     builtin_find);
 		exec.registerBuiltin("awk",      builtin_awk);
 		exec.registerBuiltin("gawk",     builtin_awk);
 	}
