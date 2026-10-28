@@ -30,7 +30,7 @@ diff -r da/x db/x
 ---
 > 2
 da:
-sub/
+sub
 x
 
 da/sub:
@@ -52,7 +52,7 @@ tree/sub/
 tree/sub/b.txt
 out:
 a.txt
-sub/
+sub
 
 out/sub:
 b.txt

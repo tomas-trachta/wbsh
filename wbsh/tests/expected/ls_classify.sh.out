@@ -1,0 +1,68 @@
+=== plain
+a
+j
+plain.txt
+run.exe
+script.bat
+=== names round-trip through read
+ok a
+ok j
+ok plain.txt
+ok run.exe
+ok script.bat
+=== -F
+a/
+j@
+plain.txt
+run.exe*
+script.bat*
+=== --classify=always
+a/
+j@
+plain.txt
+run.exe*
+script.bat*
+=== --classify=auto (not a tty)
+a
+j
+plain.txt
+run.exe
+script.bat
+=== -p
+a/
+j
+plain.txt
+run.exe
+script.bat
+=== --file-type
+a/
+j@
+plain.txt
+run.exe
+script.bat
+=== --indicator-style=classify then none
+a
+j
+plain.txt
+run.exe
+script.bat
+=== -l without and with -F
+a
+j
+plain.txt
+run.exe
+script.bat
+a/
+j@
+plain.txt
+run.exe*
+script.bat*
+=== -d on a directory
+a
+a/
+=== errors
+wbsh: ls: invalid argument 'bogus' for '--indicator-style'
+bad style: 2
+wbsh: ls: invalid option -- 'z'
+bad option: 2
+after --: 1

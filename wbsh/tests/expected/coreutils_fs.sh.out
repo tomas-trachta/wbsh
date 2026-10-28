@@ -1,12 +1,12 @@
 === mkdir / rmdir
-b/
-c/
+b
+c
 === touch / size tests
 exists empty
 non-empty hello
 === cp
 hello
-b/
+b
 === mv
 copy gone
 renamed exists
