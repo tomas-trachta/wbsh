@@ -28,6 +28,7 @@
 #include "pathconv.h"
 #include "posixregex.h"
 #include "regexutil.h"
+#include "strsearch.h"
 
 namespace wbsh {
 
@@ -82,11 +83,25 @@ namespace wbsh {
 
 		struct Matcher {
 			std::vector<std::regex> regexes;
-			std::vector<std::string> fixed;
-			bool fixed_mode = false;
-			bool ignore_case = false;
+			std::regex selector;
+			bool have_selector = false;
+			LiteralSet literals;
+			bool literal_mode = false;
+			LiteralSet required;
+			bool have_required = false;
 			bool word = false;
 			bool whole_line = false;
+		};
+
+		struct RequiredScan {
+			const std::string& pattern;
+			bool extended;
+			bool ignore_case;
+			std::size_t at = 0;
+			int depth = 0;
+			std::string run;
+			std::string best;
+			bool failed = false;
 		};
 
 		struct LineReader {
@@ -132,6 +147,7 @@ namespace wbsh {
 	using grep_detail::GrepRun;
 	using grep_detail::LineReader;
 	using grep_detail::Matcher;
+	using grep_detail::RequiredScan;
 	using grep_detail::Syntax;
 
 	static const int kGrepError = 2;
@@ -376,26 +392,274 @@ namespace wbsh {
 		return true;
 	}
 
-	static std::string lowerText(std::string text) {
-		for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		return text;
+	static const char* literalSpecials(Syntax syntax) {
+		switch (syntax) {
+		case Syntax::Basic:    return ".[*^$\\";
+		case Syntax::Extended: return ".[*^$\\+?(){}|";
+		case Syntax::Perl:     return ".[]*^$\\+?(){}|";
+		case Syntax::Fixed:    return "";
+		default:               return "";
+		}
 	}
 
-	static bool buildMatcher(const GrepOptions& options, Matcher& matcher) {
-		matcher.ignore_case = options.ignore_case;
-		matcher.word = options.word;
-		matcher.whole_line = options.whole_line;
-		matcher.fixed_mode = options.syntax == Syntax::Fixed;
-		for (const std::string& pattern : options.patterns) {
-			if (matcher.fixed_mode) {
-				matcher.fixed.push_back(options.ignore_case ? lowerText(pattern) : pattern);
+	static bool isSpecial(const char* specials, char c) {
+		return c != '\0' && std::strchr(specials, c) != nullptr;
+	}
+
+	// A pattern without operators (escaped operators allowed) is searched as
+	// a plain string, which is several times faster than any regex.
+	static bool literalPattern(const std::string& pattern, Syntax syntax, std::string& literal) {
+		const char* specials = literalSpecials(syntax);
+		literal.clear();
+		for (std::size_t i = 0; i < pattern.size(); ++i) {
+			const char c = pattern[i];
+			if (!isSpecial(specials, c)) {
+				literal.push_back(c);
 				continue;
 			}
 
+			const bool escaped_special = c == '\\' && i + 1 < pattern.size()
+				&& isSpecial(specials, pattern[i + 1]);
+			if (!escaped_special) return false;
+			literal.push_back(pattern[++i]);
+		}
+
+		return true;
+	}
+
+	static std::size_t bracketItemEnd(const std::string& pattern, std::size_t i) {
+		const bool named = pattern[i] == '[' && i + 1 < pattern.size()
+			&& isSpecial(":=.", pattern[i + 1]);
+		if (!named) return i + 1;
+
+		const std::size_t close = pattern.find(pattern.substr(i + 1, 1) + "]", i + 2);
+		return close == std::string::npos ? pattern.size() : close + 2;
+	}
+
+	/// Index just past the bracket expression opening at @p open; past the end when unterminated.
+	static std::size_t bracketEnd(const std::string& pattern, std::size_t open) {
+		std::size_t i = open + 1;
+		if (i < pattern.size() && pattern[i] == '^') ++i;
+		if (i < pattern.size() && pattern[i] == ']') ++i;
+		while (i < pattern.size() && pattern[i] != ']') i = bracketItemEnd(pattern, i);
+		return i + 1;
+	}
+
+	static int depthChange(char c) {
+		if (c == '(') return 1;
+		if (c == ')') return -1;
+		return 0;
+	}
+
+	static bool splitsAlternative(char c, int depth) {
+		return c == '|' && depth == 0;
+	}
+
+	static std::vector<std::string> splitAlternatives(const std::string& pattern, Syntax syntax) {
+		if (syntax == Syntax::Perl || syntax == Syntax::Fixed) return { pattern };
+
+		const bool extended = syntax == Syntax::Extended;
+		std::vector<std::string> pieces(1);
+		int depth = 0;
+		for (std::size_t i = 0; i < pattern.size();) {
+			const bool bracket = pattern[i] == '[';
+			const bool escaped = pattern[i] == '\\' && i + 1 < pattern.size();
+			const char c = escaped ? pattern[i + 1] : pattern[i];
+			const std::size_t end = bracket ? (std::min)(bracketEnd(pattern, i), pattern.size())
+				: i + (escaped ? 2 : 1);
+			const bool operator_char = !bracket && escaped != extended;
+			if (operator_char && splitsAlternative(c, depth)) pieces.emplace_back();
+			else pieces.back().append(pattern, i, end - i);
+
+			if (operator_char) depth += depthChange(c);
+			i = end;
+		}
+
+		return pieces;
+	}
+
+	static bool buildLiteralMatcher(const GrepOptions& options, Matcher& matcher) {
+		std::vector<std::string> needles;
+		for (const std::string& pattern : options.patterns) {
+			for (const std::string& piece : splitAlternatives(pattern, options.syntax)) {
+				std::string literal;
+				if (!literalPattern(piece, options.syntax, literal)) return false;
+				needles.push_back(literal);
+			}
+		}
+
+		matcher.literals.assign(needles, options.ignore_case);
+		matcher.literal_mode = true;
+		return true;
+	}
+
+	static bool isUtf8Continuation(char c) {
+		return (static_cast<unsigned char>(c) & 0xC0) == 0x80;
+	}
+
+	static void endRun(RequiredScan& scan) {
+		if (scan.run.size() > scan.best.size()) scan.best = scan.run;
+		scan.run.clear();
+	}
+
+	static void dropQuantifiedChar(RequiredScan& scan) {
+		std::string& run = scan.run;
+		while (!run.empty() && isUtf8Continuation(run.back())) run.pop_back();
+		if (!run.empty()) run.pop_back();
+		endRun(scan);
+	}
+
+	static void keepByte(RequiredScan& scan, char c) {
+		const bool foldable = !scan.ignore_case || static_cast<unsigned char>(c) < 0x80;
+		if (scan.depth == 0 && foldable) scan.run.push_back(c);
+		else                             endRun(scan);
+	}
+
+	static void skipInterval(RequiredScan& scan) {
+		const char* close = scan.extended ? "}" : "\\}";
+		const std::size_t end = scan.pattern.find(close, scan.at);
+		if (end == std::string::npos) scan.failed = true;
+		else                          scan.at = end + std::strlen(close);
+	}
+
+	static void skipBracket(RequiredScan& scan) {
+		const std::size_t end = bracketEnd(scan.pattern, scan.at);
+		if (end > scan.pattern.size()) scan.failed = true;
+		else                           scan.at = end;
+	}
+
+	static void scanOperator(RequiredScan& scan, char c) {
+		switch (c) {
+		case '(':
+			endRun(scan);
+			++scan.depth;
+			break;
+		case ')':
+			endRun(scan);
+			if (--scan.depth < 0) scan.failed = true;
+			break;
+		case '|':
+			endRun(scan);
+			if (scan.depth == 0) scan.failed = true;
+			break;
+		case '{':
+			dropQuantifiedChar(scan);
+			skipInterval(scan);
+			break;
+		default:
+			dropQuantifiedChar(scan);
+			break;
+		}
+	}
+
+	static void scanEscape(RequiredScan& scan) {
+		if (scan.at + 1 >= scan.pattern.size()) {
+			scan.failed = true;
+			return;
+		}
+
+		const char c = scan.pattern[scan.at + 1];
+		scan.at += 2;
+		if (!scan.extended && isSpecial("(){}|+?", c)) scanOperator(scan, c);
+		else if (isSpecial(".[]*^$\\+?(){}|/", c))      keepByte(scan, c);
+		else                                            endRun(scan);
+	}
+
+	static void scanRequiredChar(RequiredScan& scan) {
+		const char c = scan.pattern[scan.at];
+		if (c == '[') {
+			endRun(scan);
+			skipBracket(scan);
+			return;
+		}
+
+		if (c == '\\') {
+			scanEscape(scan);
+			return;
+		}
+
+		++scan.at;
+		if (isSpecial(scan.extended ? "(){}|*?+" : "*", c)) scanOperator(scan, c);
+		else if (isSpecial(".^$", c))                       endRun(scan);
+		else                                                keepByte(scan, c);
+	}
+
+	// The longest string every match of a POSIX pattern must contain; lines
+	// without one of these cannot match, so they skip the regex entirely.
+	static std::string requiredLiteral(const std::string& pattern, bool extended,
+	                                   bool ignore_case) {
+		RequiredScan scan{ pattern, extended, ignore_case };
+		while (!scan.failed && scan.at < pattern.size()) scanRequiredChar(scan);
+		endRun(scan);
+		if (scan.failed || scan.depth != 0) return std::string();
+		return scan.best;
+	}
+
+	static void buildRequiredFilter(const GrepOptions& options, Matcher& matcher) {
+		if (options.syntax == Syntax::Perl || options.patterns.empty()) return;
+
+		const bool extended = options.syntax == Syntax::Extended;
+		std::vector<std::string> literals;
+		for (const std::string& pattern : options.patterns) {
+			for (const std::string& piece : splitAlternatives(pattern, options.syntax)) {
+				const std::string literal = requiredLiteral(piece, extended, options.ignore_case);
+				if (literal.empty()) return;
+				literals.push_back(literal);
+			}
+		}
+
+		matcher.required.assign(literals, options.ignore_case);
+		matcher.have_required = true;
+	}
+
+	static std::string ecmascriptFor(const GrepOptions& options, const std::string& pattern) {
+		if (options.syntax == Syntax::Perl) return pattern;
+		return posixToEcmascript(pattern, options.syntax == Syntax::Extended);
+	}
+
+	static bool hasBackReference(const std::string& ecmascript) {
+		for (std::size_t i = 0; i + 1 < ecmascript.size(); ++i) {
+			if (ecmascript[i] != '\\') continue;
+
+			const char next = ecmascript[++i];
+			if ((next >= '1' && next <= '9') || next == 'k') return true;
+		}
+
+		return false;
+	}
+
+	static std::regex::flag_type grepRegexFlags(const GrepOptions& options) {
+		const std::regex::flag_type flags = std::regex::ECMAScript;
+		return options.ignore_case ? flags | std::regex::icase : flags;
+	}
+
+	// All patterns as one alternation decide whether a line is selected in a
+	// single pass; the per-pattern regexes still find -o / --color spans.
+	static void buildSelector(const GrepOptions& options, Matcher& matcher) {
+		const bool single_search = options.patterns.size() == 1 && !options.whole_line;
+		if (options.word || single_search) return;
+
+		std::string combined;
+		for (const std::string& pattern : options.patterns) {
+			const std::string ecmascript = ecmascriptFor(options, pattern);
+			if (hasBackReference(ecmascript)) return;
+			if (!combined.empty()) combined += '|';
+			combined += "(?:" + ecmascript + ")";
+		}
+
+		if (options.whole_line) combined = "^(?:" + combined + ")$";
+		matcher.have_selector = compileRegex(matcher.selector, combined, grepRegexFlags(options));
+	}
+
+	static bool buildMatcher(const GrepOptions& options, Matcher& matcher) {
+		matcher.word = options.word;
+		matcher.whole_line = options.whole_line;
+		if (buildLiteralMatcher(options, matcher)) return true;
+
+		for (const std::string& pattern : options.patterns) {
 			std::regex compiled;
 			const bool ok = options.syntax == Syntax::Perl
-				? compileRegex(compiled, pattern, options.ignore_case
-					? std::regex::ECMAScript | std::regex::icase : std::regex::ECMAScript)
+				? compileRegex(compiled, pattern, grepRegexFlags(options))
 				: compilePosixRegex(compiled, pattern, options.syntax == Syntax::Extended,
 					options.ignore_case);
 			if (!ok) {
@@ -406,6 +670,8 @@ namespace wbsh {
 			matcher.regexes.push_back(compiled);
 		}
 
+		buildSelector(options, matcher);
+		buildRequiredFilter(options, matcher);
 		return true;
 	}
 
@@ -419,10 +685,30 @@ namespace wbsh {
 		return left && right;
 	}
 
-	static bool fixedCandidate(const std::string& haystack, const std::string& needle,
-	                           std::size_t from, std::size_t& start) {
-		start = haystack.find(needle, from);
-		return start != std::string::npos;
+	// -x wants the whole line, -w wants word boundaries on both sides.
+	static bool matchAcceptable(const Matcher& matcher, const std::string& line, std::size_t start,
+	                            std::size_t length) {
+		const bool whole_ok = !matcher.whole_line || (start == 0 && length == line.size());
+		const bool word_ok = !matcher.word || wordBounded(line, start, length);
+		return whole_ok && word_ok;
+	}
+
+	static bool literalAcceptable(const void* context, const std::string& line,
+	                              LiteralMatch match) {
+		const Matcher& matcher = *static_cast<const Matcher*>(context);
+		return matchAcceptable(matcher, line, match.start, match.length);
+	}
+
+	static bool literalMatch(const Matcher& matcher, const std::string& line, std::size_t from,
+	                         std::size_t& start, std::size_t& length) {
+		const bool filtered = matcher.word || matcher.whole_line;
+		const LiteralFilter filter = filtered ? literalAcceptable : nullptr;
+		LiteralMatch match;
+		if (!matcher.literals.find(line, from, match, filter, &matcher)) return false;
+
+		start = match.start;
+		length = match.length;
+		return true;
 	}
 
 	static bool regexCandidate(const std::regex& re, const std::string& line, std::size_t from,
@@ -439,26 +725,11 @@ namespace wbsh {
 		return true;
 	}
 
-	// One pattern's first acceptable match at or after `from`: -x wants the
-	// whole line, -w wants word boundaries on both sides.
 	static bool patternMatch(const Matcher& matcher, std::size_t index, const std::string& line,
-	                         const std::string& folded, std::size_t from, std::size_t& start,
-	                         std::size_t& length) {
+	                         std::size_t from, std::size_t& start, std::size_t& length) {
 		for (std::size_t at = from; at <= line.size();) {
-			bool found = false;
-			if (matcher.fixed_mode) {
-				const std::string& needle = matcher.fixed[index];
-				const std::string& haystack = matcher.ignore_case ? folded : line;
-				found = fixedCandidate(haystack, needle, at, start);
-				length = needle.size();
-			} else {
-				found = regexCandidate(matcher.regexes[index], line, at, start, length);
-			}
-
-			if (!found) return false;
-			const bool whole_ok = !matcher.whole_line || (start == 0 && length == line.size());
-			const bool word_ok = !matcher.word || wordBounded(line, start, length);
-			if (whole_ok && word_ok) return true;
+			if (!regexCandidate(matcher.regexes[index], line, at, start, length)) return false;
+			if (matchAcceptable(matcher, line, start, length)) return true;
 			if (matcher.whole_line) return false;
 			at = start + 1;
 		}
@@ -466,20 +737,15 @@ namespace wbsh {
 		return false;
 	}
 
-	static std::size_t patternCount(const Matcher& matcher) {
-		return matcher.fixed_mode ? matcher.fixed.size() : matcher.regexes.size();
-	}
+	static bool firstMatch(const Matcher& matcher, const std::string& line, std::size_t from,
+	                       std::size_t& start, std::size_t& length) {
+		if (matcher.literal_mode) return literalMatch(matcher, line, from, start, length);
 
-	static bool firstMatch(const Matcher& matcher, const std::string& line,
-	                       const std::string& folded,
-	                       std::size_t from, std::size_t& start, std::size_t& length) {
 		bool found = false;
-		for (std::size_t k = 0; k < patternCount(matcher); ++k) {
+		for (std::size_t k = 0; k < matcher.regexes.size(); ++k) {
 			std::size_t candidate_start = 0;
 			std::size_t candidate_length = 0;
-			if (!patternMatch(matcher, k, line, folded, from, candidate_start, candidate_length)) {
-				continue;
-			}
+			if (!patternMatch(matcher, k, line, from, candidate_start, candidate_length)) continue;
 
 			const bool better = !found || candidate_start < start
 				|| (candidate_start == start && candidate_length > length);
@@ -492,13 +758,18 @@ namespace wbsh {
 		return found;
 	}
 
-	static bool lineSelected(const GrepRun& run, const std::string& line) {
-		const std::string folded = run.matcher.fixed_mode && run.matcher.ignore_case
-			? lowerText(line) : std::string();
+	static bool anyMatch(const Matcher& matcher, const std::string& line) {
+		LiteralMatch hint;
+		if (matcher.have_required && !matcher.required.find(line, 0, hint)) return false;
+		if (matcher.have_selector) return searchRegex(line, matcher.selector);
+
 		std::size_t start = 0;
 		std::size_t length = 0;
-		const bool matched = firstMatch(run.matcher, line, folded, 0, start, length);
-		return matched != run.options->invert;
+		return firstMatch(matcher, line, 0, start, length);
+	}
+
+	static bool lineSelected(const GrepRun& run, const std::string& line) {
+		return anyMatch(run.matcher, line) != run.options->invert;
 	}
 
 	static bool readLine(LineReader& reader, std::string& line, bool& terminated) {
@@ -550,13 +821,11 @@ namespace wbsh {
 	static std::string colored(const GrepRun& run, const std::string& line) {
 		if (!run.options->color || run.options->invert) return line;
 
-		const std::string folded = run.matcher.fixed_mode && run.matcher.ignore_case
-			? lowerText(line) : std::string();
 		std::string out;
 		std::size_t from = 0;
 		std::size_t start = 0;
 		std::size_t length = 0;
-		while (from <= line.size() && firstMatch(run.matcher, line, folded, from, start, length)) {
+		while (from <= line.size() && firstMatch(run.matcher, line, from, start, length)) {
 			out.append(line, from, start - from);
 			out += kColorMatch + line.substr(start, length) + kColorEnd;
 			from = start + (length == 0 ? 1 : length);
@@ -601,12 +870,10 @@ namespace wbsh {
 
 	static void printOnlyMatches(GrepRun& run, FileState& file, long line_number,
 	                             unsigned long long offset, const std::string& line) {
-		const std::string folded = run.matcher.fixed_mode && run.matcher.ignore_case
-			? lowerText(line) : std::string();
 		std::size_t from = 0;
 		std::size_t start = 0;
 		std::size_t length = 0;
-		while (from <= line.size() && firstMatch(run.matcher, line, folded, from, start, length)) {
+		while (from <= line.size() && firstMatch(run.matcher, line, from, start, length)) {
 			if (length > 0) {
 				printPrefix(run, file, line_number, offset + start, ':');
 				const std::string piece = line.substr(start, length);

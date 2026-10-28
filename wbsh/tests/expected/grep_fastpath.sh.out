@@ -1,0 +1,82 @@
+=== plain literal, -i, -c, -v
+ERROR disk full
+ERROR disk full
+error: lower
+2
+10
+=== escaped operators are literal characters
+INFO a.b
+x{2}y
+pipe a|b here
+=== alternations of plain strings
+WARN low memory
+ERRX
+ERROR disk full
+WARN low memory
+3
+19
+=== many -F needles: leftmost-longest -o, -w, -x
+ab
+abc
+abcd
+ab
+abc
+abcd
+ab abc abcd
+]bc
+ac
+d
+1
+19
+0000000 033   [   0   1   ;   3   1   m 033   [   K   a   b 033   [   m
+0000020 033   [   K     033   [   0   1   ;   3   1   m 033   [   K   a
+0000040   b 033   [   m 033   [   K   c     033   [   0   1   ;   3   1
+=== single needle with -w retries later occurrences
+ab
+rc=1
+=== regexes behind the required-literal prefilter
+ERROR disk full
+ERRX
+ab abc abcd
+ac
+abbbc
+abcabcd
+WARN low memory
+x{2}y
+xxy
+ab abc abcd
+]bc
+abcabcd
+7 digits 42
+ERROR disk full
+ab abc abcd
+7 digits 42
+d
+abcabcd
+ab abc abcd
+ac
+abbbc
+]bc
+abcabcd
+aéx
+error: lower
+5
+=== several regex patterns at once
+ERROR disk full
+WARN low memory
+5
+xxy
+ac
+abbbc
+=== pattern file with literal and regex lines
+ERROR disk full
+error: lower
+WARN low memory
+1:ERROR disk full
+3:WARN low memory
+=== 300 fixed needles
+3
+needle299
+needle30
+needle1
+needle10
