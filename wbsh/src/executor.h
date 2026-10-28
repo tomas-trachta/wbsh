@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 struct WbshCompletion;
@@ -334,15 +335,19 @@ namespace wbsh {
 			for (const auto& kv : plugin_commands_) v.push_back(kv.first);
 			return v;
 		}
+		/// A builtin `enable -n` turned off is not a builtin for the shell.
 		bool isBuiltin(const std::string& name) const;
-		bool isFunction(const std::string& name) const;
-		std::vector<std::string> builtinNames() const {
-			std::vector<std::string> v;
-			v.reserve(builtins_.size() + plugin_commands_.size());
-			for (const auto& kv : builtins_) v.push_back(kv.first);
-			for (const auto& kv : plugin_commands_) v.push_back(kv.first);
-			return v;
+		/// Registered as a builtin, enabled or not (what `enable` accepts).
+		bool isKnownBuiltin(const std::string& name) const;
+		void setBuiltinEnabled(const std::string& name, bool enabled);
+		const std::unordered_set<std::string>& disabledBuiltins() const {
+			return disabled_builtins_;
 		}
+		bool isFunction(const std::string& name) const;
+		/// The enabled builtins.
+		std::vector<std::string> builtinNames() const;
+		/// Every builtin, enabled or not.
+		std::vector<std::string> allBuiltinNames() const;
 		std::vector<std::string> functionNames() const {
 			std::vector<std::string> v;
 			v.reserve(functions_.size());
@@ -785,6 +790,7 @@ namespace wbsh {
 			std::unordered_map<std::string, const FunctionDef*> functions;
 			std::unordered_map<std::string, std::string> function_files;
 			std::unordered_map<std::string, std::string> aliases;
+			std::unordered_set<std::string> disabled_builtins;
 			std::unordered_map<std::string, std::string> traps;
 			std::unordered_map<std::string, std::string> inherited_traps;
 			bool lists_inherited_traps = false;
@@ -919,6 +925,7 @@ namespace wbsh {
 		std::string source_text_;
 		std::unordered_map<std::string, BuiltinFn> builtins_;
 		std::unordered_map<std::string, PluginCommand> plugin_commands_;
+		std::unordered_set<std::string> disabled_builtins_;
 		std::unordered_map<std::string, const FunctionDef*> functions_;
 		std::unordered_map<std::string, std::string> function_files_;
 		std::vector<CallFrame> call_stack_;
@@ -981,6 +988,7 @@ namespace wbsh {
 	void registerDeclarationBuiltins(Executor& exec);
 	void registerReadBuiltin(Executor& exec);
 	void registerUlimitBuiltin(Executor& exec);
+	void registerEnableBuiltin(Executor& exec);
 	void registerFcBuiltin(Executor& exec);
 	void registerTestBuiltins(Executor& exec);
 	void registerCoreutils(Executor& exec);

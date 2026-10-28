@@ -356,6 +356,20 @@ namespace wbsh {
 		exec.executeText(text, label);
 	}
 
+	static void applyInheritedDisabledBuiltins(Environment& env, Executor& exec) {
+		const std::string names = env.get("WBSH_DISABLED_BUILTINS");
+		if (names.empty()) return;
+
+		env.unset("WBSH_DISABLED_BUILTINS");
+		std::size_t start = 0;
+		while (start < names.size()) {
+			std::size_t end = names.find(' ', start);
+			if (end == std::string::npos) end = names.size();
+			if (end > start) exec.setBuiltinEnabled(names.substr(start, end - start), false);
+			start = end + 1;
+		}
+	}
+
 	static void applyInheritedFunctionFiles(Environment& env, Executor& exec) {
 		const std::string text = env.get("WBSH_FUNCTION_FILES");
 		if (text.empty()) return;
@@ -486,6 +500,7 @@ namespace wbsh {
 		replayInheritedText(env, exec, "WBSH_ARRAYS",    "<inherited arrays>");
 		exec.adoptInheritedCallStack();
 		applyInheritedFunctionFiles(env, exec);
+		applyInheritedDisabledBuiltins(env, exec);
 		env.unset("WBSH_LINENO");
 		replayInheritedText(env, exec, "WBSH_ATTRIBUTES", "<inherited attributes>");
 		replayInheritedText(env, exec, "WBSH_BINDINGS", "<inherited bindings>");

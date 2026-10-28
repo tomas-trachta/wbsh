@@ -243,6 +243,7 @@
     <ClCompile Include="src\environment.cpp" />
     <ClCompile Include="src\expander.cpp" />
     <ClCompile Include="src\executor.cpp" />
+    <ClCompile Include="src\builtins_enable.cpp" />
     <ClCompile Include="src\builtins_ulimit.cpp" />
     <ClCompile Include="src\timefmt.cpp" />
     <ClCompile Include="src\executor_callstack.cpp" />

@@ -349,6 +349,10 @@ namespace wbsh {
 			if (action == "user")      return oneName(env.get("USERNAME"));
 			if (action == "variable")  return variableNames(env, false);
 
+			if (action == "disabled") {
+				return { exec.disabledBuiltins().begin(), exec.disabledBuiltins().end() };
+			}
+
 			const bool builtins = action == "builtin" || action == "enabled"
 				|| action == "helptopic";
 			return builtins ? exec.builtinNames() : std::vector<std::string>();

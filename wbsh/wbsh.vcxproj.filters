@@ -68,6 +68,7 @@
     <ClCompile Include="src\environment.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\expander.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\builtins_enable.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins_ulimit.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\timefmt.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor_callstack.cpp"><Filter>Source Files</Filter></ClCompile>
