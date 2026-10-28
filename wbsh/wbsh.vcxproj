@@ -97,6 +97,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
@@ -118,6 +120,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
@@ -137,6 +141,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
@@ -158,6 +164,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>

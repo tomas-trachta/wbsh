@@ -1,0 +1,10 @@
+=== 1. PATH and utils are the parent's
+same PATH
+same utils
+=== 2. the markers do not leak into the stage
+[unset] [unset]
+=== 3. a util loaded by hand reaches pipeline stages
+hello not loaded at start
+loaded by hand
+Hello, world!
+HELLO, AGAIN!

@@ -26,6 +26,10 @@ namespace wbsh {
 	 */
 	void prepareEnv(Environment& env);
 
+	/// Started by another wbsh as a subshell (a pipeline stage, `&`, ...):
+	/// PATH and the loaded utils come from the parent as they are.
+	bool isChildShell(const Environment& env);
+
 	/**
 	 * @brief Re-hydrate inherited shell state from `WBSH_*` env vars.
 	 *

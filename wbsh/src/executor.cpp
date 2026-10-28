@@ -1170,6 +1170,21 @@ namespace wbsh {
 		return words;
 	}
 
+	// A self-spawned shell is told it is one, so it takes this shell's
+	// resolved PATH and loaded utils as they are instead of probing the
+	// registry, the disk and the plugin folders again (see setup.cpp).
+	static void addChildShellMarkers(NameValueList& overrides) {
+		overrides.emplace_back("WBSH_SUBSHELL", "1");
+
+		std::string files;
+		for (const UtilInfo& util : loadedUtils()) {
+			if (!files.empty()) files.push_back(';');
+			files += util.path;
+		}
+
+		if (!files.empty()) overrides.emplace_back("WBSH_UTIL_FILES", files);
+	}
+
 	// A pipeline stage is a subshell of this shell: `$?` and `$$` are ours.
 	static void addShellParameters(NameValueList& overrides, const Environment& env,
 			int last_status) {
@@ -1258,6 +1273,7 @@ namespace wbsh {
 		if (!options.empty()) overrides.emplace_back("WBSH_OPTIONS", options);
 
 		addShellParameters(overrides, env_, last_status_);
+		addChildShellMarkers(overrides);
 		addSubshellState(overrides);
 		return overrides;
 	}

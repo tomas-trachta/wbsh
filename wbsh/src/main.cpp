@@ -11,8 +11,6 @@
 #  include <cstdint>
 #  include <fcntl.h>
 #  include <io.h>
-#  include <shellapi.h>
-#  pragma comment(lib, "shell32.lib")
 #endif /* _WIN32 */
 
 #include <cstdlib>
@@ -325,24 +323,16 @@ static int runScriptAction(const Options& options) {
 
 #ifdef _WIN32
 
-static void rewriteArgvAsUtf8(int& argc, char**& argv,
-		std::vector<std::string>& storage, std::vector<char*>& ptrs) {
-	int wide_argc = 0;
-	LPWSTR* wide_argv = ::CommandLineToArgvW(::GetCommandLineW(), &wide_argc);
-	if (wide_argv == nullptr) return;
-
-	storage.reserve(static_cast<std::size_t>(wide_argc));
-	for (int i = 0; i < wide_argc; ++i) {
-		storage.push_back(wbsh::wideToUtf8(wide_argv[i]));
-	}
-
-	::LocalFree(wide_argv);
-
+static void pointAtWords(std::vector<std::string>& storage, std::vector<char*>& ptrs) {
+	ptrs.clear();
 	ptrs.reserve(storage.size() + 1);
 	for (auto& arg : storage) ptrs.push_back(arg.data());
 	ptrs.push_back(nullptr);
-	argc = static_cast<int>(storage.size());
-	argv = ptrs.data();
+}
+
+static void utf8Argv(int argc, wchar_t** wide_argv, std::vector<std::string>& storage) {
+	storage.reserve(static_cast<std::size_t>(argc));
+	for (int i = 0; i < argc; ++i) storage.push_back(wbsh::wideToUtf8(wide_argv[i]));
 }
 
 // By default the CRT's invalid-parameter handler aborts the whole
@@ -395,22 +385,12 @@ static void expandArgvFile(int& argc, char**& argv,
 	words.insert(words.begin(), argv[0]);
 	storage = std::move(words);
 
-	ptrs.clear();
-	for (auto& arg : storage) ptrs.push_back(arg.data());
-	ptrs.push_back(nullptr);
+	pointAtWords(storage, ptrs);
 	argc = static_cast<int>(storage.size());
 	argv = ptrs.data();
 }
 
-int main(int argc, char** argv) {
-	std::vector<std::string> argv_utf8_storage;
-	std::vector<char*>       argv_ptrs;
-#ifdef _WIN32
-	prepareCrtForShellUse();
-	rewriteArgvAsUtf8(argc, argv, argv_utf8_storage, argv_ptrs);
-#endif /* _WIN32 */
-	expandArgvFile(argc, argv, argv_utf8_storage, argv_ptrs);
-
+static int runShell(int argc, char** argv) {
 	Options options;
 	std::string error;
 	if (!parseArgs(argc, argv, options, error)) {
@@ -438,3 +418,27 @@ int main(int argc, char** argv) {
 		return runScriptAction(options);
 	}
 }
+
+// wmain gets the command line as UTF-16 without shell32's
+// CommandLineToArgvW, whose DLL costs every start, child shells included.
+#ifdef _WIN32
+int wmain(int argc, wchar_t** wide_argv) {
+	prepareCrtForShellUse();
+
+	std::vector<std::string> storage;
+	std::vector<char*> ptrs;
+	utf8Argv(argc, wide_argv, storage);
+	pointAtWords(storage, ptrs);
+
+	char** argv = ptrs.data();
+	expandArgvFile(argc, argv, storage, ptrs);
+	return runShell(argc, argv);
+}
+#else
+int main(int argc, char** argv) {
+	std::vector<std::string> storage;
+	std::vector<char*> ptrs;
+	expandArgvFile(argc, argv, storage, ptrs);
+	return runShell(argc, argv);
+}
+#endif /* _WIN32 */
