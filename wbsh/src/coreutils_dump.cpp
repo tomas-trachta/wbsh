@@ -494,7 +494,7 @@ namespace wbsh {
 		for (;;) {
 			std::fill(row.begin(), row.end(), 0);
 			const std::size_t got = readInput(input, row.data(), options.row_bytes, "od");
-			if (got == 0) break;
+			if (got == 0 || stdoutFailed()) break;
 
 			const std::vector<unsigned char> current(row.begin(), row.begin() + got);
 			const bool full_row = got == options.row_bytes;
@@ -643,7 +643,7 @@ namespace wbsh {
 		bool squeezing = false;
 		for (;;) {
 			const std::size_t got = readInput(input, row.data(), row.size(), "hexdump");
-			if (got == 0) break;
+			if (got == 0 || stdoutFailed()) break;
 
 			const std::vector<unsigned char> current(row.begin(), row.begin() + got);
 			const bool repeat = !options.all_rows && got == row.size() && current == previous;

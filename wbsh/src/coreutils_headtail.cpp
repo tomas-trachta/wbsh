@@ -243,7 +243,7 @@ namespace wbsh {
 
 	static void copyRest(std::FILE* stream) {
 		std::vector<char> chunk(kCopyChunk);
-		for (;;) {
+		while (!stdoutFailed()) {
 			const std::size_t got = std::fread(chunk.data(), 1, chunk.size(), stream);
 			if (got == 0) return;
 			writeBytes(chunk.data(), got);
@@ -256,7 +256,7 @@ namespace wbsh {
 
 	static void copyBytes(std::FILE* stream, unsigned long long count) {
 		std::vector<char> chunk(kCopyChunk);
-		while (count > 0) {
+		while (count > 0 && !stdoutFailed()) {
 			const std::size_t want = chunkFor(count, chunk.size());
 			const std::size_t got = std::fread(chunk.data(), 1, want, stream);
 			if (got == 0) return;
@@ -289,7 +289,8 @@ namespace wbsh {
 		ChunkReader reader;
 		reader.stream = stream;
 		std::string line;
-		for (unsigned long long printed = 0; printed < count && reader.readLine(line); ++printed) {
+		for (unsigned long long printed = 0; printed < count && !stdoutFailed()
+		     && reader.readLine(line); ++printed) {
 			writeText(line);
 		}
 
@@ -301,7 +302,7 @@ namespace wbsh {
 		reader.stream = stream;
 		std::deque<std::string> held;
 		std::string line;
-		while (reader.readLine(line)) {
+		while (!stdoutFailed() && reader.readLine(line)) {
 			held.push_back(line);
 			if (held.size() <= count) continue;
 			writeText(held.front());
@@ -312,7 +313,7 @@ namespace wbsh {
 	static void headAllButLastBytes(std::FILE* stream, unsigned long long count) {
 		std::string held;
 		std::vector<char> chunk(kCopyChunk);
-		for (;;) {
+		while (!stdoutFailed()) {
 			const std::size_t got = std::fread(chunk.data(), 1, chunk.size(), stream);
 			if (got == 0) return;
 			held.append(chunk.data(), got);
@@ -464,7 +465,7 @@ namespace wbsh {
 		std::string last_shown = options.files.back();
 		const auto interval = std::chrono::milliseconds(
 			static_cast<long long>(options.sleep_seconds * 1000.0));
-		while (!ctrlCPending()) {
+		while (!ctrlCPending() && !stdoutFailed()) {
 			for (std::size_t k = 0; k < streams.size(); ++k) {
 				if (streams[k] == nullptr || streams[k] == stdin) continue;
 				if (followOnce(streams[k], options.files[k], last_shown, showHeaders(options))) {

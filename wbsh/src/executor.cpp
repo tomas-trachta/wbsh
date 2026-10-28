@@ -611,8 +611,11 @@ namespace wbsh {
 		return false;
 	}
 
+	static bool fdIsPipe(int fd);
+
 	Executor::Executor(Environment& env)
 		: env_(env), expander_(env, this) {
+		stdout_started_as_pipe_ = fdIsPipe(1);
 		env_.setArithEvaluator(evalIntegerAttribute, &expander_);
 		registerCoreBuiltins(*this);
 		registerCoreutils(*this);
@@ -1287,8 +1290,10 @@ namespace wbsh {
 		return copy;
 	}
 
+	// A write error belongs to the file fd 1 pointed at when it happened.
 	static void beforeRepointing(int target) {
 		if (target == 0) resetStdinBuffer();
+		if (target == 1) std::clearerr(stdout);
 	}
 
 	// The opened fd can already be `target` when target was closed.
@@ -1301,7 +1306,25 @@ namespace wbsh {
 	}
 
 	// A backup of -1 records that @p fd was closed, so undoing closes it.
+	static bool fdIsPipe(int fd) {
+		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+		return handle != INVALID_HANDLE_VALUE && ::GetFileType(handle) == FILE_TYPE_PIPE;
+	}
+
+	// POSIX kills a process that writes to a pipe nobody reads any more
+	// (SIGPIPE). Pipeline elements and `wbsh ... | head` run as their own
+	// process here, so ending that shell gives the same result: a loop of
+	// builtins feeding a reader that has exited cannot run forever.
+	void Executor::exitIfStdoutReaderGone() {
+		if (!stdout_started_as_pipe_ || stdout_redirects_ != 0) return;
+		if (std::ferror(stdout) == 0 || !fdIsPipe(1)) return;
+
+		std::clearerr(stdout);
+		raiseExit(kSigPipeStatus);
+	}
+
 	void Executor::saveFd(RedirState& state, int fd) const {
+		if (fd == 1) ++stdout_redirects_;
 		state.saved.push_back({ fd, dupAboveUserFds(fd) });
 	}
 
@@ -1587,6 +1610,7 @@ namespace wbsh {
 		std::fflush(stderr);
 		for (auto it = state.saved.rbegin(); it != state.saved.rend(); ++it) {
 			restoreSavedFd(it->first, it->second);
+			if (it->first == 1) --stdout_redirects_;
 		}
 
 		state.saved.clear();
@@ -2089,6 +2113,7 @@ namespace wbsh {
 		compound_args_ = std::move(compound);
 		const int status = runResolvedCommand(argv, assigns);
 		undoRedirections(state);
+		exitIfStdoutReaderGone();
 		if (flowPending()) return status;
 
 		for (const auto& temp_file : expander_.drainTempFilesSince(proc_subst_watermark)) {
@@ -3132,6 +3157,7 @@ namespace wbsh {
 
 	int Executor::callBuiltin(const std::string& name, const std::vector<std::string>& args) {
 		const auto builtin = builtins_.find(name);
+		std::clearerr(stdout);
 		if (builtin != builtins_.end()) return builtin->second(*this, args);
 
 		const auto plugin = plugin_commands_.find(name);

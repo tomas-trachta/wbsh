@@ -668,6 +668,7 @@ namespace wbsh {
 
 			if (run.size() >= options.min_length) printStringRun(run, run_start, options, name);
 			run.clear();
+			if (stdoutFailed()) return;
 		}
 
 		if (run.size() >= options.min_length) printStringRun(run, run_start, options, name);

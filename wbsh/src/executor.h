@@ -576,6 +576,7 @@ namespace wbsh {
 			std::vector<std::string> temps;
 		};
 		bool applyRedirections(const std::vector<Redirection>& rs, RedirState& out);
+		void exitIfStdoutReaderGone();
 		void undoRedirections(RedirState& s);
 		// `exec` redirections made inside an in-process subshell or script
 		// are recorded here and undone when it ends, as a child's fds would
@@ -816,6 +817,10 @@ namespace wbsh {
 		// The status of the last `$(...)` since the current simple command
 		// started expanding; a command with no name returns it.
 		bool cmdsubst_ran_ = false;
+		// Active redirections of fd 1, so a failed write is blamed on the
+		// pipe this process was started with only when nothing replaced it.
+		mutable int stdout_redirects_ = 0;
+		bool stdout_started_as_pipe_ = false;
 		int  cmdsubst_status_ = 0;
 		int  loop_depth_ = 0;
 		int  func_depth_ = 0;

@@ -150,6 +150,7 @@ namespace wbsh {
 			// awk_io.cpp
 			AwkValue doGetline(Expr& expr);
 			void emit(const std::string& out, Stmt& stmt);
+			void emitToStdout(const std::string& out);
 			int closeStream(const std::string& name);
 			void closeAllStreams();
 			void flushAllOutput();

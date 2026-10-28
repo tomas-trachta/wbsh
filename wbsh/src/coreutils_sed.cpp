@@ -1175,10 +1175,20 @@ namespace wbsh {
 		return false;
 	}
 
+	static bool stopForFailedOutput(RunState& state) {
+		const bool to_stdout = state.out.buffer == nullptr && state.out.stream == stdout;
+		if (!to_stdout || !stdoutFailed()) return false;
+
+		state.quit = true;
+		state.exit_code = stdoutFailureStatus();
+		return true;
+	}
+
 	static void runProgram(Program& program, RunState& state, LineSource& source, Executor& exec,
 	                       bool quiet) {
 		bool reuse = false;
 		while (!state.quit) {
+			if (stopForFailedOutput(state)) break;
 			if (!reuse) {
 				if (!nextLine(source, state.pattern, state.terminated)) break;
 				state.substituted = false;
