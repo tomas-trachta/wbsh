@@ -8,6 +8,7 @@
 #   /chunked-short   chunked body that stops before the final chunk
 #   /echo            200, body is the request head plus the request body
 #   /status/<n>      status <n> with a short body
+#   /cookie          sets the cookie session=abc123
 #   /redirect        302 to /ok
 #   /slow            answers after 3 seconds
 #   /flaky           503 twice, then 200
@@ -107,7 +108,7 @@ function Send-Range($stream, $request) {
 }
 
 function Handle($stream, $request) {
-    $path = $request.Path
+    $path = $request.Path -replace '^https?://[^/]+', ''
     switch -regex ($path) {
         '^/ok$' { Send-Text $stream 200 'OK' "hello from the test server`n"; break }
         '^/short$' { Send $stream 200 'OK' @() $latin1.GetBytes('0123456789') 100; break }
@@ -123,6 +124,7 @@ function Handle($stream, $request) {
             break
         }
         '^/status/(\d+)$' { Send-Text $stream ([int]$matches[1]) 'Status' "status $($matches[1])`n"; break }
+        '^/cookie$' { Send-Text $stream 200 'OK' "cookie set`n" @('Set-Cookie: session=abc123; Path=/'); break }
         '^/redirect$' { Send-Text $stream 302 'Found' "moved`n" @('Location: /ok'); break }
         '^/slow$' { Start-Sleep -Seconds 3; Send-Text $stream 200 'OK' "slow`n"; break }
         '^/flaky$' {
