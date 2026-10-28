@@ -1,0 +1,87 @@
+=== options are parsed, and complete -p reads back
+complete -F dflt -D
+complete -W 'e' -E
+complete -c -I
+complete -o filenames -o nospace -b -u -A function -A signal -G '*.c' -W 'a b$x' -P 'pre' -S 'suf' -C 'cmd x' -F fn foo
+complete -d mycd
+complete -f -X '!*.txt' vim
+complete -o filenames -o nospace -b -u -A function -A signal -G '*.c' -W 'a b$x' -P 'pre' -S 'suf' -C 'cmd x' -F fn foo
+complete -f -X '!*.txt' vim
+complete -F dflt -D
+complete -W 'e' -E
+complete -c -I
+0
+6
+=== errors
+wbsh: complete: -Z: invalid option
+complete: usage: complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]
+status 2
+wbsh: complete: nosuch: invalid action name
+status 2
+wbsh: complete: nosuch: invalid option name
+status 2
+wbsh: complete: -W: option requires an argument
+complete: usage: complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]
+status 2
+complete: usage: complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]
+status 2
+wbsh: complete: nosuchcmd: no completion specification
+status 1
+wbsh: complete: nosuchcmd: no completion specification
+status 1
+wbsh: compopt: not currently executing completion function
+status 1
+=== compgen
+SIGURG
+SIGUSR1
+SIGUSR2
+alpha
+alps
+status 1
+alpha
+alps
+<one>
+<two>
+histexpand
+history
+fi
+1
+2
+three
+cdir/other
+cdir/sub
+cdir/file.c
+cdir/file.txt
+cdir/file.c
+cdir/other
+cdir/sub
+cdir/x
+=== compopt changes a spec's options
+compopt +o bashdefault +o default +o dirnames -o filenames +o noquote +o nosort -o nospace +o plusdirs foo
+complete -o nospace -W 'w' foo
+=== Tab: word lists, prefixes, suffixes and filters
+[svc stop ][]
+[svc sta][]
+[cfg key=][]
+[wrap <one> ][]
+=== Tab: directory and file actions, -X, -G
+[mycd cdir/sub/][]
+[view cdir/file.txt ][]
+[cc1 cdir/file.c ][]
+=== Tab: -F with compopt, -C, and COMPREPLY taken as it is
+[opts chosen=][]
+[anyc zz ][]
+[cmdc beta ][]
+=== Tab: a spec with no matches does not fall back to file names
+[none cdir/fi][]
+[fallback cdir/file.][]
+=== Tab: -D for commands without a spec, loading one on 124
+[newcmd loaded ][]
+complete -W 'loaded' newcmd
+=== Tab: -E on an empty line, -I for the command word
+[empty-line ][]
+[initial-word ][]
+=== a spec is found by the command's last path component
+[./svc stop ][]
+=== a pipeline stage sees the specs
+complete -W 'start stop status' svc

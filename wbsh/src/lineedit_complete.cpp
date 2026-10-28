@@ -38,6 +38,8 @@ namespace wbsh {
 		while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
 	}
 
+	static const int kCompletionRetryStatus = 124;
+
 	static bool ignoresCase() {
 		return shellKeymap().isOn("completion-ignore-case");
 	}
@@ -53,14 +55,7 @@ namespace wbsh {
 	// readline's completion-ignore-case, on unless an inputrc turns it off:
 	// Windows file and command names ignore case.
 	static bool matchesPrefix(const std::string& text, const std::string& prefix) {
-		if (text.size() < prefix.size()) return false;
-
-		const bool ignore_case = ignoresCase();
-		for (std::size_t k = 0; k < prefix.size(); ++k) {
-			if (!sameLetter(text[k], prefix[k], ignore_case)) return false;
-		}
-
-		return true;
+		return completionMatches(text, prefix);
 	}
 
 	// Where the command being completed starts and which words it has so
@@ -486,14 +481,33 @@ namespace wbsh {
 		return matches;
 	}
 
+	// The -E spec answers on an empty line, the -I spec for any command
+	// word; without them command names are completed.
+	std::vector<std::string> LineEditor::commandWordCompletions(const std::string& prefix,
+	                                                            const Tok& tok) {
+		const bool empty_line = buffer_.find_first_not_of(" \t") == std::string::npos;
+		const CompletionSpec* empty =
+			empty_line ? exec_.completionSpec(kEmptyCompletionName) : nullptr;
+		const CompletionSpec* spec =
+			empty != nullptr ? empty : exec_.completionSpec(kInitialCompletionName);
+		if (spec == nullptr) return commandCompletions(prefix);
+
+		const CompletionSpec copy = *spec;
+		return specCompletions(copy, prefix, tok, {});
+	}
+
 	std::vector<std::string> LineEditor::completionsFor(const std::string& prefix,
 	                                                    bool command_pos) {
 		filename_matches_ = false;
-		if (command_pos && prefix.find('/') == std::string::npos) return commandCompletions(prefix);
-
+		completion_nospace_ = false;
+		spec_answered_ = false;
 		const Tok current = currentToken();
+		if (command_pos && prefix.find('/') == std::string::npos) {
+			return commandWordCompletions(prefix, current);
+		}
+
 		const std::vector<std::string> tools = toolCompletions(prefix, current);
-		if (!tools.empty()) return tools;
+		if (!tools.empty() || spec_answered_) return tools;
 
 		return pathCompletions(prefix);
 	}
@@ -519,31 +533,10 @@ namespace wbsh {
 		env.unset("COMPREPLY");
 	}
 
-	static void runCompletionFunction(Executor& exec, const std::string& function,
-	                                  const std::vector<std::string>& args) {
-		exec.callFunction(function, args);
-
-		// A completion function calling exit / break / return must
-		// not tear down the interactive shell — drop any signal
-		// (and stray expansion error) it left behind.
-		exec.clearFlow();
-		if (exec.expander().failed()) exec.expander().takeError();
-	}
-
-	static void appendCompReply(const Environment& env, const std::string& prefix,
-	                            std::vector<std::string>& matches) {
-		const auto* reply = env.getIndexedArray("COMPREPLY");
-		if (reply == nullptr) return;
-
-		for (const auto& entry : *reply) {
-			if (matchesPrefix(entry.second, prefix)) matches.push_back(entry.second);
-		}
-	}
-
-	void LineEditor::appendFunctionCompletions(const std::string& function,
-	                                           const std::string& prefix, const Tok& tok,
-	                                           const std::vector<std::string>& prev,
-	                                           std::vector<std::string>& matches) {
+	// COMP_LINE, COMP_POINT, COMP_WORDS and COMP_CWORD for the command the
+	// cursor is in, as a -F function or -C command reads them.
+	void LineEditor::publishCompletionContext(const Tok& tok,
+	                                          const std::vector<std::string>& prev) {
 		Environment& env = exec_.env();
 
 		const std::size_t start = complete_detail::commandWordsBefore(buffer_, tok.start).start;
@@ -553,29 +546,65 @@ namespace wbsh {
 			complete_detail::wordsOfCommand(buffer_, prev, tok.start, word_end, end);
 		publishCompWords(env, words, prev.size());
 		publishCompLine(env, buffer_.substr(start, end - start), tok.end - start);
-
-		runCompletionFunction(exec_, function, { prev.front(), prefix, prev.back() });
-		appendCompReply(env, prefix, matches);
 	}
 
-	std::vector<std::string> LineEditor::specCompletions(const Executor::CompletionSpec& spec,
+	void LineEditor::markDirectories(std::vector<std::string>& matches) const {
+		const std::string home = exec_.env().get("HOME");
+		for (std::string& match : matches) {
+			if (match.empty() || match.back() == '/') continue;
+
+			std::error_code ec;
+			const std::string path = expandTildeDir(match, home);
+			const fs::path native = utf8ToPath(exec_.pathConv().toWin32(path));
+			if (fs::is_directory(native, ec)) match.push_back('/');
+		}
+	}
+
+	std::vector<std::string> LineEditor::specCompletions(const CompletionSpec& spec,
 	                                                     const std::string& prefix, const Tok& tok,
 	                                                     const std::vector<std::string>& prev) {
-		std::vector<std::string> matches;
-		for (const std::string& word : spec.words) {
-			if (matchesPrefix(word, prefix)) matches.push_back(word);
-		}
+		publishCompletionContext(tok, prev);
+		CompletionRequest request;
+		request.command = prev.empty() ? std::string() : prev.front();
+		request.word = prefix;
+		request.previous = prev.empty() ? std::string() : prev.back();
 
-		if (!spec.function.empty() && exec_.isFunction(spec.function)) {
-			appendFunctionCompletions(spec.function, prefix, tok, prev, matches);
-		}
+		const CompletionResult result = generateCompletions(exec_, spec, request);
+		spec_answered_ = true;
+		last_completion_status_ = result.function_status;
+		filename_matches_ = result.file_names && !result.hasOption("noquote");
+		completion_nospace_ = result.hasOption("nospace");
 
-		if (!matches.empty()) return matches;
-		if (spec.include_dirs || spec.include_files || spec.default_fallback) {
-			return pathCompletions(prefix);
-		}
+		std::vector<std::string> matches = result.matches;
+		if (result.file_names) markDirectories(matches);
+		return matches;
+	}
 
-		return {};
+	// A spec is looked up by the command as typed and by its last path
+	// component, as bash does.
+	const CompletionSpec* LineEditor::specFor(const std::string& command) const {
+		const CompletionSpec* spec = exec_.completionSpec(command);
+		const std::size_t slash = command.find_last_of('/');
+		if (spec != nullptr || slash == std::string::npos) return spec;
+
+		return exec_.completionSpec(command.substr(slash + 1));
+	}
+
+	// The -D spec covers commands without one of their own. Its function
+	// returning 124 means it has just defined that spec -- bash-completion
+	// loads them on demand that way -- which then gets the word instead.
+	std::vector<std::string> LineEditor::defaultSpecCompletions(
+		const std::string& prefix, const Tok& tok, const std::vector<std::string>& prev) {
+		const CompletionSpec* fallback = exec_.completionSpec(kDefaultCompletionName);
+		if (fallback == nullptr) return {};
+
+		const CompletionSpec spec = *fallback;
+		std::vector<std::string> matches = specCompletions(spec, prefix, tok, prev);
+		const CompletionSpec* loaded = specFor(prev.front());
+		if (last_completion_status_ != kCompletionRetryStatus || loaded == nullptr) return matches;
+
+		const CompletionSpec retry = *loaded;
+		return specCompletions(retry, prefix, tok, prev);
 	}
 
 	std::vector<std::string> LineEditor::toolCompletions(const std::string& prefix,
@@ -584,14 +613,26 @@ namespace wbsh {
 		if (prev.empty()) return {};
 
 		const std::string& head = prev.front();
-		const Executor::CompletionSpec* spec = exec_.completionSpec(head);
-		if (spec != nullptr) return specCompletions(*spec, prefix, tok, prev);
+		const CompletionSpec* spec = specFor(head);
+		if (spec != nullptr) {
+			const CompletionSpec copy = *spec;
+			return specCompletions(copy, prefix, tok, prev);
+		}
 
 		const PluginCommand* plugin = exec_.pluginCommand(head);
 		if (plugin != nullptr && plugin->complete != nullptr) {
 			return pluginCompletions(*plugin, prefix, prev);
 		}
 
+		std::vector<std::string> matches = builtinToolCompletions(head, prefix, prev);
+		if (!matches.empty()) return matches;
+
+		return defaultSpecCompletions(prefix, tok, prev);
+	}
+
+	std::vector<std::string> LineEditor::builtinToolCompletions(
+		const std::string& head, const std::string& prefix,
+		const std::vector<std::string>& prev) {
 		if (head == "git")     return gitCompletions(prefix, prev);
 		if (head == "docker")  return dockerCompletions(prefix, prev);
 		if (head == "npm")     return npmCompletions(prefix, prev);
@@ -1194,7 +1235,7 @@ namespace wbsh {
 		const bool directory = !match.empty() && match.back() == '/';
 		if (whole && !directory) {
 			if (tok.quote != 0) replacement.push_back(tok.quote);
-			replacement.push_back(' ');
+			if (!completion_nospace_) replacement.push_back(' ');
 		}
 
 		buffer_.replace(tok.insert_start, tok.end - tok.insert_start, replacement);

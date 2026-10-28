@@ -201,6 +201,7 @@
     <ClInclude Include="src\awk_regex.h" />
     <ClInclude Include="src\inflate.h" />
     <ClInclude Include="src\setup.h" />
+    <ClInclude Include="src\completion.h" />
     <ClInclude Include="src\gitprompt.h" />
     <ClInclude Include="src\history.h" />
     <ClInclude Include="src\repl.h" />
@@ -298,6 +299,7 @@
     <ClCompile Include="src\awk_value.cpp" />
     <ClCompile Include="src\inflate.cpp" />
     <ClCompile Include="src\setup.cpp" />
+    <ClCompile Include="src\completion.cpp" />
     <ClCompile Include="src\gitprompt.cpp" />
     <ClCompile Include="src\histexpand.cpp" />
     <ClCompile Include="src\history.cpp" />

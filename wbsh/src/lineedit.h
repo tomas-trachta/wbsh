@@ -272,13 +272,19 @@ namespace wbsh {
 		std::vector<std::string> pluginCompletions(const PluginCommand& plugin,
 		                                           const std::string& prefix,
 		                                           const std::vector<std::string>& prev);
-		std::vector<std::string> specCompletions(const Executor::CompletionSpec& spec,
+		std::vector<std::string> specCompletions(const CompletionSpec& spec,
 		                                         const std::string& prefix, const Tok& tok,
 		                                         const std::vector<std::string>& prev);
-		void appendFunctionCompletions(const std::string& function,
-		                               const std::string& prefix, const Tok& tok,
-		                               const std::vector<std::string>& prev,
-		                               std::vector<std::string>& matches);
+		const CompletionSpec* specFor(const std::string& command) const;
+		std::vector<std::string> defaultSpecCompletions(const std::string& prefix, const Tok& tok,
+		                                                const std::vector<std::string>& prev);
+		std::vector<std::string> builtinToolCompletions(const std::string& head,
+		                                                const std::string& prefix,
+		                                                const std::vector<std::string>& prev);
+		std::vector<std::string> commandWordCompletions(const std::string& prefix,
+		                                                const Tok& tok);
+		void publishCompletionContext(const Tok& tok, const std::vector<std::string>& prev);
+		void markDirectories(std::vector<std::string>& matches) const;
 		std::vector<std::string> gitCompletions(const std::string& prefix,
 		                                        const std::vector<std::string>& prev);
 		std::vector<std::string> dockerCompletions(const std::string& prefix,
@@ -365,6 +371,13 @@ namespace wbsh {
 		// The last matches were file names: they are quoted for the shell
 		// when inserted and listed by their last path component.
 		bool filename_matches_ = false;
+
+		// What the last completion spec asked for: no space after a whole
+		// match (-o nospace), whether a spec answered at all (then its
+		// empty answer stands), and its -F function's exit status.
+		bool completion_nospace_ = false;
+		bool spec_answered_ = false;
+		int last_completion_status_ = 0;
 
 		// Current ghost-text inline prediction (the tail past the
 		// cursor), rendered in dim style by redraw(). Empty when no
