@@ -1,0 +1,20 @@
+=== history in a pipeline stage
+    1  echo alpha
+    2  grep foo bar.txt
+    3  echo beta
+    2  grep foo bar.txt
+3
+--- $(history) agrees
+    3  echo beta
+=== a pipeline stage's history changes stay in the stage
+0
+=== functions and subshell groups in a stage see it too
+    3  echo beta
+    1  echo alpha
+    1  echo alpha
+=== an empty history stays empty
+0
+=== jobs in a pipeline stage
+[1] Running sleep 2
+1
+[1] Done sleep 2

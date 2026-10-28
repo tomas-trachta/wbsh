@@ -201,6 +201,8 @@ namespace wbsh {
 		};
 		/// Add a launched background process.  @return the assigned job id.
 		int  registerJob(void* handle, long long pid, std::string cmd_text);
+		/// A job of the parent shell, as a self-spawned subshell inherits it.
+		void adoptInheritedJob(const Job& job);
 		/// Update statuses of finished jobs.  @return true if any newly finished.
 		bool reapJobs();
 		std::vector<Job>& jobsTable() { return jobs_; }
@@ -732,6 +734,7 @@ namespace wbsh {
 		// inherits our full state (translated PATH, serialised functions
 		// and aliases, non-exported var marker).
 		std::vector<std::pair<std::string, std::string>> buildSelfSpawnOverrides();
+		void addSubshellState(std::vector<std::pair<std::string, std::string>>& overrides);
 		std::vector<std::string> selfSpawnArgv(const std::string& self,
 		                                       const std::string& command) const;
 		HANDLE launchExternalDirect(const SimpleCommand& sc,
