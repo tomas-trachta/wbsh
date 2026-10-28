@@ -1,0 +1,14 @@
+=== kill -STOP and -CONT on a job
+stop rc=0
+[1]+  Stopped                 sleep 3
+cont rc=0
+[1]+  Running                 sleep 3 &
+killed 143
+=== by PID, -TSTP and a pipeline
+[1]+  Stopped                 sleep 3 | sleep 3
+[1]+  Running                 sleep 3 | sleep 3 &
+pipeline gone
+=== a stopped job does not outlive its shell
+ended with the shell
+=== kill -l lists the job signals
+1

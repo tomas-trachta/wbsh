@@ -42,6 +42,7 @@
 #include "devices.h"
 #include "exitstatus.h"
 #include "fnmatch.h"
+#include "jobcontrol.h"
 #include "keymap.h"
 #include "lexer.h"
 #include "numparse.h"
@@ -56,6 +57,11 @@ namespace wbsh {
 
 	static const int kStatusCommandNotFound = 127;
 	static const int kStatusInterrupted = 130;
+	static const int kStatusStopped = 148;
+	static const int kStatusHangup = 129;
+	static const int kSignalContinue = 18;
+	static const int kSignalStop = 19;
+	static const int kSignalTerminalStop = 20;
 	static const long long kMillisPerMinute = 60000;
 	static const std::size_t kShebangProbeBytes = 256;
 
@@ -836,13 +842,19 @@ namespace wbsh {
 #ifdef _WIN32
 	int Executor::launchBackgroundCommand(const Node& cmd) {
 		const StdioHandles stdio = currentStdio();
-		spawning_background_ = true;
+		const HANDLE group = createProcessGroup();
+		spawn_placement_.job = group;
+		spawn_placement_.new_process_group = true;
 		const HANDLE process = launchPipelineElement(cmd, stdio.in, stdio.out, stdio.err);
-		spawning_background_ = false;
-		if (process == INVALID_HANDLE_VALUE) return 1;
+		spawn_placement_ = SpawnPlacement();
+		if (process == INVALID_HANDLE_VALUE) {
+			if (group != nullptr) ::CloseHandle(group);
+			return 1;
+		}
 
 		const long long pid = static_cast<long long>(::GetProcessId(process));
 		const int job_id = registerJob(process, pid, nodeSourceSlice(cmd, std::string()));
+		jobs_.back().group = group;
 		env_.setLastBgPid(pid);
 		if (env_.interactive()) std::fprintf(stderr, "[%d] %lld\n", job_id, pid);
 		return 0;
@@ -998,15 +1010,6 @@ namespace wbsh {
 		return true;
 	}
 
-	static std::vector<int> waitPipelineProcesses(const std::vector<HANDLE>& processes) {
-		std::vector<int> statuses(processes.size(), 0);
-		for (std::size_t i = 0; i < processes.size(); ++i) {
-			statuses[i] = waitProcessAndClose(processes[i]);
-		}
-
-		return statuses;
-	}
-
 	static int pipelineStatus(const std::vector<int>& statuses, bool pipefail) {
 		int last = statuses.empty() ? 0 : statuses.back();
 		if (!pipefail) return last;
@@ -1051,6 +1054,7 @@ namespace wbsh {
 		std::fflush(stderr);
 		const StdioHandles outer = currentStdio();
 
+		const HANDLE group = startForegroundGroup();
 		std::vector<HANDLE> processes;
 		processes.reserve(count);
 		for (std::size_t i = 0; i < count; ++i) {
@@ -1068,7 +1072,11 @@ namespace wbsh {
 		closeValidHandles(pipe_r);
 		closeValidHandles(pipe_w);
 
-		std::vector<int> statuses = waitPipelineProcesses(processes);
+		std::vector<int> statuses;
+		const int foreground = waitForegroundProcesses(processes, group,
+			nodeSourceSlice(pipeline, source_text_), statuses);
+		if (foreground == kStatusStopped) return foreground;
+
 		const int status = pipelineStatus(statuses, env_.pipefail());
 		statuses.resize(count, 1);
 		setPipeStatus(statuses);
@@ -2739,7 +2747,7 @@ namespace wbsh {
 
 		int spawn_status = 0;
 		const bool spawned = spawnExternalAndWait(command.exe, command.cmdline,
-			command.envblock, &spawn_status);
+			command.envblock, &spawn_status, joinWithSpaces(argv));
 		if (spawned) return spawn_status;
 
 		if (::GetLastError() == ERROR_BAD_EXE_FORMAT) {
@@ -2801,17 +2809,187 @@ namespace wbsh {
 	bool Executor::spawnExternalAndWait(const std::wstring& exe,
 	                                    std::wstring& cmdline,
 	                                    std::wstring& envblock,
-	                                    int* exit_status) {
+	                                    int* exit_status,
+	                                    const std::string& job_text) {
 		SpawnCommand command;
 		command.exe      = exe;
 		command.cmdline  = cmdline;
 		command.envblock = envblock;
 
-		const HANDLE process = createWithHandleList(command, currentStdio(), SpawnPlacement());
-		if (process == INVALID_HANDLE_VALUE) return false;
+		const HANDLE group = startForegroundGroup();
+		const HANDLE process = createWithHandleList(command, currentStdio(), spawn_placement_);
+		const DWORD error = ::GetLastError();
+		if (process == INVALID_HANDLE_VALUE) {
+			endForegroundGroup(group);
+			::SetLastError(error);
+			return false;
+		}
 
-		*exit_status = waitProcessAndClose(process);
+		std::vector<HANDLE> processes = { process };
+		std::vector<int> statuses;
+		*exit_status = waitForegroundProcesses(processes, group, job_text, statuses);
 		return true;
+	}
+
+	bool Executor::jobControlActive() const {
+		return env_.interactive() && consoleInput() != nullptr;
+	}
+
+	// A foreground command of an interactive shell runs in a job object
+	// of its own, so Ctrl+Z can stop all of its processes together.
+	HANDLE Executor::startForegroundGroup() {
+		if (!jobControlActive()) return nullptr;
+
+		const HANDLE group = createProcessGroup();
+		spawn_placement_.job = group;
+		return group;
+	}
+
+	void Executor::endForegroundGroup(HANDLE group) {
+		spawn_placement_.job = nullptr;
+		if (group != nullptr) ::CloseHandle(group);
+	}
+
+	// The job's processes are suspended, not ended: `fg` / `bg` resume them.
+	int Executor::stopForegroundJob(std::vector<HANDLE> processes, HANDLE group,
+	                                const std::string& text) {
+		suspendProcessGroup(group);
+
+		Job job;
+		job.id = nextJobId();
+		job.handle = processes.back();
+		job.pid = static_cast<long long>(::GetProcessId(job.handle));
+		job.cmd_text = text;
+		job.stopped = true;
+		job.exit_code = kStatusStopped;
+		job.group = group;
+		processes.pop_back();
+		job.stages = std::move(processes);
+		jobs_.push_back(job);
+
+		std::fputc('\n', stderr);
+		printJobState(jobs_.back());
+		return kStatusStopped;
+	}
+
+	void Executor::printJobState(const Job& job) const {
+		std::fprintf(stderr, "%s\n", jobLine(job).c_str());
+	}
+
+	int Executor::waitForegroundProcesses(std::vector<HANDLE>& processes, HANDLE group,
+	                                      const std::string& text, std::vector<int>& statuses) {
+		spawn_placement_.job = nullptr;
+		if (processes.empty()) {
+			endForegroundGroup(group);
+			statuses.clear();
+			return 1;
+		}
+
+		const HANDLE console = group != nullptr ? consoleInput() : nullptr;
+		if (waitForeground(processes, console) == ForegroundEnd::Stopped) {
+			statuses.assign(processes.size(), kStatusStopped);
+			return stopForegroundJob(processes, group, text);
+		}
+
+		statuses.clear();
+		for (const HANDLE process : processes) statuses.push_back(waitProcessAndClose(process));
+		if (group != nullptr) ::CloseHandle(group);
+		return statuses.empty() ? 0 : statuses.back();
+	}
+
+	static void resumeJob(Executor::Job& job) {
+		if (job.group != nullptr) resumeProcessGroup(job.group);
+		else resumeProcessById(static_cast<unsigned long>(job.pid));
+		job.stopped = false;
+	}
+
+	int Executor::waitForegroundJob(Job& job) {
+		std::vector<HANDLE> processes = job.stages;
+		processes.push_back(job.handle);
+
+		const HANDLE console = jobControlActive() ? consoleInput() : nullptr;
+		if (waitForeground(processes, console) == ForegroundEnd::Stopped) {
+			if (job.group != nullptr) suspendProcessGroup(job.group);
+			else suspendProcessById(static_cast<unsigned long>(job.pid));
+			job.stopped = true;
+			job.exit_code = kStatusStopped;
+			std::fputc('\n', stderr);
+			printJobState(job);
+			return kStatusStopped;
+		}
+
+		return waitForJob(job.id);
+	}
+
+	int Executor::foregroundJob(int id) {
+		for (Job& job : jobs_) {
+			if (job.id != id) continue;
+
+			if (job.stopped) resumeJob(job);
+			return waitForegroundJob(job);
+		}
+
+		return -1;
+	}
+
+	bool Executor::continueJobInBackground(int id) {
+		for (Job& job : jobs_) {
+			if (job.id != id || !job.stopped) continue;
+
+			resumeJob(job);
+			std::fprintf(stderr, "[%d]%s %s &\n", job.id, &job == &jobs_.back() ? "+" : " ",
+				job.cmd_text.c_str());
+			return true;
+		}
+
+		return false;
+	}
+
+	bool Executor::signalJob(Job& job, int signum) {
+		if (signum == kSignalStop || signum == kSignalTerminalStop) {
+			if (job.group != nullptr) suspendProcessGroup(job.group);
+			else suspendProcessById(static_cast<unsigned long>(job.pid));
+			job.stopped = true;
+			job.exit_code = 128 + signum;
+			return true;
+		}
+
+		if (signum == kSignalContinue) {
+			resumeJob(job);
+			return true;
+		}
+
+		if (signum == 0) return job.running;
+		if (job.group != nullptr) return ::TerminateJobObject(job.group, 128 + signum) != 0;
+		return ::TerminateProcess(job.handle, static_cast<UINT>(128 + signum)) != 0;
+	}
+
+	// The rest of the sleep becomes a child shell's `sleep`, started
+	// stopped, so `fg` / `bg` can carry on with it like any other job.
+	int Executor::stopRemainingSleep(unsigned long milliseconds, const std::string& text) {
+		char seconds[32];
+		std::snprintf(seconds, sizeof(seconds), "%.3f", milliseconds / 1000.0);
+		const std::string rest = std::string("sleep ") + seconds;
+
+		const HANDLE group = startForegroundGroup();
+		const StdioHandles stdio = currentStdio();
+		const HANDLE process = spawnSelfCommand(rest, stdio.in, stdio.out, stdio.err);
+		spawn_placement_.job = nullptr;
+		if (process == INVALID_HANDLE_VALUE) {
+			endForegroundGroup(group);
+			return 1;
+		}
+
+		return stopForegroundJob({ process }, group, text);
+	}
+
+	void Executor::endStoppedJobs() {
+		for (Job& job : jobs_) {
+			if (!job.stopped) continue;
+
+			if (job.group != nullptr) ::TerminateJobObject(job.group, kStatusHangup);
+			else ::TerminateProcess(job.handle, kStatusHangup);
+		}
 	}
 #endif  // _WIN32
 
@@ -3759,6 +3937,15 @@ namespace wbsh {
 		return highest + 1;
 	}
 
+#ifdef _WIN32
+	static void releaseJobExtras(Executor::Job& job) {
+		for (const HANDLE stage : job.stages) ::CloseHandle(stage);
+		job.stages.clear();
+		if (job.group != nullptr) ::CloseHandle(job.group);
+		job.group = nullptr;
+	}
+#endif
+
 	bool Executor::reapJobs() {
 		bool changed = false;
 #ifdef _WIN32
@@ -3770,9 +3957,11 @@ namespace wbsh {
 			if (exit_code == STILL_ACTIVE) continue;
 
 			job.running = false;
+			job.stopped = false;
 			job.exit_code = shellStatusFromExitCode(exit_code);
 			::CloseHandle(job.handle);
 			job.handle = nullptr;
+			releaseJobExtras(job);
 			changed = true;
 		}
 #endif
@@ -3781,9 +3970,16 @@ namespace wbsh {
 
 	static void waitJobToFinish(Executor::Job& job) {
 #ifdef _WIN32
+		if (job.stopped) {
+			job.exit_code = kStatusStopped;
+			return;
+		}
+
+		for (const HANDLE stage : job.stages) ::WaitForSingleObject(stage, INFINITE);
 		job.exit_code = waitProcessAndClose(job.handle);
 		job.running = false;
 		job.handle = nullptr;
+		releaseJobExtras(job);
 #else
 		(void)job;
 #endif
@@ -3792,6 +3988,7 @@ namespace wbsh {
 	int Executor::waitForJob(int id) {
 		for (auto& job : jobs_) {
 			if (job.id != id) continue;
+			if (job.stopped) return job.exit_code;
 			if (job.running) waitJobToFinish(job);
 
 			const int status = job.exit_code;
@@ -3803,7 +4000,12 @@ namespace wbsh {
 	}
 
 	void Executor::waitForAllJobs() {
-		while (!jobs_.empty()) waitForJob(jobs_.front().id);
+		std::vector<int> ids;
+		for (const Job& job : jobs_) {
+			if (!job.stopped) ids.push_back(job.id);
+		}
+
+		for (const int id : ids) waitForJob(id);
 	}
 
 	int Executor::waitForAnyJob() {
@@ -3820,7 +4022,7 @@ namespace wbsh {
 		std::vector<HANDLE> handles;
 		std::vector<int> ids;
 		for (const Job& job : jobs_) {
-			if (!job.running || job.handle == nullptr) continue;
+			if (!job.running || job.stopped || job.handle == nullptr) continue;
 
 			handles.push_back(job.handle);
 			ids.push_back(job.id);
@@ -3880,6 +4082,7 @@ namespace wbsh {
 	}
 
 	static std::string jobStateText(const Executor::Job& job) {
+		if (job.stopped) return "Stopped";
 		if (job.running) return "Running";
 		if (job.exit_code == 0) return "Done";
 		return "Exit " + std::to_string(job.exit_code);
@@ -3895,7 +4098,7 @@ namespace wbsh {
 		state.resize(std::max<std::size_t>(state.size(), 24), ' ');
 
 		std::string line = "[" + std::to_string(job.id) + "]" + mark + "  " + state + job.cmd_text;
-		if (job.running) line += " &";
+		if (job.running && !job.stopped) line += " &";
 		return line;
 	}
 
