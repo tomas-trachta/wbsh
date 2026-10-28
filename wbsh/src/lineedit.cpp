@@ -521,6 +521,206 @@ namespace wbsh {
 		done = true;
 	}
 
+	// Where the command being completed starts and which words it has so
+	// far, the way bash's programmable completion splits the line: quotes,
+	// $(...), ${...} and `...` stay inside one word, and the command
+	// starts after the last ; | & ( or { -- not after the & of a 2>&1 --
+	// and after any NAME=value assignments in front of it.
+	namespace complete_detail {
+
+		struct CommandWords {
+			std::size_t start = 0;
+			std::vector<std::string> words;
+		};
+
+		static std::size_t skipQuoted(const std::string& text, std::size_t i, std::size_t end) {
+			const char quote = text[i];
+			for (++i; i < end; ++i) {
+				if (text[i] == quote) return i + 1;
+				if (quote == '"' && text[i] == '\\') ++i;
+			}
+
+			return end;
+		}
+
+		static std::size_t skipGroup(const std::string& text, std::size_t i, std::size_t end) {
+			const char open = text[i];
+			const char close = open == '(' ? ')' : '}';
+			int depth = 0;
+			while (i < end) {
+				const char letter = text[i];
+				if (letter == '\'' || letter == '"') {
+					i = skipQuoted(text, i, end);
+					continue;
+				}
+
+				if (letter == open) ++depth;
+				if (letter == close && --depth == 0) return i + 1;
+				i += letter == '\\' ? 2 : 1;
+			}
+
+			return end;
+		}
+
+		static std::size_t skipBackquoted(const std::string& text, std::size_t i, std::size_t end) {
+			for (++i; i < end; ++i) {
+				if (text[i] == '`') return i + 1;
+				if (text[i] == '\\') ++i;
+			}
+
+			return end;
+		}
+
+		static bool opensGroup(const std::string& text, std::size_t i, std::size_t end) {
+			return text[i] == '$' && i + 1 < end && (text[i + 1] == '(' || text[i + 1] == '{');
+		}
+
+		// One quoted string, expansion or escaped character as a unit.
+		static std::size_t skipUnit(const std::string& text, std::size_t i, std::size_t end) {
+			const char letter = text[i];
+			if (letter == '\\') return std::min<std::size_t>(i + 2, end);
+			if (letter == '\'' || letter == '"') return skipQuoted(text, i, end);
+			if (letter == '`') return skipBackquoted(text, i, end);
+			if (opensGroup(text, i, end)) return skipGroup(text, i + 1, end);
+
+			return i + 1;
+		}
+
+		static bool isRedirectionAmpersand(const std::string& text, std::size_t i) {
+			const bool after_redirect = i > 0 && (text[i - 1] == '>' || text[i - 1] == '<');
+			const bool before_redirect = i + 1 < text.size() && text[i + 1] == '>';
+			return after_redirect || before_redirect;
+		}
+
+		static bool isStandaloneBrace(const std::string& text, std::size_t i) {
+			const bool word_start = i == 0 || isSpaceByte(text[i - 1]);
+			const bool word_end = i + 1 >= text.size() || isSpaceByte(text[i + 1]);
+			return word_start && word_end;
+		}
+
+		static bool separatesCommands(const std::string& text, std::size_t i) {
+			switch (text[i]) {
+			case ';':
+			case '|':
+			case '(':
+			case '\n':
+				return true;
+			case '&':
+				return !isRedirectionAmpersand(text, i);
+			case '{':
+				return isStandaloneBrace(text, i);
+			default:
+				return false;
+			}
+		}
+
+		static bool isNameByte(char letter, bool first) {
+			const auto byte = static_cast<unsigned char>(letter);
+			if (letter == '_' || std::isalpha(byte) != 0) return true;
+
+			return !first && std::isdigit(byte) != 0;
+		}
+
+		static bool isAssignmentWord(const std::string& word) {
+			std::size_t i = 0;
+			while (i < word.size() && isNameByte(word[i], i == 0)) ++i;
+			if (i == 0 || i >= word.size()) return false;
+
+			if (word[i] == '[') {
+				const std::size_t close = word.find(']', i);
+				if (close == std::string::npos) return false;
+
+				i = close + 1;
+			}
+
+			if (i < word.size() && word[i] == '+') ++i;
+			return i < word.size() && word[i] == '=';
+		}
+
+		struct WordSpan {
+			std::size_t start;
+			std::size_t end;
+		};
+
+		static std::vector<WordSpan> wordSpansBefore(const std::string& text, std::size_t end) {
+			std::vector<WordSpan> spans;
+			std::size_t word_start = std::string::npos;
+			std::size_t i = 0;
+			while (i < end) {
+				const bool breaks = isSpaceByte(text[i]) || separatesCommands(text, i);
+				if (breaks && word_start != std::string::npos) {
+					spans.push_back({ word_start, i });
+					word_start = std::string::npos;
+				}
+
+				if (separatesCommands(text, i)) spans.clear();
+				if (breaks) {
+					++i;
+					continue;
+				}
+
+				if (word_start == std::string::npos) word_start = i;
+				i = skipUnit(text, i, end);
+			}
+
+			if (word_start != std::string::npos) spans.push_back({ word_start, end });
+			return spans;
+		}
+
+		static CommandWords commandWordsBefore(const std::string& text, std::size_t end) {
+			const std::vector<WordSpan> spans = wordSpansBefore(text, end);
+
+			CommandWords command;
+			command.start = end;
+			for (const WordSpan& span : spans) {
+				std::string word = text.substr(span.start, span.end - span.start);
+				if (command.words.empty() && isAssignmentWord(word)) continue;
+
+				if (command.words.empty()) command.start = span.start;
+				command.words.push_back(std::move(word));
+			}
+
+			return command;
+		}
+
+		static std::size_t wordEndAfter(const std::string& text, std::size_t from) {
+			std::size_t i = from;
+			while (i < text.size() && !isSpaceByte(text[i]) && !separatesCommands(text, i)) {
+				i = skipUnit(text, i, text.size());
+			}
+
+			return std::min<std::size_t>(i, text.size());
+		}
+
+		// COMP_WORDS: the words before the cursor's word, that whole word,
+		// and the words after it up to the end of the command.
+		static std::vector<std::string> wordsOfCommand(const std::string& text,
+		                                               const std::vector<std::string>& before,
+		                                               std::size_t word_start,
+		                                               std::size_t word_end,
+		                                               std::size_t command_end) {
+			std::vector<std::string> words = before;
+			words.push_back(text.substr(word_start, word_end - word_start));
+			for (const WordSpan& span : wordSpansBefore(text, command_end)) {
+				if (span.start < word_end) continue;
+
+				words.push_back(text.substr(span.start, span.end - span.start));
+			}
+
+			return words;
+		}
+
+		static std::size_t commandEndAfter(const std::string& text, std::size_t from) {
+			std::size_t i = from;
+			while (i < text.size() && !separatesCommands(text, i)) {
+				i = skipUnit(text, i, text.size());
+			}
+
+			return std::min<std::size_t>(i, text.size());
+		}
+
+	}  // namespace complete_detail
+
 	LineEditor::Tok LineEditor::currentToken() const {
 		Tok token{ cursor_, cursor_, true };
 
@@ -534,7 +734,8 @@ namespace wbsh {
 		if (before == 0) return token;
 
 		const char prev = buffer_[before - 1];
-		token.first = prev == '|' || prev == '&' || prev == ';' || prev == '(' || prev == '{';
+		token.first = prev == '|' || prev == '&' || prev == ';' || prev == '(' || prev == '{'
+			|| complete_detail::commandWordsBefore(buffer_, token.start).words.empty();
 		return token;
 	}
 
@@ -667,38 +868,23 @@ namespace wbsh {
 	}
 
 	std::vector<std::string> LineEditor::prevTokensBefore(const Tok& tok) const {
-		std::vector<std::string> prev;
-		std::string word;
-		for (std::size_t i = 0; i < tok.start; ++i) {
-			const char letter = buffer_[i];
-			if (!isSpaceByte(letter)) {
-				word.push_back(letter);
-				continue;
-			}
-
-			if (word.empty()) continue;
-
-			prev.push_back(word);
-			word.clear();
-		}
-
-		if (!word.empty()) prev.push_back(word);
-		return prev;
+		return complete_detail::commandWordsBefore(buffer_, tok.start).words;
 	}
 
-	static void publishCompWords(Environment& env, const std::vector<std::string>& comp_words) {
+	static void publishCompWords(Environment& env, const std::vector<std::string>& comp_words,
+	                             std::size_t cword) {
 		std::map<long long, std::string> indexed;
 		for (std::size_t i = 0; i < comp_words.size(); ++i) {
 			indexed[static_cast<long long>(i)] = comp_words[i];
 		}
 
 		env.setIndexedArraySparse("COMP_WORDS", std::move(indexed));
-		env.set("COMP_CWORD", std::to_string(comp_words.size() - 1));
+		env.set("COMP_CWORD", std::to_string(cword));
 	}
 
-	static void publishCompLine(Environment& env, const std::string& line) {
+	static void publishCompLine(Environment& env, const std::string& line, std::size_t point) {
 		env.set("COMP_LINE", line);
-		env.set("COMP_POINT", std::to_string(line.size()));
+		env.set("COMP_POINT", std::to_string(point));
 		env.unset("COMPREPLY");
 	}
 
@@ -729,13 +915,15 @@ namespace wbsh {
 	                                           std::vector<std::string>& matches) {
 		Environment& env = exec_.env();
 
-		std::vector<std::string> comp_words = prev;
-		comp_words.push_back(prefix);
-		publishCompWords(env, comp_words);
-		publishCompLine(env, buffer_.substr(0, tok.start) + prefix);
+		const std::size_t start = complete_detail::commandWordsBefore(buffer_, tok.start).start;
+		const std::size_t end = complete_detail::commandEndAfter(buffer_, tok.end);
+		const std::size_t word_end = complete_detail::wordEndAfter(buffer_, tok.end);
+		const std::vector<std::string> words =
+			complete_detail::wordsOfCommand(buffer_, prev, tok.start, word_end, end);
+		publishCompWords(env, words, prev.size());
+		publishCompLine(env, buffer_.substr(start, end - start), tok.end - start);
 
-		const std::string previous_word = prev.size() > 1 ? prev.back() : std::string();
-		runCompletionFunction(exec_, function, { prev.front(), prefix, previous_word });
+		runCompletionFunction(exec_, function, { prev.front(), prefix, prev.back() });
 		appendCompReply(env, prefix, matches);
 	}
 
