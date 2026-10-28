@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -89,6 +90,13 @@ namespace wbsh {
 
 		// The typed line goes to `out` without its newline.
 		LineStatus readLine(const std::string& prompt, std::string& out);
+
+		// How to build the prompt again when requestPromptRefresh() asks.
+		void setPromptRefresher(std::function<std::string()> refresher);
+
+		// Callable from any thread: an editor waiting for a key at a prompt
+		// builds that prompt again and redraws it if it changed.
+		static void requestPromptRefresh();
 
 		struct ReplayOptions {
 			std::string prompt;
@@ -160,6 +168,8 @@ namespace wbsh {
 		std::string describeCursorCell() const;
 		void moveToLineEnd();
 		void showPrompt();
+		void refreshPrompt();
+		std::size_t leadRows() const;
 		void appendLineText(std::string& out) const;
 		void insertChars(const std::string& text);
 		void killRange(std::size_t start, std::size_t end, bool prepend);
@@ -312,6 +322,9 @@ namespace wbsh {
 		std::string prompt_raw_;
 		std::string prompt_lead_;      // lines of a multi-line prompt above its last one
 		std::string prompt_visible_;   // the cells the last line takes, as text
+		std::string prompt_lead_visible_;
+		std::string prompt_full_;
+		std::function<std::string()> prompt_refresher_;
 
 		// Row offset of the cursor below the prompt's first row, as of the
 		// most recent redraw. When the buffer wraps, redraw() must walk

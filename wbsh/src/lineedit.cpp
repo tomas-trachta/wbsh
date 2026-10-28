@@ -13,6 +13,7 @@
 #endif /* _WIN32 */
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -274,6 +275,10 @@ namespace wbsh {
 	LineEditor::LineEditor(Environment& env, Executor& exec)
 		: env_(env), exec_(exec) {}
 
+	void LineEditor::setPromptRefresher(std::function<std::string()> refresher) {
+		prompt_refresher_ = std::move(refresher);
+	}
+
 	LineStatus LineEditor::readLine(const std::string& prompt, std::string& out) {
 		resetLine(prompt);
 
@@ -312,6 +317,8 @@ namespace wbsh {
 	// lines above it are written once.
 	void LineEditor::setPrompt(const std::string& prompt) {
 		const std::size_t last_line = prompt_detail::lastLineStart(prompt);
+		prompt_full_ = prompt;
+		prompt_lead_visible_ = prompt_detail::visiblePart(prompt.substr(0, last_line));
 		prompt_lead_ = prompt_detail::withoutMarks(prompt.substr(0, last_line));
 		prompt_raw_ = prompt_detail::withoutMarks(prompt.substr(last_line));
 		prompt_visible_ = prompt_detail::visiblePart(prompt.substr(last_line));
@@ -1670,6 +1677,21 @@ namespace wbsh {
 		revsearchRefresh(query, match_index);
 	}
 
+	// Another thread asks the editor waiting for keys to rebuild its
+	// prompt by putting a menu event, which no key produces, into the
+	// console's input queue.
+	namespace refresh_detail {
+
+		static const UINT kRefreshCommand = 0x7762;
+		static std::atomic<bool> g_reading_keys{ false };
+
+		static bool asksForRefresh(const INPUT_RECORD& record) {
+			return record.EventType == MENU_EVENT
+			    && record.Event.MenuEvent.dwCommandId == kRefreshCommand;
+		}
+
+	}  // namespace refresh_detail
+
 	namespace keys_detail {
 
 		static const DWORD kCtrlBits = LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED;
@@ -1866,12 +1888,47 @@ namespace wbsh {
 		if (headless_) return;
 
 		cooked_input_mode_ = enterRawInputMode(::GetStdHandle(STD_INPUT_HANDLE));
+		refresh_detail::g_reading_keys.store(true);
 	}
 
 	void LineEditor::leaveRawMode() {
 		if (headless_) return;
 
+		refresh_detail::g_reading_keys.store(false);
 		::SetConsoleMode(::GetStdHandle(STD_INPUT_HANDLE), cooked_input_mode_);
+	}
+
+	void LineEditor::requestPromptRefresh() {
+		if (!refresh_detail::g_reading_keys.load()) return;
+
+		INPUT_RECORD record{};
+		record.EventType = MENU_EVENT;
+		record.Event.MenuEvent.dwCommandId = refresh_detail::kRefreshCommand;
+		DWORD written = 0;
+		::WriteConsoleInputW(::GetStdHandle(STD_INPUT_HANDLE), &record, 1, &written);
+	}
+
+	// Lines of a multi-line prompt above its last one, as they wrapped.
+	std::size_t LineEditor::leadRows() const {
+		return advanceOver(prompt_lead_visible_, prompt_lead_visible_.size(), { 0, 0 },
+			screenColumns()).row;
+	}
+
+	// The whole prompt is erased and written again, only when it changed.
+	void LineEditor::refreshPrompt() {
+		if (!prompt_refresher_ || revsearch_active_ || headless_) return;
+
+		const std::string prompt = prompt_refresher_();
+		if (prompt == prompt_full_) return;
+
+		std::string out;
+		appendCursorUp(out, last_cursor_row_ + leadRows());
+		out += kEraseToEnd;
+		emit(out);
+
+		setPrompt(prompt);
+		showPrompt();
+		redraw();
 	}
 
 	// Alt-code input (Alt + numpad digits) is delivered as a key-UP event
@@ -1921,6 +1978,7 @@ namespace wbsh {
 
 			INPUT_RECORD record;
 			if (!readInputRecord(::GetStdHandle(STD_INPUT_HANDLE), record)) return false;
+			if (refresh_detail::asksForRefresh(record)) refreshPrompt();
 			if (record.EventType != KEY_EVENT) continue;
 
 			key = record.Event.KeyEvent;
@@ -2160,6 +2218,9 @@ namespace wbsh {
 	bool LineEditor::editUntilDone() { return false; }
 	void LineEditor::leaveRawMode() {}
 	void LineEditor::enterRawMode() {}
+	void LineEditor::requestPromptRefresh() {}
+	std::size_t LineEditor::leadRows() const { return 0; }
+	void LineEditor::refreshPrompt() {}
 	LineEditor::Tok LineEditor::currentToken() const { return {0, 0, true}; }
 	std::vector<std::string> LineEditor::commandCompletions(const std::string&) { return {}; }
 	std::vector<std::string> LineEditor::pathCompletions(const std::string&) { return {}; }

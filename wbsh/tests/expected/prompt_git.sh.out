@@ -1,0 +1,17 @@
+=== a fresh repository with an untracked file
+[ (main | untracked)]
+=== staged, then committed and clean
+[ (main | staged)]
+[ (main)]
+=== unstaged changes outrank staged and untracked ones
+[ (main | unstaged)]
+[ (main | unstaged)]
+[ (main | staged)]
+=== an operation in progress is shown instead
+[ (main | merging)]
+=== in a subdirectory, on another branch
+[ (feature/x | staged)]
+=== WBSH_GIT_NO_DIRTY leaves the state out
+[ (feature/x)]
+=== a detached HEAD
+detached shown
