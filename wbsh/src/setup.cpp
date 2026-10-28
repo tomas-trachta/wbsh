@@ -8,10 +8,14 @@
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#  include <tlhelp32.h>
+#else
+#  include <unistd.h>
 #endif /* _WIN32 */
 
 #include <algorithm>
 #include <cstdlib>
+#include <iterator>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -228,6 +232,96 @@ namespace wbsh {
 		return env.get("WBSH_SUBSHELL") == "1";
 	}
 
+#if !defined(WBSH_VERSION_MAJOR) || !defined(WBSH_VERSION_MINOR) || !defined(WBSH_VERSION_PATCH)
+#define WBSH_VERSION_MAJOR 0
+#define WBSH_VERSION_MINOR 0
+#define WBSH_VERSION_PATCH 0
+#endif
+#define WBSH_SETUP_VSTR2(x) #x
+#define WBSH_SETUP_VSTR(x) WBSH_SETUP_VSTR2(x)
+
+	// Scripts gate on BASH_VERSION / BASH_VERSINFO, so wbsh reports the bash
+	// release it is compatible with; WBSH_VERSION is its own version. OSTYPE
+	// and MACHTYPE are Git Bash's, which scripts already treat as Windows.
+	static const char* const kBashVersInfo[] = { "5", "2", "37", "1", "release" };
+	static const char* const kWbshVersion = WBSH_SETUP_VSTR(WBSH_VERSION_MAJOR) "."
+		WBSH_SETUP_VSTR(WBSH_VERSION_MINOR) "." WBSH_SETUP_VSTR(WBSH_VERSION_PATCH);
+
+	static std::string hostType() {
+#if defined(_M_ARM64) || defined(__aarch64__)
+		return "aarch64";
+#else
+		return "x86_64";
+#endif
+	}
+
+	static std::string selfExecutablePath(const PathConv& path_conv) {
+#ifdef _WIN32
+		wchar_t buffer[MAX_PATH] = {};
+		const DWORD length = ::GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+		if (length == 0 || length >= MAX_PATH) return "wbsh";
+
+		return path_conv.toPosix(wideToUtf8(std::wstring(buffer, length)));
+#else
+		(void)path_conv;
+		return "wbsh";
+#endif /* _WIN32 */
+	}
+
+	static long long parentProcessId() {
+#ifdef _WIN32
+		const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+		if (snapshot == INVALID_HANDLE_VALUE) return 0;
+
+		const DWORD self = ::GetCurrentProcessId();
+		PROCESSENTRY32W entry{};
+		entry.dwSize = sizeof(entry);
+		long long parent = 0;
+		BOOL more = ::Process32FirstW(snapshot, &entry);
+		while (more && parent == 0) {
+			if (entry.th32ProcessID == self) parent = entry.th32ParentProcessID;
+			more = ::Process32NextW(snapshot, &entry);
+		}
+
+		::CloseHandle(snapshot);
+		return parent;
+#else
+		return static_cast<long long>(::getppid());
+#endif /* _WIN32 */
+	}
+
+	// A self-spawned subshell keeps its parent shell's `$PPID`.
+	static std::string shellParentPid(const Environment& env) {
+		long long pid = 0;
+		if (parseLL(env.get("WBSH_PPID"), pid)) return std::to_string(pid);
+
+		return std::to_string(parentProcessId());
+	}
+
+	static void setReadonlyInteger(Environment& env, const std::string& name, std::string value) {
+		env.unexportVar(name);
+		env.set(name, std::move(value));
+		env.setAttributes(name, kAttrInteger);
+		env.markReadonly(name);
+	}
+
+	static void seedBashVariables(Environment& env, const PathConv& path_conv) {
+		const std::string machine = hostType() + "-pc-msys";
+		env.set("BASH_VERSION", "5.2.37(1)-release");
+		env.set("WBSH_VERSION", kWbshVersion);
+		env.set("BASH", selfExecutablePath(path_conv));
+		env.set("OSTYPE", "msys");
+		env.set("HOSTTYPE", hostType());
+		env.set("MACHTYPE", machine);
+
+		std::vector<std::string> versinfo(std::begin(kBashVersInfo), std::end(kBashVersInfo));
+		versinfo.push_back(machine);
+		env.setIndexedArrayFromList("BASH_VERSINFO", std::move(versinfo));
+		env.markReadonly("BASH_VERSINFO");
+
+		setReadonlyInteger(env, "PPID", shellParentPid(env));
+	}
+
 	void prepareEnv(Environment& env) {
 		env.loadFromProcessEnv();
 
@@ -239,6 +333,7 @@ namespace wbsh {
 
 		seedHome(env, path_conv);
 		seedPwd(env, path_conv);
+		seedBashVariables(env, path_conv);
 	}
 
 	static void unexportInheritedLocals(Environment& env, const std::string& names) {
@@ -304,6 +399,7 @@ namespace wbsh {
 		int status = 0;
 		if (parseInt(env.get("WBSH_STATUS"), status)) exec.setLastStatus(status);
 		env.unset("WBSH_STATUS");
+		env.unset("WBSH_PPID");
 	}
 
 	static void applyInheritedHistory(Environment& env, Executor& exec) {

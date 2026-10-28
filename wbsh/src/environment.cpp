@@ -244,6 +244,11 @@ namespace wbsh {
 		return indexed->second.count(element.index) != 0;
 	}
 
+	static bool isReadOnlyDynamicName(const std::string& name) {
+		return name == "LINENO" || name == "BASHPID" || name == "BASH_COMMAND"
+			|| name == "EPOCHSECONDS" || name == "EPOCHREALTIME";
+	}
+
 	void Environment::set(const std::string& name, std::string value) {
 		const auto unbound = namerefs_.find(name);
 		if (unbound != namerefs_.end() && unbound->second.empty()) {
@@ -276,7 +281,7 @@ namespace wbsh {
 		}
 
 		// Read-only dynamic params; writes are ignored silently.
-		if (name == "LINENO" || name == "BASHPID" || name == "BASH_COMMAND") return;
+		if (isReadOnlyDynamicName(name)) return;
 
 		if (rejectIfReadonly(name)) return;
 		if (!applyAttributes(name, value)) return;
