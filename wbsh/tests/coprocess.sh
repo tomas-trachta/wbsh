@@ -23,7 +23,7 @@ coproc SQ ( read -r n; echo $((n * n)) )
 echo 7 >&${SQ[1]}; read -r r <&${SQ[0]}; echo "square $r"
 wait $SQ_PID; echo "SQ exited $?"
 coproc python -I -u -c "import sys; [print(l.strip()[::-1], flush=True) for l in sys.stdin]"
-echo abc >&${COPROC[1]}; read -r r <&${COPROC[0]}; echo "reversed ${r%$'\r'}"
+echo abc >&${COPROC[1]}; read -r r <&${COPROC[0]}; echo "reversed $r" | tr -d '\r'
 echo "${#COPROC[@]}"
 coproc echo simple command name
 read -r r <&${COPROC[0]}; echo "$r"
