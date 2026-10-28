@@ -242,8 +242,25 @@ namespace wbsh {
 		bool reapJobs();
 		std::vector<Job>& jobsTable() { return jobs_; }
 		/// Wait for one job; returns its exit status, or -1 if id unknown.
+		/// A job that was waited for leaves the table, as in bash.
 		int  waitForJob(int id);
 		void waitForAllJobs();
+		/// `wait -n`: the status of the next job to finish, or -1 with none.
+		int  waitForAnyJob();
+		/// `%N`, `%%`, `%+`, `%`, `%-`, `%name`, `%?text`; nullptr if no job matches.
+		Job* findJob(const std::string& spec);
+		/// The status of a finished background process that left the table.
+		bool finishedJobStatus(long long pid, int& status) const;
+		/// `[N]+  Done  cmd` for every job that ended since the last report;
+		/// reported jobs leave the table.
+		void reportFinishedJobs(std::FILE* out);
+		std::string jobLine(const Job& job) const;
+		void forgetJob(int id);
+		int  nextJobId() const;
+		int  waitForFirstRunningJob();
+		/// Ctrl+C at an interactive prompt's command: stops the loop or
+		/// list running it with status 130, as SIGINT does in bash.
+		bool stopForCtrlC(int& status) const;
 		/// `wait PID` for a `<(...)` / `>(...)` process; false if @p pid is not one.
 		bool waitForProcSubstChild(long long pid, int& status);
 		void waitForProcSubstChildren();
@@ -872,6 +889,11 @@ namespace wbsh {
 		                            HANDLE h_in, HANDLE h_out, HANDLE h_err);
 		HANDLE spawnSelfCommand(const std::string& command_text,
 		                        HANDLE h_in, HANDLE h_out, HANDLE h_err);
+		SpawnPlacement backgroundPlacement() const {
+			SpawnPlacement placement;
+			placement.new_process_group = spawning_background_;
+			return placement;
+		}
 		void   rememberProcSubstChild(HANDLE process);
 
 		// Process substitutions started while a node runs are released
@@ -920,7 +942,10 @@ namespace wbsh {
 		std::unordered_map<std::string, std::string> exec_path_cache_;
 		std::string exec_path_cache_path_;
 		std::vector<Job> jobs_;
-		int next_job_id_ = 0;
+		std::unordered_map<long long, int> finished_job_statuses_;
+		// Set while a `&` command is being started: it gets its own
+		// process group, so the console's Ctrl+C does not reach it.
+		bool spawning_background_ = false;
 		int getopts_subindex_ = 1;
 		// Arenas backing every AST the executor must keep alive (e.g.
 		// those parsed via `source` / `eval` / inherited `WBSH_FUNCTIONS`

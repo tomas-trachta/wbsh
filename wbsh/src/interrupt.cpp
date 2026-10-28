@@ -13,6 +13,8 @@
 #endif /* _WIN32 */
 
 #include <atomic>
+#include <chrono>
+#include <thread>
 
 namespace wbsh {
 
@@ -22,9 +24,20 @@ namespace wbsh {
 		static bool              g_installed = false;
 
 #ifdef _WIN32
+		// Signalled with the flag, so a sleep can wake on the press.
+		static HANDLE pressedEvent() {
+			static const HANDLE event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+			return event;
+		}
+
+		static void notePress() {
+			g_pending.store(true);
+			::SetEvent(pressedEvent());
+		}
+
 		static BOOL WINAPI ctrlCHandler(DWORD ctrl) {
 			if (ctrl == CTRL_C_EVENT || ctrl == CTRL_BREAK_EVENT) {
-				g_pending.store(true);
+				notePress();
 				return TRUE;
 			}
 
@@ -61,7 +74,39 @@ namespace wbsh {
 	}
 
 	bool takeCtrlC() {
+#ifdef _WIN32
+		::ResetEvent(interrupt_detail::pressedEvent());
+#endif /* _WIN32 */
 		return interrupt_detail::g_pending.exchange(false);
+	}
+
+	bool sleepUnlessCtrlC(unsigned long milliseconds) {
+#ifdef _WIN32
+		if (!interrupt_detail::g_installed) {
+			::Sleep(milliseconds);
+			return true;
+		}
+
+		if (ctrlCPending()) return false;
+
+		const DWORD woke = ::WaitForSingleObject(interrupt_detail::pressedEvent(), milliseconds);
+		return woke != WAIT_OBJECT_0;
+#else
+		std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+		return true;
+#endif /* _WIN32 */
+	}
+
+	void pressCtrlCAfter(unsigned long milliseconds) {
+		installCtrlCHandler();
+#ifdef _WIN32
+		std::thread([milliseconds] {
+			::Sleep(milliseconds);
+			interrupt_detail::notePress();
+		}).detach();
+#else
+		(void)milliseconds;
+#endif /* _WIN32 */
 	}
 
 	ScopedCtrlCCapture::ScopedCtrlCCapture() {

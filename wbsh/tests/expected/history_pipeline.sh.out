@@ -15,6 +15,5 @@
 === an empty history stays empty
 0
 === jobs in a pipeline stage
-[1] Running sleep 2
+[1]+ Running sleep 2 &
 1
-[1] Done sleep 2

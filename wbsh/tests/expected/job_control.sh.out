@@ -1,0 +1,30 @@
+=== kill and wait with job specs
+status 143
+both gone
+by name 143
+by substring 143
+wbsh: kill: %9: no such job
+no job 1
+=== jobs
+[1]-  Running                 sleep 1 &
+[2]+  Running                 sleep 2 &
+2
+[1]- PID Running                 sleep 1 &
+[2]+ PID Running                 sleep 2 &
+0
+=== wait -n
+first done 3
+nothing left 127
+=== a finished job is reported once
+[1]+  Exit 5                  (exit 5)
+0
+late wait 5
+=== bg without job control
+wbsh: bg: no job control
+bg rc 1
+=== Ctrl+C stops sleep and loops
+endless sleep loop rc=130
+sleep rc=130
+1
+for loop rc=130
+busy loop rc=130

@@ -22,6 +22,19 @@ namespace wbsh {
 	bool takeCtrlC();
 
 	/**
+	 * @brief Sleeps for @p milliseconds unless Ctrl+C comes first.
+	 * @return false when Ctrl+C cut the sleep short (the press stays
+	 *         pending, so the loop around the sleep stops too).
+	 */
+	bool sleepUnlessCtrlC(unsigned long milliseconds);
+
+	/**
+	 * @brief Test hook (`__ctrlc`): catches Ctrl+C as an interactive shell
+	 *        does and presses it after @p milliseconds from another thread.
+	 */
+	void pressCtrlCAfter(unsigned long milliseconds);
+
+	/**
 	 * @brief Catches Ctrl+C for the life of the object, where the shell
 	 *        is not already doing so.
 	 *
