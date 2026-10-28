@@ -4,14 +4,6 @@
  *        translate / delete / squeeze, and chunked byte I/O.
  */
 
-#ifdef _WIN32
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
-
-#  include <io.h>
-#endif /* _WIN32 */
-
 #include "coreutils_internal.h"
 
 #include <cstdio>
@@ -479,11 +471,6 @@ namespace wbsh {
 		for (const OptHit& hit : scan.hits) applyTrHit(hit, options);
 		options.sets = scan.operands;
 		return checkTrOperandCount(options);
-	}
-
-	static bool isDiskStream(FILE* stream) {
-		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stream)));
-		return handle != INVALID_HANDLE_VALUE && GetFileType(handle) == FILE_TYPE_DISK;
 	}
 
 	// From a pipe or the console a chunk ends at a newline, so a line-fed

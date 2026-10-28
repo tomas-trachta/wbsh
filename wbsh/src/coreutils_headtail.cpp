@@ -47,14 +47,37 @@ namespace wbsh {
 
 		struct ChunkReader {
 			std::FILE* stream = nullptr;
+			bool line_at_a_time = false;
 			std::vector<char> buffer = std::vector<char>(64 * 1024);
 			std::size_t position = 0;
 			std::size_t length = 0;
 
+			// fread waits until the whole chunk arrives, so a pipe or console
+			// is read one line at a time: head -n 1 then answers as soon as
+			// the first line is written, not when 64 KiB have piled up.
+			void attach(std::FILE* input) {
+				stream = input;
+				line_at_a_time = !isDiskStream(input);
+			}
+
 			bool refill() {
 				position = 0;
-				length = std::fread(buffer.data(), 1, buffer.size(), stream);
+				length = line_at_a_time ? readUpToNewline() : std::fread(buffer.data(), 1,
+					buffer.size(), stream);
 				return length != 0;
+			}
+
+			std::size_t readUpToNewline() {
+				std::size_t got = 0;
+				int c = EOF;
+				_lock_file(stream);
+				while (got < buffer.size() && (c = _fgetc_nolock(stream)) != EOF) {
+					buffer[got++] = static_cast<char>(c);
+					if (c == '\n') break;
+				}
+
+				_unlock_file(stream);
+				return got;
 			}
 
 			// The line keeps its '\n'; only the final line of the input may
@@ -287,7 +310,7 @@ namespace wbsh {
 
 	static void headLines(std::FILE* stream, unsigned long long count) {
 		ChunkReader reader;
-		reader.stream = stream;
+		reader.attach(stream);
 		std::string line;
 		for (unsigned long long printed = 0; printed < count && !stdoutFailed()
 		     && reader.readLine(line); ++printed) {
@@ -299,7 +322,7 @@ namespace wbsh {
 
 	static void headAllButLastLines(std::FILE* stream, unsigned long long count) {
 		ChunkReader reader;
-		reader.stream = stream;
+		reader.attach(stream);
 		std::deque<std::string> held;
 		std::string line;
 		while (!stdoutFailed() && reader.readLine(line)) {
@@ -334,7 +357,7 @@ namespace wbsh {
 
 	static void tailFromLine(std::FILE* stream, unsigned long long first) {
 		ChunkReader reader;
-		reader.stream = stream;
+		reader.attach(stream);
 		std::string line;
 		unsigned long long number = 1;
 		while (number < first && reader.readLine(line)) ++number;
@@ -345,7 +368,7 @@ namespace wbsh {
 
 	static void tailLastLines(std::FILE* stream, unsigned long long count) {
 		ChunkReader reader;
-		reader.stream = stream;
+		reader.attach(stream);
 		std::deque<std::string> held;
 		std::string line;
 		while (reader.readLine(line)) {

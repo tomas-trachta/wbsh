@@ -1,0 +1,21 @@
+=== head -n stops reading after its lines
+a
+answered at once
+a
+b
+answered at once
+=== head -n with a negative count and tail +N still see everything
+a
+b
+b
+c
+=== grep -m and grep -q stop at the first match
+hit
+answered at once
+found
+answered at once
+=== files are still read in chunks
+one
+two
+three
+2
