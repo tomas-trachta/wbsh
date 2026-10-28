@@ -1,0 +1,25 @@
+=== without HISTTIMEFORMAT no time is shown
+    1  echo one
+=== with it, the time comes before each entry in its format
+    1  [at] echo one
+1
+    1  echo one
+=== times read from the file are shown; entries without one show ??
+    1  2023 echo stamped
+    2  ??echo plain
+=== with HISTTIMEFORMAT set the file gets the times
+#!wbsh-history-v3
+#<seconds>
+0	echo first
+#<seconds>
+0	echo second
+=== without it the file has none
+#!wbsh-history-v3
+0	echo first
+=== a shell without HISTTIMEFORMAT keeps the times when it trims the file
+#!wbsh-history-v3
+#1700000001
+0	echo b
+0	true
+=== HISTCONTROL=ignoreboth keeps a command with a leading space out
+0	echo kept

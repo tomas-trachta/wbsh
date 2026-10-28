@@ -1923,11 +1923,30 @@ namespace wbsh {
 		return 0;
 	}
 
+	// HISTTIMEFORMAT, when set, is the strftime format of the time shown
+	// before each entry; an entry with no time shows ??, as in bash.
+	static std::string historyTimeText(Executor& exec, std::size_t index) {
+		if (!exec.env().has("HISTTIMEFORMAT")) return {};
+
+		const std::vector<long long>& times = exec.historyTimes();
+		const long long time = index < times.size() ? times[index] : 0;
+		if (time <= 0) return "??";
+
+		const std::time_t when = static_cast<std::time_t>(time);
+		const std::tm* local = std::localtime(&when);
+		const std::string format = exec.env().get("HISTTIMEFORMAT");
+		char text[256];
+		const std::size_t length = local == nullptr
+			? 0 : std::strftime(text, sizeof(text), format.c_str(), local);
+		return std::string(text, length);
+	}
+
 	static int printHistory(Executor& exec, const std::vector<std::string>& args) {
 		const std::vector<std::string>& history = exec.history();
 		const std::size_t start = historyStartIndex(args, history.size());
 		for (std::size_t i = start; i < history.size(); ++i) {
-			std::printf("%5zu  %s\n", i + 1, history[i].c_str());
+			const std::string stamp = historyTimeText(exec, i);
+			std::printf("%5zu  %s%s\n", i + 1, stamp.c_str(), history[i].c_str());
 		}
 
 		return 0;

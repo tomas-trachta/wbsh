@@ -72,20 +72,30 @@ namespace wbsh {
 	struct HistoryList {
 		std::vector<std::string> commands;
 		std::vector<int>         statuses;
+		std::vector<long long>   times;   ///< when each was added, in epoch seconds; 0 unknown
 	};
+
+	/** True when some entry of @p list has a time. */
+	bool historyHasTimes(const HistoryList& list);
 
 	/** Reads the history file at the native @p path; false when it cannot be opened. */
 	bool readHistoryFile(const std::string& path, HistoryList& list);
 
-	/** Replaces the file with the entries of @p list from @p first on, all or nothing. */
-	bool writeHistoryFile(const std::string& path, const HistoryList& list, std::size_t first);
+	/**
+	 * Replaces the file with the entries of @p list from @p first on, all or
+	 * nothing; with @p with_times each entry's time goes before it as a
+	 * `#<seconds>` line, as bash writes it when HISTTIMEFORMAT is set.
+	 */
+	bool writeHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
+	                      bool with_times);
 
 	/**
 	 * Appends the entries of @p list from @p first on in a single write, so
 	 * the entries of shells sharing the file never interleave mid-line. A
 	 * file in an older format is rewritten in the current one first.
 	 */
-	bool appendHistoryFile(const std::string& path, const HistoryList& list, std::size_t first);
+	bool appendHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
+	                       bool with_times);
 
 	/** Drops all but the newest @p keep entries of the file at @p path. */
 	bool trimHistoryFile(const std::string& path, std::size_t keep);

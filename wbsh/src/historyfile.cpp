@@ -10,6 +10,7 @@
 #  include <windows.h>
 #endif /* _WIN32 */
 
+#include <cctype>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -28,9 +29,12 @@ namespace wbsh {
 	//
 	//   #!wbsh-history-v3
 	//   <status>\t<command>
+	//   #<seconds>
 	//   <status>\t<command>
 	//   ...
 	//
+	// A `#<seconds>` line gives the time of the entry after it, as in
+	// bash's own history files; readers that do not know it skip it.
 	// A command typed over several lines is one entry, so v3 writes a
 	// newline in it as \n and a backslash as \\. v2 files (the same lines,
 	// nothing escaped) and legacy files (no header, one command per line,
@@ -99,14 +103,24 @@ namespace wbsh {
 			return !command.empty();
 		}
 
-		static std::string formatEntries(const HistoryList& list, std::size_t first) {
+		static std::string formatEntries(const HistoryList& list, std::size_t first,
+		                                 bool with_times) {
 			std::string text;
 			for (std::size_t i = first; i < list.commands.size(); ++i) {
 				const int status = i < list.statuses.size() ? list.statuses[i] : 0;
+				const long long time = i < list.times.size() ? list.times[i] : 0;
+				if (with_times && time > 0) text += "#" + std::to_string(time) + '\n';
 				text += std::to_string(status) + '\t' + escapeCommand(list.commands[i]) + '\n';
 			}
 
 			return text;
+		}
+
+		static bool timeLine(const std::string& line, long long& time) {
+			if (line.size() < 2 || line[0] != '#') return false;
+			if (std::isdigit(static_cast<unsigned char>(line[1])) == 0) return false;
+
+			return parseLL(line.substr(1), time);
 		}
 
 		static Format formatOfFile(const std::string& path) {
@@ -177,7 +191,7 @@ namespace wbsh {
 			HistoryList existing;
 			if (!readHistoryFile(path, existing)) return false;
 
-			return writeHistoryFile(path, existing, 0);
+			return writeHistoryFile(path, existing, 0, historyHasTimes(existing));
 		}
 
 		static std::vector<std::string> splitColons(const std::string& text) {
@@ -233,7 +247,8 @@ namespace wbsh {
 			HistoryList list;
 			list.commands.push_back(unsaved.command);
 			list.statuses.push_back(0);
-			appendHistoryFile(unsaved.path, list, 0);
+			list.times.push_back(0);
+			appendHistoryFile(unsaved.path, list, 0, false);
 			unsaved.command.clear();
 		}
 
@@ -257,6 +272,7 @@ namespace wbsh {
 
 		std::string line;
 		bool first = true;
+		long long time = 0;
 		histfile_detail::Format format = histfile_detail::Format::kLegacy;
 		while (std::getline(file, line)) {
 			histfile_detail::stripLineEnding(line);
@@ -268,26 +284,38 @@ namespace wbsh {
 
 			int status = 0;
 			std::string command;
-			if (line.empty()) continue;
+			if (line.empty() || histfile_detail::timeLine(line, time)) continue;
 			if (!histfile_detail::parseLine(line, format, status, command)) continue;
 
 			list.commands.push_back(std::move(command));
 			list.statuses.push_back(status);
+			list.times.push_back(time);
+			time = 0;
 		}
 
 		return true;
 	}
 
-	bool writeHistoryFile(const std::string& path, const HistoryList& list, std::size_t first) {
+	bool historyHasTimes(const HistoryList& list) {
+		for (const long long time : list.times) {
+			if (time > 0) return true;
+		}
+
+		return false;
+	}
+
+	bool writeHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
+	                      bool with_times) {
 		const std::string text = std::string(histfile_detail::kV3Header) + '\n'
-			+ histfile_detail::formatEntries(list, first);
+			+ histfile_detail::formatEntries(list, first, with_times);
 		return histfile_detail::replaceFile(path, text);
 	}
 
-	bool appendHistoryFile(const std::string& path, const HistoryList& list, std::size_t first) {
+	bool appendHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
+	                       bool with_times) {
 		if (first >= list.commands.size()) return true;
 
-		std::string text = histfile_detail::formatEntries(list, first);
+		std::string text = histfile_detail::formatEntries(list, first, with_times);
 		switch (histfile_detail::formatOfFile(path)) {
 		case histfile_detail::Format::kMissing:
 			text = std::string(histfile_detail::kV3Header) + '\n' + text;
@@ -307,7 +335,7 @@ namespace wbsh {
 		if (!readHistoryFile(path, list)) return false;
 		if (list.commands.size() <= keep) return true;
 
-		return writeHistoryFile(path, list, list.commands.size() - keep);
+		return writeHistoryFile(path, list, list.commands.size() - keep, historyHasTimes(list));
 	}
 
 	long long historyLimit(const std::string& value) {

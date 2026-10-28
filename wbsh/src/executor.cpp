@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -3958,6 +3959,7 @@ namespace wbsh {
 		const auto to = static_cast<std::ptrdiff_t>(first + count);
 		list.commands.erase(list.commands.begin() + from, list.commands.begin() + to);
 		list.statuses.erase(list.statuses.begin() + from, list.statuses.begin() + to);
+		list.times.erase(list.times.begin() + from, list.times.begin() + to);
 	}
 
 	static void forgetSavedEntries(std::size_t& saved, std::size_t first, std::size_t count) {
@@ -3980,6 +3982,7 @@ namespace wbsh {
 
 		history_.commands.push_back(std::move(line));
 		history_.statuses.push_back(0);
+		history_.times.push_back(static_cast<long long>(std::time(nullptr)));
 		trimHistoryTo(history_, history_saved_, historyLimit(env_.get("HISTSIZE")));
 	}
 
@@ -4015,6 +4018,7 @@ namespace wbsh {
 	void Executor::clearHistory() {
 		history_.commands.clear();
 		history_.statuses.clear();
+		history_.times.clear();
 		history_saved_ = 0;
 	}
 
@@ -4026,13 +4030,19 @@ namespace wbsh {
 			loaded.commands.end());
 		history_.statuses.insert(history_.statuses.end(), loaded.statuses.begin(),
 			loaded.statuses.end());
+		history_.times.insert(history_.times.end(), loaded.times.begin(), loaded.times.end());
 		history_saved_ = history_.commands.size();
 		trimHistoryTo(history_, history_saved_, historyLimit(env_.get("HISTSIZE")));
 		return true;
 	}
 
+	// As bash: entry times go to the file while HISTTIMEFORMAT is set.
+	bool Executor::writesHistoryTimes() const {
+		return env_.has("HISTTIMEFORMAT");
+	}
+
 	bool Executor::saveHistoryToFile(const std::string& path) const {
-		return writeHistoryFile(path, history_, 0);
+		return writeHistoryFile(path, history_, 0, writesHistoryTimes());
 	}
 
 	bool Executor::writeHistory(const std::string& path) {
@@ -4043,7 +4053,7 @@ namespace wbsh {
 	}
 
 	bool Executor::appendNewHistory(const std::string& path) {
-		if (!appendHistoryFile(path, history_, history_saved_)) return false;
+		if (!appendHistoryFile(path, history_, history_saved_, writesHistoryTimes())) return false;
 
 		history_saved_ = history_.commands.size();
 		return true;
