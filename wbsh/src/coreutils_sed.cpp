@@ -35,6 +35,7 @@
 
 #include "executor.h"
 #include "numparse.h"
+#include "optscan.h"
 #include "pathconv.h"
 #include "posixregex.h"
 #include "utf8.h"
@@ -121,6 +122,7 @@ namespace wbsh {
 			bool separate = false;
 			bool in_place = false;
 			bool null_data = false;
+			bool bad_option = false;
 			std::string backup_suffix;
 			std::string script;
 			bool have_script = false;
@@ -1231,77 +1233,80 @@ namespace wbsh {
 		options.have_script = true;
 	}
 
-	static bool applyInPlaceFlag(const std::string& arg, SedOptions& options) {
-		if (arg.compare(0, 10, "--in-place") == 0) {
-			options.in_place = true;
-			if (arg.size() > 11) options.backup_suffix = arg.substr(11);
-			return true;
-		}
+	enum SedOptionId {
+		kSedQuiet, kSedExpression, kSedFile, kSedExtended, kSedInPlace, kSedSeparate,
+		kSedNullData, kSedIgnored, kSedLineLength,
+	};
 
-		if (arg.compare(0, 2, "-i") != 0) return false;
-		options.in_place = true;
-		options.backup_suffix = arg.substr(2);
-		return true;
+	// GNU sed's options; short ones combine (`-nE`, `-ne 'p'`, `-Ei`), and
+	// `-i` takes its backup suffix only attached (`-i.bak`).
+	static const std::vector<OptDef> kSedOptions = {
+		{ kSedQuiet,      'n', "quiet",            OptArg::None },
+		{ kSedQuiet,      0,   "silent",           OptArg::None },
+		{ kSedExpression, 'e', "expression",       OptArg::Required },
+		{ kSedFile,       'f', "file",             OptArg::Required },
+		{ kSedExtended,   'E', "regexp-extended",  OptArg::None },
+		{ kSedExtended,   'r', nullptr,            OptArg::None },
+		{ kSedInPlace,    'i', "in-place",         OptArg::Optional },
+		{ kSedSeparate,   's', "separate",         OptArg::None },
+		{ kSedNullData,   'z', "null-data",        OptArg::None },
+		{ kSedIgnored,    'u', "unbuffered",       OptArg::None },
+		{ kSedIgnored,    'b', "binary",           OptArg::None },
+		{ kSedIgnored,    0,   "posix",            OptArg::None },
+		{ kSedIgnored,    0,   "debug",            OptArg::None },
+		{ kSedIgnored,    0,   "sandbox",          OptArg::None },
+		{ kSedIgnored,    0,   "follow-symlinks",  OptArg::None },
+		{ kSedLineLength, 'l', "line-length",      OptArg::Required },
+	};
+
+	static void applySedFlag(const OptHit& hit, SedOptions& options) {
+		switch (hit.id) {
+			case kSedQuiet:
+				options.quiet = true;
+				break;
+			case kSedExtended:
+				options.extended = true;
+				break;
+			case kSedInPlace:
+				options.in_place = true;
+				options.backup_suffix = hit.value;
+				break;
+			case kSedSeparate:
+				options.separate = true;
+				break;
+			case kSedNullData:
+				options.null_data = true;
+				break;
+			default:
+				break;
+		}
 	}
 
-	static bool applySedFlag(const std::string& arg, SedOptions& options) {
-		const bool quiet = arg == "-n" || arg == "--quiet" || arg == "--silent";
-		const bool extended = arg == "-E" || arg == "-r" || arg == "--regexp-extended";
-		const bool ignored = arg == "-u" || arg == "--unbuffered" || arg == "--posix";
-		if (quiet)                                    options.quiet = true;
-		else if (extended)                            options.extended = true;
-		else if (arg == "-s" || arg == "--separate")  options.separate = true;
-		else if (arg == "-z" || arg == "--null-data") options.null_data = true;
-		else if (!ignored) return applyInPlaceFlag(arg, options);
-		return true;
-	}
-
-	static bool applyScriptOption(Executor& exec, const std::vector<std::string>& args,
-	                              std::size_t& i, SedOptions& options, bool& valid) {
-		const std::string& arg = args[i];
-		const bool has_value = i + 1 < args.size();
-		if ((arg == "-e" || arg == "--expression") && has_value) {
-			appendScript(options, args[++i]);
+	static bool applySedOption(Executor& exec, const OptHit& hit, SedOptions& options) {
+		if (hit.id == kSedExpression) {
+			appendScript(options, hit.value);
 			return true;
 		}
 
-		if (arg.compare(0, 2, "-e") == 0 && arg.size() > 2) {
-			appendScript(options, arg.substr(2));
-			return true;
-		}
+		if (hit.id == kSedFile) return appendScriptFile(exec, hit.value, options);
 
-		if ((arg != "-f" && arg != "--file") || !has_value) return false;
-		valid = appendScriptFile(exec, args[++i], options);
+		applySedFlag(hit, options);
 		return true;
 	}
 
 	static bool parseSedArgs(Executor& exec, const std::vector<std::string>& args,
 	                         SedOptions& options) {
-		std::vector<std::string> operands;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "--") {
-				const auto rest = args.begin() + static_cast<std::ptrdiff_t>(i) + 1;
-				operands.insert(operands.end(), rest, args.end());
-				break;
-			}
-
-			bool valid = true;
-			if (applyScriptOption(exec, args, i, options, valid)) {
-				if (!valid) return false;
-				continue;
-			}
-
-			if (arg.size() < 2 || arg[0] != '-') {
-				operands.push_back(arg);
-				continue;
-			}
-
-			if (applySedFlag(arg, options)) continue;
-			std::fprintf(stderr, "sed: unknown option -- '%s'\n", arg.c_str());
+		OptScanResult scanned;
+		if (!scanOptions("sed", args, kSedOptions, scanned)) {
+			options.bad_option = true;
 			return false;
 		}
 
+		for (const OptHit& hit : scanned.hits) {
+			if (!applySedOption(exec, hit, options)) return false;
+		}
+
+		std::vector<std::string> operands = scanned.operands;
 		if (!options.have_script && !operands.empty()) {
 			options.script = operands.front();
 			options.have_script = true;
@@ -1494,7 +1499,12 @@ namespace wbsh {
 	static int builtin_sed(Executor& exec, const std::vector<std::string>& args) {
 		SedOptions options;
 		if (!parseSedArgs(exec, args, options)) {
-			if (!options.have_script) std::fprintf(stderr, "sed: no script specified\n");
+			if (options.bad_option) {
+				std::fprintf(stderr, "Usage: sed [OPTION]... {script-only-if-no-other-script} "
+					"[input-file]...\n");
+			} else if (!options.have_script) {
+				std::fprintf(stderr, "sed: no script specified\n");
+			}
 			return kSedSyntaxStatus;
 		}
 
