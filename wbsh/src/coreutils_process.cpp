@@ -34,6 +34,7 @@
 #include "exitstatus.h"
 #include "interrupt.h"
 #include "numparse.h"
+#include "optscan.h"
 #include "pathconv.h"
 #include "regexutil.h"
 #include "termreq.h"
@@ -70,8 +71,14 @@ namespace wbsh {
 			std::string pattern;
 		};
 
+		enum TimeoutOptionId {
+			kTimeoutSignal = 1, kTimeoutKillAfter, kTimeoutPreserve, kTimeoutForeground,
+			kTimeoutVerbose,
+		};
+
 		struct TimeoutOptions {
 			double seconds = 0.0;
+			double kill_after = 0.0;
 			int signal = 15;
 			bool preserve_status = false;
 			bool verbose = false;
@@ -99,6 +106,7 @@ namespace wbsh {
 	static const int    kStatusTimeoutFailed  = 125;
 	static const int    kStatusCannotInvoke   = 126;
 	static const int    kStatusNotFound       = 127;
+	static const int    kSignalInterrupt      = 2;
 	static const int    kSignalKill           = 9;
 	static const int    kSignalTerm           = 15;
 	static const DWORD  kWatchPollMs          = 50;
@@ -444,62 +452,61 @@ namespace wbsh {
 		return status;
 	}
 
-	static bool parseTimeoutOption(const std::vector<std::string>& args, std::size_t& i,
-	                               TimeoutOptions& options) {
-		const std::string& arg = args[i];
-		if (arg == "--preserve-status") {
-			options.preserve_status = true;
-			return true;
-		}
+	static const std::vector<OptDef>& timeoutOptionDefs() {
+		static const std::vector<OptDef> defs = {
+			{ process_detail::kTimeoutSignal,     's', "signal",          OptArg::Required },
+			{ process_detail::kTimeoutKillAfter,  'k', "kill-after",      OptArg::Required },
+			{ process_detail::kTimeoutPreserve,   0,   "preserve-status", OptArg::None },
+			{ process_detail::kTimeoutForeground, 'f', "foreground",      OptArg::None },
+			{ process_detail::kTimeoutVerbose,    'v', "verbose",         OptArg::None },
+		};
+		return defs;
+	}
 
-		if (arg == "-v" || arg == "--verbose") {
-			options.verbose = true;
-			return true;
-		}
+	static bool parseTimeoutDuration(const std::string& text, double& seconds) {
+		if (parseDurationSeconds(text, seconds) && seconds >= 0.0) return true;
 
-		if (arg == "--foreground") return true;
-		if ((arg == "-s" || arg == "--signal") && i + 1 < args.size()) {
-			return parseSignalName(args[++i], options.signal);
-		}
+		perr("timeout", "invalid time interval '" + text + "'");
+		return false;
+	}
 
-		if (arg == "-k" && i + 1 < args.size()) {
-			++i;
-			return true;
+	static bool applyTimeoutHit(const OptHit& hit, TimeoutOptions& options) {
+		switch (hit.id) {
+			case process_detail::kTimeoutSignal:
+				if (parseSignalName(hit.value, options.signal)) return true;
+				perr("timeout", "invalid signal '" + hit.value + "'");
+				return false;
+			case process_detail::kTimeoutKillAfter:
+				return parseTimeoutDuration(hit.value, options.kill_after);
+			case process_detail::kTimeoutPreserve:
+				options.preserve_status = true;
+				return true;
+			case process_detail::kTimeoutVerbose:
+				options.verbose = true;
+				return true;
+			default:
+				return true;
 		}
-
-		if (arg.compare(0, 9, "--signal=") == 0) {
-			return parseSignalName(arg.substr(9), options.signal);
-		}
-
-		return arg.compare(0, 13, "--kill-after=") == 0;
 	}
 
 	static bool parseTimeoutArgs(const std::vector<std::string>& args, TimeoutOptions& options) {
-		std::size_t i = 0;
-		for (; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "--") {
-				++i;
-				break;
-			}
+		OptScanResult scanned;
+		if (!scanOptions("timeout", args, timeoutOptionDefs(), scanned, true)) return false;
 
-			if (arg.size() < 2 || arg[0] != '-') break;
-			if (parseTimeoutOption(args, i, options)) continue;
-			perr("timeout", "invalid option: " + arg);
+		for (const OptHit& hit : scanned.hits) {
+			if (!applyTimeoutHit(hit, options)) return false;
+		}
+
+		const std::vector<std::string>& operands = scanned.operands;
+		if (operands.size() < 2) {
+			perr("timeout", "usage: timeout [-s SIG] [-k DURATION] [--preserve-status] "
+				"DURATION COMMAND...");
 			return false;
 		}
 
-		if (i + 1 >= args.size()) {
-			perr("timeout", "usage: timeout [-s SIG] [--preserve-status] DURATION COMMAND...");
-			return false;
-		}
+		if (!parseTimeoutDuration(operands[0], options.seconds)) return false;
 
-		if (!parseDurationSeconds(args[i], options.seconds)) {
-			perr("timeout", "invalid time interval '" + args[i] + "'");
-			return false;
-		}
-
-		options.command.assign(args.begin() + static_cast<std::ptrdiff_t>(i) + 1, args.end());
+		options.command.assign(operands.begin() + 1, operands.end());
 		return true;
 	}
 
@@ -529,40 +536,114 @@ namespace wbsh {
 		return shellStatusFromExitCode(exit_code);
 	}
 
-	static int expireTimedOutChild(HANDLE job, HANDLE process, const TimeoutOptions& options) {
-		if (options.verbose) {
-			std::fprintf(stderr, "timeout: sending signal %d to command '%s'\n", options.signal,
-				options.command[0].c_str());
+	static std::string signalName(int signum) {
+		for (const auto& entry : process_detail::kSignalNames) {
+			if (entry.number == signum) return entry.name;
 		}
 
-		const UINT code = static_cast<UINT>(128 + options.signal);
+		return std::to_string(signum);
+	}
+
+	static void announceSignal(const TimeoutOptions& options, int signum) {
+		if (!options.verbose) return;
+
+		std::fprintf(stderr, "timeout: sending signal %s to command '%s'\n",
+			signalName(signum).c_str(), options.command[0].c_str());
+	}
+
+	static void terminateChild(HANDLE job, HANDLE process, int signum) {
+		const UINT code = static_cast<UINT>(128 + signum);
 		if (job == nullptr || ::TerminateJobObject(job, code) == 0) {
 			::TerminateProcess(process, code);
 		}
 
 		::WaitForSingleObject(process, INFINITE);
+	}
+
+	static int expireTimedOutChild(HANDLE job, HANDLE process, const TimeoutOptions& options) {
+		announceSignal(options, options.signal);
+		terminateChild(job, process, options.signal);
 		if (options.preserve_status) return processExitCode(process);
 		return options.signal == kSignalKill ? 128 + kSignalKill : kStatusTimedOut;
 	}
 
+	static bool hasGracePeriod(const TimeoutOptions& options) {
+		return options.kill_after > 0.0 && options.signal != kSignalKill && options.signal != 0;
+	}
+
+	// With -k the first signal has to be one the command can survive, and
+	// the only such thing Windows can aim at one console process group is
+	// Ctrl+Break; KILL follows if the command is still there afterwards.
+	static int expireGracefully(HANDLE job, HANDLE process, const TimeoutOptions& options) {
+		if (::GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, ::GetProcessId(process)) == 0) {
+			return expireTimedOutChild(job, process, options);
+		}
+
+		announceSignal(options, options.signal);
+		const DWORD grace = timeoutMilliseconds(options.kill_after);
+		if (::WaitForSingleObject(process, grace) == WAIT_OBJECT_0) {
+			return options.preserve_status ? processExitCode(process) : kStatusTimedOut;
+		}
+
+		announceSignal(options, kSignalKill);
+		terminateChild(job, process, kSignalKill);
+		return 128 + kSignalKill;
+	}
+
+	// A child in a process group of its own never sees Ctrl+C, so the wait
+	// watches for it and ends the command on the user's behalf.
+	static DWORD waitWatchingCtrlC(HANDLE process, DWORD timeout_ms, bool& interrupted) {
+		const ULONGLONG deadline = ::GetTickCount64() + timeout_ms;
+		for (;;) {
+			const ULONGLONG now = ::GetTickCount64();
+			const DWORD left = timeout_ms == INFINITE ? INFINITE
+				: static_cast<DWORD>(now >= deadline ? 0 : deadline - now);
+			const DWORD waited = ::WaitForSingleObject(process, (std::min)(left, kWatchPollMs));
+			if (waited != WAIT_TIMEOUT || left <= kWatchPollMs) return waited;
+
+			if (takeCtrlC()) {
+				interrupted = true;
+				return WAIT_TIMEOUT;
+			}
+		}
+	}
+
+	static int superviseChild(HANDLE job, HANDLE process, const TimeoutOptions& options) {
+		const DWORD timeout_ms = timeoutMilliseconds(options.seconds);
+		if (!hasGracePeriod(options)) {
+			const DWORD waited = ::WaitForSingleObject(process, timeout_ms);
+			if (waited != WAIT_TIMEOUT) return processExitCode(process);
+			return expireTimedOutChild(job, process, options);
+		}
+
+		const ScopedCtrlCCapture capture;
+		bool interrupted = false;
+		const DWORD waited = waitWatchingCtrlC(process, timeout_ms, interrupted);
+		if (interrupted) {
+			terminateChild(job, process, kSignalInterrupt);
+			return 128 + kSignalInterrupt;
+		}
+
+		if (waited != WAIT_TIMEOUT) return processExitCode(process);
+		return expireGracefully(job, process, options);
+	}
+
 	static int runUnderTimeout(Executor& exec, const TimeoutOptions& options) {
-		const HANDLE process = exec.spawnCommand(options.command);
+		SpawnPlacement placement;
+		placement.job = createKillOnCloseJob();
+		placement.new_process_group = hasGracePeriod(options);
+
+		const HANDLE process = exec.spawnCommand(options.command, placement);
 		if (process == INVALID_HANDLE_VALUE) {
+			if (placement.job != nullptr) ::CloseHandle(placement.job);
 			return exec.findExecutable(options.command[0]).empty()
 				? kStatusNotFound
 				: kStatusCannotInvoke;
 		}
 
-		const HANDLE job = createKillOnCloseJob();
-		if (job != nullptr) ::AssignProcessToJobObject(job, process);
-
-		const DWORD waited = ::WaitForSingleObject(process, timeoutMilliseconds(options.seconds));
-		const int status = waited == WAIT_TIMEOUT
-			? expireTimedOutChild(job, process, options)
-			: processExitCode(process);
-
+		const int status = superviseChild(placement.job, process, options);
 		::CloseHandle(process);
-		if (job != nullptr) ::CloseHandle(job);
+		if (placement.job != nullptr) ::CloseHandle(placement.job);
 		return status;
 	}
 

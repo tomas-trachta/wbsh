@@ -1,0 +1,28 @@
+=== plain expiry
+expired: 124
+timeout: sending signal TERM to command 'sleep'
+verbose: 124
+KILL: 137
+fast command: 0
+own status: 3
+=== -k / --kill-after
+obeys Ctrl+Break: 124
+timeout: sending signal TERM to command 'ping'
+timeout: sending signal KILL to command 'ping'
+survives Ctrl+Break: 137
+long option: 137
+KILL needs no grace: 137
+=== nothing escapes the job
+spawner: 124
+no grandchild survived
+=== errors
+wbsh: timeout: invalid time interval 'x'
+bad -k: 125
+wbsh: timeout: invalid signal 'FOO'
+bad signal: 125
+wbsh: timeout: usage: timeout [-s SIG] [-k DURATION] [--preserve-status] DURATION COMMAND...
+missing command: 125
+wbsh: timeout: invalid option -- '1'
+negative: 125
+wbsh: nosuchcommand: command not found
+not found: 127

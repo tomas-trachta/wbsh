@@ -121,6 +121,17 @@ namespace wbsh {
 	bool changeDirectory(Executor& exec, const std::string& target, std::string& err,
 		bool physical = false);
 
+#ifdef _WIN32
+	/// Where spawnCommand starts a child: inside @c job, assigned while the
+	/// child is still suspended so nothing it starts can escape the job, and
+	/// optionally in a console process group of its own (so a Ctrl+Break
+	/// can be aimed at it alone).
+	struct SpawnPlacement {
+		HANDLE job = nullptr;
+		bool new_process_group = false;
+	};
+#endif
+
 	/// @p word as bash shows it for re-use (`set -x`, `declare`): bare when
 	/// that is safe, else single-quoted, or `$'...'` with control characters.
 	std::string shellQuoteForReuse(const std::string& word);
@@ -458,7 +469,8 @@ namespace wbsh {
 		// an external directly, a builtin, function or alias through a child
 		// wbsh that inherits this shell's state. The caller owns the returned
 		// handle; INVALID_HANDLE_VALUE (already reported) when nothing started.
-		HANDLE spawnCommand(const std::vector<std::string>& argv);
+		HANDLE spawnCommand(const std::vector<std::string>& argv,
+		                    const SpawnPlacement& placement = SpawnPlacement());
 #endif
 
 		// Walk PATH for an executable named `name`. Returns the resolved
@@ -738,7 +750,8 @@ namespace wbsh {
 		                               HANDLE h_in, HANDLE h_out, HANDLE h_err,
 		                               bool* tried);
 		bool   runsInsideShell(const std::string& name) const;
-		HANDLE spawnShellCommand(const std::vector<std::string>& argv);
+		HANDLE spawnShellCommand(const std::vector<std::string>& argv,
+		                         const SpawnPlacement& placement);
 		// Re-enter wbsh on the original source slice that produced this AST
 		// node. Used as the fallback when a pipeline element is a builtin,
 		// function, alias, or anything else that can't run as a separate exe.
