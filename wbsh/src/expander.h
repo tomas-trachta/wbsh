@@ -398,7 +398,7 @@ namespace wbsh {
 		                              std::string& out);
 		void expandHeredocCmdSubst   (const std::string& body, std::size_t& i,
 		                              std::string& out);
-		void expandHeredocArith      (const std::string& body, std::size_t& i,
+		bool expandHeredocArith      (const std::string& body, std::size_t& i,
 		                              std::string& out);
 		void expandHeredocArithBracket(const std::string& body, std::size_t& i,
 		                              std::string& out);
