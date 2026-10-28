@@ -687,10 +687,6 @@ namespace wbsh {
 		loadCopySource(native, shown, false, endpoint);
 	}
 
-	static bool isLinkStatus(const fs::file_status& status) {
-		return status.type() == fs::file_type::symlink || status.type() == fs::file_type::junction;
-	}
-
 	static bool isDirectoryOrLinkToOne(const Endpoint& endpoint) {
 		std::error_code ec;
 		return isRealDirectory(endpoint.status) || fs::is_directory(endpoint.native, ec);
