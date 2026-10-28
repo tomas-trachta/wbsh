@@ -413,10 +413,21 @@ namespace wbsh {
 			}
 		}
 
+		// Output that can no longer reach stdout ends the program the way
+		// SIGPIPE ends a POSIX awk, END rules included.
+		void Interpreter::emitToStdout(const std::string& out) {
+			std::fwrite(out.data(), 1, out.size(), stdout);
+			if (!stdoutFailed()) return;
+
+			exiting = true;
+			fatal = true;
+			exit_status = stdoutFailureStatus();
+		}
+
 		void Interpreter::emit(const std::string& out, Stmt& stmt) {
 			if (fatal) return;
 			if (stmt.redirect == Redirect::None) {
-				std::fwrite(out.data(), 1, out.size(), stdout);
+				emitToStdout(out);
 				return;
 			}
 

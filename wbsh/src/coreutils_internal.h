@@ -96,6 +96,14 @@ namespace wbsh {
 	/// True only for a real console: _isatty also says yes for NUL.
 	bool isConsoleStream(std::FILE* stream);
 
+	/// A write to stdout failed, typically because the pipe's reader exited.
+	/// Producer loops stop then, as SIGPIPE would stop them on POSIX.
+	bool stdoutFailed();
+
+	/// The status a builtin stopped by stdoutFailed() returns: 141 (killed by
+	/// SIGPIPE) when stdout is a pipe, 1 otherwise.
+	int stdoutFailureStatus();
+
 	/// Visible console window size; false when stdout is not a console.
 	bool queryConsoleSize(int& columns, int& rows);
 

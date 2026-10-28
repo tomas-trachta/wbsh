@@ -46,6 +46,9 @@ namespace wbsh {
 
 	constexpr int kSignalStatusBase = 128;
 
+	/** What `$?` shows for a command killed by SIGPIPE, which wbsh imitates. */
+	constexpr int kSigPipeStatus = kSignalStatusBase + 13;
+
 	/** `exit N` / `return N`: only the low 8 bits survive, so -1 is 255. */
 	inline int shellStatusFromInt(long long value) {
 		return static_cast<int>(static_cast<unsigned long long>(value) & 0xFFu);

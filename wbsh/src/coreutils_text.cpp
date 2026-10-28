@@ -101,7 +101,7 @@ namespace wbsh {
 	static void forEachLine(FILE* stream, Fn on_line) {
 		forEachRecord(stream, '\n', [&](const std::string& line) {
 			on_line(line);
-			return true;
+			return !stdoutFailed();
 		});
 	}
 
@@ -151,10 +151,12 @@ namespace wbsh {
 			const std::vector<std::string>& files, Fn on_stream) {
 		if (readsStdin(files)) {
 			on_stream(stdin);
-			return 0;
+			return stdoutFailed() ? stdoutFailureStatus() : 0;
 		}
 
 		for (const auto& path : files) {
+			if (stdoutFailed()) return stdoutFailureStatus();
+
 			FILE* stream = fopenNative(exec, path, "rb");
 			if (stream == nullptr) {
 				perr(tool, path, std::error_code(errno, std::system_category()));
@@ -165,7 +167,7 @@ namespace wbsh {
 			std::fclose(stream);
 		}
 
-		return 0;
+		return stdoutFailed() ? stdoutFailureStatus() : 0;
 	}
 
 	enum class UniqDelimit { None, Prepend, Separate };
@@ -763,7 +765,7 @@ namespace wbsh {
 		const std::vector<FILE*> outs = teeOpenOutputs(exec, files, append);
 
 		char chunk[kReadChunk];
-		while (true) {
+		while (!stdoutFailed()) {
 			const std::size_t got = std::fread(chunk, 1, sizeof(chunk), stdin);
 			if (got == 0) break;
 
@@ -773,7 +775,7 @@ namespace wbsh {
 
 		for (FILE* stream : outs) std::fclose(stream);
 		std::fflush(stdout);
-		return 0;
+		return stdoutFailed() ? stdoutFailureStatus() : 0;
 	}
 
 	static bool readRecord(FILE* stream, char terminator, std::string& record, bool& terminated) {
@@ -1537,7 +1539,7 @@ namespace wbsh {
 	static void expandStream(FILE* stream, int tabstop) {
 		int col = 0;
 		int c;
-		while ((c = std::fgetc(stream)) != EOF) {
+		while (!stdoutFailed() && (c = std::fgetc(stream)) != EOF) {
 			if (c == '\t') {
 				const int spaces = tabstop - (col % tabstop);
 				for (int i = 0; i < spaces; ++i) std::putchar(' ');
@@ -1635,7 +1637,7 @@ namespace wbsh {
 	static void unexpandRunOnStream(FILE* stream, const UnexpandOptions& options) {
 		std::string line;
 		int c;
-		while ((c = std::fgetc(stream)) != EOF) {
+		while (!stdoutFailed() && (c = std::fgetc(stream)) != EOF) {
 			if (c != '\n') {
 				line.push_back(static_cast<char>(c));
 				continue;

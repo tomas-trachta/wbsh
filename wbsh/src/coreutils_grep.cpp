@@ -998,7 +998,8 @@ namespace wbsh {
 		std::string line;
 		bool terminated = true;
 		long line_number = 0;
-		while (!reachedLimit(options, file) && readLine(reader, line, terminated)) {
+		while (!reachedLimit(options, file) && !stdoutFailed()
+		       && readLine(reader, line, terminated)) {
 			++line_number;
 			const unsigned long long offset = file.offset;
 			file.offset += line.size() + (terminated ? 1 : 0);
@@ -1157,6 +1158,7 @@ namespace wbsh {
 
 		std::sort(entries.begin(), entries.end());
 		for (const fs::directory_entry& entry : entries) {
+			if (stdoutFailed()) return;
 			grepTreeEntry(exec, run, entry, directory, shown_base);
 		}
 	}
@@ -1189,7 +1191,10 @@ namespace wbsh {
 		run.show_names = options.with_filename == 1 || (options.with_filename == -1 && many);
 
 		if (implicit_tree) descendInto(exec, run, ".", "");
-		for (const std::string& operand : options.files) grepOperand(exec, run, operand);
+		for (const std::string& operand : options.files) {
+			if (stdoutFailed()) break;
+			grepOperand(exec, run, operand);
+		}
 
 		std::fflush(stdout);
 		if (run.matcher.perl_failed) {
@@ -1198,6 +1203,7 @@ namespace wbsh {
 		}
 
 		if (options.quiet && run.any_selected) return 0;
+		if (stdoutFailed()) return stdoutFailureStatus();
 		if (run.any_error) return kGrepError;
 		return run.any_selected ? 0 : 1;
 	}

@@ -35,6 +35,7 @@
 #include "coreutils_internal.h"
 #include "devices.h"
 #include "executor.h"
+#include "exitstatus.h"
 #include "inflate.h"
 #include "numparse.h"
 #include "optscan.h"
@@ -224,6 +225,19 @@ namespace wbsh {
 #else
 		return isatty(fileno(stream)) != 0;
 #endif
+	}
+
+	static bool isPipeStream(std::FILE* stream) {
+		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stream)));
+		return handle != INVALID_HANDLE_VALUE && ::GetFileType(handle) == FILE_TYPE_PIPE;
+	}
+
+	bool stdoutFailed() {
+		return std::ferror(stdout) != 0;
+	}
+
+	int stdoutFailureStatus() {
+		return isPipeStream(stdout) ? kSigPipeStatus : 1;
 	}
 
 	bool queryConsoleSize(int& columns, int& rows) {
@@ -858,7 +872,7 @@ namespace wbsh {
 
 	static void catStream(std::FILE* stream, const CatOptions& opts, CatEmitState& state) {
 		char chunk[kStreamChunk];
-		for (;;) {
+		while (!stdoutFailed()) {
 			const std::size_t got = std::fread(chunk, 1, sizeof(chunk), stream);
 			if (got == 0) break;
 			catEmitChunk(chunk, got, opts, state);
@@ -883,11 +897,12 @@ namespace wbsh {
 		CatEmitState state;
 		int status = 0;
 		for (const auto& file : opts.files) {
+			if (stdoutFailed()) break;
 			if (catStreamFile(exec, file, opts, state) != 0) status = 1;
 		}
 
 		std::fflush(stdout);
-		return status;
+		return stdoutFailed() ? stdoutFailureStatus() : status;
 	}
 
 	static int builtin_clear(Executor&, const std::vector<std::string>&) {
@@ -1637,6 +1652,7 @@ namespace wbsh {
 		const bool integral = seqIsIntegral(range);
 		bool first_out = true;
 		for (double value = range.first; seqContinues(value, range); value += range.inc) {
+			if (stdoutFailed()) return;
 			if (!first_out) std::fputs(sep.c_str(), stdout);
 			if (integral) std::fprintf(stdout, "%lld", static_cast<long long>(value));
 			else          std::fprintf(stdout, "%g", value);
@@ -1678,7 +1694,7 @@ namespace wbsh {
 		printSeq(range, sep);
 		std::fputc('\n', stdout);
 		std::fflush(stdout);
-		return 0;
+		return stdoutFailed() ? stdoutFailureStatus() : 0;
 	}
 
 	struct UnameOptions {
