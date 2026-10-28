@@ -185,7 +185,10 @@ namespace wbsh {
 
 	LineEditor::EditCommand LineEditor::commandNamed(const std::string& name) const {
 		const EditCommand basic = basicCommandNamed(name);
-		return basic != nullptr ? basic : readlineCommandNamed(name);
+		if (basic != nullptr) return basic;
+
+		const EditCommand more = readlineCommandNamed(name);
+		return more != nullptr ? more : viCommandNamed(name);
 	}
 
 	LineEditor::EditCommand LineEditor::basicCommandNamed(const std::string& name) const {
@@ -243,21 +246,32 @@ namespace wbsh {
 	}
 
 	void LineEditor::dispatchKeys(const std::string& keys) {
-		if (takePendingKey(keys)) return;
+		if (viSplitsMetaKey(keys)) return;
 
+		viRecordKeys(keys);
+		if (!takePendingKey(keys)) lookUpKeys(keys);
+		viAfterKeys();
+	}
+
+	// Typed text inserts itself, except in vi's command mode.
+	void LineEditor::lookUpKeys(const std::string& keys) {
 		pending_keys_ += keys;
 
+		const Keymap& keymap = activeKeymap();
 		KeyBinding binding;
-		const KeyLookup found = shellKeymap().lookup(pending_keys_, binding);
+		const KeyLookup found =
+			viSettlePrefix(keymap.lookup(pending_keys_, binding), keymap, keys, binding);
 		if (found == KeyLookup::kPrefix) return;
 
 		current_keys_ = pending_keys_;
 		pending_keys_.clear();
+		const bool vi_command = viEditing() && vi_command_;
 		if (found == KeyLookup::kBound) {
 			runBinding(binding);
-		} else if (commands_detail::insertsItself(current_keys_)) {
+		} else if (!vi_command && commands_detail::insertsItself(current_keys_)) {
 			runCommand("self-insert");
 		} else {
+			if (vi_command) viCancelOperator();
 			ding();
 		}
 	}
@@ -286,10 +300,11 @@ namespace wbsh {
 		}
 
 		const UndoPoint before = { buffer_, cursor_ };
-		(this->*command)();
+		runEditCommand(name, command);
 		recordUndo(before, name);
 		last_command_ = name;
 		last_was_tab_ = name == "complete";
+		viSettleCursor();
 		if (!done_) redrawWhenIdle();
 	}
 

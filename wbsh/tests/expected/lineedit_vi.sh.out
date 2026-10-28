@@ -1,0 +1,131 @@
+=== set -o vi and set -o emacs switch the editing mode
+emacs          	off
+vi             	off
+status 0
+emacs          	off
+vi             	on
+set editing-mode vi
+emacs          	on
+vi             	off
+set editing-mode emacs
+emacs          	off
+vi             	on
+emacs          	off
+vi             	off
+set editing-mode emacs
+=== insert mode types; Esc goes to command mode, one character back
+[hello][]
+[hell][o]
+[hell][o]
+=== h l 0 ^ $ w b e W B E move
+[][one two three]
+[one ][two three]
+[one two ][three]
+[one two ][three]
+[on][e two three]
+[one tw][o three]
+[a][.b c]
+[a.b ][c]
+[][a.b c]
+[a.][b c]
+[  ][indented]
+[ab][c]
+[][abc]
+[abcde][f]
+[abc][def]
+[f(a, (b)][)]
+=== f F t T ; , find a character
+[a][-b-c-d]
+[a-b-c][-d]
+[a-b][-c-d]
+[a-b-c][-d]
+[a-b][-c-d]
+[a-b][-c-d]
+[a][-b-c-d]
+[žluť-k][ůň]
+=== i a I A R insert; x X r ~ s S edit
+[hello][ world]
+[ab][c]
+[a][bc]
+[abc][]
+[XY][cd]
+[][bcd]
+[][cd]
+[ab][d]
+[][zbcd]
+[zz][zd]
+[][abcd]
+[AB][cd]
+[ŽLU][Ť]
+[X][bcd]
+[new][]
+=== d c y with motions; dd cc yy; D C Y; p P
+[][two three]
+[][three]
+[][three]
+[][ two three]
+[one two ][e]
+[one][ ]
+[][two three]
+[][wo three]
+[][two three]
+[one two ][e]
+[][]
+[one][ ]
+[ONE][ two three]
+[X][ three]
+[X][ b]
+[one end][]
+[new][]
+[one twoone][ ]
+[one tw][oone two]
+[tw][oone two]
+[b][ac]
+[ba][ac]
+[one tw][o]
+=== . repeats the last change
+[][ c d]
+[][three four]
+[Qx ][Qy]
+[X ][X three]
+[][a]
+=== u undoes, U goes back to the start
+[][one two]
+[][]
+=== marks
+[one ][wo three]
+[one ][e]
+=== history: k j G and / ? n N
+[][echo third]
+[][ls -la]
+[][echo third]
+[][echo first]
+[][ls -la]
+[][ls -la]
+[][echo first]
+[][echo third]
+[type][d]
+[type][d]
+=== Enter runs the line from either mode; Ctrl-D on an empty line ends the input
+accept [echo hi]
+accept [echo hi]
+eof
+[a][]
+=== insert-mode keys
+[one ][]
+[][]
+[one tw][]
+[aX][bc]
+[one][two]
+=== bind and inputrc reach the vi keymaps
+[][bc]
+[X][abc]
+vi-put can be invoked via "P", "p".
+1
+[a][c]
+=== Ctrl-E in command mode goes back to emacs keys
+[ab][c]
+set editing-mode emacs
+accept [abc]
+[][bc]
+set editing-mode vi

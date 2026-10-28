@@ -320,6 +320,7 @@ namespace wbsh {
 		overwrite_ = false;
 		pending_key_ = PendingKey::kNone;
 		menu_matches_.clear();
+		resetViState();
 		setPrompt(prompt);
 		loadOperateNext();
 	}
@@ -1165,6 +1166,53 @@ namespace wbsh {
 		dispatchKeys(meta ? keys_detail::kMetaPrefix + text : text);
 	}
 
+	// vi's `/` and `?`: the text typed after the lead, shown in the
+	// prompt's place. False when Esc, Ctrl-C or Ctrl-G gives it up, or
+	// Backspace on an empty text.
+	bool LineEditor::readMinibuffer(const std::string& lead, std::string& text) {
+		const std::string saved_raw = prompt_raw_;
+		const std::string saved_visible = prompt_visible_;
+		const UndoPoint saved = { buffer_, cursor_ };
+		revsearch_active_ = true;
+		prompt_raw_ = prompt_visible_ = lead;
+		buffer_.clear();
+		cursor_ = 0;
+		redraw();
+
+		const bool entered = collectMinibuffer();
+		text = buffer_;
+		prompt_raw_ = saved_raw;
+		prompt_visible_ = saved_visible;
+		buffer_ = saved.buffer;
+		cursor_ = saved.cursor;
+		revsearch_active_ = false;
+		return entered;
+	}
+
+	bool LineEditor::collectMinibuffer() {
+		KEY_EVENT_RECORD key{};
+		while (nextKeyDown(key)) {
+			const WORD vk = key.wVirtualKeyCode;
+			const WCHAR ch = key.uChar.UnicodeChar;
+			if (vk == VK_RETURN) return true;
+
+			const bool abort_key = vk == VK_ESCAPE || keys_detail::isInterruptKey(key)
+				|| (keys_detail::ctrlHeld(key) && vk == 'G');
+			if (abort_key || (vk == VK_BACK && buffer_.empty())) return false;
+
+			if (vk == VK_BACK) {
+				buffer_.erase(previousClusterStart(buffer_, buffer_.size()));
+			} else if (ch >= 0x80 || isPrintableAscii(ch)) {
+				buffer_ += ch >= 0x80 ? wideCharacter(ch) : std::string(1, static_cast<char>(ch));
+			}
+
+			cursor_ = buffer_.size();
+			redraw();
+		}
+
+		return false;
+	}
+
 	// readline's answers: y, Y or Space say yes; n, N, Rubout, Esc, Ctrl-G
 	// or Ctrl-C say no; any other key rings the bell.
 	bool LineEditor::askYesNo() {
@@ -1491,6 +1539,8 @@ namespace wbsh {
 	void LineEditor::emit(const std::string&) {}
 	void LineEditor::redraw() {}
 	void LineEditor::redrawWhenIdle() {}
+	bool LineEditor::readMinibuffer(const std::string&, std::string&) { return false; }
+	bool LineEditor::collectMinibuffer() { return false; }
 	bool LineEditor::askYesNo() { return true; }
 	std::string LineEditor::readBracketedPaste() { return {}; }
 	void LineEditor::moveToLineEnd() {}

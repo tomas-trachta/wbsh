@@ -687,12 +687,24 @@ namespace wbsh {
 
 	using set_detail::SetOperands;
 
+	// The line editor follows `set -o vi` and `set -o emacs`; with line
+	// editing always on, `set +o vi` goes back to emacs keys.
+	static void applyEditingMode(const SetOptionSpec& spec, bool on) {
+		const bool vi = spec.flag == &SetOptions::vi;
+		const bool emacs = spec.flag == &SetOptions::emacs;
+		if (!vi && !emacs) return;
+		if (!on && !(vi && viEditing())) return;
+
+		shellKeymap().setVariable("editing-mode", vi && on ? "vi" : "emacs");
+	}
+
 	static void applySetOption(Environment& env, const SetOptionSpec& spec, bool on) {
 		SetOptions& options = env.options();
 		options.*(spec.flag) = on;
 
 		if (on && spec.flag == &SetOptions::vi)    options.emacs = false;
 		if (on && spec.flag == &SetOptions::emacs) options.vi = false;
+		applyEditingMode(spec, on);
 	}
 
 	static void listSetOptions(const Environment& env, bool as_commands) {

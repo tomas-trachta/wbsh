@@ -121,7 +121,13 @@ namespace wbsh {
 			return true;
 		}
 
-		searchCharacter(keys, pending == PendingKey::kSearchForward);
+		const UndoPoint before = { buffer_, cursor_ };
+		if (!takeViPendingKey(pending, keys)) {
+			searchCharacter(keys, pending == PendingKey::kSearchForward);
+		}
+
+		recordUndo(before, "pending-key");
+		viSettleCursor();
 		redrawWhenIdle();
 		return true;
 	}
