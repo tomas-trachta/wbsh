@@ -1,0 +1,21 @@
+=== curl complete download
+rc=0
+hello from the test server
+=== curl short Content-Length
+rc=18
+10
+curl: (18) transfer closed with 90 bytes remaining to read
+rc=18
+chain stopped
+=== curl truncated chunked body
+rc=18
+=== curl write error
+rc=23
+=== wget complete download
+rc=0
+hello from the test server
+=== wget short Content-Length
+wbsh: wget: download of 'OUT/wshort' was interrupted after 10 bytes
+rc=4
+=== wget truncated chunked body
+rc=4

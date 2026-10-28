@@ -478,23 +478,24 @@ namespace wbsh {
 		if (final_draw) std::fputc('\n', stderr);
 	}
 
-	static bool streamBody(HINTERNET request, std::FILE* out, Progress& progress, bool quiet) {
+	// WinHTTP reports a connection closed before Content-Length bytes as a
+	// normal end of data, so the byte count is checked here.
+	static int streamBody(HINTERNET request, std::FILE* out, Progress& progress, bool quiet) {
 		std::vector<char> buffer(64 * 1024);
 		for (;;) {
 			DWORD got = 0;
 			const DWORD capacity = static_cast<DWORD>(buffer.size());
-			if (::WinHttpReadData(request, buffer.data(), capacity, &got) == 0) {
-				return false;
-			}
-
+			if (::WinHttpReadData(request, buffer.data(), capacity, &got) == 0) return kExitNetwork;
 			if (got == 0) break;
-			if (std::fwrite(buffer.data(), 1, got, out) != got) return false;
+			if (std::fwrite(buffer.data(), 1, got, out) != got) return kExitFileIo;
+
 			progress.done += got;
 			if (!quiet) drawProgress(progress, false);
 		}
 
 		if (!quiet) drawProgress(progress, true);
-		return true;
+		if (progress.total > 0 && progress.done < progress.total) return kExitNetwork;
+		return 0;
 	}
 
 	static unsigned long long existingSize(Executor& exec, const std::string& path) {
@@ -513,6 +514,18 @@ namespace wbsh {
 		return fopenNative(exec, path, append ? "ab" : "wb");
 	}
 
+	static int reportSaveStatus(const std::string& path, const Progress& progress, int status) {
+		if (status == kExitFileIo) {
+			perr("wget", "error writing '" + path + "': " + std::strerror(errno));
+		} else if (status == kExitNetwork) {
+			const unsigned long long have = progress.resumed_from + progress.done;
+			perr("wget", "download of '" + path + "' was interrupted after "
+				+ std::to_string(have) + " bytes");
+		}
+
+		return status;
+	}
+
 	static int saveBody(Executor& exec, HINTERNET request, const WgetOptions& options,
 	                    const std::string& path, Progress& progress, bool append) {
 		std::FILE* out = openTarget(exec, path, append);
@@ -522,13 +535,11 @@ namespace wbsh {
 		}
 
 		const bool to_stdout = out == stdout;
-		const bool ok = streamBody(request, out, progress, options.quiet || to_stdout);
-		if (!to_stdout) std::fclose(out);
-		std::fflush(stdout);
-		if (ok) return 0;
-
-		perr("wget", "download of '" + path + "' was interrupted");
-		return kExitNetwork;
+		int status = streamBody(request, out, progress, options.quiet || to_stdout);
+		const bool flushed = std::fflush(out) == 0 && std::ferror(out) == 0;
+		const bool closed = to_stdout || std::fclose(out) == 0;
+		if (status == 0 && !(flushed && closed)) status = kExitFileIo;
+		return reportSaveStatus(path, progress, status);
 	}
 
 	static int handleResponse(Executor& exec, HttpHandles& handles, const WgetOptions& options,

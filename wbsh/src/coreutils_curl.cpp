@@ -10,11 +10,14 @@
 
 #include "coreutils_internal.h"
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "executor.h"
+#include "numparse.h"
 #include "pathconv.h"
 
 #ifdef _WIN32
@@ -29,8 +32,12 @@ namespace wbsh {
 
 	namespace curl_detail {
 
-		// curl's own exit status for an HTTP error response.
+		// curl's own exit statuses.
+		static const int kPartialFileStatus = 18;
 		static const int kHttpFailureStatus = 22;
+		static const int kWriteErrorStatus = 23;
+		static const int kReceiveErrorStatus = 56;
+		static const std::size_t kReadChunkBytes = 64 * 1024;
 
 		static void curlPerr(const std::string& msg) {
 			std::fprintf(stderr, "wbsh: curl: %s\n", msg.c_str());
@@ -245,9 +252,7 @@ namespace wbsh {
 			if (options.save_remote) options.output_file = remoteFileName(url_path);
 			if (options.output_file.empty()) return stdout;
 
-			FILE* out = openUtf8(exec.pathConv().toWin32(options.output_file), "wb");
-			if (out == nullptr && !options.silent) curlPerr(options.output_file + ": cannot open");
-			return out;
+			return openUtf8(exec.pathConv().toWin32(options.output_file), "wb");
 		}
 
 		static void writeResponseHeaders(HINTERNET request, FILE* out) {
@@ -272,19 +277,64 @@ namespace wbsh {
 			std::fwrite(utf8.data(), 1, without_nul, out);
 		}
 
-		static void streamResponseBody(HINTERNET request, FILE* out) {
-			for (;;) {
-				DWORD available = 0;
-				if (::WinHttpQueryDataAvailable(request, &available) == 0) return;
-				if (available == 0) return;
+		static int transferError(const CurlOptions& options, int code, const std::string& message) {
+			if (!options.silent) std::fprintf(stderr, "curl: (%d) %s\n", code, message.c_str());
+			return code;
+		}
 
-				std::vector<char> buffer(available);
-				DWORD got = 0;
-				if (::WinHttpReadData(request, buffer.data(), available, &got) == 0) return;
-				if (got == 0) return;
-
-				std::fwrite(buffer.data(), 1, got, out);
+		static bool declaredLength(HINTERNET request, unsigned long long& length) {
+			wchar_t text[32] = {};
+			DWORD size = sizeof(text);
+			if (::WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX,
+			                          text, &size, WINHTTP_NO_HEADER_INDEX) == 0) {
+				return false;
 			}
+
+			return parseULL(wideToUtf8(text), length);
+		}
+
+		static int readFailure(const CurlOptions& options) {
+			const DWORD error = ::GetLastError();
+			if (error == ERROR_WINHTTP_CONNECTION_ERROR || error == ERROR_WINHTTP_INVALID_SERVER_RESPONSE) {
+				return transferError(options, kPartialFileStatus,
+					"transfer closed with outstanding read data remaining");
+			}
+
+			return transferError(options, kReceiveErrorStatus, "Failure when receiving data from the peer");
+		}
+
+		// WinHTTP reports a connection closed before Content-Length bytes as a
+		// normal end of data, so the byte count is checked here.
+		static int streamResponseBody(HINTERNET request, FILE* out, const CurlOptions& options) {
+			unsigned long long expected = 0;
+			const bool sized = declaredLength(request, expected);
+			unsigned long long received = 0;
+
+			std::vector<char> buffer(kReadChunkBytes);
+			for (;;) {
+				DWORD got = 0;
+				const DWORD capacity = static_cast<DWORD>(buffer.size());
+				if (::WinHttpReadData(request, buffer.data(), capacity, &got) == 0) return readFailure(options);
+				if (got == 0) break;
+				if (std::fwrite(buffer.data(), 1, got, out) != got) {
+					return transferError(options, kWriteErrorStatus, "Failure writing output to destination");
+				}
+
+				received += got;
+			}
+
+			if (!sized || received >= expected) return 0;
+
+			const std::string missing = std::to_string(expected - received);
+			return transferError(options, kPartialFileStatus,
+				"transfer closed with " + missing + " bytes remaining to read");
+		}
+
+		static int finishOutput(FILE* out, const CurlOptions& options, int status) {
+			const bool flushed = std::fflush(out) == 0 && std::ferror(out) == 0;
+			const bool closed = out == stdout || std::fclose(out) == 0;
+			if (status != 0 || (flushed && closed)) return status;
+			return transferError(options, kWriteErrorStatus, "Failure writing output to destination");
 		}
 #endif /* _WIN32 */
 
@@ -317,14 +367,19 @@ namespace wbsh {
 
 			const DWORD status_code = readStatusCode(handles.request);
 			FILE* out = openOutputSink(exec, options, url.path);
-			if (out == nullptr) return 1;
+			if (out == nullptr) {
+				const std::string reason = std::strerror(errno);
+				return transferError(options, kWriteErrorStatus,
+					"Failed to open the file " + options.output_file + ": " + reason);
+			}
 
 			const bool with_headers = options.include_headers || options.head_only;
 			if (with_headers) writeResponseHeaders(handles.request, out);
-			if (!options.head_only) streamResponseBody(handles.request, out);
 
-			if (out != stdout) std::fclose(out);
-			std::fflush(stdout);
+			int status = 0;
+			if (!options.head_only) status = streamResponseBody(handles.request, out, options);
+			status = finishOutput(out, options, status);
+			if (status != 0) return status;
 			if (status_code >= 400) return kHttpFailureStatus;
 			return 0;
 #endif /* _WIN32 */
