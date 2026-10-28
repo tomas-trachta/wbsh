@@ -1,0 +1,10 @@
+=== in a script
+wbsh: logout: not login shell: use `exit'
+status 1
+wbsh: logout: not login shell: use `exit'
+status 1
+builtin
+=== interactive
+exit status 0
+0
+exit status 7
