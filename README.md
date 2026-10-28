@@ -152,6 +152,7 @@ PS1='\[\e[35;1m\]\w\[\e[0m\]\g \$ '
 | `HISTCONTROL`, `HISTIGNORE` | `ignorespace`, `ignoredups`, `ignoreboth`, `erasedups`; colon-separated patterns (`&` = previous entry) left out of history. |
 | `COLUMNS`, `LINES` | Updated on resize; fires the `WINCH` trap.               |
 | `WBSH_GIT_NO_DIRTY` | Skip the working-tree check in the `\g` prompt (huge repos). |
+| `WBSH_GIT_STATUS_WAIT` | Milliseconds the prompt waits for `\g`'s background `git status` (default 50) before showing the last known state and redrawing when the new one arrives. |
 | `WBSH_NO_PATHCONV`, `MSYS_NO_PATHCONV` | Suppress POSIX→Win32 argument translation for spawned commands. |
 | `WBSH_PAGER` | `builtin` makes `less` use the bundled pager even when a `less` is on PATH. |
 

@@ -43,6 +43,7 @@
 #include "ast.h"
 #include "environment.h"
 #include "executor.h"
+#include "gitprompt.h"
 #include "history.h"
 #include "keymap.h"
 #include "lexer.h"
@@ -158,11 +159,6 @@ namespace wbsh {
 	}
 #endif /* _WIN32 */
 
-	struct GitInfo {
-		std::string branch;
-		std::string state;
-	};
-
 	static const char* gitStateColor(const std::string& state) {
 		if (state == "merging" ||
 		    state == "rebasing" ||
@@ -173,126 +169,6 @@ namespace wbsh {
 		if (state == "staged")     return "\x1b[32m";
 		if (state == "untracked")  return "\x1b[36m";
 		return "";
-	}
-
-	static std::string detectGitOpState(const fs::path& git_dir) {
-		std::error_code ec;
-		if (fs::exists(git_dir / "MERGE_HEAD", ec))        return "merging";
-		if (fs::exists(git_dir / "rebase-merge", ec) ||
-		    fs::exists(git_dir / "rebase-apply", ec))      return "rebasing";
-		if (fs::exists(git_dir / "CHERRY_PICK_HEAD", ec))  return "cherry-picking";
-		if (fs::exists(git_dir / "REVERT_HEAD", ec))       return "reverting";
-		if (fs::exists(git_dir / "BISECT_LOG", ec))        return "bisecting";
-		return {};
-	}
-
-	static bool gitDirtyCheckDisabled() {
-		const char* off = std::getenv("WBSH_GIT_NO_DIRTY");
-		return off != nullptr && *off != '\0' && *off != '0';
-	}
-
-	static FILE* openGitPipe(const std::string& args) {
-#ifdef _WIN32
-		return _popen(("git --no-optional-locks " + args + " 2>NUL").c_str(), "r");
-#else
-		return popen(("git --no-optional-locks " + args + " 2>/dev/null").c_str(), "r");
-#endif
-	}
-
-	static void closeGitPipe(FILE* pipe) {
-#ifdef _WIN32
-		_pclose(pipe);
-#else
-		pclose(pipe);
-#endif
-	}
-
-	static std::string detectGitDirtyState() {
-		if (gitDirtyCheckDisabled()) return {};
-
-		FILE* pipe = openGitPipe("status --porcelain");
-		if (pipe == nullptr) return {};
-
-		bool unstaged = false;
-		bool staged = false;
-		bool untracked = false;
-		char line[512];
-		while (std::fgets(line, sizeof(line), pipe) != nullptr) {
-			if (line[0] == '?' && line[1] == '?') {
-				untracked = true;
-			} else {
-				if (line[0] != ' ' && line[0] != '?') staged = true;
-				if (line[1] != ' ' && line[1] != '?') unstaged = true;
-			}
-
-			if (unstaged) break;
-		}
-
-		closeGitPipe(pipe);
-		if (unstaged)  return "unstaged";
-		if (staged)    return "staged";
-		if (untracked) return "untracked";
-		return {};
-	}
-
-	static void stripLineEnding(std::string& line) {
-		while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-	}
-
-	static std::string branchFromHeadLine(std::string line) {
-		const std::string ref_prefix = "ref: ";
-		if (line.compare(0, ref_prefix.size(), ref_prefix) != 0) {
-			if (line.size() >= 7) line.resize(7);
-			return line + " (detached)";
-		}
-
-		const std::string ref = line.substr(ref_prefix.size());
-		const std::string heads = "refs/heads/";
-		if (ref.compare(0, heads.size(), heads) == 0) return ref.substr(heads.size());
-
-		return ref;
-	}
-
-	static std::string firstGitLine(const std::string& args) {
-		FILE* pipe = openGitPipe(args);
-		if (pipe == nullptr) return {};
-
-		char line[512] = {};
-		const bool read = std::fgets(line, sizeof(line), pipe) != nullptr;
-		closeGitPipe(pipe);
-		if (!read) return {};
-
-		std::string text = line;
-		stripLineEnding(text);
-		return text;
-	}
-
-	// A reftable repository's HEAD file is only a stub pointing at
-	// refs/heads/.invalid; the real HEAD has to come from git.
-	static std::string branchFromGit() {
-		const std::string branch = firstGitLine("symbolic-ref --short -q HEAD");
-		if (!branch.empty()) return branch;
-
-		const std::string commit = firstGitLine("rev-parse --short HEAD");
-		return commit.empty() ? std::string() : commit + " (detached)";
-	}
-
-	static GitInfo detectGitInfo() {
-		GitInfo info;
-		const fs::path git_dir = findGitDir();
-		if (git_dir.empty()) return info;
-
-		std::ifstream head(git_dir / "HEAD");
-		std::string line;
-		if (!std::getline(head, line)) return info;
-
-		stripLineEnding(line);
-		info.branch = branchFromHeadLine(line);
-		if (info.branch == ".invalid") info.branch = branchFromGit();
-
-		info.state = detectGitOpState(git_dir);
-		if (info.state.empty()) info.state = detectGitDirtyState();
-		return info;
 	}
 
 	static std::string currentCwdAsUtf8() {
@@ -362,8 +238,9 @@ namespace wbsh {
 		return out;
 	}
 
-	static std::string promptGitBranch() {
-		const GitInfo info = detectGitInfo();
+	static std::string promptGitBranch(const Environment& env, const PathConv& conv,
+	                                   bool can_redraw) {
+		const GitInfo info = gitPromptInfo(env, conv, can_redraw);
 		if (info.branch.empty()) return {};
 		if (!stdoutIsTty()) return plainGitSegment(info);
 
@@ -378,7 +255,7 @@ namespace wbsh {
 	}
 
 	static std::string expandPromptEscape(char code, const Environment& env,
-	                                      const PathConv& conv) {
+	                                      const PathConv& conv, bool can_redraw) {
 		switch (code) {
 		case 'n':  return "\n";
 		case 'r':  return "\r";
@@ -394,14 +271,16 @@ namespace wbsh {
 		case 'H':  return promptHost(env, code);
 		case 'w':  return promptCwdHome(env, conv);
 		case 'W':  return promptCwdBasename(conv);
-		case 'g':  return promptGitBranch();
+		case 'g':  return promptGitBranch(env, conv, can_redraw);
 		case 't':  return promptTimeHms();
 		default:   return std::string{ '\\', code };
 		}
 	}
 
+	// `can_redraw`: a prompt on a terminal can show `\g`'s dirty state late
+	// and be drawn again, so it does not wait long for `git status`.
 	static std::string expandPrompt(const std::string& ps, const Environment& env,
-	                                const PathConv& conv) {
+	                                const PathConv& conv, bool can_redraw) {
 		std::string out;
 		for (std::size_t i = 0; i < ps.size(); ++i) {
 			if (ps[i] != '\\' || i + 1 >= ps.size()) {
@@ -409,7 +288,7 @@ namespace wbsh {
 				continue;
 			}
 
-			out += expandPromptEscape(ps[++i], env, conv);
+			out += expandPromptEscape(ps[++i], env, conv, can_redraw);
 		}
 
 		return out;
@@ -417,7 +296,7 @@ namespace wbsh {
 
 	std::string expandPromptEscapes(const std::string& ps, const Environment& env,
 			const PathConv& conv) {
-		return expandPrompt(ps, env, conv);
+		return expandPrompt(ps, env, conv, false);
 	}
 
 	static bool parseErrorLooksIncomplete(const std::string& message) {
@@ -693,7 +572,7 @@ namespace wbsh {
 	                               const ReplState& state) {
 		std::string ps_raw = state.waiting_for_more ? env.get("PS2") : env.get("PS1");
 		if (ps_raw.empty()) ps_raw = state.waiting_for_more ? "> " : "$ ";
-		return expandPrompt(ps_raw, env, exec.pathConv());
+		return expandPrompt(ps_raw, env, exec.pathConv(), stdinIsTty() && stdoutIsTty());
 	}
 
 	// A continuation line that starts inside a quoted string keeps its
@@ -901,6 +780,8 @@ namespace wbsh {
 		}
 
 		LineEditor editor(env, exec);
+		editor.setPromptRefresher([&env, &exec, &state] { return buildPrompt(env, exec, state); });
+		setGitStatusListener([] { LineEditor::requestPromptRefresh(); });
 		for (;;) {
 			pumpAsyncEvents(env, exec, state);
 			emitWorkingDirectory(state);
