@@ -688,6 +688,15 @@ namespace wbsh {
 		return 1;
 	}
 
+	// wbsh is never a login shell. Typed at the prompt `logout` ends the
+	// session like `exit`; anywhere else it is bash's error.
+	static int builtin_logout(Executor& exec, const std::vector<std::string>& args) {
+		if (exec.env().interactive()) return builtin_exit(exec, args);
+
+		printerr("logout: not login shell: use `exit'");
+		return 1;
+	}
+
 	static int builtin_return(Executor& exec, const std::vector<std::string>& args) {
 		if (exec.funcDepth() == 0 && exec.sourceDepth() == 0) {
 			printerr("return: can only `return' from a function or sourced script");
@@ -2293,6 +2302,7 @@ namespace wbsh {
 		exec.registerBuiltin("cd",       builtin_cd);
 		exec.registerBuiltin("exit",     builtin_exit);
 		exec.registerBuiltin("suspend",  builtin_suspend);
+		exec.registerBuiltin("logout",   builtin_logout);
 		exec.registerBuiltin("return",   builtin_return);
 		exec.registerBuiltin("break",    builtin_break);
 		exec.registerBuiltin("continue", builtin_continue);
