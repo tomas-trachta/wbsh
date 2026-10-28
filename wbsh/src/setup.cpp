@@ -255,19 +255,6 @@ namespace wbsh {
 #endif
 	}
 
-	static std::string selfExecutablePath(const PathConv& path_conv) {
-#ifdef _WIN32
-		wchar_t buffer[MAX_PATH] = {};
-		const DWORD length = ::GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-		if (length == 0 || length >= MAX_PATH) return "wbsh";
-
-		return path_conv.toPosix(wideToUtf8(std::wstring(buffer, length)));
-#else
-		(void)path_conv;
-		return "wbsh";
-#endif /* _WIN32 */
-	}
-
 	static long long parentProcessId() {
 #ifdef _WIN32
 		const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -309,7 +296,7 @@ namespace wbsh {
 		const std::string machine = hostType() + "-pc-msys";
 		env.set("BASH_VERSION", "5.2.37(1)-release");
 		env.set("WBSH_VERSION", kWbshVersion);
-		env.set("BASH", selfExecutablePath(path_conv));
+		env.set("BASH", path_conv.toPosix(selfExecutablePath()));
 		env.set("OSTYPE", "msys");
 		env.set("HOSTTYPE", hostType());
 		env.set("MACHTYPE", machine);

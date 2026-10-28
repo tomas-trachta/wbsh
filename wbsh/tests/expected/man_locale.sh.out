@@ -1,0 +1,199 @@
+=== man pages
+LS(1)                         wbsh Manual                          LS(1)
+
+NAME
+       ls - list directory contents
+
+SYNOPSIS
+       ls [OPTION]... [FILE]...
+
+DESCRIPTION
+       ls is built into wbsh and runs without an external program.
+
+SEE ALSO
+       wbsh(1), apropos(1)
+
+wbsh                                                               LS(1)
+CD(1)                         wbsh Manual                          CD(1)
+
+NAME
+       cd - change the shell working directory
+
+SYNOPSIS
+       cd [-L|[-P [-e]]] [DIR]
+
+DESCRIPTION
+       cd is a shell builtin. It behaves as the bash builtin of the same
+       name, which bash(1) documents in full.
+
+SEE ALSO
+       bash(1), help(1)
+
+wbsh                                                               CD(1)
+CHOWN(1)                      wbsh Manual                       CHOWN(1)
+
+NAME
+       chown - change file owner and group
+WBSH(1)                       wbsh Manual                        WBSH(1)
+
+NAME
+       wbsh - a bash-compatible shell for Windows
+
+SYNOPSIS
+       wbsh [OPTION]... [SCRIPT [ARG]...]
+       wbsh -c COMMAND [ARG]...
+
+2
+2
+=== missing pages
+wbsh: man: No manual entry for no_such_page_q7
+status 16
+wbsh: man: No manual entry for printf in section 3
+status 16
+wbsh: man: No manual entry for no_such_page_q7
+LS(1)                         wbsh Manual                          LS(1)
+status 16
+What manual page do you want?
+For example, try 'man man'.
+status 1
+=== apropos and whatis
+gunzip (1)           - compress or expand files
+gzip (1)             - compress or expand files
+lzop (1)             - compress or expand files
+zcat (1)             - compress or expand files
+sha1sum (1)          - compute and check SHA1 message digest
+sha256sum (1)        - compute and check SHA256 message digest
+sha384sum (1)        - compute and check SHA384 message digest
+sha3sum (1)          - compute and check SHA-3 message digest
+sha512sum (1)        - compute and check SHA512 message digest
+ls (1)               - list directory contents
+cat (1)              - concatenate files and print on the standard output
+ls (1)               - list directory contents
+no_such_page_q7: nothing appropriate.
+status 16
+zzz_nothing_q7: nothing appropriate.
+status 16
+wbsh: apropos: (: Unmatched ( or \(
+status 1
+wbsh: apropos: what?
+status 1
+=== locale variables
+LANG=
+LANGUAGE=
+LC_CTYPE="C"
+LC_NUMERIC="C"
+LC_TIME="C"
+LC_COLLATE="C"
+LC_MONETARY="C"
+LC_MESSAGES="C"
+LC_PAPER="C"
+LC_NAME="C"
+LC_ADDRESS="C"
+LC_TELEPHONE="C"
+LC_MEASUREMENT="C"
+LC_IDENTIFICATION="C"
+LC_ALL=C
+LANG=C.UTF-8
+LANGUAGE=
+LC_CTYPE="C.UTF-8"
+LC_NUMERIC="C.UTF-8"
+LC_TIME=POSIX
+LC_COLLATE="C.UTF-8"
+LC_MONETARY="C.UTF-8"
+LC_MESSAGES="C.UTF-8"
+LC_PAPER="C.UTF-8"
+LC_NAME="C.UTF-8"
+LC_ADDRESS="C.UTF-8"
+LC_TELEPHONE="C.UTF-8"
+LC_MEASUREMENT="C.UTF-8"
+LC_IDENTIFICATION="C.UTF-8"
+LC_ALL=
+LANG=en_US.UTF-8
+LANGUAGE=en
+LC_CTYPE="en_US.UTF-8"
+wbsh: locale: Cannot set LC_CTYPE to default locale: No such file or directory
+wbsh: locale: Cannot set LC_MESSAGES to default locale: No such file or directory
+wbsh: locale: Cannot set LC_ALL to default locale: No such file or directory
+LANG=xx_QQ.UTF-8
+=== C keywords
+ANSI_X3.4-1968
+ANSI_X3.4-1968
+.
+
+-1
+decimal_point="."
+thousands_sep=""
+grouping=-1
+numeric-codeset="ANSI_X3.4-1968"
+LC_TIME
+d_t_fmt="%a %b %e %H:%M:%S %Y"
+LC_TIME
+d_fmt="%m/%d/%y"
+LC_TIME
+t_fmt="%H:%M:%S"
+LC_TIME
+t_fmt_ampm="%I:%M:%S %p"
+LC_TIME
+am_pm="AM;PM"
+abday="Sun;Mon;Tue;Wed;Thu;Fri;Sat"
+mon="January;February;March;April;May;June;July;August;September;October;November;December"
+int_curr_symbol=""
+currency_symbol=""
+mon_decimal_point=""
+mon_thousands_sep=""
+mon_grouping=-1
+positive_sign=""
+negative_sign=""
+int_frac_digits=-1
+frac_digits=-1
+p_cs_precedes=-1
+p_sep_by_space=-1
+n_cs_precedes=-1
+n_sep_by_space=-1
+p_sign_posn=-1
+n_sign_posn=-1
+monetary-codeset="ANSI_X3.4-1968"
+yesexpr="^[yY]"
+noexpr="^[nN]"
+yesstr=""
+nostr=""
+messages-codeset="ANSI_X3.4-1968"
+height=297
+width=210
+paper-codeset="ANSI_X3.4-1968"
+measurement=1
+measurement-codeset="ANSI_X3.4-1968"
+UTF-8
+status 0
+=== en_US keywords
+decimal_point="."
+thousands_sep=","
+grouping=3;3
+charmap="UTF-8"
+d_fmt="%-m/%-d/%Y"
+t_fmt="%-I:%M:%S %p"
+am_pm="AM;PM"
+abday="Sun;Mon;Tue;Wed;Thu;Fri;Sat"
+first_weekday=1
+currency_symbol="$"
+int_curr_symbol="USD "
+frac_digits=2
+p_cs_precedes=1
+measurement=2
+height=279
+width=216
+country_ab2="US"
+lang_ab="en"
+,
+.
+
+=== locale -a and -m
+C
+C.UTF-8
+POSIX
+1
+1
+1
+1
+wbsh: locale: invalid option -- 'x'
+status 1

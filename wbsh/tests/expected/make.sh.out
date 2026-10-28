@@ -1,0 +1,388 @@
+=== basic build and up to date
+echo compile a.c to a.o
+compile a.c to a.o
+echo compile b.c to b.o
+compile b.c to b.o
+link a.o b.o into prog
+done a.c b.c
+[0]
+make: 'prog' is up to date.
+[0]
+echo done a.c b.c
+[0]
+echo compile b.c to b.o
+touch b.o
+echo link a.o b.o into prog
+touch prog
+echo done a.c b.c
+[0]
+make: *** No rule to make target 'nothere'.  Stop.
+[2]
+=== variable flavours
+B=1 two C=3 four D=dee E=shell out F=3$$x CC=cc
+a.o b.o c.h obj/a.o obj/b.o c.h a.c b.c c.h 3
+simple recursive undefined file environment default automatic
+[0]
+line1
+line2
+[0]
+file
+[0]
+B=9 two C=9 four D=dee E=shell out F=9$$x CC=cc
+a.o b.o c.h obj/a.o obj/b.o c.h a.c b.c c.h 3
+simple recursive undefined command line environment default automatic
+[0]
+[a b more] [c] [override] [undefined] [one two] [value ] [a#b]
+[0]
+=== functions
+info line
+Makefile:18: warn line
+foo.o bar.o baz.h src/qux.o
+foo.o bar.o baz.h src/qux.o
+[a b] ar []
+foo.c bar.c src/qux.c | baz.h
+a b c bar.c bar.c baz.h foo.c src/qux.c
+./ ./ ./ src/ | foo.c bar.c baz.h qux.c | .c .c .h .c | foo bar baz src/qux
+a.x b.x p/a p/b a1 b2 c
+yes no [z] [b] []
+<a> <b> <c> y x 2 1
+/a/c/d lt eq 2 3-1
+hi there 0 w
+one.mk two.mk [] $(2) $(1)
+[0]
+rule for x
+[0]
+rule for x
+rule for y
+2 words, last second
+[0]
+first
+second
+Makefile:2: *** boom here.  Stop.
+[2]
+Makefile:2: *** Recursive variable 'X' references itself (eventually).  Stop.
+[2]
+Makefile:1: *** non-numeric first argument to 'word' function: 'x'.  Stop.
+[2]
+=== syntax errors
+Makefile:1: *** missing separator.  Stop.
+[2]
+Makefile:1: *** missing separator (did you mean TAB instead of 8 spaces?).  Stop.
+[2]
+Makefile:1: *** recipe commences before first target.  Stop.
+[2]
+Makefile:2: *** missing 'endif'.  Stop.
+[2]
+Makefile:1: *** extraneous 'endif'.  Stop.
+[2]
+Makefile:1: *** missing 'endef', unterminated 'define'.  Stop.
+[2]
+=== conditionals
+a c d e g nested
+inside the recipe
+[0]
+=== include
+from inc via -I [ Makefile inc.mk incdir/found.mk]
+[0]
+Makefile:1: nothere.mk: No such file or directory
+make: *** No rule to make target 'nothere.mk'.  Stop.
+[2]
+generating
+generated
+[0]
+generated
+[0]
+=== rule kinds
+first
+second
+mkdir out
+build out/x.o from x.c order out
+build out/y.o from y.c order out
+[0]
+static s1.o s1.c stem s1
+static s2.o s2.c stem s2
+[0]
+grouped once
+yacc p makes p.tab.c
+[0]
+Makefile:2: warning: overriding recipe for target 'x'
+Makefile:1: warning: ignoring old recipe for target 'x'
+two
+[0]
+make: Circular b <- a dependency dropped.
+b
+a
+[0]
+default for thing
+[0]
+cleaning
+[0]
+make: 'all' is up to date.
+[0]
+make: Nothing to be done for 'none'.
+[0]
+second []
+[0]
+first [first second]
+second [first second]
+[0]
+=== automatic variables
+@=d/out.o <=d/p1.c ^=d/p1.c p2.h old.h +=d/p1.c p2.h d/p1.c old.h |=d *=d/out
+D=d F=out.o <D=d <F=p1.c ^F=p1.c p2.h old.h
+?=d/p1.c p2.h old.h
+[0]
+@=d/out.o <=d/p1.c ^=d/p1.c p2.h old.h +=d/p1.c p2.h d/p1.c old.h |=d *=d/out
+D=d F=out.o <D=d <F=p1.c ^F=p1.c p2.h old.h
+?=p2.h
+[0]
+=== implicit chains and built-in rules
+cp f.src f.mid
+cp f.mid f.out
+rm f.mid
+[0]
+cp k.src k.mid
+cp k.mid k.out
+[0]
+f.out
+f.src
+k.mid
+k.out
+k.src
+Makefile
+make: 'f.out' is up to date.
+[0]
+echo     prog.c   -o prog
+prog.c -o prog
+[0]
+make: *** No rule to make target 'prog'.  Stop.
+[2]
+cc -O2 -c -o main.o main.c
+cc -O2 -c -o util.o util.c
+cc main.o util.o -o main
+[0]
+convert doc.in to doc.txt stem doc
+[0]
+=== vpath
+compile src/v.c with inc/h.h
+[0]
+=== target and pattern variables
+dep sees t1val
+t1 t1val w more
+t2 global
+p.x pattern
+[0]
+child [parent] []
+pr parent hidden
+[0]
+dep sees cmd
+t1 cmd w more
+t2 cmd
+p.x cmd
+[0]
+=== recipe errors
+a
+make: *** [Makefile:4: a] Error 3
+[2]
+a
+make: *** [Makefile:4: a] Error 3
+make: [Makefile:7: b] Error 1 (ignored)
+b after ignored
+c
+make: Target 'all' not remade because of errors.
+[2]
+a
+make: [Makefile:4: a] Error 3 (ignored)
+not reached
+make: [Makefile:7: b] Error 1 (ignored)
+b after ignored
+c
+[0]
+good
+make: *** No rule to make target 'missing', needed by 'bad'.  Stop.
+[2]
+good
+make: *** No rule to make target 'missing', needed by 'bad'.
+other
+make: Target 'all' not remade because of errors.
+[2]
+make: *** [Makefile:4: out.txt] Error 1
+make: *** Deleting file 'out.txt'
+[2]
+deleted
+make: *** Deleting file 'out'
+make: *** [Makefile:1: out] Interrupt
+[130]
+deleted
+=== question, touch, dry run, always
+[1]
+echo build t
+cp s t
+[0]
+touch t
+[0]
+[0]
+make: 't' is up to date.
+[0]
+build t
+[0]
+build t
+cp s t
+[0]
+echo build t
+cp s t
+[0]
+make: 't' is up to date.
+[0]
+build t
+cp s t
+[0]
+make: 't' is up to date.
+[0]
+=== echo and silence
+echo one
+one
+two
+echo multi \
+  line
+multi line
+plus
+[0]
+one
+two
+multi line
+plus
+[0]
+quiet
+[0]
+x is 5
+_make_tmp
+[0]
+=== recursion and directories
+make -C sub V=passed
+make[1]: Entering directory '<top>/w/sub'
+sub level 1 flags [ -- V=passed] V=passed EX=exported
+make[1]: Leaving directory '<top>/w/sub'
+sub level 1 flags [ --no-print-directory] V= EX=exported
+[0]
+sub level 1 flags [s -- V=passed] V=passed EX=exported
+sub level 1 flags [s --no-print-directory] V= EX=exported
+[0]
+make -C sub V=passed
+make[1]: Entering directory '<top>/w/sub'
+echo sub level 1 flags '[n -- V=passed]' V=passed EX=$EX
+make[1]: Leaving directory '<top>/w/sub'
+make -C sub --no-print-directory
+echo sub level 1 flags '[n --no-print-directory]' V= EX=$EX
+[0]
+make: Entering directory '<top>/w/sub'
+sub level 0 flags [] V= EX=
+make: Leaving directory '<top>/w/sub'
+[0]
+make: *** nodir: No such file or directory.  Stop.
+[2]
+from stdin
+[0]
+other other.mk
+[0]
+make: nothere.mk: No such file or directory
+make: *** No rule to make target 'nothere.mk'.  Stop.
+[2]
+evaluated
+[0]
+make: *** No targets specified and no makefile found.  Stop.
+[2]
+=== misc options
+making mid
+all []
+rm mid
+[0]
+Makefile
+make: Entering directory '<top>/w'
+making mid
+all [-rw]
+rm mid
+make: Leaving directory '<top>/w'
+[0]
+# Variables
+X = 1
+# Files
+mid:
+all: mid
+# Implicit Rules
+GNU Make-compatible make (wbsh) 4.4.1
+[0]
+wbsh: make: unrecognized option '--no-such-option'
+[2]
+=== environment and exports
+filefoo filefoo file
+[0]
+envfoo envfoo environment override
+[0]
+[]
+[0]
+zz [k --no-print-directory]
+[0]
+=== shells
+hello from cmd
+echo %OS%
+Windows_NT
+[0]
+status 0
+make: *** [Makefile:5: all] Error 1
+[2]
+=== second expansion
+myfile: onefile later
+[0]
+implicit main.o from main.c
+implicit try.o from try.c
+main: main.o try.o
+implicit lib.o from lib.c
+lib: lib.o
+[0]
+foo: foo.1 bar.1 foo.2 bar.2 foo.1 foo.1 bar.1 foo.1 bar.1
+[0]
+foo.out: foo.in d/foo.h order foo.out.dir
+bar.out: bar.in d/bar.h order bar.out.dir
+[0]
+=== regressions
+sub V=p$q W=1 flags=[s -- V=p$$q W=1]
+top flags [s -- V=p$$q W=1]
+[0]
+[k -- W=1]
+[0]
+[k]
+[0]
+has path
+[0]
+pat
+[0]
+sh -c "exit 130"
+make: [Makefile:2: a] Error 130 (ignored)
+b ran
+[0]
+sh -c "exit 130"
+make: *** [Makefile:2: a] Error 130
+b ran
+make: Target 'all' not remade because of errors.
+[2]
+cp Makefile.in Makefile
+new
+[0]
+new
+[0]
+X=1 echo hi
+hi
+[0]
+x;y
+[0]
+Makefile:1: warning: undefined variable 'UNDEF'
+[]
+[0]
+sub read with [q --no-print-directory]
+[1]
+mkdir d; false
+make: *** [Makefile:2: d] Error 1
+[2]
+directory kept
+[$$(x 
+[0]

@@ -714,10 +714,9 @@ namespace wbsh {
 	// dropping the rest, so a long list sent item by item loses its tail --
 	// and the "end" that opens the overlay with it. The list travels as a
 	// file instead; only its path goes through the console.
-	static fs::path pickListPath() {
-		std::error_code ec;
-		const fs::path dir = fs::temp_directory_path(ec);
-		if (ec) return fs::path();
+	static fs::path pickListPath(Executor& exec) {
+		const fs::path dir = shellTempDirectory(exec);
+		if (dir.empty()) return fs::path();
 
 		const std::wstring name = L"wbsh-pick-"
 			+ std::to_wstring(static_cast<unsigned long>(::GetCurrentProcessId())) + L".txt";
@@ -809,7 +808,7 @@ namespace wbsh {
 	}
 
 	static int pickThroughTerminal(Executor& exec, const std::vector<std::string>& candidates) {
-		const fs::path list_path = pickListPath();
+		const fs::path list_path = pickListPath(exec);
 		const bool list_written = writePickList(list_path, candidates);
 
 		sendPickRequest(candidates, list_path, list_written);

@@ -1,0 +1,1365 @@
+=== inserting and writing
+"new.txt" [New file]
+"new.txt" [New] 1L, 12C written
+rc=0
+hello world
+"lines.txt" [New file]
+"lines.txt" [New] 3L, 14C written
+one
+three
+two
+"lines.txt" 3L, 14C
+rc=0
+"unsaved.txt" [New file]
+vi: input ended with unsaved changes
+rc=1
+not written
+=== motions
+"s.txt" 4L, 58C
+"s.txt" 4L, 54C written
+rc=0
+alpha eta gamm
+ indented (paen) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 46C written
+rc=0
+alpha beta gamma
+  indented 
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 60C written
+rc=0
+BalphaE beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha bet gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 55C written
+rc=0
+alpha beta gamma
+  indented (pn) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 56C written
+rc=0
+alpha beta gamma
+  indented aren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+ast line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 56C written
+rc=0
+pha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indente (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+ast line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 60C written
+rc=0
+YalphaX beta gamma
+  indented (paren) line
+
+last line here.
+"sent.txt" 4L, 58C
+"sent.txt" 4L, 54C written
+One two. hree four!  ive six?
+even (eight.)
+
+ine ten.
+"sent.txt" 4L, 58C
+"sent.txt" 4L, 55C written
+One two. Three four!  ive six?
+even (eight.)
+
+ine ten.
+=== operators
+"s.txt" 4L, 58C
+"s.txt" 4L, 52C written
+rc=0
+beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 47C written
+rc=0
+gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 47C written
+rc=0
+gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 48C written
+rc=0
+alpha gamma
+  inde(paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 56C written
+rc=0
+alpha XX gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+alphX beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 51C written
+rc=0
+alpha END
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 2L, 17C written
+rc=0
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 2L, 17C written
+rc=0
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 34C written
+rc=0
+alpha beta gamma
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 28C written
+rc=0
+alpha line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 75C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+alpha beta gamma
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 60C written
+rc=0
+alpha beta gamma
+    indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 74C written
+rc=0
+alpha beta gammaalpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 60C written
+rc=0
+	alpha beta gamma
+	  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+  alpha beta gamma
+indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+3 fewer lines
+"s.txt" 1L, 16C written
+rc=0
+last line here.
+"s.txt" 4L, 58C
+4 fewer lines
+"s.txt" 0L, 0C written
+rc=0
+"s.txt" 4L, 58C
+"s.txt" 4L, 42C written
+rc=0
+
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 41C written
+rc=0
+alpha beta gamma
+  text
+
+last line here.
+=== single-key edits
+"s.txt" 4L, 58C
+"s.txt" 4L, 55C written
+rc=0
+ha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gama
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 48C written
+rc=0
+alpha 
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 51C written
+rc=0
+alpha new
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 75C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+alpha beta gamma
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+Slpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 38C written
+rc=0
+alpha beta gamma
+new
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 56C written
+rc=0
+alpha beta gamma indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 2L, 55C written
+rc=0
+alpha beta gamma indented (paren) line
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 55C written
+rc=0
+alpha beta gammaindented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+ALPHA beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+_lp-a beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 58C written
+rc=0
+alpha 
+eta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+newha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+abpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+lapha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+  indented (paren) line
+alpha beta gamma
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 7L, 109C written
+rc=0
+alpha beta gamma
+alpha beta gamma
+alpha beta gamma
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 64C written
+rc=0
+alpha beta gammaalpha 
+  indented (paren) line
+
+last line here.
+=== insert mode
+"s.txt" 4L, 58C
+"s.txt" 4L, 59C written
+rc=0
+aXlpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 59C written
+rc=0
+alpha beta gammaX
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 59C written
+rc=0
+alpha beta gamma
+  Xindented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 59C written
+rc=0
+alpha beta gamma
+X  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 6L, 62C written
+rc=0
+alpha beta gamma
+Y
+X
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 62C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+  X
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 59C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 65C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+  more
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 64C written
+rc=0
+abababalpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 6L, 64C written
+rc=0
+alpha beta gamma
+xy
+xy
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 68C written
+rc=0
+alpha beta gamma one three
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 60C written
+rc=0
+acalpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+ indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 59C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 60C written
+rc=0
+alpha beta gamma	x
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 63C written
+rc=0
+alpha beta gamma    x
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 62C written
+rc=0
+    alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 65C written
+rc=0
+alpha beta gamma
+alpha 
+  indented (paren) line
+
+last line here.
+=== counts, undo, redo and repeat
+"s.txt" 4L, 58C
+"s.txt" 3L, 49C written
+rc=0
+beta gamma
+indented (paren) line
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+lpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 56C written
+rc=0
+pha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 41C written
+rc=0
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 62C written
+rc=0
+alpha beta gammahi
+  indented (paren) linehi
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 55C written
+rc=0
+new new gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 54C written
+rc=0
+a beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 54C written
+rc=0
+a beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+Already at oldest change
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+=== registers and marks
+"s.txt" 4L, 58C
+"s.txt" 6L, 99C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+beta gamma
+alpha   indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+  indented (paren) line
+last line here.
+
+alpha beta gamma
+"s.txt" 4L, 58C
+"s.txt" 4L, 51C written
+rc=0
+alpha beta gamma
+
+alpha beta gamma
+last line here.
+"s.txt" 4L, 58C
+3 fewer lines
+"s.txt" 1L, 17C written
+rc=0
+alpha beta gamma
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha eta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 56C written
+rc=0
+lpha beta gamma
+  indented (paren) line
+
+ast line here.
+"s.txt" 4L, 58C
+Nothing in register "
+"s.txt" 3L, 41C written
+rc=0
+  indented (paren) line
+
+last line here.
+=== searching
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) ine
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last ine here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamm
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+search hit TOP, continuing at BOTTOM
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last ine here.
+"s.txt" 4L, 58C
+search hit BOTTOM, continuing at TOP
+"s.txt" 4L, 57C written
+rc=0
+lpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+search hit TOP, continuing at BOTTOM
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+ast line here.
+"s.txt" 4L, 58C
+Pattern not found: nothing
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+search hit BOTTOM, continuing at TOP
+"s.txt" 4L, 57C written
+rc=0
+lpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+Pattern not found: alpha
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 54C written
+rc=0
+alpha beta gamma
+  indented (paren) 
+
+last line here.
+=== ex commands
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  ndented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+ast line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 34C written
+rc=0
+alpha beta gamma
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 2L, 17C written
+rc=0
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 0L, 0C written
+rc=0
+"s.txt" 4L, 58C
+"s.txt" 6L, 83C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+  indented (paren) line
+
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+  indented (paren) line
+
+last line here.
+alpha beta gamma
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+last line here.
+alpha beta gamma
+  indented (paren) line
+
+"s.txt" 4L, 58C
+"s.txt" 6L, 92C written
+rc=0
+alpha beta gamma
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+alpha beta gamma
+"s.txt" 4L, 58C
+"s.txt" 3L, 56C written
+rc=0
+alpha beta gamma indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 59C written
+rc=0
+alpha beta gamma
+	  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 62C written
+rc=0
+		alpha beta gamma
+		  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 3L, 42C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+"s.txt" 4L, 58C
+"s.txt" 2L, 33C written
+rc=0
+alpha beta gamma
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 1L, 17C written
+rc=0
+alpha beta gamma
+"s.txt" 4L, 58C
+"s.txt" 3L, 34C written
+rc=0
+alpha beta gamma
+
+last line here.
+"s.txt" 4L, 58C
+4
+  indented (paren) line
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+Not an editor command: nosuch
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+Invalid range
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+=== substitute and global
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+Alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+AlphA betA gAmmA
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+8 substitutions on 3 lines
+"s.txt" 4L, 58C written
+rc=0
+alpha bEta gamma
+  indEntEd (parEn) linE
+
+last linE hErE.
+"s.txt" 4L, 58C
+"s.txt" 4L, 62C written
+rc=0
+alpha beta gamma
+>   indented (paren) line
+> 
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+lapha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 61C written
+rc=0
+alpha [beta] GAMMA!
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 6L, 58C written
+rc=0
+alpha
+beta
+gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 62C written
+rc=0
+Alpha beta gamma
+  indented (paren) LineLine
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+1lph1 bet1 gamma
+  indented (p1ren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+xlpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+Pattern not found: nothing
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+8 matches on 3 lines
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+7 substitutions on 3 lines
+"s.txt" 4L, 58C written
+rc=0
+/lph/ bet/ g/mm/
+  indented (p/ren) line
+
+l/st line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+alpha beta GAMma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 2L, 18C written
+rc=0
+alpha beta gamma
+
+"s.txt" 4L, 58C
+"s.txt" 2L, 40C written
+rc=0
+  indented (paren) line
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 59C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+#
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+@lph@ bet@ g@mm@
+  indented (p@ren) line
+
+l@st line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+last line here.
+
+  indented (paren) line
+alpha beta gamma
+"s.txt" 4L, 58C
+alpha beta gamma
+  indented (paren) line
+last line here.
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+Invalid range
+"s.txt" 3L, 56C written
+rc=0
+alpha beta gamma indented (paren) line
+
+last line here.
+=== set
+"s.txt" 4L, 58C
+autoindent  list  number  shiftwidth=2  tabstop=4
+tabstop=4
+noautoindent
+nonumber
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+noautoindent  noexpandtab  fileformat=unix  noignorecase  nolist  nonumber  noreadonly  shiftwidth=8  tabstop=8  wrapscan
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+Unknown option: bogus
+Invalid argument: ts=0
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+=== files
+"s.txt" 4L, 58C
+"s.txt" 5L, 64C written
+rc=0
+alpha beta gamma
+other
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 64C written
+rc=0
+other
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 5L, 64C written
+rc=0
+alpha beta gamma
+shell
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 6L, 62C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+a
+b
+"s.txt" 4L, 58C
+run
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+
+  indented (paren) line
+last line here.
+"s.txt" 4L, 58C
+4
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"copy.txt" [New] 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+File exists (add ! to override)
+"copy.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"o.txt" 1L, 17C appended
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+other
+alpha beta gamma
+"s.txt" 4L, 58C
+No write since last change (add ! to override)
+"o.txt" 2L, 23C
+"o.txt" 2L, 23C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+other
+alpha beta gamma
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" line 1 of 4 --25%-- col 1
+"renamed.txt" line 1 of 4 --25%-- col 1
+"renamed.txt" [New] 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" line 1 of 4 --25%-- col 1
+"s.txt" line 3 of 4 --75%-- col 1
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"sub" is a directory
+rc=0
+=== quitting
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+lpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+No write since last change (add ! to override)
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+lpha beta gamma
+  indented (paren) line
+
+last line here.
+=== command line options
+"s.txt" 4L, 58C
+"s.txt" 4L, 58C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+ast line here.
+"s.txt" 4L, 58C
+"s.txt" 4L, 57C written
+rc=0
+alpha beta gamma
+  ndented (paren) line
+
+last line here.
+"s.txt" 4L, 58C
+7 substitutions on 3 lines
+"s.txt" 4L, 58C written
+rc=0
+AlphA betA gAmmA
+  indented (pAren) line
+
+lAst line here.
+"s.txt" [readonly] 4L, 58C
+'readonly' option is set (add ! to override)
+rc=0
+alpha beta gamma
+  indented (paren) line
+
+last line here.
+"s.txt" [readonly] 4L, 58C
+'readonly' option is set (add ! to override)
+"s.txt" 4L, 57C written
+lpha beta gamma
+  indented (paren) line
+
+last line here.
+wbsh: vi: unknown option: -Z
+wbsh: vi: usage: vi [-R] [-c CMD] [+CMD] [FILE]...
+rc=2
+=== several files
+"m1.txt" 1L, 4C
+[m1.txt] m2.txt m3.txt
+No write since last change (add ! to override)
+"m1.txt" 1L, 3C written
+"m2.txt" 1L, 4C
+"m2.txt" 1L, 3C written
+"m3.txt" 1L, 6C
+m1.txt m2.txt [m3.txt]
+Cannot go beyond last file
+"m2.txt" 1L, 3C
+"m1.txt" 1L, 3C
+2 more files to edit
+rc=0
+ne
+wo
+three
+"m1.txt" 1L, 3C
+"m2.txt" 1L, 3C
+"m2.txt" 1L, 4C written
+ne
+woY
+"m1.txt" 1L, 3C
+Cannot go before first file
+"m1.txt" 1L, 3C
+rc=0
+=== line endings
+"dos.txt" [dos] 2L, 6C
+"dos.txt" [dos] 3L, 9C written
+0000000   a  \r  \n   x  \r  \n   b  \r  \n
+0000011
+"mixed.txt" 2L, 5C
+"mixed.txt" 2L, 5C written
+0000000   a  \r  \n   b  \n
+0000005
+"noeol.txt" [noeol] 1L, 10C
+"noeol.txt" 1L, 12C written
+0000000   n   o       n   e   w   l   i   n   e   !  \n
+0000014
+"ff.txt" 1L, 2C
+"ff.txt" [dos] 1L, 3C written
+0000000   a  \r  \n
+0000003
+"empty.txt" 0L, 0C
+"empty.txt" 0L, 0C written
+0
+"lines.txt" 3L, 14C
+"lines.txt" 2L, 10C written
+10
+=== UTF-8, tabs and long lines
+"u.txt" 1L, 23C
+"u.txt" 1L, 17C written
+eština 本語 k
+"u.txt" 1L, 20C
+"u.txt" 1L, 18C written
+ž*UŤoučký ků
+"u.txt" 1L, 10C
+"u.txt" 1L, 13C written
+日本本語
+"raw.txt" 1L, 4C
+"raw.txt" 1L, 3C written
+0000000   x   y  \n
+0000003
+"tab.txt" 1L, 6C
+"tab.txt" 1L, 7C written
+0000000   a   b  \t   c   |   d  \n
+0000007
+"tab.txt" 1L, 4C
+"tab.txt" 1L, 3C written
+0000000  \t   x  \n
+0000003
+"long.txt" 1L, 1391C
+"long.txt" 1L, 391C written
+100
+=== scrolling
+"n.txt" 100L, 292C
+"n.txt" line 22 of 100 --22%-- col 1
+"n.txt" line 43 of 100 --43%-- col 1
+"n.txt" line 43 of 100 --43%-- col 1
+"n.txt" 100L, 292C
+"n.txt" line 12 of 100 --12%-- col 1
+"n.txt" line 23 of 100 --23%-- col 1
+"n.txt" line 12 of 100 --12%-- col 1
+"n.txt" 100L, 292C
+"n.txt" line 3 of 100 --3%-- col 1
+"n.txt" line 3 of 100 --3%-- col 1
+"n.txt" 100L, 292C
+"n.txt" line 1 of 100 --1%-- col 1
+"n.txt" line 12 of 100 --12%-- col 1
+"n.txt" line 23 of 100 --23%-- col 1
+"n.txt" line 100 of 100 --100%-- col 1
+"n.txt" line 78 of 100 --78%-- col 1
+"n.txt" line 89 of 100 --89%-- col 1
+"n.txt" line 100 of 100 --100%-- col 1
+"n.txt" line 80 of 100 --80%-- col 1
+"n.txt" line 98 of 100 --98%-- col 1
+"n.txt" 100L, 292C
+"n.txt" line 50 of 100 --50%-- col 1
+"n.txt" 100L, 292C
+"n.txt" [Modified] line 100 of 100 --100%-- col 1
+"n.txt" 100L, 292C

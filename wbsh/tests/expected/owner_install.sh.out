@@ -1,0 +1,133 @@
+=== chown to the current user succeeds and changes nothing more
+status 0
+ownership of 'f' retained as ME
+changes-only output above: none, status 0
+login group status 0
+ownership of 'f' retained as ME:ME
+group of 'f' retained as ME
+ownership of 'f' retained
+chgrp status 0
+group of 'f' retained as ME
+numeric id of id -u: status 0
+numeric group: status 0
+recursive status 0
+ownership of 'tree' retained as ME
+ownership of 'tree/sub' retained as ME
+ownership of 'tree/sub/leaf' retained as ME
+reference status 0
+ownership of 'g' retained as ME:ME
+group of 'g' retained as ME
+ownership of 'f' retained as ME
+no-dereference status 0
+=== chown and chgrp errors
+wbsh: chown: invalid user: 'nosuch_wbsh_user_q7'
+status 1
+wbsh: chown: invalid group: ':nosuch_wbsh_group_q7'
+status 1
+wbsh: chgrp: invalid group: 'nosuch_wbsh_group_q7'
+status 1
+wbsh: chown: cannot access 'missing_file': No such file or directory
+status 1
+silent status 1
+wbsh: chown: missing operand
+status 1
+wbsh: chown: missing operand after 'somebody'
+status 1
+wbsh: chgrp: missing operand
+status 1
+wbsh: chown: -R --dereference requires either -H or -L
+status 1
+wbsh: chown: failed to get attributes of 'missing_file': No such file or directory
+status 1
+wbsh: chown: invalid option -- 'q'
+status 1
+=== install SOURCE DEST
+status 0
+same
+'src' -> 'dest'
+writable
+status 0
+read-only
+replaces read-only: status 0
+writable again
+symbolic u=r is read-only
+symbolic +x is read-only
+symbolic a=rw is writable
+wbsh: install: invalid mode '9'
+status 1
+wbsh: install: invalid mode 'u+q'
+status 1
+=== install into directories
+status 0
+g
+src
+'src' -> 'dir/src'
+wbsh: install: cannot overwrite directory 'dir' with non-directory
+status 1
+wbsh: install: target 'dest' is not a directory
+status 1
+wbsh: install: missing destination file operand after 'src'
+status 1
+wbsh: install: missing file operand
+status 1
+wbsh: install: missing file operand
+status 1
+wbsh: install: cannot combine --target-directory (-t) and --no-target-directory (-T)
+status 1
+=== install -d and -D
+install: creating directory 'a'
+install: creating directory 'a/b'
+install: creating directory 'a/b/c'
+again status 0
+a/b/c
+install: creating directory 'deep'
+install: creating directory 'deep/er'
+'src' -> 'deep/er/file'
+deep copy
+install: creating directory 'made'
+install: creating directory 'made/here'
+'src' -> 'made/here/src'
+'g' -> 'made/here/g'
+g
+src
+wbsh: install: target directory not allowed when installing a directory
+status 1
+=== install source errors
+wbsh: install: cannot stat 'missing_src': No such file or directory
+status 1
+wbsh: install: omitting directory 'dir'
+status 1
+wbsh: install: 'src' and 'src' are the same file
+status 1
+wbsh: install: cannot create regular file 'no/such/dir/x': No such file or directory
+status 1
+=== install backups
+'b2' -> 'target' (backup: 'target~')
+two
+one
+two
+'b3' -> 'nt' (backup: 'nt.~2~')
+one
+two
+three
+'b1' -> 'nt' (backup: 'nt.~3~')
+'b3' -> 'sv' (backup: 'sv~')
+'b1' -> 'sv' (backup: 'sv.orig')
+wbsh: install: invalid argument 'bogus' for 'backup type'
+status 1
+'b2' -> 'sv'
+=== install -C and -p
+unchanged: status 0
+'src2' -> 'cmpd'
+preserved
+fresh time
+=== install -o, -g and -s
+status 0
+wbsh: install: invalid user 'nosuch_wbsh_user_q7'
+status 1
+wbsh: install: invalid group 'nosuch_wbsh_group_q7'
+status 1
+strip absent: status 0
+wbsh: install: cannot run 'nosuch_strip_q7': No such file or directory
+status 1
+ignored options: status 0

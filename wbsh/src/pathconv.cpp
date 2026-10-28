@@ -58,6 +58,22 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
+	std::string selfExecutablePath() {
+#ifdef _WIN32
+		std::wstring buffer(MAX_PATH, L'\0');
+		for (;;) {
+			const DWORD length = ::GetModuleFileNameW(nullptr, buffer.data(),
+				static_cast<DWORD>(buffer.size()));
+			if (length == 0) return "wbsh.exe";
+			if (length < buffer.size()) return wideToUtf8(buffer.substr(0, length));
+
+			buffer.resize(buffer.size() * 2);
+		}
+#else
+		return "wbsh";
+#endif /* _WIN32 */
+	}
+
 #ifdef _WIN32
 	static const wchar_t kExtendedPrefix[] = L"\\\\?\\";
 	static const wchar_t kExtendedUncPrefix[] = L"\\\\?\\UNC\\";

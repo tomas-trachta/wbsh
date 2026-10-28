@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -36,6 +37,10 @@ namespace wbsh {
 
 	/// fopen on a UTF-8, POSIX-or-Win32 path (`_wfopen` on Windows).
 	std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode);
+
+	/// The directory named by the shell's TMPDIR, TEMP or TMP, in that order
+	/// (POSIX or Win32 form), else the system's; empty when there is none.
+	std::filesystem::path shellTempDirectory(Executor& exec);
 
 	/// Symbolic links and NTFS junctions are both "links" to the POSIX tools.
 	bool isLinkStatus(const std::filesystem::file_status& status);
@@ -72,6 +77,7 @@ namespace wbsh {
 		unsigned long pid = 0;
 		unsigned long parent_pid = 0;
 		unsigned long threads = 0;
+		long base_priority = 0;
 		std::string name;
 	};
 
@@ -80,6 +86,39 @@ namespace wbsh {
 
 	/// The command line @p pid was started with; empty when Windows refuses to tell.
 	std::string processCommandLine(unsigned long pid);
+
+	struct ProcessUsage {
+		std::string user;
+		std::uint64_t working_set = 0;
+		std::uint64_t pagefile = 0;
+		std::int64_t cpu_ticks = 0;
+	};
+
+	/// Owner, memory and CPU time (100 ns ticks) of every process by PID, read
+	/// without opening any of them, so known for other users' processes too.
+	std::map<unsigned long, ProcessUsage> collectProcessUsage();
+
+	/// A signal operand as kill takes it: a number, or a name with or without SIG.
+	bool parseSignalName(const std::string& text, int& signum);
+
+	/// Ends @p pid with exit code 128 + @p signum; signal 0 only checks it is running.
+	bool terminateProcessId(unsigned long pid, int signum);
+
+	/// "2 days,  3:04": the time since boot as `uptime` and `top` show it.
+	std::string uptimeText(unsigned long long uptime_ms);
+
+	/// Size and free bytes of all page files together.
+	void pageFileUsage(unsigned long long& total, unsigned long long& free);
+
+	/// Niceness <-> priority class, the one mapping nice, renice, ps and top share
+	/// (coreutils_session.cpp has the table).
+	unsigned long priorityClassForNiceness(int niceness);
+	int nicenessOfPriorityClass(unsigned long priority_class);
+	/// From Toolhelp's thread base priority, which needs no handle to the process.
+	int nicenessOfBasePriority(long base_priority);
+
+	bool queryProcessNiceness(unsigned long pid, int& niceness, std::error_code& ec);
+	bool setProcessNiceness(unsigned long pid, int niceness, std::error_code& ec);
 
 	/// Append every line of `path` ("-" = stdin) to `lines`, stripping
 	/// the trailing `\n` / `\r\n`. Returns false if the file can't be
@@ -185,5 +224,35 @@ namespace wbsh {
 	void registerFzfBuiltin(Executor& exec);
 	void registerTmuxBuiltin(Executor& exec);
 	void registerUtilsBuiltin(Executor& exec);
+
+	void registerSessionBuiltins(Executor& exec);
+
+	void registerTopBuiltin(Executor& exec);
+
+	void registerOwnerBuiltins(Executor& exec);
+
+	void registerInstallBuiltin(Executor& exec);
+
+	void registerFileTypeBuiltin(Executor& exec);
+
+	void registerManBuiltin(Executor& exec);
+
+	void registerLocaleBuiltin(Executor& exec);
+
+	void registerEdBuiltin(Executor& exec);
+
+	void registerViBuiltin(Executor& exec);
+
+	void registerMakeBuiltin(Executor& exec);
+
+	void registerNcBuiltin(Executor& exec);
+
+	void registerFtpBuiltins(Executor& exec);
+
+	void registerWhoisBuiltin(Executor& exec);
+
+	void registerHttpdBuiltin(Executor& exec);
+
+	void registerCronBuiltins(Executor& exec);
 
 }  // namespace wbsh

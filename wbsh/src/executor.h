@@ -129,11 +129,24 @@ namespace wbsh {
 	/// Where spawnCommand starts a child: inside @c job, assigned while the
 	/// child is still suspended so nothing it starts can escape the job, and
 	/// optionally in a console process group of its own (so a Ctrl+Break
-	/// can be aimed at it alone).
+	/// can be aimed at it alone). @c creation_flags go to CreateProcess as
+	/// well: a priority class, or CREATE_NO_WINDOW to outlive the console.
 	struct SpawnPlacement {
 		HANDLE job = nullptr;
 		bool new_process_group = false;
+		DWORD creation_flags = 0;
 	};
+
+	/// CREATE_BREAKAWAY_FROM_JOB when the shell runs in a job that lets a
+	/// child leave it but does not already make it leave, else 0. Breaking
+	/// away keeps a host that kills its job on exit (a terminal tab, an IDE)
+	/// from taking a command that has to outlive the shell along.
+	DWORD jobBreakawayFlag();
+
+	/// Where a command that has to outlive the console starts: a process
+	/// group of its own, out of the shell's job, and on a hidden console of
+	/// its own unless @p keep_console.
+	SpawnPlacement detachedPlacement(bool keep_console);
 #endif
 
 	/// @p word as bash shows it for re-use (`set -x`, `declare`): bare when
@@ -540,6 +553,13 @@ namespace wbsh {
 		// handle; INVALID_HANDLE_VALUE (already reported) when nothing started.
 		HANDLE spawnCommand(const std::vector<std::string>& argv,
 		                    const SpawnPlacement& placement = SpawnPlacement());
+
+		// Start the program at `exe_path` with `command_line` as it stands and
+		// exactly `environment` (PATH and HOME go out in Win32 form) on the
+		// current stdio, without waiting; a child wbsh is told it is one.
+		// INVALID_HANDLE_VALUE (already reported) when nothing started.
+		HANDLE spawnWithEnvironment(const std::string& exe_path, const std::string& command_line,
+		                            const std::vector<std::pair<std::string, std::string>>& environment);
 #endif
 
 		// Walk PATH for an executable named `name`. Returns the resolved
