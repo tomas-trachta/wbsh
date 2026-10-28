@@ -20,6 +20,7 @@
 
 #include "arena.h"
 #include "ast.h"
+#include "completion.h"
 #include "environment.h"
 #include "expander.h"
 #include "history.h"
@@ -279,16 +280,7 @@ namespace wbsh {
 		int& getoptsSubindex() { return getopts_subindex_; }
 		void resetGetopts() { getopts_subindex_ = 1; }
 
-		struct CompletionSpec {
-			std::vector<std::string> words;     ///< `-W` word list.
-			std::string function;               ///< `-F` function name.
-			std::string command;                ///< `-C` command to run for candidates.
-			bool include_files = false;         ///< `-f`.
-			bool include_dirs = false;          ///< `-d`.
-			bool default_fallback = false;      ///< `-o default`.
-			bool plusdirs = false;              ///< `-o plusdirs`.
-			bool nospace = false;               ///< `-o nospace`.
-		};
+		using CompletionSpec = wbsh::CompletionSpec;
 		void setCompletionSpec(const std::string& cmd, CompletionSpec spec) {
 			completion_specs_[cmd] = std::move(spec);
 		}

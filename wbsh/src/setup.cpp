@@ -366,6 +366,7 @@ namespace wbsh {
 		replayInheritedText(env, exec, "WBSH_ARRAYS",    "<inherited arrays>");
 		replayInheritedText(env, exec, "WBSH_ATTRIBUTES", "<inherited attributes>");
 		replayInheritedText(env, exec, "WBSH_BINDINGS", "<inherited bindings>");
+		replayInheritedText(env, exec, "WBSH_COMPLETIONS", "<inherited completions>");
 		applyInheritedOptions(env);
 		applyInheritedShellParameters(env, exec);
 		applyInheritedHistory(env, exec);

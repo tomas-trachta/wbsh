@@ -1093,6 +1093,8 @@ namespace wbsh {
 		if (!attributes.empty()) overrides.emplace_back("WBSH_ATTRIBUTES", attributes);
 		const std::string bindings = serializeKeyBindings();
 		if (!bindings.empty()) overrides.emplace_back("WBSH_BINDINGS", bindings);
+		const std::string completions = serializeCompletionSpecs(*this);
+		if (!completions.empty()) overrides.emplace_back("WBSH_COMPLETIONS", completions);
 
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
