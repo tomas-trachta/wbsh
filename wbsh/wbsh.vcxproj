@@ -227,6 +227,7 @@
     <ClCompile Include="src\coreutils_xargs.cpp" />
     <ClCompile Include="src\coreutils_sort.cpp" />
     <ClCompile Include="src\coreutils_tr.cpp" />
+    <ClCompile Include="src\coreutils_find.cpp" />
     <ClCompile Include="src\coreutils_curl.cpp" />
     <ClCompile Include="src\coreutils_hash.cpp" />
     <ClCompile Include="src\coreutils_grep.cpp" />

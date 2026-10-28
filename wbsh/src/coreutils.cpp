@@ -113,6 +113,22 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
+	std::string quoteShellArgv(const std::vector<std::string>& argv) {
+		std::string line;
+		for (const std::string& arg : argv) {
+			if (!line.empty()) line.push_back(' ');
+			line.push_back('\'');
+			for (char ch : arg) {
+				if (ch == '\'') line += "'\\''";
+				else            line.push_back(ch);
+			}
+
+			line.push_back('\'');
+		}
+
+		return line;
+	}
+
 	static bool startsWithDash(const std::string& arg) {
 		return !arg.empty() && arg[0] == '-';
 	}
@@ -288,7 +304,7 @@ namespace wbsh {
 #endif
 	}
 
-	static bool hasExecutableExtension(const fs::path& full) {
+	bool hasExecutableExtension(const fs::path& full) {
 		std::string ext = pathToUtf8(full.extension());
 		std::transform(ext.begin(), ext.end(), ext.begin(),
 			[](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
@@ -3277,6 +3293,7 @@ namespace wbsh {
 		registerFileBuiltins(exec);
 		registerHeadTailBuiltins(exec);
 		registerTextBuiltins(exec);
+		registerFindBuiltin(exec);
 		registerTrBuiltin(exec);
 		registerSortBuiltin(exec);
 		registerXargsBuiltin(exec);

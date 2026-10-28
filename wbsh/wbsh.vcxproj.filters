@@ -61,6 +61,7 @@
     <ClCompile Include="src\coreutils_xargs.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_sort.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_tr.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_find.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_encoding.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_archive.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_grep.cpp"><Filter>Source Files</Filter></ClCompile>

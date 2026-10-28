@@ -555,27 +555,11 @@ namespace wbsh {
 		return false;
 	}
 
-	static std::string xargsQuoteArgv(const std::vector<std::string>& argv) {
-		std::string line;
-		for (const std::string& arg : argv) {
-			if (!line.empty()) line.push_back(' ');
-			line.push_back('\'');
-			for (char ch : arg) {
-				if (ch == '\'') line += "'\\''";
-				else            line.push_back(ch);
-			}
-
-			line.push_back('\'');
-		}
-
-		return line;
-	}
-
 	static int invokeXargsInProcess(Executor& exec, const std::vector<std::string>& argv) {
 		const std::vector<std::string> call_args(argv.begin() + 1, argv.end());
 		if (exec.isBuiltin(argv[0])) return exec.callBuiltin(argv[0], call_args);
 		if (exec.isFunction(argv[0])) return exec.callFunction(argv[0], call_args);
-		return exec.executeText(xargsQuoteArgv(argv), "<xargs>");
+		return exec.executeText(quoteShellArgv(argv), "<xargs>");
 	}
 
 	// The child gets NUL (or the console with -o) as its stdin unless the
