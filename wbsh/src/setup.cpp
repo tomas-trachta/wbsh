@@ -10,6 +10,7 @@
 #  include <windows.h>
 #endif /* _WIN32 */
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -284,6 +285,75 @@ namespace wbsh {
 		env.unset("WBSH_STATUS");
 	}
 
+	static void applyInheritedHistory(Environment& env, Executor& exec) {
+		const std::string path = env.get("WBSH_HISTORY");
+		if (path.empty()) return;
+
+		env.unset("WBSH_HISTORY");
+		exec.loadHistoryFromFile(path);
+
+		std::error_code ec;
+		std::filesystem::remove(utf8ToPath(path), ec);
+	}
+
+	static std::vector<std::string> splitFields(const std::string& line, std::size_t count) {
+		std::vector<std::string> fields;
+		std::size_t start = 0;
+		while (fields.size() + 1 < count) {
+			const std::size_t space = line.find(' ', start);
+			if (space == std::string::npos) break;
+
+			fields.push_back(line.substr(start, space - start));
+			start = space + 1;
+		}
+
+		fields.push_back(line.substr(std::min<std::size_t>(start, line.size())));
+		return fields;
+	}
+
+	// A running job stays visible to `jobs` and `wait` here through a
+	// handle of our own on its process.
+	static void* openJobProcess(long long pid) {
+#ifdef _WIN32
+		const DWORD access = SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION;
+		return ::OpenProcess(access, FALSE, static_cast<DWORD>(pid));
+#else
+		(void)pid;
+		return nullptr;
+#endif /* _WIN32 */
+	}
+
+	static void applyInheritedJob(Executor& exec, const std::string& line) {
+		const std::vector<std::string> fields = splitFields(line, 5);
+		if (fields.size() != 5) return;
+
+		Executor::Job job;
+		if (!parseInt(fields[0], job.id) || !parseLL(fields[1], job.pid)) return;
+		if (!parseInt(fields[3], job.exit_code)) return;
+
+		job.running = fields[2] == "1";
+		job.cmd_text = fields[4];
+		if (job.running) job.handle = openJobProcess(job.pid);
+		if (job.running && job.handle == nullptr) return;
+
+		exec.adoptInheritedJob(job);
+	}
+
+	static void applyInheritedJobs(Environment& env, Executor& exec) {
+		const std::string text = env.get("WBSH_JOBS");
+		if (text.empty()) return;
+
+		env.unset("WBSH_JOBS");
+		std::size_t start = 0;
+		while (start < text.size()) {
+			std::size_t end = text.find('\n', start);
+			if (end == std::string::npos) end = text.size();
+
+			applyInheritedJob(exec, text.substr(start, end - start));
+			start = end + 1;
+		}
+	}
+
 	void absorbInheritedState(Environment& env, Executor& exec) {
 		const std::string local_names = env.get("WBSH_LOCAL_NAMES");
 		if (!local_names.empty()) {
@@ -297,6 +367,8 @@ namespace wbsh {
 		replayInheritedText(env, exec, "WBSH_ATTRIBUTES", "<inherited attributes>");
 		applyInheritedOptions(env);
 		applyInheritedShellParameters(env, exec);
+		applyInheritedHistory(env, exec);
+		applyInheritedJobs(env, exec);
 	}
 
 }  // namespace wbsh

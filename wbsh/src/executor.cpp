@@ -973,6 +973,56 @@ namespace wbsh {
 		overrides.emplace_back("WBSH_SHELL_PID", std::to_string(env.shellPid()));
 	}
 
+	// A self-spawned subshell starts with this shell's history and job
+	// table, as a forked bash subshell does. History can be long, so it
+	// travels in a temp file that the child deletes once it has read it.
+	static std::string writeHistorySnapshot(const Executor& exec) {
+		if (exec.history().empty()) return {};
+
+		wchar_t dir[MAX_PATH + 1] = {};
+		wchar_t name[MAX_PATH + 1] = {};
+		if (::GetTempPathW(MAX_PATH + 1, dir) == 0) return {};
+		if (::GetTempFileNameW(dir, L"wbh", 0, name) == 0) return {};
+
+		const std::string path = wideToUtf8(name);
+		if (exec.saveHistoryToFile(path)) return path;
+
+		::DeleteFileW(name);
+		return {};
+	}
+
+	static std::string serializeJobs(const std::vector<Executor::Job>& jobs) {
+		std::string text;
+		for (const Executor::Job& job : jobs) {
+			std::string command = job.cmd_text;
+			std::replace(command.begin(), command.end(), '\n', ' ');
+
+			text += std::to_string(job.id) + ' ' + std::to_string(job.pid) + ' ';
+			text += std::string(job.running ? "1" : "0") + ' ' + std::to_string(job.exit_code);
+			text += ' ' + command + '\n';
+		}
+
+		return text;
+	}
+
+	void Executor::addSubshellState(NameValueList& overrides) {
+		const std::string history_file = writeHistorySnapshot(*this);
+		if (!history_file.empty()) overrides.emplace_back("WBSH_HISTORY", history_file);
+
+		reapJobs();
+		const std::string jobs = serializeJobs(jobs_);
+		if (!jobs.empty()) overrides.emplace_back("WBSH_JOBS", jobs);
+	}
+
+	static void discardHistorySnapshot(const NameValueList& overrides) {
+		for (const auto& entry : overrides) {
+			if (entry.first != "WBSH_HISTORY") continue;
+
+			std::error_code ec;
+			std::filesystem::remove(utf8ToPath(entry.second), ec);
+		}
+	}
+
 	NameValueList Executor::buildSelfSpawnOverrides() {
 		NameValueList overrides;
 
@@ -997,6 +1047,7 @@ namespace wbsh {
 		if (!options.empty()) overrides.emplace_back("WBSH_OPTIONS", options);
 
 		addShellParameters(overrides, env_, last_status_);
+		addSubshellState(overrides);
 		return overrides;
 	}
 
@@ -1043,12 +1094,15 @@ namespace wbsh {
 		const std::string self = getSelfExecutablePath();
 		const std::vector<std::string> argv = selfSpawnArgv(self, slice);
 
+		const NameValueList overrides = buildSelfSpawnOverrides();
 		SpawnCommand command;
 		command.exe      = utf8ToWide(self);
 		command.cmdline  = buildCommandLine(argv);
-		command.envblock = buildEnvBlock(env_, buildSelfSpawnOverrides(),
-			/*include_unexported=*/true);
-		return spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err });
+		command.envblock = buildEnvBlock(env_, overrides, /*include_unexported=*/true);
+
+		const HANDLE process = spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err });
+		if (process == INVALID_HANDLE_VALUE) discardHistorySnapshot(overrides);
+		return process;
 	}
 
 	HANDLE Executor::launchPipelineElement(const Node& elem,
@@ -1082,12 +1136,15 @@ namespace wbsh {
 		const std::string self = getSelfExecutablePath();
 		const std::vector<std::string> child_argv = selfSpawnArgv(self, quotedCommandText(argv));
 
+		const NameValueList overrides = buildSelfSpawnOverrides();
 		SpawnCommand command;
 		command.exe      = utf8ToWide(self);
 		command.cmdline  = buildCommandLine(child_argv);
-		command.envblock = buildEnvBlock(env_, buildSelfSpawnOverrides(),
-			/*include_unexported=*/true);
-		return spawnWithHandles(command, currentStdio());
+		command.envblock = buildEnvBlock(env_, overrides, /*include_unexported=*/true);
+
+		const HANDLE process = spawnWithHandles(command, currentStdio());
+		if (process == INVALID_HANDLE_VALUE) discardHistorySnapshot(overrides);
+		return process;
 	}
 
 	HANDLE Executor::spawnCommand(const std::vector<std::string>& argv) {
@@ -3043,6 +3100,11 @@ namespace wbsh {
 		job.running = true;
 		jobs_.push_back(job);
 		return job.id;
+	}
+
+	void Executor::adoptInheritedJob(const Job& job) {
+		jobs_.push_back(job);
+		if (job.id > next_job_id_) next_job_id_ = job.id;
 	}
 
 	bool Executor::reapJobs() {
