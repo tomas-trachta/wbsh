@@ -1,0 +1,38 @@
+=== 1. length and substrings count characters
+5 é éll llo hél llo
+7 語テ 語テキスト 日本語
+5 5 ö
+=== 2. ? and brackets match one character
+? matches é
+?? does not match é
+[é] matches é
+[a-z] does not match é
+code point range
+[[ == ? ]] matches é
+řžýá čřžý žýá čř čRžýá .....
+=== 3. POSIX classes
+[a] alpha alnum lower xdigit word print graph
+[é] alpha alnum lower word print graph
+[É] alpha alnum upper word print graph
+[5] digit alnum xdigit word print graph
+[ ] space blank print
+[_] punct word print graph
+[.] punct print graph
+[f] alpha alnum lower xdigit word print graph
+two classes
+negated class
+equivalence class
+collating symbol
+class in [[ == ]]
+=== 4. an unterminated [ is literal
+[a matches itself
+[ matches itself
+[ does not match x
+] first is a member
+[a]] is a class then ]
+=== 5. case conversion
+Čřžýá ČŘŽÝÁ hÉLLo
+čŘŽ čřž
+Héllo Wörld
+=== 6. ${...} holds no brace expansion
+aB ab 1aB 2aB h ,B
