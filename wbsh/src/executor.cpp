@@ -3746,6 +3746,12 @@ namespace wbsh {
 		trimHistoryTo(history_, history_saved_, historyLimit(env_.get("HISTSIZE")));
 	}
 
+	void Executor::replaceLastHistoryEntry(std::string line) {
+		if (history_.commands.empty() || line.empty()) return;
+
+		history_.commands.back() = std::move(line);
+	}
+
 	void Executor::eraseHistoryEntries(const std::string& line) {
 		std::size_t i = 0;
 		while (i < history_.commands.size()) {

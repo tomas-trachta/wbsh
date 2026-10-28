@@ -1,0 +1,87 @@
+=== fc -l lists the last commands, numbered
+1<TAB> echo one
+2<TAB> echo two two
+3<TAB> ls -la
+4<TAB> echo three
+--- a range, numbers and offsets
+2<TAB> echo two two
+3<TAB> ls -la
+3<TAB> ls -la
+4<TAB> echo three
+3<TAB> ls -la
+4<TAB> echo three
+--- by how a command starts
+3<TAB> ls -la
+4<TAB> echo three
+4<TAB> echo three
+--- -n leaves the numbers out, -r and first > last reverse
+<TAB> echo one
+<TAB> echo two two
+3<TAB> ls -la
+2<TAB> echo two two
+1<TAB> echo one
+3<TAB> ls -la
+2<TAB> echo two two
+1<TAB> echo one
+<TAB> echo three
+<TAB> ls -la
+<TAB> echo two two
+<TAB> echo one
+=== errors
+wbsh: fc: history specification out of range
+status 1
+wbsh: fc: no command found
+status 1
+wbsh: fc: -x: invalid option
+wbsh: fc: usage: fc [-e ename] [-lnr] [first] [last] or fc -s [pat=rep] [command]
+status 2
+wbsh: fc: -e: option requires an argument
+wbsh: fc: usage: fc [-e ename] [-lnr] [first] [last] or fc -s [pat=rep] [command]
+status 2
+=== fc -s runs a command again, after pat=rep substitutions
+echo three
+three
+echo 2 2
+2 2
+Echo onE
+onE
+echo one
+one
+wbsh: fc: no command found
+status 1
+--- its status is the command's
+false
+status 1
+=== fc runs what the editor leaves in the file
+echo edit me
+edit me
+echo second
+second
+echo edit you
+edit you
+echo edit me
+echo second
+edit me
+second
+--- an editor that fails runs nothing
+status 1
+--- an emptied file runs nothing
+status 0
+=== in an interactive shell the fc line is replaced by what it runs
+$ alpha
+$ beta beta
+$ 1	 echo alpha
+2	 echo beta beta
+$ echo gamma gamma
+gamma gamma
+$ wbsh: fc: no command found
+$ 1	 echo alpha
+2	 echo beta beta
+3	 fc -l
+4	 echo gamma gamma
+5	 fc -s alpha
+$     4  echo gamma gamma
+    5  fc -s alpha
+    6  fc -l
+    7  history 4
+$ 
