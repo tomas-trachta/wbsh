@@ -27,6 +27,7 @@
 #include "lexer.h"
 #include "numparse.h"
 #include "strscan.h"
+#include "utf8.h"
 
 namespace wbsh {
 
@@ -1681,7 +1682,7 @@ namespace wbsh {
 		std::string name;
 		std::string subscript;
 		if (!splitSubscriptForm(rest, name, subscript)) {
-			return std::to_string(lookupParam(rest).size());
+			return std::to_string(utf8Count(lookupParam(rest)));
 		}
 
 		if (subscript == "@" || subscript == "*") return std::to_string(arrayLength(name));
@@ -1689,7 +1690,7 @@ namespace wbsh {
 		ElementSlot slot;
 		const std::string element = lookupSubscripted(name, subscript, false, &slot);
 		if (env_.nounset() && !slot.is_set) failFatal(name + ": unbound variable");
-		return std::to_string(element.size());
+		return std::to_string(utf8Count(element));
 	}
 
 	// Length of the parameter name at the start of `body`, or npos when
@@ -1831,20 +1832,23 @@ namespace wbsh {
 		}
 	}
 
-	static char convertCase(char c, char op) {
-		if (op == '^') return static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-		return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	static char32_t convertCase(char32_t c, char op) {
+		return op == '^' ? upperCode(c) : lowerCode(c);
 	}
 
+	// `^` uppercases and `,` lowercases the matching characters: the
+	// first one, or every one when doubled.
 	std::string Expander::applyCaseConv(const std::string& val, char op, bool all,
 			const std::string& pat) {
-		std::string out = val;
-		for (std::size_t k = 0; k < out.size(); ++k) {
-			if (!all && k > 0) break;
-
-			const char c = out[k];
-			if (!pat.empty() && !fnmatchFull(pat, std::string(1, c))) continue;
-			out[k] = convertCase(c, op);
+		std::string out;
+		out.reserve(val.size());
+		for (std::size_t k = 0; k < val.size();) {
+			const Utf8Char c = decodeUtf8(val, k);
+			const bool wanted = (all || k == 0)
+				&& (pat.empty() || fnmatchRange(pat, val, k, c.length));
+			if (wanted) appendUtf8(out, convertCase(c.code, op));
+			else out.append(val, k, c.length);
+			k += c.length;
 		}
 
 		return out;
@@ -2227,59 +2231,82 @@ namespace wbsh {
 		return expandParamApplyOp(op, colon, i, ctx);
 	}
 
+	static std::string charSlice(const std::string& val, std::size_t offset, std::size_t count) {
+		const std::size_t begin = utf8Advance(val, 0, offset);
+		const std::size_t end = utf8Advance(val, begin, count);
+		return val.substr(begin, end - begin);
+	}
+
 	std::string Expander::substringExpand(const std::string& val, const std::string& args) {
 		std::string offset_text;
 		std::string length_text;
 		splitSliceArgs(args, offset_text, length_text);
 
-		const long long size = static_cast<long long>(val.size());
+		const long long size = static_cast<long long>(utf8Count(val));
 		long long offset = evalArith(offset_text);
 		if (offset < 0) offset = std::max<long long>(0, size + offset);
 		if (offset > size) offset = size;
-		if (length_text.empty()) return val.substr(static_cast<std::size_t>(offset));
 
-		long long length = evalArith(length_text);
-		if (length < 0) {
-			long long end = size + length;
-			if (end < offset) end = offset;
-			return val.substr(static_cast<std::size_t>(offset),
-				static_cast<std::size_t>(end - offset));
-		}
-
+		long long length = length_text.empty() ? size - offset : evalArith(length_text);
+		if (length < 0) length = std::max<long long>(0, size + length - offset);
 		if (offset + length > size) length = size - offset;
-		return val.substr(static_cast<std::size_t>(offset), static_cast<std::size_t>(length));
+		return charSlice(val, static_cast<std::size_t>(offset), static_cast<std::size_t>(length));
 	}
 
-	// Length of the longest span at `start` matching `pat`, or npos.
-	static std::size_t longestMatchAt(const std::string& val, std::size_t start,
+	// The byte offset of every character start, plus the end.
+	using CharBounds = std::vector<std::size_t>;
+
+	static CharBounds charBounds(const std::string& val) {
+		CharBounds bounds;
+		bounds.reserve(val.size() + 1);
+		for (std::size_t pos = 0; pos < val.size(); pos += utf8CharLength(val, pos)) {
+			bounds.push_back(pos);
+		}
+
+		bounds.push_back(val.size());
+		return bounds;
+	}
+
+	static bool matchesBetween(const std::string& val, const CharBounds& bounds, std::size_t from,
+			std::size_t to, const std::string& pat) {
+		return fnmatchRange(pat, val, bounds[from], bounds[to] - bounds[from]);
+	}
+
+	// Bound index of the farthest end matching `pat` from bounds[from], or npos.
+	static std::size_t longestMatchAt(const std::string& val, const CharBounds& bounds,
+			std::size_t from, const std::string& pat) {
+		for (std::size_t to = bounds.size() - 1;; --to) {
+			if (matchesBetween(val, bounds, from, to, pat)) return to;
+			if (to == from) return std::string::npos;
+		}
+	}
+
+	static std::size_t shortestPrefixMatch(const std::string& val, const CharBounds& bounds,
 			const std::string& pat) {
-		for (std::size_t length = val.size() - start;; --length) {
-			if (fnmatchRange(pat, val, start, length)) return length;
-			if (length == 0) return std::string::npos;
-		}
-	}
-
-	static std::size_t shortestPrefixMatch(const std::string& val, const std::string& pat) {
-		for (std::size_t length = 0; length <= val.size(); ++length) {
-			if (fnmatchRange(pat, val, 0, length)) return length;
+		for (std::size_t to = 0; to < bounds.size(); ++to) {
+			if (matchesBetween(val, bounds, 0, to, pat)) return to;
 		}
 
 		return std::string::npos;
 	}
 
-	// Start offset of the longest suffix matching `pat`, or npos.
-	static std::size_t longestSuffixMatch(const std::string& val, const std::string& pat) {
-		for (std::size_t start = 0; start <= val.size(); ++start) {
-			if (fnmatchRange(pat, val, start, val.size() - start)) return start;
+	// Bound index where the longest suffix matching `pat` starts, or npos.
+	static std::size_t longestSuffixMatch(const std::string& val, const CharBounds& bounds,
+			const std::string& pat) {
+		const std::size_t last = bounds.size() - 1;
+		for (std::size_t from = 0; from <= last; ++from) {
+			if (matchesBetween(val, bounds, from, last, pat)) return from;
 		}
 
 		return std::string::npos;
 	}
 
-	static std::size_t shortestSuffixMatch(const std::string& val, const std::string& pat) {
-		for (std::size_t start = val.size();; --start) {
-			if (fnmatchRange(pat, val, start, val.size() - start)) return start;
-			if (start == 0) return std::string::npos;
+	static std::size_t shortestSuffixMatch(const std::string& val, const CharBounds& bounds,
+			const std::string& pat) {
+		const std::size_t last = bounds.size() - 1;
+		for (std::size_t from = last;; --from) {
+			if (matchesBetween(val, bounds, from, last, pat)) return from;
+			if (from == 0) return std::string::npos;
 		}
 	}
 
@@ -2287,60 +2314,68 @@ namespace wbsh {
 			bool greedy) {
 		if (pat.empty()) return val;
 
-		const std::size_t length = greedy ? longestMatchAt(val, 0, pat)
-			: shortestPrefixMatch(val, pat);
-		if (length == std::string::npos) return val;
-		return val.substr(length);
+		const CharBounds bounds = charBounds(val);
+		const std::size_t to = greedy ? longestMatchAt(val, bounds, 0, pat)
+			: shortestPrefixMatch(val, bounds, pat);
+		if (to == std::string::npos) return val;
+		return val.substr(bounds[to]);
 	}
 
 	std::string Expander::stripSuffix(const std::string& val, const std::string& pat,
 			bool greedy) {
 		if (pat.empty()) return val;
 
-		const std::size_t start = greedy ? longestSuffixMatch(val, pat)
-			: shortestSuffixMatch(val, pat);
-		if (start == std::string::npos) return val;
-		return val.substr(0, start);
+		const CharBounds bounds = charBounds(val);
+		const std::size_t from = greedy ? longestSuffixMatch(val, bounds, pat)
+			: shortestSuffixMatch(val, bounds, pat);
+		if (from == std::string::npos) return val;
+		return val.substr(0, bounds[from]);
 	}
 
 	static std::string replaceAnchoredPrefix(const std::string& val, const std::string& pat,
 			const std::string& rep) {
-		const std::size_t length = longestMatchAt(val, 0, pat);
-		if (length == std::string::npos) return val;
-		return rep + val.substr(length);
+		const CharBounds bounds = charBounds(val);
+		const std::size_t to = longestMatchAt(val, bounds, 0, pat);
+		if (to == std::string::npos) return val;
+		return rep + val.substr(bounds[to]);
 	}
 
 	static std::string replaceAnchoredSuffix(const std::string& val, const std::string& pat,
 			const std::string& rep) {
-		const std::size_t start = longestSuffixMatch(val, pat);
-		if (start == std::string::npos) return val;
-		return val.substr(0, start) + rep;
+		const CharBounds bounds = charBounds(val);
+		const std::size_t from = longestSuffixMatch(val, bounds, pat);
+		if (from == std::string::npos) return val;
+		return val.substr(0, bounds[from]) + rep;
 	}
 
+	static void appendCharAt(std::string& out, const std::string& val, const CharBounds& bounds,
+			std::size_t index) {
+		if (index + 1 >= bounds.size()) return;
+
+		out.append(val, bounds[index], bounds[index + 1] - bounds[index]);
+	}
+
+	// A zero-width match copies the next character, so a pattern that
+	// always matches `""` still makes progress.
 	static std::string replaceUnanchored(const std::string& val, const std::string& pat,
 			const std::string& rep, bool all) {
+		const CharBounds bounds = charBounds(val);
+		const std::size_t last = bounds.size() - 1;
 		std::string out;
 		std::size_t i = 0;
-		while (i <= val.size()) {
-			const std::size_t best = longestMatchAt(val, i, pat);
-			if (best == std::string::npos) {
-				if (i < val.size()) out.push_back(val[i]);
-				++i;
+		while (i <= last) {
+			const std::size_t to = longestMatchAt(val, bounds, i, pat);
+			if (to == std::string::npos) {
+				appendCharAt(out, val, bounds, i++);
 				continue;
 			}
 
 			out += rep;
-			if (best == 0) {
-				// Zero-width match: advance one literal char so we don't
-				// loop forever on a pattern that always matches `""`.
-				if (i < val.size()) out.push_back(val[i]);
-				++i;
-			} else {
-				i += best;
-			}
+			if (to == i) appendCharAt(out, val, bounds, i++);
+			else i = to;
 
 			if (!all) {
-				out += val.substr(i);
+				if (i <= last) out.append(val, bounds[i], std::string::npos);
 				return out;
 			}
 		}
@@ -2899,6 +2934,36 @@ namespace wbsh {
 		return (i < s.size()) ? i + 1 : i;
 	}
 
+	static bool atDollarForm(const std::string& s, std::size_t i) {
+		return s[i] == '$' && i + 1 < s.size() && (s[i + 1] == '{' || s[i + 1] == '(');
+	}
+
+	// `${...}` and `$(...)` hold no brace expansion: `${x,}` is a case operator.
+	static std::size_t braceSkipDollarForm(const std::string& s, std::size_t i) {
+		const char open = s[i + 1];
+		const char close = (open == '{') ? '}' : ')';
+		int depth = 0;
+		std::size_t j = i + 1;
+		while (j < s.size()) {
+			const char c = s[j];
+			if (c == '\\') {
+				j += 2;
+				continue;
+			}
+
+			if (c == '\'' || c == '"') {
+				j = braceSkipQuotedRun(s, j);
+				continue;
+			}
+
+			if (c == open) ++depth;
+			if (c == close && --depth == 0) return j + 1;
+			++j;
+		}
+
+		return s.size();
+	}
+
 	static std::size_t braceFindOpen(const std::string& s) {
 		std::size_t i = 0;
 		while (i < s.size()) {
@@ -2910,6 +2975,11 @@ namespace wbsh {
 
 			if (c == '\'' || c == '"') {
 				i = braceSkipQuotedRun(s, i);
+				continue;
+			}
+
+			if (atDollarForm(s, i)) {
+				i = braceSkipDollarForm(s, i);
 				continue;
 			}
 
@@ -2933,6 +3003,11 @@ namespace wbsh {
 
 			if (c == '\'' || c == '"') {
 				j = braceSkipQuotedRun(s, j);
+				continue;
+			}
+
+			if (atDollarForm(s, j)) {
+				j = braceSkipDollarForm(s, j);
 				continue;
 			}
 

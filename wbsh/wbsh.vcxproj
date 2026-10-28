@@ -189,6 +189,7 @@
     <ClInclude Include="src\consolekeys.h" />
     <ClInclude Include="src\lineedit.h" />
     <ClInclude Include="src\textcells.h" />
+    <ClInclude Include="src\utf8.h" />
     <ClInclude Include="src\awk.h" />
     <ClInclude Include="src\awk_internal.h" />
     <ClInclude Include="src\awk_interp.h" />
@@ -263,6 +264,8 @@
     <ClCompile Include="src\consolekeys.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\textcells.cpp" />
+    <ClCompile Include="src\fnmatch.cpp" />
+    <ClCompile Include="src\utf8.cpp" />
     <ClCompile Include="..\wbshterm\src\charwidth.cpp" />
     <ClCompile Include="..\wbshterm\src\charwidth_ucd.cpp" />
     <ClCompile Include="src\awk.cpp" />
