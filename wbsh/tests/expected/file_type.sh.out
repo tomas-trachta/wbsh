@@ -1,0 +1,148 @@
+=== inode types and text
+empty:     empty
+one:       very short file (no magic)
+ascii.txt: ASCII text
+crlf.txt:  ASCII text, with CRLF line terminators
+cr.txt:    ASCII text, with CR line terminators
+mixed.txt: ASCII text, with CRLF, LF line terminators
+noeol.txt: ASCII text, with no line terminators
+long.txt:  ASCII text, with very long lines (400)
+utf8.txt:  Unicode text, UTF-8 text
+bom.txt:   Unicode text, UTF-8 (with BOM) text
+u16le.txt:  Unicode text, UTF-16, little-endian text
+u16be.txt:  Unicode text, UTF-16, big-endian text
+latin1.txt: ISO-8859 text
+ext.txt:    Non-ISO extended-ASCII text
+esc.txt:    ASCII text, with escape sequences
+over.txt:   ASCII text, with overstriking
+bin.dat:    data
+dir:        directory
+=== scripts and source
+s1: POSIX shell script, ASCII text executable
+s2: Bourne-Again shell script, ASCII text executable
+s3: Bourne-Again shell script, ASCII text executable
+s4: Python script, ASCII text executable
+s5: Perl script text executable
+s6: Node.js script, ASCII text executable
+s7: a /opt/odd/interp -x script, ASCII text executable
+s8: Python script, Unicode text, UTF-8 text executable
+s9: POSIX shell script, ASCII text executable, with CRLF line terminators
+c.c:         C source, ASCII text
+cpp.cpp:     C++ source, ASCII text
+page.html:   HTML document, ASCII text
+doc.xml:     XML 1.0 document, ASCII text
+pic.svg:     SVG Scalable Vector Graphics image
+data.json:   JSON text data
+broken.json: ASCII text
+run.bat:     DOS batch file, ASCII text, with CRLF line terminators
+script.ps1:  PowerShell script, ASCII text
+Makefile:    makefile script, ASCII text
+cert.pem: PEM certificate
+id_key:   OpenSSH private key
+=== images
+img.png:  PNG image data, 16 x 8, 8-bit/color RGBA, non-interlaced
+gray.png: PNG image data, 256 x 64, 1-bit grayscale, interlaced
+img.gif:  GIF image data, version 89a, 10 x 20
+img.jpg:  JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16, baseline, precision 8, 64x32, components 3
+img.bmp:  PC bitmap, Windows 3.x format, 2 x 2 x 24, image size 16, resolution 2835 x 2835 px/m, cbSize 70, bits offset 54
+img.ico:  MS Windows icon resource - 1 icon, 16x16, 32 bits/pixel
+img.webp: RIFF (little-endian) data, Web/P image, with lossless, 16x8
+img.tif:  TIFF image data, little-endian, direntries=1
+=== audio and video
+snd.wav:   RIFF (little-endian) data, WAVE audio, Microsoft PCM, 16 bit, stereo 44100 Hz
+snd.ogg:   Ogg data, Vorbis audio, stereo, 44100 Hz, ~128000 bps
+snd.flac:  FLAC audio bitstream data, 16 bit, stereo, 44.1 kHz, 441000 samples
+snd.mp3:   MPEG ADTS, layer III, v1, 128 kbps, 44.1 kHz, JntStereo
+tag.mp3:   Audio file with ID3 version 2.3.0, contains: MPEG ADTS, layer III, v1, 128 kbps, 44.1 kHz, JntStereo
+clip.mp4:  ISO Media, MP4 Base Media v1 [ISO 14496-12:2003]
+clip.mov:  ISO Media, Apple QuickTime movie, Apple QuickTime (.MOV/QT)
+clip.webm: WebM
+=== executables
+console.exe: PE32+ executable (console) x86-64, for MS Windows, 2 sections
+gui.exe:     PE32+ executable (GUI) x86-64, for MS Windows, 2 sections
+lib.dll:     PE32+ executable (DLL) (console) x86-64, for MS Windows, 2 sections
+old.exe:     PE32 executable (console) Intel 80386, for MS Windows, 2 sections
+managed.exe: PE32 executable (console) Intel 80386 Mono/.Net assembly, for MS Windows, 2 sections
+dos.exe:     MS-DOS executable
+prog.elf:   ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked
+prog.macho: Mach-O 64-bit x86_64 executable, flags:<NOUNDEFS|DYLDLINK|TWOLEVEL|PIE>
+Main.class: compiled Java class data, version 52.0 (Java 1.8)
+mod.wasm:   WebAssembly (wasm) binary module version 0x1 (MVP)
+=== archives and compressed data
+p1.gz:    gzip compressed data, from Unix, original size modulo 2^32 12
+named.gz: gzip compressed data, was "a.txt", last modified: Tue Nov 14 22:13:20 2023, max compression, from Unix, original size modulo 2^32 0
+p2.bz2:   bzip2 compressed data, block size = 900k
+p3.xz:    XZ compressed data, checksum CRC64
+p4.lzma:  LZMA compressed data, streamed
+p5.lzo:   lzop compressed data - version 1.040, LZO1X-1, os: Unix
+a.tar:    POSIX tar archive
+a.cpio:   ASCII cpio archive (SVR4 with no CRC)
+odc.cpio: ASCII cpio archive (pre-SVR4 or odc)
+a.a:      current ar archive
+a.zip:    Zip archive data, at least v2.0 to extract, compression method=store
+old.Z:   compress'd data 16 bits
+a.zst:   Zstandard compressed data (v0.8+), Dictionary ID: None
+a.7z:    7-zip archive data, version 0.4
+a.rar:   RAR archive data, v5
+old.rar: RAR archive data, v4
+a.cab:   Microsoft Cabinet archive data, 80 bytes, 2 files
+=== zip containers
+a.jar:     Java archive data (JAR)
+a.docx:    Microsoft Word 2007+
+a.xlsx:    Microsoft Excel 2007+
+a.odt:     OpenDocument Text
+empty.zip: Zip archive data (empty)
+=== documents and containers
+doc.pdf:   PDF document, version 1.7, 3 page(s)
+bare.pdf:  PDF document, version 1.4
+db.sqlite: SQLite 3.x database, last written using SQLite version 3039004, file counter 2, database pages 2, cookie 0x1, schema 4, UTF-8, version-valid-for 2
+app.lnk:   MS Windows shortcut, Item id list present, Points to a file or directory, Has Relative path, Archive, length=1234
+setup.msi: Composite Document File V2 Document, MSI Installer
+other.ole: Composite Document File V2 Document
+disc.iso:  ISO 9660 CD-ROM filesystem data 'WBSH_DISC'
+font.ttf:  TrueType Font data, 12 tables
+font.woff: Web Open Font Format
+=== options
+ASCII text
+ascii.txt: text/plain; charset=us-ascii
+utf8.txt:  text/plain; charset=utf-8
+bin.dat:   application/octet-stream; charset=binary
+empty:     inode/x-empty; charset=binary
+dir:       inode/directory; charset=binary
+img.png:   image/png; charset=binary
+data.json: application/json; charset=us-ascii
+s1:        text/x-shellscript; charset=us-ascii
+crlf.txt:   text/plain
+latin1.txt: text/plain
+u16le.txt:  text/plain
+ascii.txt:  us-ascii
+latin1.txt: iso-8859-1
+ext.txt:    unknown-8bit
+ascii.txt: ASCII text
+img.gif: GIF image data, version 89a, 10 x 20
+ascii.txt => ASCII text
+ASCII text
+ascii.txt: ASCII text
+img.gif:   GIF image data, version 89a, 10 x 20
+/dev/stdin: ASCII text
+/dev/stdin: PNG image data, 16 x 8, 8-bit/color RGBA, non-interlaced
+empty
+missing_q7: cannot open `missing_q7' (No such file or directory)
+status 0
+wbsh: file: cannot open `missing_q7' (No such file or directory)
+status 1
+wbsh: file: cannot open `no_such_list_q7' (No such file or directory)
+status 1
+wbsh: file: Usage: file [-bcdEhikLlNnprsSvzZ0] [--apple] [--extension] [--mime-encoding] [--mime-type] [-e <testname>] [-F <separator>] [-f <namefile>] [-m <magicfiles>] [-P <parameter=value>] [--exclude-quiet] <file> ...
+status 1
+p1.gz: ASCII text (gzip compressed data, from Unix, original size modulo 2^32 12)
+p1.gz: ASCII text
+ASCII text (bzip2 compressed data, block size = 900k)
+ASCII text (XZ compressed data, checksum CRC64)
+p1.gz: text/plain; charset=us-ascii compressor: application/gzip
+ascii.txt: ASCII text
+=== links
+link: symbolic link to ascii.txt
+link: ASCII text
+link: symbolic link to ascii.txt
+dangling: broken symbolic link to gone_q7

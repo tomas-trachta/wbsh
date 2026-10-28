@@ -1,0 +1,171 @@
+=== nice prints and sets the niceness (priority class)
+0
+8
+8
+16
+16
+16
+16
+-8
+-8
+-16
+function at 8
+status 3
+=== nice errors
+wbsh: nice: a command must be given with an adjustment
+status 125
+wbsh: nice: invalid adjustment 'x'
+status 125
+wbsh: nice: invalid option -- 'q'
+status 125
+wbsh: nice: 'no_such_command_xyz': No such file or directory
+status 127
+=== renice, read back by ps and top
+VICTIM (process ID) old priority 0, new priority 8
+VICTIM (process ID) old priority 8, new priority 16
+VICTIM (process ID) old priority 16, new priority 8
+8
+11 88 28 88
+ps -l PRI 88 NI 8
+top PR 28 NI 8
+VICTIM (process group ID) old priority 8, new priority 0
+0
+=== renice errors
+wbsh: renice: failed to get priority for 999999 (process ID): No such process
+status 1
+wbsh: renice: bad process ID value: abc
+status 1
+wbsh: renice: not enough arguments
+status 1
+wbsh: renice: invalid priority 'x'
+status 1
+wbsh: renice: unknown user no_such_user_xyz
+status 1
+wbsh: renice: failed to get priority for 999999 (process group ID): No such process
+status 1
+=== renice 0 is the shell itself
+0 (process ID) old priority 0, new priority 16
+16
+0 (process ID) old priority 16, new priority 0
+0 (process group ID) old priority 0, new priority 8
+0
+=== setsid
+out: hello
+err: hello
+status 7
+out: a script waits
+err: a script waits
+status 7
+wbsh: setsid: no command specified
+status 1
+wbsh: setsid: invalid option -- 'x'
+status 1
+wbsh: setsid: failed to execute no_such_command_xyz: No such file or directory
+status 127
+status 0
+returned at once
+late
+=== Ctrl+C gives the shell back and leaves the command running
+setsid -w: 130
+still ran
+nohup: 130
+still ran
+=== nohup without a terminal changes nothing
+out: plain
+err: plain
+status 7
+after dashdash
+no nohup.out
+=== --help and --version
+Usage: nohup COMMAND [ARG]...
+nohup (wbsh) X.Y.Z
+Usage: setsid [options] <program> [arguments ...]
+Run a program in a new session: a process group of its own, on a hidden
+setsid (wbsh) X.Y.Z
+status 0
+=== nohup errors
+wbsh: nohup: missing operand
+status 125
+wbsh: nohup: missing operand
+status 127
+wbsh: nohup: invalid option -- 'x'
+status 125
+wbsh: nohup: failed to run command 'no_such_command_xyz': No such file or directory
+status 127
+=== nohup on a terminal
+wbsh: nohup: ignoring input and appending output to 'nohup.out'
+err: on a terminal
+status 7
+out: on a terminal
+appended: 2
+wbsh: nohup: appending output to 'nohup.out'
+input not a terminal
+wbsh: nohup: ignoring input
+err: stdin only
+out: stdin only
+out: stderr follows stdout
+err: stderr follows stdout
+no nohup.out
+=== nohup falls back to $HOME/nohup.out
+wbsh: nohup: ignoring input and appending output to 'PWD/home/nohup.out'
+err: on a terminal
+status 7
+out: on a terminal
+wbsh: nohup: failed to open 'nohup.out': Permission denied
+wbsh: nohup: failed to open 'PWD/home2/nohup.out': Permission denied
+status 125
+=== su and sudo
+wbsh: su: Windows has no su; to run a shell as another user: runas /user:Administrator wbsh
+wbsh: su: for an elevated shell, use sudo (Windows 11 24H2 or later) or gsudo
+status 1
+wbsh: su: Windows has no su; to run a shell as another user: runas /user:alice wbsh
+wbsh: su: for an elevated shell, use sudo (Windows 11 24H2 or later) or gsudo
+status 1
+wbsh: sudo: no sudo on PATH, and wbsh cannot switch users by itself
+wbsh: sudo: on Windows 11 24H2 or later, turn on Settings > System > For developers > Enable sudo
+wbsh: sudo: otherwise start an elevated wbsh (runas /user:Administrator wbsh) or install gsudo (winget install gerardog.gsudo)
+status 1
+fake sudo: net session /list
+status 3
+fake sudo: -E whoami
+fake sudo: WBSH -r -c "'cd' '/'"
+=== top -b layout
+uptime line
+tasks line
+cpu line
+memory line
+swap line
+
+    PID USER      PR  NI    VIRT    RES S  %CPU  %MEM     TIME+ COMMAND
+memory adds up
+cpu adds up
+every task listed
+rows complete
+=== top selection, sorting and iterations
+the shell
+-c shows the command line
+7
+PID ascending
+PID descending
+%MEM descending
+only the user
+3
+top -
+=== top errors
+wbsh: top: bad iterations argument '0'
+status 1
+wbsh: top: bad delay interval 'x'
+status 1
+wbsh: top: bad delay interval '-1'
+status 1
+wbsh: top: unrecognized field name 'BOGUS'
+status 1
+wbsh: top: bad pid 'x'
+status 1
+wbsh: top: invalid option -- 'z'
+status 1
+wbsh: top: unknown argument 'extra'
+status 1
+=== top on a terminal
+status 0
+=== done

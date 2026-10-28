@@ -122,7 +122,7 @@ namespace wbsh {
 		return text;
 	}
 
-	static bool parseSignalName(const std::string& text, int& signum) {
+	bool parseSignalName(const std::string& text, int& signum) {
 		if (parseInt(text, signum)) return signum >= 0;
 
 		std::string name = upperAscii(text);
@@ -159,7 +159,7 @@ namespace wbsh {
 		return alive ? ProcessProbe::Alive : ProcessProbe::Missing;
 	}
 
-	static bool terminateProcessId(DWORD pid, int signum) {
+	bool terminateProcessId(unsigned long pid, int signum) {
 		if (signum == 0) return probeProcess(pid) == ProcessProbe::Alive;
 
 		const HANDLE process = ::OpenProcess(PROCESS_TERMINATE, FALSE, pid);
@@ -731,7 +731,7 @@ namespace wbsh {
 		return 0;
 	}
 
-	static std::string uptimeText(unsigned long long uptime_ms) {
+	std::string uptimeText(unsigned long long uptime_ms) {
 		const unsigned long long minutes_total = uptime_ms / kMsPerSecond / 60ULL;
 		const unsigned long long days = minutes_total / (24ULL * 60ULL);
 		const unsigned long long hours = (minutes_total / 60ULL) % 24ULL;
@@ -817,7 +817,7 @@ namespace wbsh {
 		return TRUE;
 	}
 
-	static void pageFileUsage(unsigned long long& total, unsigned long long& free) {
+	void pageFileUsage(unsigned long long& total, unsigned long long& free) {
 		PageFileTotals totals;
 		::EnumPageFilesW(addPageFile, &totals);
 

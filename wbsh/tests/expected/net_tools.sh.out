@@ -1,0 +1,47 @@
+PASS nc roundtrip
+PASS nc -z open port
+PASS nc -z closed port
+PASS nc udp roundtrip
+PASS whois -h reply
+PASS httpd index
+PASS httpd file
+PASS httpd range
+PASS httpd 404
+PASS httpd traversal
+PASS httpd method
+PASS httpd listing
+PASS httpd listing escaped text
+PASS httpd listing encoded href
+PASS httpd listing no raw name
+PASS httpd utf8 file
+PASS httpd utf8 listing href
+PASS httpd utf8 listing text
+PASS httpd HEAD length
+PASS cgi GET query
+PASS cgi POST body
+PASS cgi redirect status
+PASS cgi absolute encoded no exec
+PASS cgi absolute encoded refused
+PASS cgi absolute raw no exec
+PASS cgi plain file not served
+PASS cgi plain file refused
+PASS cgi case variant not served
+PASS conf auth 401
+PASS conf auth ok
+PASS conf auth bypass /VAULT/s.txt
+PASS conf auth bypass /%76ault/s.txt
+PASS conf auth bypass /./vault/s.txt
+PASS conf auth bypass /vault\s.txt
+PASS conf auth trailing dot refused
+PASS conf auth dir ok
+PASS conf mime override
+PASS conf index name
+PASS conf error page
+PASS conf deny ip
+PASS ftpget
+PASS ftpput
+PASS ftp dir
+PASS ftp active dir
+PASS ftp url autofetch
+PASS ftpget url
+net_tools: 0 failures

@@ -1,0 +1,9 @@
+=== 1. unexported tmp, temp and tmpdir
+[hi]
+awk pipe
+/c/wbsh-no-such-dir /c/wbsh-no-such-dir /c/wbsh-no-such-dir
+0
+=== 2. exported as well
+[hi]
+awk pipe
+1

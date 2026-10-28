@@ -30,6 +30,10 @@ namespace wbsh {
 	std::wstring utf8ToWide(const std::string& s);
 	std::string  wideToUtf8(const std::wstring& w);
 
+	/// The running executable's own path (native form, any length);
+	/// "wbsh.exe" when Windows cannot tell it.
+	std::string selfExecutablePath();
+
 	/// Builds the path from the wide form, bypassing the CP_ACP
 	/// interpretation that `path(std::string)` applies on MSVC. A path
 	/// longer than plain Win32 calls take comes back in its `\\?\` form,

@@ -77,12 +77,7 @@ namespace wbsh {
 			std::vector<std::string> sort_keys;
 		};
 
-		struct Usage {
-			std::string user;
-			std::uint64_t working_set = 0;
-			std::uint64_t pagefile = 0;
-			std::int64_t cpu_ticks = 0;
-		};
+		using Usage = ProcessUsage;
 
 		struct Row {
 			ProcessInfo info;
@@ -430,8 +425,24 @@ namespace wbsh {
 			return "0";
 		}
 
-		static std::string textPriority(Context&, Row&) {
-			return "80";
+		static std::string textNice(Context&, Row& row) {
+			return std::to_string(nicenessOfBasePriority(row.info.base_priority));
+		}
+
+		static int rowNiceness(const Row& row) {
+			return nicenessOfBasePriority(row.info.base_priority);
+		}
+
+		static std::string textPri(Context&, Row& row) {
+			return std::to_string(19 - rowNiceness(row));
+		}
+
+		static std::string textOldPri(Context&, Row& row) {
+			return std::to_string(80 + rowNiceness(row));
+		}
+
+		static std::string textKernelPriority(Context&, Row& row) {
+			return std::to_string(20 + rowNiceness(row));
 		}
 
 		static std::string textDash(Context&, Row&) {
@@ -469,6 +480,14 @@ namespace wbsh {
 
 		static double numberThreads(Context&, Row& row) {
 			return static_cast<double>(row.info.threads);
+		}
+
+		static double numberNice(Context&, Row& row) {
+			return static_cast<double>(rowNiceness(row));
+		}
+
+		static double numberPri(Context&, Row& row) {
+			return static_cast<double>(19 - rowNiceness(row));
 		}
 
 		static const ColumnSpec kColumns[] = {
@@ -517,9 +536,12 @@ namespace wbsh {
 			{ "state",      "S",       false, textState,          nullptr },
 			{ "nlwp",       "NLWP",    true,  textThreads,        numberThreads },
 			{ "thcount",    "THCNT",   true,  textThreads,        numberThreads },
-			{ "pri",        "PRI",     true,  textPriority,       nullptr },
-			{ "ni",         "NI",      true,  textZero,           nullptr },
-			{ "nice",       "NI",      true,  textZero,           nullptr },
+			{ "pri",        "PRI",     true,  textPri,            numberPri },
+			{ "opri",       "PRI",     true,  textOldPri,         numberNice },
+			{ "intpri",     "PRI",     true,  textOldPri,         numberNice },
+			{ "priority",   "PRI",     true,  textKernelPriority, numberNice },
+			{ "ni",         "NI",      true,  textNice,           numberNice },
+			{ "nice",       "NI",      true,  textNice,           numberNice },
 			{ "psr",        "PSR",     true,  textZero,           nullptr },
 			{ "f",          "F",       true,  textZero,           nullptr },
 			{ "flags",      "F",       true,  textZero,           nullptr },
@@ -550,7 +572,7 @@ namespace wbsh {
 				"time", "cmd", nullptr };
 			static const char* const kExtraFull[] = { "uid_name", "pid", "ppid", "c", "sz",
 				"rss", "psr", "stime", "tname", "time", "cmd", nullptr };
-			static const char* const kLong[] = { "f", "s", "uid_name", "pid", "ppid", "c", "pri",
+			static const char* const kLong[] = { "f", "s", "uid_name", "pid", "ppid", "c", "opri",
 				"ni", "addr", "sz", "wchan", "tname", "time", "ucmd", nullptr };
 			static const char* const kUser[] = { "user", "pid", "%cpu", "%mem", "vsz", "rss",
 				"tname", "stat", "bsdstart", "bsdtime", "command", nullptr };
@@ -1012,12 +1034,17 @@ namespace wbsh {
 			info.pid = entry.th32ProcessID;
 			info.parent_pid = entry.th32ParentProcessID;
 			info.threads = entry.cntThreads;
+			info.base_priority = entry.pcPriClassBase;
 			info.name = wideToUtf8(entry.szExeFile);
 			processes.push_back(info);
 		}
 
 		::CloseHandle(snapshot);
 		return processes;
+	}
+
+	std::map<unsigned long, ProcessUsage> collectProcessUsage() {
+		return ps_detail::collectUsage();
 	}
 
 	std::string processCommandLine(unsigned long pid) {

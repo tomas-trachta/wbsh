@@ -1,0 +1,355 @@
+=== fields: lists, ranges, steps, names
+2026-01-15 12:15 Thu +0000
+2026-01-15 12:30 Thu +0000
+2026-01-15 12:45 Thu +0000
+rc=0
+2026-01-15 12:10 Thu +0000
+2026-01-15 12:11 Thu +0000
+2026-01-15 12:12 Thu +0000
+2026-01-15 18:05 Thu +0000
+2026-01-15 18:10 Thu +0000
+2026-01-15 18:11 Thu +0000
+rc=0
+2026-01-15 03:10 Thu +0000
+2026-01-15 03:30 Thu +0000
+2026-01-15 03:50 Thu +0000
+2026-01-16 03:10 Fri +0000
+rc=0
+2026-07-01 00:00 Wed +0000
+2027-01-01 00:00 Fri +0000
+2027-07-01 00:00 Thu +0000
+rc=0
+2026-01-18 00:00 Sun +0000
+2026-01-25 00:00 Sun +0000
+rc=0
+2026-01-16 00:00 Fri +0000
+2026-01-17 00:00 Sat +0000
+2026-01-18 00:00 Sun +0000
+2026-01-23 00:00 Fri +0000
+rc=0
+2026-01-15 09:00 Thu +0000
+2026-01-16 09:00 Fri +0000
+2026-01-19 09:00 Mon +0000
+rc=0
+2026-01-17 00:00 Sat +0000
+2026-01-18 00:00 Sun +0000
+2026-01-21 00:00 Wed +0000
+rc=0
+2026-12-31 23:59 Thu +0000
+2027-12-31 23:59 Fri +0000
+rc=0
+=== day of month or day of week
+2026-01-02 12:00 Fri +0000
+2026-01-09 12:00 Fri +0000
+2026-01-13 12:00 Tue +0000
+2026-01-16 12:00 Fri +0000
+rc=0
+2026-05-01 12:00 Fri +0000
+2026-07-31 12:00 Fri +0000
+2026-08-21 12:00 Fri +0000
+rc=0
+2026-01-13 12:00 Tue +0000
+2026-02-13 12:00 Fri +0000
+rc=0
+=== @keywords
+2027-01-01 00:00 Fri +0000
+2028-01-01 00:00 Sat +0000
+rc=0
+2027-01-01 00:00 Fri +0000
+2028-01-01 00:00 Sat +0000
+rc=0
+2026-02-01 00:00 Sun +0000
+2026-03-01 00:00 Sun +0000
+rc=0
+2026-01-18 00:00 Sun +0000
+2026-01-25 00:00 Sun +0000
+rc=0
+2026-01-16 00:00 Fri +0000
+2026-01-17 00:00 Sat +0000
+rc=0
+2026-01-16 00:00 Fri +0000
+2026-01-17 00:00 Sat +0000
+rc=0
+2026-01-15 13:00 Thu +0000
+2026-01-15 14:00 Thu +0000
+rc=0
+never
+rc=0
+=== dates that come rarely or never
+2028-02-29 00:00 Tue +0000
+2032-02-29 00:00 Sun +0000
+2036-02-29 00:00 Fri +0000
+rc=0
+never
+rc=0
+never
+rc=0
+=== daylight saving: a skipped hour
+2026-03-29 03:00 Sun +0200
+2026-03-30 02:30 Mon +0200
+2026-03-31 02:30 Tue +0200
+rc=0
+2026-03-30 02:00 Mon +0200
+2026-03-30 02:20 Mon +0200
+2026-03-30 02:40 Mon +0200
+rc=0
+2026-03-29 01:00 Sun +0100
+2026-03-29 03:00 Sun +0200
+2026-03-29 04:00 Sun +0200
+rc=0
+2026-03-08 03:00 Sun -0700
+2026-03-09 02:30 Mon -0700
+2026-03-10 02:30 Tue -0700
+rc=0
+=== daylight saving: a repeated hour
+2026-10-25 02:30 Sun +0200
+2026-10-26 02:30 Mon +0100
+2026-10-27 02:30 Tue +0100
+rc=0
+2026-10-25 02:00 Sun +0200
+2026-10-25 02:20 Sun +0200
+2026-10-25 02:40 Sun +0200
+2026-10-25 02:00 Sun +0100
+2026-10-25 02:20 Sun +0100
+2026-10-25 02:40 Sun +0100
+2026-10-26 02:00 Mon +0100
+rc=0
+2026-10-25 01:00 Sun +0200
+2026-10-25 02:00 Sun +0200
+2026-10-25 02:00 Sun +0100
+2026-10-25 03:00 Sun +0100
+rc=0
+2026-11-01 01:00 Sun -0700
+2026-11-02 01:00 Mon -0800
+2026-11-03 01:00 Tue -0800
+rc=0
+=== New Year takes the new year's rules (Volgograd went from +04 to +03 for 2021)
+2021-01-01 00:00 Fri +0300
+rc=0
+2021-01-01 12:00 Fri +0300
+rc=0
+=== bad schedules
+wbsh: crontab: 60 * * * *: bad minute
+rc=1
+wbsh: crontab: * 24 * * *: bad hour
+rc=1
+wbsh: crontab: * * 0 * *: bad day-of-month
+rc=1
+wbsh: crontab: * * 32 * *: bad day-of-month
+rc=1
+wbsh: crontab: * * * 13 *: bad month
+rc=1
+wbsh: crontab: * * * * 8: bad day-of-week
+rc=1
+wbsh: crontab: 5-1 * * * *: bad minute
+rc=1
+wbsh: crontab: */0 * * * *: bad minute
+rc=1
+wbsh: crontab: 1,,2 * * * *: bad minute
+rc=1
+wbsh: crontab: x * * * *: bad minute
+rc=1
+wbsh: crontab: * * * foo *: bad month
+rc=1
+wbsh: crontab: * * *: bad month
+rc=1
+wbsh: crontab: @sometimes: bad time specifier
+rc=1
+wbsh: crontab: * * * * * extra: unexpected text after the schedule
+rc=1
+wbsh: crontab: invalid time: 2026-02-30 00:00
+rc=1
+wbsh: crontab: invalid count: 0
+rc=1
+wbsh: crontab: unknown time zone: No Such Zone
+rc=1
+wbsh: crontab: usage: crontab --next-runs SPEC 'YYYY-MM-DD HH:MM' [COUNT [ZONE]]
+rc=1
+=== install, list, remove
+wbsh: crontab: no crontab for tester
+rc=1
+wbsh: crontab: no crontab for tester
+rc=1
+rc=0
+# a comment
+
+MAILTO=""
+*/5 * * * * echo hi
+rc=0
+same user rc=0
+wbsh: crontab: must be privileged to use -u
+rc=1
+tester
+rc=0
+0000000 @ d a i l y d a t e \n
+0000014
+crontab: really delete tester's crontab? (y/n) 
+rc=0
+crontab: really delete tester's crontab? (y/n) Please enter Y or N: 
+rc=0
+wbsh: crontab: no crontab for tester
+rc=1
+wbsh: crontab: missing-file: No such file or directory
+rc=1
+=== syntax errors
+"bad":1: bad command
+"bad":2: bad minute
+"bad":3: bad day-of-week
+"bad":4: bad time specifier
+"bad":5: bad month
+"bad":6: bad hour
+"bad":7: bad day-of-month
+errors in crontab file, can't install.
+rc=1
+wbsh: crontab: no crontab for tester
+rc=1
+"bad":1: bad command
+"bad":2: bad minute
+"bad":3: bad day-of-week
+"bad":4: bad time specifier
+"bad":5: bad month
+"bad":6: bad hour
+"bad":7: bad day-of-month
+Invalid crontab file. Syntax issues were found.
+rc=1
+No syntax issues were found in the crontab file.
+rc=0
+No syntax issues were found in the crontab file.
+rc=0
+No syntax issues were found in the crontab file.
+rc=0
+=== usage errors
+wbsh: crontab: usage error: file name or - (for stdin) must be specified
+usage: crontab [-c DIR] [-u USER] FILE | -
+wbsh: crontab: usage error: only one operation permitted
+wbsh: crontab: usage error: no arguments permitted after this option
+wbsh: crontab: usage error: only one file can be installed
+wbsh: crontab: invalid option -- 'x'
+usage: crontab [-c DIR] [-u USER] FILE | -
+       crontab [-c DIR] [-u USER] -l | -e | -r [-i]
+       crontab -T FILE
+=== editing
+wbsh: crontab: no crontab for tester - using an empty one
+wbsh: crontab: installing new crontab
+rc=0
+0 * * * * appended
+wbsh: crontab: no changes made to crontab
+rc=0
+wbsh: crontab: "false" exited with status 1
+rc=1
+wbsh: crontab: "false" exited with status 1
+rc=1
+rc=1
+wbsh: crontab: installing new crontab
+"TEMP":2: bad minute
+errors in crontab file, can't install.
+Do you want to retry the same edit? (y/n) wbsh: crontab: edits left in TEMP
+1
+rc=0
+wbsh: crontab: installing new crontab
+"TEMP":2: bad minute
+errors in crontab file, can't install.
+Do you want to retry the same edit? (y/n) Enter Y or N
+wbsh: crontab: installing new crontab
+0 * * * * appended
+0 0 * * * fixed
+=== the crontab directory
+wbsh: crontab: no crontab for tester
+rc=1
+tester
+=== crond --once
+rc=0
+12:00 rc=0
+12:01 rc=0
+12:02 rc=0
+12:03 rc=0
+12:04 rc=0
+12:05 rc=0
+12:06 rc=0
+12:07 rc=0
+crond (wbsh) started, log level 0
+user tester: 8 job(s) loaded
+USER tester pid N cmd echo rebooted
+USER tester pid N cmd echo "in $(pwd) as $LOGNAME/$USER"
+USER tester pid N exited with status 0
+output of USER tester pid N cmd echo rebooted:
+rebooted
+USER tester pid N exited with status 0
+output of USER tester pid N cmd echo "in $(pwd) as $LOGNAME/$USER":
+in HOME as tester/tester
+crond (wbsh) started, log level 0
+user tester: 8 job(s) loaded
+USER tester pid N cmd cat%line one%line two\%x
+USER tester pid N exited with status 0
+output of USER tester pid N cmd cat%line one%line two\%x:
+line one
+line two%x
+crond (wbsh) started, log level 0
+user tester: 8 job(s) loaded
+USER tester pid N cmd echo "FOO=$FOO"; exit 3
+USER tester pid N exited with status 3
+output of USER tester pid N cmd echo "FOO=$FOO"; exit 3:
+FOO=bar baz
+crond (wbsh) started, log level 0
+user tester: 8 job(s) loaded
+USER tester pid N cmd pwd; echo "to stderr" >&2
+USER tester pid N exited with status 0
+output of USER tester pid N cmd pwd; echo "to stderr" >&2:
+TMP/home
+to stderr
+crond (wbsh) started, log level 0
+user tester: 8 job(s) loaded
+USER tester pid N cmd echo discarded
+USER tester pid N exited with status 0
+crond (wbsh) started, log level 0
+user tester: 8 job(s) loaded
+USER tester pid N cmd echo to the mailbox
+USER tester pid N exited with status 0
+crond (wbsh) started, log level 0
+user tester: 8 job(s) loaded
+USER tester pid N cmd echo "shell $SHELL"
+USER tester pid N exited with status 0
+crond (wbsh) started, log level 0
+user tester: 8 job(s) loaded
+--- mailbox
+output of USER tester pid N cmd echo to the mailbox:
+to the mailbox
+output of USER tester pid N cmd echo "shell $SHELL":
+shell /bin/sh
+.crond.log
+.crond.reboot
+tester
+=== crond --once with CRLF lines, -L and -d
+rc=0
+0000000 c r l f \n
+0000005
+crond (wbsh) started, log level 8
+USER tester pid N cmd echo crlf
+output of USER tester pid N cmd echo crlf:
+crlf
+=== crond options
+wbsh: crond: invalid option -- 'x'
+wbsh: crond: invalid number 'high'
+wbsh: crond: invalid time 'tomorrow'
+wbsh: crond: extra operand 'extra'
+usage: crond [-fbS] [-l N] [-d N] [-L LOGFILE] [-c DIR]
+=== one crond per directory, and stopping it
+rc=0
+pid file written
+rc=1
+wbsh: crond: already running for DIR (pid N)
+rc=1
+wbsh: crond: already running for DIR (pid N)
+wbsh
+kill rc=0
+crond gone
+stale pid file rc=0
+pid file removed
+=== simultaneous starts leave one crond
+3
+the recorded crond runs
+=== Ctrl+C stops crond -f
+crond rc=130
+timeout rc=0
+pid file removed
+crond (wbsh) started, log level 8

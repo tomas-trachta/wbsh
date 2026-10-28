@@ -161,10 +161,7 @@ namespace wbsh {
 		}
 
 		static std::wstring directoryOfThisExe() {
-			wchar_t path[MAX_PATH] = {};
-			const DWORD length = ::GetModuleFileNameW(nullptr, path, MAX_PATH);
-			const std::wstring full(path, length);
-
+			const std::wstring full = utf8ToWide(selfExecutablePath());
 			const std::size_t cut = full.find_last_of(L'\\');
 			return cut == std::wstring::npos ? std::wstring() : full.substr(0, cut + 1);
 		}

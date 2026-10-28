@@ -183,15 +183,16 @@ non-printing markers. Default `PS1`:
 `disown`.
 
 **Files:** `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `touch`, `ln`,
-`link`, `unlink`, `stat`, `chmod`, `chattr`, `lsattr`, `du`, `df`, `realpath`,
-`readlink`, `basename`, `dirname`, `find`, `dd`, `split`, `truncate`, `shred`,
-`sync`, `fsync`, `flock`, `mktemp`, `pushd`, `popd`, `dirs`.
+`link`, `unlink`, `stat`, `chmod`, `chown`, `chgrp`, `chattr`, `lsattr`,
+`install`, `file`, `du`, `df`, `realpath`, `readlink`, `basename`, `dirname`,
+`find`, `dd`, `split`, `truncate`, `shred`, `sync`, `fsync`, `flock`, `mktemp`,
+`pushd`, `popd`, `dirs`.
 
 **Text:** `head`, `tail` (`-f`), `wc`, `sort`, `uniq`, `tr`, `cut`, `tee`,
 `paste`, `join`, `tac`, `rev`, `nl`, `fold`, `column`, `expand`, `unexpand`,
 `comm`, `shuf`, `tsort`, `strings`, `grep` / `egrep` / `fgrep`, `sed`,
 `awk` / `gawk`, `diff` (`-r`), `cmp`, `patch`, `dos2unix`, `unix2dos`,
-`iconv`, `xargs`, `less`, `more`.
+`iconv`, `xargs`, `less`, `more`, `vi` / `view`, `ed`.
 
 **Encoding and hashing:** `base64`, `base32`, `uuencode`, `uudecode`, `xxd`,
 `od`, `hexdump` (`-e` / `-f` format strings), `hd`, `md5sum`, `sha1sum`,
@@ -208,14 +209,18 @@ append, delete, move; GNU long names, deterministic headers unless `U`).
 `lzop` keeps its input unless given `-U`, as lzop does.
 
 **Processes and system:** `ps`, `pgrep`, `pkill`, `pidof`, `kill`, `killall`,
-`timeout`, `watch`, `uptime`, `free`, `nproc`, `env` (`-i`, `-u`, `NAME=value
-command`), `printenv`, `whoami`, `logname`, `groups`, `id`, `hostname`,
-`uname`, `date`, `cal`, `sleep`, `usleep`, `stty`, `reset`, `tput`,
-`ttysize`, `clear`.
+`top`, `nice`, `renice`, `nohup`, `setsid`, `timeout`, `watch`, `crontab`,
+`crond`, `uptime`, `free`, `nproc`, `env` (`-i`, `-u`, `NAME=value command`),
+`printenv`, `whoami`, `logname`, `groups`, `id`, `su`, `sudo`, `hostname`,
+`uname`, `date`, `cal`, `sleep`, `usleep`, `stty`, `reset`, `tput`, `ttysize`,
+`clear`, `locale`.
+
+**Network:** `curl`, `wget`, `nc` / `netcat`, `ftp`, `ftpget`, `ftpput`,
+`whois`, `httpd`.
 
 **Other:** `echo`, `printf` (`%b`, `%q`, `-v`), `seq`, `expr`, `bc`, `dc`,
 `factor`, `getopt`, `uuidgen`, `ascii`, `ipcalc`, `ts`, `yes`, `which`,
-`curl`, `wget`, `fzf`, `tmux`, `utils`.
+`make` / `gmake`, `man`, `apropos`, `whatis`, `fzf`, `tmux`, `utils`.
 
 `/dev/zero`, `/dev/random`, `/dev/urandom` and `/dev/full` exist for
 redirections and for every bundled command that reads a file.
@@ -234,6 +239,95 @@ Enter prints the selection. With no input it lists the directory tree. It works
 mid-pipeline because it talks to the console device directly. Typed bare at the
 prompt it acts on the pick: a directory is entered, a file opens through its
 file association. Captured or piped uses keep printing the selection.
+
+`vi` / `view` is a busybox-style full-screen editor for the console, Windows
+Terminal and wbshterm: counts, motions, operators, `.` repeat, multi-level
+undo / redo, marks, named registers, searches, scrolling, autoindent and ex
+commands (`:s`, `:g`, `:r !cmd`, `:range!filter`, `:set`, several files). It
+handles UTF-8 (wide characters take two cells), tabs, long lines and resizing,
+and keeps CRLF line endings. Visual mode, text objects, macros and `:map` are
+not there; use a real vim from PATH for those. When stdin is not a console it
+reads keys from stdin and draws nothing, so it can be scripted:
+`printf 'ihello\033:wq\n' | vi file`. `ed` is the POSIX line editor with GNU's
+extras (`W`, `wq`, `z`, `E`, `-p` / `-s` / `-v` / `-l`): full addressing, `s`
+with back-references and multi-line replacements, `g` / `v` / `G` / `V`, undo,
+marks and `r !` / `w !` / `e !`.
+
+`make` / `gmake` is GNU make 4.4 compatible: every assignment flavour,
+`define`, conditionals, `include`, remaking of makefiles (main and included)
+with a restart, the GNU functions (`eval`, `call`, `shell`, `file`, `let`,
+`intcmp`, ...), pattern, static-pattern, double-colon, grouped and suffix
+rules, GNU's built-in C / C++ rules, VPATH / vpath, target- and
+pattern-specific variables, `.SECONDEXPANSION`, `.ONESHELL`,
+`.DELETE_ON_ERROR` and the other special targets, and `-n -s -k -i -q -t -B -e
+-r -R -p -C -f -I -o -W -w`, with GNU's messages. Each recipe line runs in a
+fresh wbsh: `SHELL = /bin/sh` or `bash` means wbsh, and `.SHELLFLAGS` such as
+`-eu -o pipefail` reach it as `set` options; `SHELL = cmd` (or another Windows
+shell) runs recipes there. `$(MAKE) -C sub` runs the same make again with
+MAKEFLAGS and MAKELEVEL passed down. `-j` is accepted, but jobs run one at a
+time, and archive members (`lib(member)`) are not supported.
+
+`nice`, `renice`, `ps` and `top` share one mapping between niceness and Windows
+priority classes: -20..-13 HIGH, -12..-5 ABOVE_NORMAL, -4..3 NORMAL, 4..11
+BELOW_NORMAL, 12..19 IDLE (read back as -16, -8, 0, 8, 16; REALTIME is never
+set). `nohup` and `setsid` start the command on a hidden console of its own,
+so Ctrl+C, Ctrl+Break and closing the window leave it running; `setsid` keeps a
+command whose standard streams are still the console on it. Ctrl+C while
+`nohup` or `setsid -w` waits only gives the prompt back. `top` is procps-style
+(`-b -n -d -p -u -o -c -i`; keys `P M N T R c i k r d h q`). wbsh cannot switch
+users: `sudo` hands the command to the first `sudo` on PATH (Windows 11 24H2's
+own, or gsudo) and otherwise explains how to get one; `su` points to
+`runas /user:NAME wbsh`.
+
+`crontab` (cronie's: `FILE` / `-`, `-l`, `-e` with `$VISUAL` / `$EDITOR` /
+`vi`, `-r [-i]`, `-T FILE`) and `crond` (busybox's: `-f`, `-b`, `-l N`,
+`-d N`, `-L FILE`, `-c DIR`) are cron for one Windows account. Crontabs live
+in `%APPDATA%\wbsh\crontabs\<user>` (`-c DIR` or `$WBSH_CRONTAB_DIR` moves
+them) and take lists, ranges, steps, names, `@reboot` … `@yearly`,
+`NAME=value` lines and `%`; daylight-saving changes are handled as cronie
+does. `crond` starts a hidden copy of itself and returns; jobs run through
+wbsh without a window, in `$HOME`, and since there is no mail their output is
+appended to `DIR/.crond.log` (`MAILTO=""` discards it, `MAILTO=/some/file`
+sends it there). One crond runs per directory; stop it with
+`kill $(cat "$APPDATA/wbsh/crontabs/.crond.pid")` (`pkill crond` finds
+nothing, the process is `wbsh.exe`). wbsh registers nothing with Task
+Scheduler; to start crond at logon, put a shortcut to `wbsh.exe -r -c crond`
+in `shell:startup`, or run
+`schtasks /Create /SC ONLOGON /TN wbsh-crond /TR "\"C:\path\to\wbsh.exe\" -r -c crond"`
+from cmd.
+
+`chown` / `chgrp` (`-R -h -H -L -P -v -c -f --from --reference`) set the NTFS
+owner and group. Asking for the current owner always succeeds; giving a file
+to another account needs an elevated shell and otherwise fails with
+"Operation not permitted", as on Linux. `install` follows GNU (`-d -D -t -T -m
+-o -g -p -C -b / -S -v -s`); a mode maps onto the read-only attribute as in
+`chmod`, and `-s` runs `strip` only when one is on PATH. `file` identifies
+text encodings, scripts, executables (PE / ELF / Mach-O), archives,
+compressed streams (`-z` looks inside), images, audio and documents in
+file(1)'s words (`-b`, `-i`, `--mime-type`, `-L`, `-f`). `man`, `apropos` and
+`whatis` show a page for every bundled command and builtin, page through
+`$MANPAGER` / `$PAGER` / less, and hand other names to an external `man` if
+there is one. `locale` reports LANG / LC_* like glibc, falling back to the
+Windows user locale (e.g. `cs_CZ.UTF-8`), and answers `-a`, `-m`, `-k` and
+keyword queries from Windows' locale data.
+
+`nc` / `netcat` connects or listens over TCP and UDP (`-l`, `-k`, `-u`, `-w`,
+`-q`, `-N`, `-z` port scans with ranges, `-e` / `-c` to attach a program).
+`whois` speaks RFC 3912, following IANA's referral and the thin-registry
+"Registrar WHOIS Server" for .com / .net. `ftp` is the classic interactive
+client (`~/.netrc`, passive EPSV / PASV by default, active PORT / EPRT via
+`passive`, `ftp ftp://user:pass@host/path` autofetch) with busybox's `ftpget` /
+`ftpput` beside it. `httpd` is a busybox-style static server (`-p [IP:]PORT`,
+`-h DIR`, `-f`, `-v`; GET / HEAD, ranges, If-Modified-Since, directory indexes,
+keep-alive, path-traversal protection) that also runs CGI scripts under
+`/cgi-bin/` (`.exe` / `.com` / `.bat` / `.cmd` directly, `.sh` / `.cgi` or `#!`
+scripts through wbsh, anything else refused; a 30 s limit per request) and reads a
+busybox `httpd.conf` (`A:` / `D:` allow and deny, `/path:user:pass` basic auth
+with plain-text passwords, `.ext:type`, `Ennn:/page`, `I:name`). Request paths
+are decoded and normalised before the auth and CGI checks, and auth rules match
+case-insensitively, as NTFS names do. Listeners bind
+every interface unless given an address, so the first one may raise the
+Windows Firewall prompt; `-s 127.0.0.1` / `-p 127.0.0.1:8080` avoids it.
 
 `git`, `vim`, `less`, `ssh` and the like are expected on PATH; `git` is
 auto-discovered from the standard install locations.

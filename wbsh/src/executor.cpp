@@ -34,6 +34,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <sys/stat.h>
 #include <unordered_set>
 #include <utility>
@@ -99,6 +100,15 @@ namespace wbsh {
 			std::wstring cmdline;
 			std::string argv_file;
 		};
+
+		// Windows takes the first entry whose name matches regardless of
+		// case, so of names that differ only in case the exported ones go
+		// first, in byte order: an unexported `tmp` handed to a subshell
+		// must not stand in for TMP in the Win32 calls made there.
+		struct EnvEntry {
+			std::wstring text;
+			bool exported = true;
+		};
 #endif
 
 		enum class ExtensionClass {
@@ -110,6 +120,7 @@ namespace wbsh {
 
 	using executor_detail::ExtensionClass;
 #ifdef _WIN32
+	using executor_detail::EnvEntry;
 	using executor_detail::SelfSpawnLine;
 	using executor_detail::SpawnCommand;
 	using executor_detail::StdioHandles;
@@ -321,11 +332,13 @@ namespace wbsh {
 		return cmd + L" /d /s /c \"" + cmdline + L"\"";
 	}
 
-	static std::vector<std::wstring> envEntries(const Environment& env, bool include_unexported) {
-		std::vector<std::wstring> entries;
+	static std::vector<EnvEntry> envEntries(const Environment& env, bool include_unexported) {
+		std::vector<EnvEntry> entries;
 		for (const auto& var : env.vars()) {
-			if (!include_unexported && !env.isExported(var.first)) continue;
-			entries.push_back(utf8ToWide(var.first + "=" + var.second));
+			const bool exported = env.isExported(var.first);
+			if (!include_unexported && !exported) continue;
+
+			entries.push_back(EnvEntry{ utf8ToWide(var.first + "=" + var.second), exported });
 		}
 
 		return entries;
@@ -336,12 +349,12 @@ namespace wbsh {
 			&& std::equal(prefix.begin(), prefix.end(), text.begin());
 	}
 
-	static void overrideEnvEntry(std::vector<std::wstring>& entries,
+	static void overrideEnvEntry(std::vector<EnvEntry>& entries,
 	                             const std::pair<std::string, std::string>& assignment) {
 		const std::wstring prefix = utf8ToWide(assignment.first) + L"=";
-		std::wstring entry = prefix + utf8ToWide(assignment.second);
+		EnvEntry entry{ prefix + utf8ToWide(assignment.second), true };
 		for (auto& existing : entries) {
-			if (!startsWith(existing, prefix)) continue;
+			if (!startsWith(existing.text, prefix)) continue;
 			existing = std::move(entry);
 			return;
 		}
@@ -349,32 +362,52 @@ namespace wbsh {
 		entries.push_back(std::move(entry));
 	}
 
-	static bool envEntryLess(const std::wstring& a, const std::wstring& b) {
+	static std::wstring_view envEntryName(const EnvEntry& entry) {
+		const std::wstring_view text(entry.text);
+		return text.substr(0, text.find(L'='));
+	}
+
+	static int compareFoldedNames(std::wstring_view a, std::wstring_view b) {
 		const std::size_t common = a.size() < b.size() ? a.size() : b.size();
 		for (std::size_t i = 0; i < common; ++i) {
 			const wchar_t ca = static_cast<wchar_t>(towlower(a[i]));
 			const wchar_t cb = static_cast<wchar_t>(towlower(b[i]));
-			if (ca != cb) return ca < cb;
+			if (ca != cb) return ca < cb ? -1 : 1;
 		}
 
-		return a.size() < b.size();
+		if (a.size() == b.size()) return 0;
+		return a.size() < b.size() ? -1 : 1;
 	}
 
-	static std::wstring buildEnvBlock(const Environment& env,
-	                                  const NameValueList& overrides,
-	                                  bool include_unexported = false) {
-		std::vector<std::wstring> entries = envEntries(env, include_unexported);
-		for (const auto& assignment : overrides) overrideEnvEntry(entries, assignment);
+	static bool envEntryLess(const EnvEntry& a, const EnvEntry& b) {
+		const std::wstring_view name_a = envEntryName(a);
+		const std::wstring_view name_b = envEntryName(b);
+		const int folded = compareFoldedNames(name_a, name_b);
+		if (folded != 0) return folded < 0;
+		if (a.exported != b.exported) return a.exported;
+
+		return name_a < name_b;
+	}
+
+	static std::wstring envBlockFromEntries(std::vector<EnvEntry> entries) {
 		std::sort(entries.begin(), entries.end(), envEntryLess);
 
 		std::wstring block;
 		for (const auto& entry : entries) {
-			block += entry;
+			block += entry.text;
 			block.push_back(L'\0');
 		}
 
 		block.push_back(L'\0');
 		return block;
+	}
+
+	static std::wstring buildEnvBlock(const Environment& env,
+	                                  const NameValueList& overrides,
+	                                  bool include_unexported = false) {
+		std::vector<EnvEntry> entries = envEntries(env, include_unexported);
+		for (const auto& assignment : overrides) overrideEnvEntry(entries, assignment);
+		return envBlockFromEntries(std::move(entries));
 	}
 
 	static std::string lastErrorString() {
@@ -397,19 +430,6 @@ namespace wbsh {
 		}
 
 		return message;
-	}
-
-	static std::string getSelfExecutablePath() {
-		wchar_t buffer[MAX_PATH];
-		const DWORD length = ::GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-		if (length == 0 || length >= MAX_PATH) return "wbsh.exe";
-
-		const int utf8_length = ::WideCharToMultiByte(CP_UTF8, 0, buffer, static_cast<int>(length),
-			nullptr, 0, nullptr, nullptr);
-		std::string out(static_cast<std::size_t>(utf8_length), '\0');
-		::WideCharToMultiByte(CP_UTF8, 0, buffer, static_cast<int>(length),
-			out.data(), utf8_length, nullptr, nullptr);
-		return out;
 	}
 
 	static bool isMsysBinary(const std::string& path) {
@@ -554,7 +574,7 @@ namespace wbsh {
 	}
 
 	static DWORD placementFlags(const SpawnPlacement& placement) {
-		DWORD flags = 0;
+		DWORD flags = placement.creation_flags;
 		if (placement.job != nullptr) flags |= CREATE_SUSPENDED;
 		if (placement.new_process_group) flags |= CREATE_NEW_PROCESS_GROUP;
 		return flags;
@@ -1484,7 +1504,7 @@ namespace wbsh {
 
 	HANDLE Executor::spawnSelfCommand(const std::string& command_text,
 	                                  HANDLE h_in, HANDLE h_out, HANDLE h_err) {
-		const std::string self = getSelfExecutablePath();
+		const std::string self = selfExecutablePath();
 		const SelfSpawnLine line = buildSelfSpawnLine(selfSpawnArgv(self, command_text));
 
 		const NameValueList overrides = buildSelfSpawnOverrides();
@@ -1593,7 +1613,7 @@ namespace wbsh {
 
 	HANDLE Executor::spawnShellCommand(const std::vector<std::string>& argv,
 	                                   const SpawnPlacement& placement) {
-		const std::string self = getSelfExecutablePath();
+		const std::string self = selfExecutablePath();
 		const SelfSpawnLine line = buildSelfSpawnLine(selfSpawnArgv(self, quotedCommandText(argv)));
 
 		const NameValueList overrides = buildSelfSpawnOverrides();
@@ -1628,6 +1648,54 @@ namespace wbsh {
 			prepareExternalArgv(argv, exec_path, no_assignments), exec_path,
 			buildEnvBlock(env_, prepareExternalEnvOverrides(no_assignments)));
 		return spawnWithHandles(command, currentStdio(), placement);
+	}
+
+	DWORD jobBreakawayFlag() {
+		BOOL in_job = FALSE;
+		if (::IsProcessInJob(::GetCurrentProcess(), nullptr, &in_job) == 0 || !in_job) return 0;
+
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+		const BOOL queried = ::QueryInformationJobObject(nullptr,
+			JobObjectExtendedLimitInformation, &limits, sizeof(limits), nullptr);
+		if (queried == 0) return 0;
+
+		const DWORD flags = limits.BasicLimitInformation.LimitFlags;
+		const bool allowed = (flags & JOB_OBJECT_LIMIT_BREAKAWAY_OK) != 0;
+		const bool automatic = (flags & JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK) != 0;
+		return allowed && !automatic ? CREATE_BREAKAWAY_FROM_JOB : 0;
+	}
+
+	SpawnPlacement detachedPlacement(bool keep_console) {
+		SpawnPlacement placement;
+		placement.new_process_group = true;
+		placement.creation_flags = jobBreakawayFlag();
+		if (!keep_console) placement.creation_flags |= CREATE_NO_WINDOW;
+		return placement;
+	}
+
+	HANDLE Executor::spawnWithEnvironment(const std::string& exe_path,
+	                                      const std::string& command_line,
+	                                      const NameValueList& environment) {
+		NameValueList entries = environment;
+		for (auto& entry : entries) {
+			if (entry.first == "PATH") entry.second = path_conv_.pathListPosixToWin32(entry.second);
+			else if (entry.first == "HOME") entry.second = path_conv_.toWin32Short(entry.second);
+		}
+
+		if (asciiLower(exe_path) == asciiLower(selfExecutablePath())) {
+			addChildShellMarkers(entries);
+		}
+
+		std::vector<EnvEntry> wide_entries;
+		for (const auto& entry : entries) overrideEnvEntry(wide_entries, entry);
+
+		std::fflush(stdout);
+		std::fflush(stderr);
+		SpawnCommand command;
+		command.exe      = utf8ToWide(exe_path);
+		command.cmdline  = utf8ToWide(command_line);
+		command.envblock = envBlockFromEntries(std::move(wide_entries));
+		return spawnWithHandles(command, currentStdio());
 	}
 
 	// A prefix assignment whose value fails to expand is dropped rather

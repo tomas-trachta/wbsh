@@ -94,6 +94,17 @@ namespace wbsh {
 		return openUtf8(exec.pathConv().toWin32(p), mode);
 	}
 
+	fs::path shellTempDirectory(Executor& exec) {
+		for (const char* name : { "TMPDIR", "TEMP", "TMP" }) {
+			const std::string value = exec.env().get(name);
+			if (!value.empty()) return toNative(exec, value);
+		}
+
+		std::error_code ec;
+		const fs::path system = fs::temp_directory_path(ec);
+		return ec ? fs::path() : system;
+	}
+
 	bool isLinkStatus(const fs::file_status& status) {
 		return status.type() == fs::file_type::symlink || status.type() == fs::file_type::junction;
 	}
@@ -3407,6 +3418,21 @@ namespace wbsh {
 		registerFzfBuiltin(exec);
 		registerTmuxBuiltin(exec);
 		registerUtilsBuiltin(exec);
+		registerSessionBuiltins(exec);
+		registerTopBuiltin(exec);
+		registerOwnerBuiltins(exec);
+		registerInstallBuiltin(exec);
+		registerFileTypeBuiltin(exec);
+		registerManBuiltin(exec);
+		registerLocaleBuiltin(exec);
+		registerEdBuiltin(exec);
+		registerViBuiltin(exec);
+		registerMakeBuiltin(exec);
+		registerNcBuiltin(exec);
+		registerFtpBuiltins(exec);
+		registerWhoisBuiltin(exec);
+		registerHttpdBuiltin(exec);
+		registerCronBuiltins(exec);
 	}
 
 }  // namespace wbsh

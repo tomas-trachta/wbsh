@@ -1,0 +1,422 @@
+=== loading, printing and byte counts
+24
+one
+two
+three
+four
+five
+wbsh: ed: missing.txt: No such file or directory
+rc=0
+1	one
+2	two
+3	three
+4	four
+5	five
+two$
+three$
+5
+3
+5
+three
+two
+four
+rc=0
+two
+three
+four
+four
+rc=0
+?
+one
+two
+three
+four
+one
+two
+rc=1
+tab\there\\back\001$
+01234567890123456789012345678901234567890123456789012345678901234567890\
+12345678901234567890123456789$
+1	0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+=== addresses
+two
+three
+two
+one
+four
+five
+two
+three
+one
+two
+three
+one
+two
+three
+four
+five
+rc=0
+three
+four
+five
+four
+five
+four
+three
+one
+two
+three
+four
+five
+five
+rc=0
+?
+?
+?
+?
+?
+rc=1
+=== appending, inserting, changing, deleting
+at top
+one
+two
+three
+four
+five
+after one?
+at end
+rc=0
+1	first
+2	one
+3	two
+4	before three
+5	three
+6	four
+7	five
+rc=0
+one
+changed
+four
+five
+4
+rc=0
+one
+five
+2
+one
+1
+rc=0
+0
+fresh
+rc=0
+=== join, move, transfer, marks
+onetwothree
+four
+five
+fourfive
+rc=0
+two
+three
+four
+five
+one
+one
+two
+three
+four
+five
+one
+four
+two
+three
+five
+rc=0
+?
+?
+Invalid destination
+rc=1
+one
+two
+three
+four
+five
+one
+two
+1	five
+2	one
+3	two
+4	three
+5	four
+6	five
+7	one
+8	two
+rc=0
+three
+three
+four
+five
+three
+rc=0
+=== substitute
+?
+five
+tWo
+onE
+tWo
+thrEE
+four
+fivE
+rc=1
+f[o]ur
+neo
+wot
+hreet
+ourf
+ivef
+rc=0
+a
+b
+two
+three
+four
+five
+rc=0
+?
+No match
+?
+No match
+one
+two
+threE
+four
+five
+rc=1
+one
+two
+thrXY
+four
+Yive
+rc=0
+Ane
+twA
+three
+fAur
+five
+rc=0
+#/e
+#xe
+rc=0
+> one <
+> two <
+> three <
+> four <
+> five <
+rc=0
+-n-
+-t-w-
+-t-h-r-
+-f-r-
+-f-v-
+rc=0
+=== global commands
+one
+two
+four
+onE
+two
+thrEe
+four
+fivE
+rc=0
+one
+three
+five
+rc=0
+five
+four
+three
+two
+one
+rc=0
+(0)ne
+tw(0)
+three
+f(0)ur
+five
+rc=0
+one
+two
+added
+three
+added
+four
+five
+rc=0
+FOUR
+one
+two
+three
+four
+five
+one
+two
+three
+four
+five
+rc=0
+?
+rc=1
+one
+one
+two
+two
+four
+three
+five
+=== undo
+one
+two
+three
+four
+five
+one
+three
+four
+five
+rc=0
+?
+Nothing to undo
+rc=1
+one
+two
+three
+four
+five
+rc=0
+one
+two
+three
+four
+five
+rc=0
+=== files
+f.txt
+other.txt
+other.txt
+rc=0
+one
+two
+three
+four
+five
+one
+two
+three
+one
+two
+one
+two
+three
+three
+four
+five
+one
+two
+three
+16
+rc=0
+one
+two
+three
+one
+two
+three
+four
+five
+rc=0
+?
+one
+two
+three
+rc=1
+?
+one
+two
+three
+four
+rc=1
+rc=0
+rc=0
+one
+two
+three
+four
+five
+?
+?
+rc=1
+named.txt
+new
+6
+12
+0000000   a   !  \r  \n   b   !  \r  \n   c   !  \r  \n
+0000014
+10
+no newline
+11
+0000000   n   o       n   e   w   l   i   n   e  \n
+0000013
+=== shell commands
+hello
+one
+from shell
+ONE
+FROM SHELL
+TWO
+THREE
+FOUR
+FIVE
+rc=0
+echo f.txt
+f.txt
+f.txt
+24
+again
+!
+echo again
+again
+!
+x
+y
+replaced
+f.txt
+=== prompt, help and errors
+> five
+> five
+> five
+> 
+*five
+*
+?
+?
+?
+?
+two
+three
+Invalid command suffix
+Invalid command suffix
+?
+Invalid address
+rc=1
+?
+Invalid address
+rc=1
+?
+rc=0
+?
+rc=1
+wbsh: ed: invalid option -- 'x'
+wbsh: ed: usage: ed [-lsvG] [-p PROMPT] [FILE]
+rc=1
+wbsh: ed: usage: ed [-lsvG] [-p PROMPT] [FILE]
+rc=1
