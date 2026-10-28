@@ -1,0 +1,49 @@
+=== -a
+core file size          (blocks, -c) unlimited
+data seg size           (kbytes, -d) unlimited
+scheduling priority             (-e) N
+file size               (blocks, -f) unlimited
+pending signals                 (-i) unlimited
+max locked memory       (kbytes, -l) unlimited
+max memory size         (kbytes, -m) unlimited
+open files                      (-n) N
+pipe size            (512 bytes, -p) N
+POSIX message queues     (bytes, -q) unlimited
+real-time priority              (-r) N
+stack size              (kbytes, -s) N
+cpu time               (seconds, -t) unlimited
+max user processes              (-u) unlimited
+virtual memory          (kbytes, -v) unlimited
+file locks                      (-x) unlimited
+=== single limits
+unlimited
+unlimited
+open files is a number
+8192
+stack size is a number
+8
+core file size          (blocks, -c) unlimited
+data seg size           (kbytes, -d) unlimited
+=== setting
+rc=0 core 0 hard 0
+wbsh: ulimit: core file size: cannot modify limit: Invalid argument
+rc=1 core 0
+wbsh: ulimit: virtual memory: cannot modify limit: Invalid argument
+rc=1 (soft limit is still unlimited)
+rc=0 hard v 1000 soft v 500
+wbsh: ulimit: virtual memory: cannot modify limit: Operation not permitted
+rc=1
+wbsh: ulimit: virtual memory: cannot modify limit: Operation not permitted
+rc=1
+rc=0 open files 1000
+rc=0 open files 1000
+wbsh: ulimit: open files: cannot modify limit: Operation not permitted
+rc=1
+wbsh: ulimit: pipe size: cannot modify limit: Invalid argument
+rc=1
+=== errors
+wbsh: ulimit: -z: invalid option
+ulimit: usage: ulimit [-SHacdefilmnpqrstuvx] [limit]
+rc=2
+wbsh: ulimit: abc: invalid number
+rc=1
