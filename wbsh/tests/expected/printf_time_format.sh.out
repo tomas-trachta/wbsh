@@ -1,0 +1,24 @@
+=== basic
+[2023-11]
+[1700000000]
+[5]
+2023
+2023
+[      2023][2023  ][20]
+=== now and shell start
+-1 is now
+no argument is now
+-2 is the shell start
+=== printf -v
+year=2023
+=== default format is %X
+empty format is %X
+=== GNU extensions
+[NN|NN|NN|NN|pm]
+[%|~|TUE]
+=== errors
+wbsh: printf: abc: invalid number
+[1970]
+status 1
+wbsh: printf: warning: `(': invalid time format specification
+[%(status 1

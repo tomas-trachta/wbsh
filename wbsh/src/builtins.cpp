@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -35,6 +36,7 @@
 #include "lineedit.h"
 #include "numparse.h"
 #include "parser.h"
+#include "timefmt.h"
 
 namespace wbsh {
 
@@ -255,6 +257,9 @@ namespace wbsh {
 			std::string out;
 			bool bad_number = false;
 			bool stopped = false;
+			bool has_time_format = false;
+			std::string time_format;
+			std::time_t shell_start = 0;
 		};
 
 	}  // namespace printf_detail
@@ -336,6 +341,25 @@ namespace wbsh {
 		while (i < fmt.size() && std::strchr("hlLjzt", fmt[i]) != nullptr) ++i;
 	}
 
+	// `%(datefmt)T`: the strftime format between the parentheses.
+	static bool takeTimeFormat(const std::string& fmt, std::size_t& i, PrintfRun& run) {
+		run.has_time_format = false;
+		if (i >= fmt.size() || fmt[i] != '(') return true;
+
+		const std::size_t close = fmt.find(')', i + 1);
+		if (close == std::string::npos) {
+			printerr("printf: warning: `(': invalid time format specification");
+			run.bad_number = true;
+			run.stopped = true;
+			return false;
+		}
+
+		run.time_format = fmt.substr(i + 1, close - i - 1);
+		run.has_time_format = true;
+		i = close + 1;
+		return true;
+	}
+
 	static bool parsePrintfConversionSpec(const std::string& fmt, std::size_t& i, PrintfRun& run,
 			std::string& out_spec) {
 		out_spec = "%";
@@ -350,6 +374,7 @@ namespace wbsh {
 			appendPrintfWidth(fmt, i, run, out_spec);
 		}
 
+		if (!takeTimeFormat(fmt, i, run)) return false;
 		skipLengthModifiers(fmt, i);
 		if (i >= fmt.size()) return false;
 
@@ -412,8 +437,25 @@ namespace wbsh {
 		return formatValue(spec, text.empty() ? 0 : static_cast<int>(text[0]));
 	}
 
+	// No argument means now (-1); -2 is the time the shell started.
+	static std::time_t printfTimeArg(PrintfRun& run) {
+		const bool missing = run.next_arg >= run.args.size();
+		const long long value = missing ? -1 : printfIntegerArg(takePrintfArg(run), run);
+		if (value == -1) return std::time(nullptr);
+		if (value == -2) return run.shell_start;
+		return static_cast<std::time_t>(value);
+	}
+
+	static std::string formatTimeArg(const std::string& spec, PrintfRun& run) {
+		const std::string format = run.time_format.empty() ? "%X" : run.time_format;
+		const std::string text = formatLocalTime(format, printfTimeArg(run));
+		return formatString(specWithConversion(spec, "s"), text);
+	}
+
 	static std::string formatPrintfConversion(const std::string& spec, char conversion,
 			PrintfRun& run) {
+		if (run.has_time_format && conversion == 'T') return formatTimeArg(spec, run);
+
 		switch (conversion) {
 		case 's':
 			return formatString(spec, takePrintfArg(run));
@@ -464,7 +506,8 @@ namespace wbsh {
 			const std::size_t spec_start = i;
 			std::string spec;
 			if (!parsePrintfConversionSpec(fmt, i, run, spec)) {
-				run.out.append(fmt, spec_start, std::string::npos);
+				const std::size_t end = run.stopped ? i + 1 : std::string::npos;
+				run.out.append(fmt, spec_start, end == std::string::npos ? end : end - spec_start);
 				return;
 			}
 
@@ -476,12 +519,11 @@ namespace wbsh {
 	// while there are unconsumed args. If a pass consumes nothing
 	// (a literal-only format), stop to avoid an infinite loop.
 	static void appendFormatCycles(const std::string& fmt, PrintfRun& run) {
-		appendFormatOnce(fmt, run);
-		while (!run.stopped && run.next_arg < run.args.size()) {
-			const std::size_t before = run.next_arg;
+		std::size_t before = 0;
+		do {
+			before = run.next_arg;
 			appendFormatOnce(fmt, run);
-			if (run.next_arg == before) break;
-		}
+		} while (!run.stopped && run.next_arg < run.args.size() && run.next_arg != before);
 	}
 
 	static std::size_t parsePrintfTarget(const std::vector<std::string>& args,
@@ -523,6 +565,7 @@ namespace wbsh {
 
 		PrintfRun run;
 		run.args.assign(args.begin() + static_cast<std::ptrdiff_t>(first) + 1, args.end());
+		run.shell_start = exec.env().startEpoch();
 		appendFormatCycles(args[first], run);
 
 		const int store_status = storePrintfResult(exec, target, run.out);
