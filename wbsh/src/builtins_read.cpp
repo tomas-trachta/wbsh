@@ -23,10 +23,12 @@
 
 #include "executor.h"
 #include "numparse.h"
+#include "stdinsync.h"
 
 namespace wbsh::read_detail {
 
 	static const int kStatusTimeout = 142;
+	static const int kReadAheadBytes = 4096;
 	static const DWORD kPipePollMillis = 10;
 	static const double kMillisPerSecond = 1000.0;
 
@@ -65,10 +67,13 @@ namespace wbsh::read_detail {
 		int fd = 0;
 		HANDLE handle = INVALID_HANDLE_VALUE;
 		bool console = false;
+		bool file = false;
 		bool line_mode = true;
 		bool echo = false;
 		bool has_deadline = false;
 		ULONGLONG deadline = 0;
+		std::string ahead;
+		std::size_t ahead_pos = 0;
 	};
 
 	static const char kOptionLetters[] = "ersa:d:i:n:N:p:t:u:";
@@ -224,6 +229,7 @@ namespace wbsh::read_detail {
 
 		DWORD mode = 0;
 		source.console = GetConsoleMode(source.handle, &mode) != 0;
+		source.file = GetFileType(source.handle) == FILE_TYPE_DISK;
 		if (opts.has_timeout) {
 			source.has_deadline = true;
 			source.deadline = GetTickCount64()
@@ -274,12 +280,12 @@ namespace wbsh::read_detail {
 		guard.mode_changed = SetConsoleMode(source.handle, mode) != 0;
 	}
 
-	static ULONGLONG millisLeft(const Source& source) {
+	static ULONGLONG millisLeft(Source& source) {
 		const ULONGLONG now = GetTickCount64();
 		return now >= source.deadline ? 0 : source.deadline - now;
 	}
 
-	static bool pipeReadyBy(const Source& source) {
+	static bool pipeReadyBy(Source& source) {
 		for (;;) {
 			DWORD available = 0;
 			if (!PeekNamedPipe(source.handle, nullptr, 0, nullptr, &available, nullptr)) return true;
@@ -291,7 +297,7 @@ namespace wbsh::read_detail {
 		}
 	}
 
-	static bool inputReadyBy(const Source& source) {
+	static bool inputReadyBy(Source& source) {
 		if (!source.has_deadline) return true;
 
 		if (source.console) {
@@ -308,20 +314,45 @@ namespace wbsh::read_detail {
 
 	// On a console Ctrl-Z / Ctrl-D end the input, and Enter's CR is the
 	// newline: a line arrives as CR LF, a single key as a bare CR.
-	static int consoleByte(const Source& source, unsigned char byte) {
+	static int consoleByte(Source& source, unsigned char byte) {
 		if (byte == kCtrlZ || byte == kCtrlD) return kByteEof;
 		if (byte != '\r') return byte;
 
 		return source.line_mode ? kByteSkip : '\n';
 	}
 
-	static int readOneByte(const Source& source) {
+	// A file is read a block at a time and the unused rest handed back
+	// by giveBackReadAhead(); a pipe or console only ever byte by byte.
+	static int nextFileByte(Source& source) {
+		if (source.ahead_pos >= source.ahead.size()) {
+			source.ahead.resize(kReadAheadBytes);
+			const int got = _read(source.fd, &source.ahead[0], kReadAheadBytes);
+			source.ahead.resize(got > 0 ? static_cast<std::size_t>(got) : 0);
+			source.ahead_pos = 0;
+			if (got <= 0) return kByteEof;
+		}
+
+		return static_cast<unsigned char>(source.ahead[source.ahead_pos++]);
+	}
+
+	static void giveBackReadAhead(Source& source) {
+		const std::size_t unused = source.ahead.size() - source.ahead_pos;
+		if (unused != 0) _lseeki64(source.fd, -static_cast<long long>(unused), SEEK_CUR);
+
+		source.ahead.clear();
+		source.ahead_pos = 0;
+	}
+
+	static int readOneByte(Source& source) {
+		if (source.fd == 0 && stdinBufferedBytes() > 0) return std::fgetc(stdin);
+		if (source.file) return nextFileByte(source);
+
 		unsigned char byte = 0;
 		if (_read(source.fd, &byte, 1) != 1) return kByteEof;
 		return source.console ? consoleByte(source, byte) : byte;
 	}
 
-	static int nextByte(const Source& source) {
+	static int nextByte(Source& source) {
 		int byte = kByteSkip;
 		while (byte == kByteSkip) {
 			if (!inputReadyBy(source)) return kByteTimeout;
@@ -340,7 +371,7 @@ namespace wbsh::read_detail {
 		return opts.nchars >= 0 && static_cast<long long>(input.text.size()) >= opts.nchars;
 	}
 
-	static bool readEscaped(const Source& source, Input& input, End& end) {
+	static bool readEscaped(Source& source, Input& input, End& end) {
 		const int next = nextByte(source);
 		if (next == kByteEof) {
 			end = End::Eof;
@@ -356,7 +387,7 @@ namespace wbsh::read_detail {
 		return true;
 	}
 
-	static End collectInput(const Options& opts, const Source& source, Input& input) {
+	static End collectInput(const Options& opts, Source& source, Input& input) {
 		for (;;) {
 			if (countReached(opts, input)) return End::Count;
 
@@ -479,7 +510,7 @@ namespace wbsh::read_detail {
 		return status;
 	}
 
-	static void showPrompt(const Options& opts, const Source& source) {
+	static void showPrompt(const Options& opts, Source& source) {
 		if (opts.prompt.empty() || _isatty(source.fd) == 0) return;
 
 		std::fwrite(opts.prompt.data(), 1, opts.prompt.size(), stderr);
@@ -495,7 +526,7 @@ namespace wbsh::read_detail {
 		}
 	}
 
-	static bool inputAvailableNow(const Source& source) {
+	static bool inputAvailableNow(Source& source) {
 		if (source.console) return WaitForSingleObject(source.handle, 0) == WAIT_OBJECT_0;
 		if (GetFileType(source.handle) != FILE_TYPE_PIPE) return true;
 
@@ -512,10 +543,13 @@ namespace wbsh::read_detail {
 		std::fflush(stdout);
 		showPrompt(opts, source);
 
+		if (source.fd == 0) giveBackStdinReadAhead();
+
 		Input input;
 		ConsoleModeGuard guard;
 		enterConsoleMode(opts, source, guard);
 		const End end = collectInput(opts, source, input);
+		giveBackReadAhead(source);
 
 		const int assigned = opts.array_name.empty()
 			? assignNames(exec.env(), opts, names, input)
