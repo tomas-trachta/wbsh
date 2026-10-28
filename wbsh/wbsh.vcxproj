@@ -207,6 +207,7 @@
     <ClInclude Include="src\numparse.h" />
     <ClInclude Include="src\optscan.h" />
     <ClInclude Include="src\regexutil.h" />
+    <ClInclude Include="src\strsearch.h" />
     <ClInclude Include="src\strscan.h" />
   </ItemGroup>
   <ItemGroup>
@@ -236,6 +237,7 @@
     <ClCompile Include="src\coreutils_grep.cpp" />
     <ClCompile Include="src\coreutils_sed.cpp" />
     <ClCompile Include="src\posixregex.cpp" />
+    <ClCompile Include="src\strsearch.cpp" />
     <ClCompile Include="src\coreutils_cpio.cpp" />
     <ClCompile Include="src\coreutils_misc.cpp" />
     <ClCompile Include="src\coreutils_wget.cpp" />
