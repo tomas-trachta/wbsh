@@ -227,19 +227,29 @@ namespace wbsh {
 		return shared_->error;
 	}
 
-	static std::array<std::uint32_t, 256> buildCrc32Table() {
-		std::array<std::uint32_t, 256> table{};
-		for (std::uint32_t k = 0; k < 256; ++k) {
-			std::uint32_t entry = k;
-			for (int bit = 0; bit < 8; ++bit) entry = (entry & 1) != 0 ? 0xEDB88320u ^ (entry >> 1) : entry >> 1;
-			table[k] = entry;
+	template <typename Word>
+	static std::array<Word, 256> reflectedCrcTable(Word polynomial) {
+		std::array<Word, 256> table{};
+		for (Word index = 0; index < 256; ++index) {
+			Word entry = index;
+			for (int bit = 0; bit < 8; ++bit) entry = (entry & 1) != 0 ? polynomial ^ (entry >> 1) : entry >> 1;
+			table[static_cast<std::size_t>(index)] = entry;
 		}
 
 		return table;
 	}
 
 	std::uint32_t crc32Of(std::uint32_t crc, const std::uint8_t* data, std::size_t size) {
-		static const std::array<std::uint32_t, 256> table = buildCrc32Table();
+		static const std::array<std::uint32_t, 256> table =
+			reflectedCrcTable<std::uint32_t>(0xEDB88320u);
+		crc = ~crc;
+		for (std::size_t k = 0; k < size; ++k) crc = table[(crc ^ data[k]) & 0xFF] ^ (crc >> 8);
+		return ~crc;
+	}
+
+	std::uint64_t crc64Of(std::uint64_t crc, const std::uint8_t* data, std::size_t size) {
+		static const std::array<std::uint64_t, 256> table =
+			reflectedCrcTable<std::uint64_t>(0xC96C5795D7870F42ULL);
 		crc = ~crc;
 		for (std::size_t k = 0; k < size; ++k) crc = table[(crc ^ data[k]) & 0xFF] ^ (crc >> 8);
 		return ~crc;

@@ -311,6 +311,11 @@
     <ClCompile Include="src\xz.cpp" />
     <ClCompile Include="src\bzip2.cpp" />
     <ClCompile Include="src\deflate.cpp" />
+    <ClCompile Include="src\lzma_encoder.cpp" />
+    <ClCompile Include="src\lzma_matchfinder.cpp" />
+    <ClCompile Include="src\lzma_parser.cpp" />
+    <ClCompile Include="src\lzma_prices.cpp" />
+    <ClCompile Include="src\xz_encoder.cpp" />
     <ClCompile Include="src\huffman.cpp" />
     <ClCompile Include="src\coreutils_filter.cpp" />
     <ClCompile Include="src\coreutils_dump.cpp" />

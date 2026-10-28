@@ -12,9 +12,11 @@
 #include "bzip2.h"
 #include "deflate.h"
 #include "inflate.h"
+#include "lzma_encoder.h"
 #include "lzop.h"
 #include "lzw.h"
 #include "xz.h"
+#include "xz_encoder.h"
 
 namespace wbsh {
 
@@ -105,6 +107,28 @@ namespace wbsh {
 
 		private:
 			LzopEncoder encoder_;
+		};
+
+		class XzCompressor : public Compressor {
+		public:
+			XzCompressor(ByteSink& out, const CompressSettings& settings)
+				: encoder_(out, lzmaPreset(settings.level, settings.extreme), settings.check) {}
+			bool write(const std::uint8_t* data, std::size_t size) override { return encoder_.write(data, size); }
+			bool finish() override { return encoder_.finish(); }
+
+		private:
+			XzEncoder encoder_;
+		};
+
+		class LzmaCompressor : public Compressor {
+		public:
+			LzmaCompressor(ByteSink& out, const CompressSettings& settings)
+				: encoder_(out, lzmaPreset(settings.level, settings.extreme)) {}
+			bool write(const std::uint8_t* data, std::size_t size) override { return encoder_.write(data, size); }
+			bool finish() override { return encoder_.finish(); }
+
+		private:
+			LzmaAloneEncoder encoder_;
 		};
 
 		class PlainCompressor : public Compressor {
@@ -300,20 +324,35 @@ namespace wbsh {
 		return options;
 	}
 
-	std::unique_ptr<Compressor> makeCompressor(Codec codec, int level, ByteSink& out, std::string& error) {
+	bool canCompress(Codec codec) {
+		return codec != Codec::Compress;
+	}
+
+	std::unique_ptr<Compressor> makeCompressor(Codec codec, const CompressSettings& settings,
+	                                           ByteSink& out, std::string& error) {
 		switch (codec) {
 			case Codec::Gzip:
-				return std::make_unique<codecs_detail::GzipCompressor>(out, level);
+				return std::make_unique<codecs_detail::GzipCompressor>(out, settings.level);
 			case Codec::Bzip2:
-				return std::make_unique<codecs_detail::Bzip2Compressor>(out, level);
+				return std::make_unique<codecs_detail::Bzip2Compressor>(out, settings.level);
+			case Codec::Xz:
+				return std::make_unique<codecs_detail::XzCompressor>(out, settings);
+			case Codec::Lzma:
+				return std::make_unique<codecs_detail::LzmaCompressor>(out, settings);
 			case Codec::Lzop:
-				return makeLzopCompressor(lzopLevelOptions(level), out);
+				return makeLzopCompressor(lzopLevelOptions(settings.level), out);
 			case Codec::None:
 				return std::make_unique<codecs_detail::PlainCompressor>(out);
 			default:
 				error = "compression to this format is not supported";
 				return nullptr;
 		}
+	}
+
+	std::unique_ptr<Compressor> makeCompressor(Codec codec, int level, ByteSink& out, std::string& error) {
+		CompressSettings settings;
+		settings.level = level;
+		return makeCompressor(codec, settings, out, error);
 	}
 
 	std::unique_ptr<Compressor> makeLzopCompressor(const LzopWriteOptions& options, ByteSink& out) {

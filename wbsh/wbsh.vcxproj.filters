@@ -142,6 +142,11 @@
     <ClCompile Include="src\xz.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\bzip2.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\deflate.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzma_encoder.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzma_matchfinder.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzma_parser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lzma_prices.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\xz_encoder.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\huffman.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_filter.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_dump.cpp"><Filter>Source Files</Filter></ClCompile>

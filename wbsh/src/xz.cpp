@@ -10,7 +10,6 @@
 #include "xz.h"
 
 #include <algorithm>
-#include <array>
 #include <cstring>
 
 namespace wbsh {
@@ -162,7 +161,6 @@ namespace wbsh {
 	static const std::uint8_t kXzMagic[6] = { 0xFD, '7', 'z', 'X', 'Z', 0x00 };
 	static const std::size_t kStreamHeaderSize = 12;
 	static const std::size_t kStreamFooterSize = 12;
-	static const std::uint64_t kCrc64Polynomial = 0xC96C5795D7870F42ULL;
 	static const std::size_t kMinWindow = 4096;
 
 	static void fillProbabilities(Probability* first, std::size_t count) {
@@ -387,25 +385,6 @@ namespace wbsh {
 		const bool finished = end == DecodeEnd::Marker || (end == DecodeEnd::Limit && known);
 		if (finished && window_out.flush()) return true;
 		return corrupt(error, window_out);
-	}
-
-	template <typename Word>
-	static std::array<Word, 256> reflectedTable(Word polynomial) {
-		std::array<Word, 256> table{};
-		for (Word index = 0; index < 256; ++index) {
-			Word entry = index;
-			for (int bit = 0; bit < 8; ++bit) entry = (entry & 1) != 0 ? polynomial ^ (entry >> 1) : entry >> 1;
-			table[static_cast<std::size_t>(index)] = entry;
-		}
-
-		return table;
-	}
-
-	static std::uint64_t crc64Of(std::uint64_t crc, const std::uint8_t* data, std::size_t size) {
-		static const std::array<std::uint64_t, 256> table = reflectedTable<std::uint64_t>(kCrc64Polynomial);
-		crc = ~crc;
-		for (std::size_t k = 0; k < size; ++k) crc = table[(crc ^ data[k]) & 0xFF] ^ (crc >> 8);
-		return ~crc;
 	}
 
 	static bool readVli(const std::uint8_t* data, std::size_t size, std::size_t& at,

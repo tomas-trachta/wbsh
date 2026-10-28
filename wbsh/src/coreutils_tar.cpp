@@ -4,8 +4,9 @@
  *        any codec the bundled tools know.
  *
  * Reading auto-detects gzip, bzip2, xz, lzma, lzop and compress; writing
- * uses the codec named by -z / -j / --lzop / -a. Long names are written as
- * GNU 'L' records; pax 'x' headers and base-256 sizes are understood on read.
+ * uses the codec named by -z / -j / -J / --lzma / --lzop / -a, any of them
+ * but compress. Long names are written as GNU 'L' records; pax 'x' headers
+ * and base-256 sizes are understood on read.
  * Members are refused when they would land outside the target directory.
  * Archives stream in both directions: one member at a time, never the
  * whole archive in memory.
@@ -576,11 +577,6 @@ namespace wbsh {
 		return toNative(exec, options.directory);
 	}
 
-	static bool tarCanWrite(Codec codec) {
-		return codec == Codec::None || codec == Codec::Gzip || codec == Codec::Bzip2
-			|| codec == Codec::Lzop;
-	}
-
 	static int createArchive(Executor& exec, const TarOptions& options) {
 		if (options.members.empty()) {
 			perr("tar", "Cowardly refusing to create an empty archive");
@@ -589,9 +585,8 @@ namespace wbsh {
 
 		Codec codec = options.codec;
 		if (options.auto_compress && !options.codec_forced) codec = codecForSuffix(options.archive);
-		if (!tarCanWrite(codec)) {
-			perr("tar", "writing this compression format is not supported "
-				"(gzip, bzip2 and lzop are)");
+		if (!canCompress(codec)) {
+			perr("tar", "writing this compression format is not supported");
 			return 2;
 		}
 
