@@ -2283,6 +2283,7 @@ namespace wbsh {
 		exec.registerBuiltin("disown",   builtin_disown);
 		registerDeclarationBuiltins(exec);
 		registerReadBuiltin(exec);
+		registerUlimitBuiltin(exec);
 		registerFcBuiltin(exec);
 		registerTestBuiltins(exec);
 	}
