@@ -8,7 +8,9 @@
 #include "bzip2.h"
 
 #include <algorithm>
+#include <cstring>
 
+#include "bytestream.h"
 #include "huffman.h"
 
 namespace wbsh {
@@ -16,19 +18,20 @@ namespace wbsh {
 	namespace bzip2_detail {
 
 		struct BitReader {
-			const std::uint8_t* data = nullptr;
-			std::size_t size = 0;
-			std::size_t position = 0;
+			InputBuffer* in = nullptr;
 			std::uint64_t buffer = 0;
 			int count = 0;
 			bool overrun = false;
 
 			std::uint32_t bits(int width) {
 				while (count < width) {
-					const std::uint8_t byte = position < size ? data[position] : 0;
-					if (position >= size) overrun = true;
-					++position;
-					buffer = (buffer << 8) | byte;
+					int byte = in->get();
+					if (byte < 0) {
+						overrun = true;
+						byte = 0;
+					}
+
+					buffer = (buffer << 8) | static_cast<std::uint8_t>(byte);
 					count += 8;
 				}
 
@@ -332,7 +335,7 @@ namespace wbsh {
 		}
 	}
 
-	static bool decodeBlock(BitReader& reader, std::size_t limit, std::vector<std::uint8_t>& out,
+	static bool decodeBlock(BitReader& reader, std::size_t limit, ByteSink& out,
 	                        std::uint32_t& crc, std::string& error) {
 		crc = reader.bits(32);
 		if (reader.bits(1) != 0) {
@@ -351,16 +354,17 @@ namespace wbsh {
 			return false;
 		}
 
-		const std::size_t start = out.size();
-		undoInitialRle(transformed, out);
-		if (blockCrc(out.data() + start, out.size() - start) == crc) return true;
+		std::vector<std::uint8_t> plain;
+		undoInitialRle(transformed, plain);
+		if (blockCrc(plain.data(), plain.size()) != crc) {
+			error = "block checksum mismatch";
+			return false;
+		}
 
-		error = "block checksum mismatch";
-		return false;
+		return out.write(plain.data(), plain.size());
 	}
 
-	static bool decodeStream(BitReader& reader, std::vector<std::uint8_t>& out,
-	                         std::string& error) {
+	static bool decodeStream(BitReader& reader, ByteSink& out, std::string& error) {
 		if (reader.bits(8) != 'B' || reader.bits(8) != 'Z' || reader.bits(8) != 'h') {
 			error = "not in bzip2 format";
 			return false;
@@ -392,20 +396,29 @@ namespace wbsh {
 		return false;
 	}
 
-	bool bunzip2Data(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
-	                 std::string& error) {
+	static bool anotherStreamFollows(InputBuffer& in) {
+		const std::uint8_t* next = nullptr;
+		return in.peek(next, 3) == 3 && std::memcmp(next, "BZh", 3) == 0;
+	}
+
+	bool bunzip2Stream(InputBuffer& in, ByteSink& out, std::string& error) {
 		BitReader reader;
-		reader.data = in;
-		reader.size = size;
+		reader.in = &in;
 		do {
 			if (!decodeStream(reader, out, error)) return false;
-			reader.alignToByte();
-			reader.position -= static_cast<std::size_t>(reader.count / 8);
 			reader.count = 0;
 			reader.buffer = 0;
-		} while (reader.position + 4 <= size && in[reader.position] == 'B');
+		} while (anotherStreamFollows(in));
 
 		return true;
+	}
+
+	bool bunzip2Data(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
+	                 std::string& error) {
+		MemorySource source(in, size);
+		InputBuffer input(source);
+		VectorSink sink(out);
+		return bunzip2Stream(input, sink, error);
 	}
 
 	static std::size_t appendRun(std::vector<std::uint8_t>& block, std::uint8_t byte,
@@ -414,24 +427,6 @@ namespace wbsh {
 		block.insert(block.end(), literal, byte);
 		if (run >= 4) block.push_back(static_cast<std::uint8_t>(run - 4));
 		return run;
-	}
-
-	// Fills one block with the initial run-length encoding: four equal
-	// bytes are followed by a count (0-251) of further copies.
-	static std::size_t fillBlock(const std::uint8_t* data, std::size_t size, std::size_t capacity,
-	                             std::vector<std::uint8_t>& block) {
-		std::size_t consumed = 0;
-		while (consumed < size) {
-			std::size_t run = 1;
-			const std::uint8_t byte = data[consumed];
-			while (consumed + run < size && run < 255 && data[consumed + run] == byte) ++run;
-
-			const std::size_t encoded = run >= 4 ? 5 : run;
-			if (block.size() + encoded > capacity) break;
-			consumed += appendRun(block, data[consumed], run);
-		}
-
-		return consumed;
 	}
 
 	static void countingSortByClass(const std::vector<int>& classes, int class_count,
@@ -717,31 +712,99 @@ namespace wbsh {
 		writeSymbols(writer, symbols, tables);
 	}
 
-	void bzip2Data(const std::uint8_t* data, std::size_t size, int level,
-	               std::vector<std::uint8_t>& out) {
-		level = (std::min)((std::max)(level, 1), 9);
+	// The initial run-length encoding happens as bytes arrive, so only the
+	// block being filled is ever held: four equal bytes are followed by a
+	// count (0-251) of further copies.
+	struct Bzip2Encoder::State {
+		std::vector<std::uint8_t> bytes;
 		BitWriter writer;
-		writer.out = &out;
-		writer.put('B', 8);
-		writer.put('Z', 8);
-		writer.put('h', 8);
-		writer.put(static_cast<std::uint32_t>('0' + level), 8);
-
-		const std::size_t capacity = static_cast<std::size_t>(level) * 100000 - 19;
+		std::vector<std::uint8_t> block;
+		std::size_t capacity = 0;
+		std::uint32_t block_crc = 0xFFFFFFFFu;
 		std::uint32_t combined = 0;
-		for (std::size_t offset = 0; offset < size;) {
-			std::vector<std::uint8_t> block;
-			const std::size_t consumed = fillBlock(data + offset, size - offset, capacity, block);
-			const std::uint32_t crc = blockCrc(data + offset, consumed);
-			writeBlock(writer, block, crc);
-			combined = combineCrc(combined, crc);
-			offset += consumed;
+		std::uint8_t run_byte = 0;
+		std::size_t run_length = 0;
+	};
+
+	Bzip2Encoder::Bzip2Encoder(ByteSink& out, int level) : out_(out), state_(std::make_unique<State>()) {
+		level = (std::min)((std::max)(level, 1), 9);
+		state_->writer.out = &state_->bytes;
+		state_->capacity = static_cast<std::size_t>(level) * 100000 - 19;
+		state_->writer.put('B', 8);
+		state_->writer.put('Z', 8);
+		state_->writer.put('h', 8);
+		state_->writer.put(static_cast<std::uint32_t>('0' + level), 8);
+	}
+
+	Bzip2Encoder::~Bzip2Encoder() = default;
+
+	bool Bzip2Encoder::drainBytes() {
+		std::vector<std::uint8_t>& bytes = state_->bytes;
+		const bool ok = bytes.empty() || out_.write(bytes.data(), bytes.size());
+		bytes.clear();
+		return ok;
+	}
+
+	bool Bzip2Encoder::emitBlock() {
+		State& state = *state_;
+		if (state.block.empty()) return true;
+
+		const std::uint32_t crc = ~state.block_crc;
+		writeBlock(state.writer, state.block, crc);
+		state.combined = combineCrc(state.combined, crc);
+		state.block.clear();
+		state.block_crc = 0xFFFFFFFFu;
+		return drainBytes();
+	}
+
+	// A run that no longer fits closes the block, exactly where a one-shot
+	// fill of the whole input would have closed it.
+	bool Bzip2Encoder::flushRun() {
+		State& state = *state_;
+		if (state.run_length == 0) return true;
+
+		const std::size_t encoded = state.run_length >= 4 ? 5 : state.run_length;
+		if (state.block.size() + encoded > state.capacity && !emitBlock()) return false;
+
+		appendRun(state.block, state.run_byte, state.run_length);
+		for (std::size_t k = 0; k < state.run_length; ++k) state.block_crc = crcUpdate(state.block_crc, state.run_byte);
+		state.run_length = 0;
+		return true;
+	}
+
+	bool Bzip2Encoder::write(const std::uint8_t* data, std::size_t size) {
+		State& state = *state_;
+		for (std::size_t k = 0; k < size; ++k) {
+			if (state.run_length > 0 && data[k] == state.run_byte && state.run_length < 255) {
+				++state.run_length;
+				continue;
+			}
+
+			if (!flushRun()) return false;
+			state.run_byte = data[k];
+			state.run_length = 1;
 		}
 
-		writer.put(static_cast<std::uint32_t>(kStreamMagic >> 24), 24);
-		writer.put(static_cast<std::uint32_t>(kStreamMagic & 0xFFFFFF), 24);
-		writer.put(combined, 32);
-		writer.flush();
+		return true;
+	}
+
+	bool Bzip2Encoder::finish() {
+		State& state = *state_;
+		if (!flushRun() || !emitBlock()) return false;
+
+		state.writer.put(static_cast<std::uint32_t>(kStreamMagic >> 24), 24);
+		state.writer.put(static_cast<std::uint32_t>(kStreamMagic & 0xFFFFFF), 24);
+		state.writer.put(state.combined, 32);
+		state.writer.flush();
+		return drainBytes();
+	}
+
+	void bzip2Data(const std::uint8_t* data, std::size_t size, int level,
+	               std::vector<std::uint8_t>& out) {
+		VectorSink sink(out);
+		Bzip2Encoder encoder(sink, level);
+		encoder.write(data, size);
+		encoder.finish();
 	}
 
 }  // namespace wbsh

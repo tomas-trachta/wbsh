@@ -21,10 +21,12 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
 
+#include "bytestream.h"
 #include "codecs.h"
 #include "executor.h"
 
@@ -184,16 +186,6 @@ namespace wbsh {
 		return true;
 	}
 
-	static bool readStream(std::FILE* stream, std::vector<std::uint8_t>& bytes) {
-		std::vector<std::uint8_t> chunk(kReadChunk);
-		for (;;) {
-			const std::size_t got = std::fread(chunk.data(), 1, chunk.size(), stream);
-			if (got == 0) return std::ferror(stream) == 0;
-			const auto end = chunk.begin() + static_cast<std::ptrdiff_t>(got);
-			bytes.insert(bytes.end(), chunk.begin(), end);
-		}
-	}
-
 	static bool streamIsTerminal(std::FILE* stream) {
 		return isConsoleStream(stream);
 	}
@@ -217,45 +209,61 @@ namespace wbsh {
 		}
 	}
 
-	static bool decodeInput(const CompressTool& tool, const CompressOptions& options,
-	                        const std::vector<std::uint8_t>& input,
-	                        std::vector<std::uint8_t>& output,
-	                        const std::string& name) {
-		Codec codec = detectCodec(input.data(), input.size());
-		if (codec == Codec::None && tool.codec == Codec::Lzma) codec = Codec::Lzma;
-		if (!acceptsCodec(tool, codec)) {
-			if (options.force && options.to_stdout) {
-				output = input;
-				return true;
-			}
+	struct CodecRun {
+		const CompressTool& tool;
+		const CompressOptions& options;
+		std::string name;
+		std::uint64_t in_bytes = 0;
+		std::uint64_t out_bytes = 0;
+	};
 
-			perr(tool.name, name + ": not in " + formatName(tool.codec) + " format");
+	static bool decodeStream(CodecRun& run, InputBuffer& in, ByteSink& out) {
+		Codec codec = detectCodec(in);
+		if (codec == Codec::None && run.tool.codec == Codec::Lzma) codec = Codec::Lzma;
+
+		std::string error;
+		if (!acceptsCodec(run.tool, codec)) {
+			if (run.options.force && run.options.to_stdout) return decompressStream(Codec::None, in, out, error);
+
+			perr(run.tool.name, run.name + ": not in " + formatName(run.tool.codec) + " format");
 			return false;
 		}
 
-		std::string error;
-		if (decompressWith(codec, input.data(), input.size(), output, error)) return true;
-
-		perr(tool.name, name + ": " + error);
+		if (decompressStream(codec, in, out, error)) return true;
+		if (!error.empty()) perr(run.tool.name, run.name + ": " + error);
 		return false;
 	}
 
-	static bool transformData(const CompressTool& tool, const CompressOptions& options,
-	                          const std::vector<std::uint8_t>& input,
-	                          std::vector<std::uint8_t>& output, const std::string& name) {
-		if (options.decompress) return decodeInput(tool, options, input, output, name);
-
+	static bool encodeStream(CodecRun& run, InputBuffer& in, ByteSink& out) {
 		std::string error;
-		if (compressWith(tool.codec, input.data(), input.size(), options.level, output, error)) {
-			return true;
+		const std::unique_ptr<Compressor> compressor = makeCompressor(run.tool.codec, run.options.level, out, error);
+		if (!compressor) {
+			perr(run.tool.name, error + "; use -d to decompress");
+			return false;
 		}
 
-		perr(tool.name, error + "; use -d to decompress");
+		std::vector<std::uint8_t> chunk(kReadChunk);
+		for (;;) {
+			const std::size_t got = in.readSome(chunk.data(), chunk.size());
+			if (got == 0) break;
+			if (!compressor->write(chunk.data(), got)) return false;
+		}
+
+		if (!in.sourceFailed()) return compressor->finish();
+		perr(run.tool.name, run.name + ": read error");
 		return false;
 	}
 
-	static bool writeAll(std::FILE* out, const std::vector<std::uint8_t>& bytes) {
-		return std::fwrite(bytes.data(), 1, bytes.size(), out) == bytes.size();
+	// Streams @p input through the codec into @p out; an empty error from the
+	// codec means the output went away, which is not worth a message.
+	static bool transformStream(CodecRun& run, std::FILE* input, ByteSink& out) {
+		FileSource source(input);
+		InputBuffer in(source);
+		CountingSink counted(out);
+		const bool ok = run.options.decompress ? decodeStream(run, in, counted) : encodeStream(run, in, counted);
+		run.in_bytes = in.consumed();
+		run.out_bytes = counted.count();
+		return ok;
 	}
 
 	static int compressStdin(const CompressTool& tool, const CompressOptions& options) {
@@ -271,13 +279,13 @@ namespace wbsh {
 			return 1;
 		}
 
-		std::vector<std::uint8_t> input;
-		std::vector<std::uint8_t> output;
-		if (!readStream(stdin, input)) return 1;
-		if (!transformData(tool, options, input, output, "stdin")) return 1;
-		if (!options.test) writeAll(stdout, output);
+		CodecRun run{ tool, options, "stdin" };
+		FileSink to_stdout(stdout);
+		NullSink discard;
+		ByteSink& out = options.test ? static_cast<ByteSink&>(discard) : to_stdout;
+		const bool ok = transformStream(run, stdin, out);
 		std::fflush(stdout);
-		return 0;
+		return ok ? 0 : 1;
 	}
 
 	static bool endsWith(const std::string& text, const std::string& suffix) {
@@ -324,50 +332,51 @@ namespace wbsh {
 		return true;
 	}
 
-	static bool loadFile(Executor& exec, const CompressTool& tool, const std::string& path,
-	                     std::vector<std::uint8_t>& input) {
+	static std::FILE* openInput(Executor& exec, const CompressTool& tool, const std::string& path) {
 		std::error_code ec;
 		if (fs::is_directory(toNative(exec, path), ec)) {
 			perr(tool.name, path + " is a directory -- ignored");
-			return false;
+			return nullptr;
 		}
 
 		std::FILE* in = fopenNative(exec, path, "rb");
-		if (in == nullptr) {
-			perr(tool.name, path + ": " + std::strerror(errno));
-			return false;
-		}
-
-		const bool ok = readStream(in, input);
-		std::fclose(in);
-		if (!ok) perr(tool.name, path + ": read error");
-		return ok;
+		if (in == nullptr) perr(tool.name, path + ": " + std::strerror(errno));
+		return in;
 	}
 
-	static bool storeFile(Executor& exec, const CompressTool& tool, const CompressOptions& options,
-	                      const std::string& target, const std::vector<std::uint8_t>& output) {
+	static std::FILE* openTarget(Executor& exec, const CompressTool& tool, const CompressOptions& options,
+	                             const std::string& target) {
 		std::error_code ec;
 		if (!options.force && fs::exists(toNative(exec, target), ec)) {
 			perr(tool.name, target + " already exists; not overwritten");
-			return false;
+			return nullptr;
 		}
 
 		std::FILE* out = fopenNative(exec, target, "wb");
-		if (out == nullptr) {
-			perr(tool.name, target + ": " + std::strerror(errno));
-			return false;
-		}
+		if (out == nullptr) perr(tool.name, target + ": " + std::strerror(errno));
+		return out;
+	}
 
-		const bool ok = writeAll(out, output);
-		std::fclose(out);
-		if (!ok) perr(tool.name, target + ": write error");
-		return ok;
+	// A failed in-place run leaves no half-written target behind.
+	static bool storeStream(Executor& exec, CodecRun& run, std::FILE* input, const std::string& target) {
+		std::FILE* out = openTarget(exec, run.tool, run.options, target);
+		if (out == nullptr) return false;
+
+		FileSink sink(out);
+		const bool ok = transformStream(run, input, sink);
+		const bool closed = std::fclose(out) == 0;
+		if (ok && !closed) perr(run.tool.name, target + ": write error");
+		if (ok && closed) return true;
+
+		std::error_code ec;
+		fs::remove(toNative(exec, target), ec);
+		return false;
 	}
 
 	static void reportRatio(const std::string& path, const std::string& target,
-	                        std::size_t before, std::size_t after, bool decompressed) {
-		const std::size_t plain = decompressed ? after : before;
-		const std::size_t packed = decompressed ? before : after;
+	                        std::uint64_t before, std::uint64_t after, bool decompressed) {
+		const std::uint64_t plain = decompressed ? after : before;
+		const std::uint64_t packed = decompressed ? before : after;
 		const double saved = plain == 0 ? 0.0
 			: 100.0 * (static_cast<double>(plain) - static_cast<double>(packed))
 				/ static_cast<double>(plain);
@@ -384,31 +393,37 @@ namespace wbsh {
 		if (!options.keep) fs::remove(source, ec);
 	}
 
+	static int streamToStdout(CodecRun& run, std::FILE* input) {
+		FileSink to_stdout(stdout);
+		NullSink discard;
+		ByteSink& out = run.options.test ? static_cast<ByteSink&>(discard) : to_stdout;
+		const bool ok = transformStream(run, input, out);
+		if (ok && run.options.test && run.options.verbose) std::fprintf(stderr, "%s:\tOK\n", run.name.c_str());
+		return ok ? 0 : 1;
+	}
+
 	static int processFile(Executor& exec, const CompressTool& tool, const CompressOptions& options,
 	                       const std::string& path) {
-		std::vector<std::uint8_t> input;
-		std::vector<std::uint8_t> output;
 		std::string target;
 		const bool in_place = !options.to_stdout && !options.test;
 		if (in_place && !outputName(tool, options, path, target)) return options.quiet ? 0 : 1;
-		if (!loadFile(exec, tool, path, input)) return 1;
-		if (!transformData(tool, options, input, output, path)) return 1;
 
-		if (options.test) {
-			if (options.verbose) std::fprintf(stderr, "%s:\tOK\n", path.c_str());
-			return 0;
-		}
+		std::FILE* input = openInput(exec, tool, path);
+		if (input == nullptr) return 1;
 
+		CodecRun run{ tool, options, path };
 		if (!in_place) {
-			writeAll(stdout, output);
-			return 0;
+			const int status = streamToStdout(run, input);
+			std::fclose(input);
+			return status;
 		}
 
-		if (!storeFile(exec, tool, options, target, output)) return 1;
-		finishInPlace(exec, path, target, options);
-		if (!options.verbose) return 0;
+		const bool stored = storeStream(exec, run, input, target);
+		std::fclose(input);
+		if (!stored) return 1;
 
-		reportRatio(path, target, input.size(), output.size(), options.decompress);
+		finishInPlace(exec, path, target, options);
+		if (options.verbose) reportRatio(path, target, run.in_bytes, run.out_bytes, options.decompress);
 		return 0;
 	}
 

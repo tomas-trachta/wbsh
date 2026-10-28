@@ -3,11 +3,14 @@
  * @brief LZMA / LZMA2 / .xz decoding. The LZMA part follows the
  *        structure of Igor Pavlov's public-domain LzmaSpec reference
  *        decoder; the container follows the .xz file format 1.0.4.
+ *        Everything streams: input is read as needed and output leaves
+ *        through the dictionary window as it is produced.
  */
 
 #include "xz.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 
 namespace wbsh {
@@ -17,17 +20,22 @@ namespace wbsh {
 		typedef std::uint16_t Probability;
 
 		struct RangeDecoder {
-			const std::uint8_t* data = nullptr;
-			std::size_t size = 0;
-			std::size_t position = 0;
+			InputBuffer* in = nullptr;
+			std::uint64_t limit = ~0ULL;
+			std::uint64_t used = 0;
 			std::uint32_t range = 0xFFFFFFFFu;
 			std::uint32_t code = 0;
 			bool corrupted = false;
 
 			std::uint8_t nextByte() {
-				if (position < size) return data[position++];
-				corrupted = true;
-				return 0;
+				const int byte = used < limit ? in->get() : -1;
+				if (byte < 0) {
+					corrupted = true;
+					return 0;
+				}
+
+				++used;
+				return static_cast<std::uint8_t>(byte);
 			}
 
 			bool start() {
@@ -112,16 +120,12 @@ namespace wbsh {
 		};
 
 		struct Window {
-			std::vector<std::uint8_t>* out = nullptr;
-			std::size_t dictionary_start = 0;
+			LzWindow* out = nullptr;
 			std::uint32_t dictionary_size = 0;
 
-			std::size_t history() const {
-				return out->size() - dictionary_start;
-			}
-
+			// LZMA distances are zero-based: 0 is the byte just written.
 			std::uint8_t back(std::uint32_t distance) const {
-				return (*out)[out->size() - distance - 1];
+				return out->back(static_cast<std::size_t>(distance) + 1);
 			}
 		};
 
@@ -135,7 +139,10 @@ namespace wbsh {
 			bool delta = false;
 			unsigned delta_distance = 1;
 			bool x86 = false;
+			bool delta_listed_first = false;
 			std::uint32_t dictionary = 0;
+			std::uint64_t unpacked = 0;
+			bool unpacked_known = false;
 		};
 
 	}  // namespace xz_detail
@@ -154,7 +161,9 @@ namespace wbsh {
 	static const std::uint32_t kEndMarker = 0xFFFFFFFFu;
 	static const std::uint8_t kXzMagic[6] = { 0xFD, '7', 'z', 'X', 'Z', 0x00 };
 	static const std::size_t kStreamHeaderSize = 12;
+	static const std::size_t kStreamFooterSize = 12;
 	static const std::uint64_t kCrc64Polynomial = 0xC96C5795D7870F42ULL;
+	static const std::size_t kMinWindow = 4096;
 
 	static void fillProbabilities(Probability* first, std::size_t count) {
 		std::fill(first, first + count, kProbabilityStart);
@@ -226,8 +235,8 @@ namespace wbsh {
 	}
 
 	static void decodeLiteral(RangeDecoder& rc, LzmaState& lzma, Window& window) {
-		const std::size_t total = window.out->size();
-		const unsigned previous = window.history() > 0 ? window.back(0) : 0;
+		const std::uint64_t total = window.out->total();
+		const unsigned previous = window.out->history() > 0 ? window.back(0) : 0;
 		const unsigned lp_mask = (1u << lzma.props.lp) - 1;
 		const std::size_t context = ((static_cast<unsigned>(total) & lp_mask) << lzma.props.lc)
 			+ (previous >> (8 - lzma.props.lc));
@@ -246,16 +255,13 @@ namespace wbsh {
 		}
 
 		while (symbol < 0x100) symbol = (symbol << 1) | rc.bit(probabilities[symbol]);
-		window.out->push_back(static_cast<std::uint8_t>(symbol - 0x100));
+		window.out->put(static_cast<std::uint8_t>(symbol - 0x100));
 		lzma.state = lzma.state < 4 ? 0 : (lzma.state < 10 ? lzma.state - 3 : lzma.state - 6);
 	}
 
 	static bool copyMatch(Window& window, std::uint32_t distance, unsigned length) {
-		if (distance >= window.dictionary_size || distance >= window.history()) return false;
-
-		std::vector<std::uint8_t>& out = *window.out;
-		for (unsigned k = 0; k < length; ++k) out.push_back(out[out.size() - distance - 1]);
-		return true;
+		if (distance >= window.dictionary_size) return false;
+		return window.out->copy(static_cast<std::size_t>(distance) + 1, length);
 	}
 
 	// Returns 0 for a short rep (one byte already written), otherwise the
@@ -265,7 +271,7 @@ namespace wbsh {
 		if (rc.bit(lzma.is_rep_g0[lzma.state]) == 0) {
 			if (rc.bit(lzma.is_rep0_long[(lzma.state << 4) + pos_state]) == 0) {
 				lzma.state = lzma.state < 7 ? 9 : 11;
-				window.out->push_back(window.back(lzma.reps[0]));
+				window.out->put(window.back(lzma.reps[0]));
 				return 0;
 			}
 		} else {
@@ -301,11 +307,12 @@ namespace wbsh {
 	}
 
 	static DecodeEnd decodeSymbols(RangeDecoder& rc, LzmaState& lzma, Window& window,
-	                               std::size_t limit) {
+	                               std::uint64_t limit) {
 		const unsigned pb_mask = (1u << lzma.props.pb) - 1;
-		while (window.out->size() < limit) {
-			const unsigned pos_state = static_cast<unsigned>(window.out->size()) & pb_mask;
-			if (rc.corrupted) return DecodeEnd::Error;
+		LzWindow& out = *window.out;
+		while (out.total() < limit) {
+			const unsigned pos_state = static_cast<unsigned>(out.total()) & pb_mask;
+			if (rc.corrupted || !out.ok()) return DecodeEnd::Error;
 			if (rc.bit(lzma.is_match[(lzma.state << 4) + pos_state]) == 0) {
 				decodeLiteral(rc, lzma, window);
 				continue;
@@ -313,14 +320,14 @@ namespace wbsh {
 
 			unsigned length = 0;
 			if (rc.bit(lzma.is_rep[lzma.state]) != 0) {
-				if (window.history() == 0) return DecodeEnd::Error;
+				if (out.history() == 0) return DecodeEnd::Error;
 				length = decodeRep(rc, lzma, window, pos_state);
 				if (length == 0) continue;
 			} else if (decodeMatch(rc, lzma, pos_state, length) == DecodeEnd::Marker) {
 				return DecodeEnd::Marker;
 			}
 
-			if (window.out->size() + length > limit) return DecodeEnd::Error;
+			if (out.total() + length > limit) return DecodeEnd::Error;
 			if (!copyMatch(window, lzma.reps[0], length)) return DecodeEnd::Error;
 		}
 
@@ -342,77 +349,61 @@ namespace wbsh {
 			| (static_cast<std::uint32_t>(bytes[3]) << 24);
 	}
 
-	bool unlzmaData(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
-	                std::string& error) {
+	static std::size_t windowSizeFor(std::uint32_t dictionary, std::uint64_t unpacked, bool unpacked_known) {
+		std::uint64_t size = (std::max<std::uint64_t>)(dictionary, kMinWindow);
+		if (unpacked_known) size = (std::min)(size, (std::max<std::uint64_t>)(unpacked, kMinWindow));
+		return static_cast<std::size_t>(size);
+	}
+
+	static bool corrupt(std::string& error, const LzWindow& window) {
+		if (window.ok()) error = "data is corrupt";
+		return false;
+	}
+
+	bool unlzmaStream(InputBuffer& in, ByteSink& out, std::string& error) {
+		std::uint8_t header[13];
 		LzmaState lzma;
-		if (size < 13 || !decodePropertiesByte(in[0], lzma.props)) {
+		if (!in.readExact(header, sizeof(header)) || !decodePropertiesByte(header[0], lzma.props)) {
 			error = "not in lzma format";
 			return false;
 		}
 
-		lzma.props.dictionary = (std::max)(readLe32(in + 1), 4096u);
+		lzma.props.dictionary = (std::max)(readLe32(header + 1), 4096u);
 		std::uint64_t unpacked = 0;
-		for (int k = 7; k >= 0; --k) unpacked = (unpacked << 8) | in[5 + k];
+		for (int k = 7; k >= 0; --k) unpacked = (unpacked << 8) | header[5 + k];
 		const bool known = unpacked != ~0ULL;
 
-		RangeDecoder rc;
-		rc.data = in + 13;
-		rc.size = size - 13;
+		LzWindow window_out(out, windowSizeFor(lzma.props.dictionary, unpacked, known));
 		Window window;
-		window.out = &out;
-		window.dictionary_start = out.size();
+		window.out = &window_out;
 		window.dictionary_size = lzma.props.dictionary;
 		resetLzmaState(lzma);
-		if (!rc.start()) {
-			error = "data is corrupt";
-			return false;
-		}
 
-		const std::size_t unbounded = ~static_cast<std::size_t>(0);
-		const std::size_t expected = out.size() + static_cast<std::size_t>(unpacked);
-		const std::size_t limit = known ? expected : unbounded;
-		const DecodeEnd end = decodeSymbols(rc, lzma, window, limit);
-		if (end == DecodeEnd::Marker || (end == DecodeEnd::Limit && known)) return true;
+		RangeDecoder rc;
+		rc.in = &in;
+		if (!rc.start()) return corrupt(error, window_out);
 
-		error = "data is corrupt";
-		return false;
+		const DecodeEnd end = decodeSymbols(rc, lzma, window, known ? unpacked : ~0ULL);
+		const bool finished = end == DecodeEnd::Marker || (end == DecodeEnd::Limit && known);
+		if (finished && window_out.flush()) return true;
+		return corrupt(error, window_out);
 	}
 
 	template <typename Word>
-	static Word reflectedTableEntry(Word index, Word polynomial) {
-		Word entry = index;
-		for (int bit = 0; bit < 8; ++bit) {
-			entry = (entry & 1) != 0 ? polynomial ^ (entry >> 1) : entry >> 1;
+	static std::array<Word, 256> reflectedTable(Word polynomial) {
+		std::array<Word, 256> table{};
+		for (Word index = 0; index < 256; ++index) {
+			Word entry = index;
+			for (int bit = 0; bit < 8; ++bit) entry = (entry & 1) != 0 ? polynomial ^ (entry >> 1) : entry >> 1;
+			table[static_cast<std::size_t>(index)] = entry;
 		}
 
-		return entry;
+		return table;
 	}
 
-	static std::uint32_t crc32Of(const std::uint8_t* data, std::size_t size) {
-		static std::uint32_t table[256];
-		static bool built = false;
-		if (!built) {
-			for (std::uint32_t k = 0; k < 256; ++k) table[k] = reflectedTableEntry(k, 0xEDB88320u);
-			built = true;
-		}
-
-		std::uint32_t crc = 0xFFFFFFFFu;
-		for (std::size_t k = 0; k < size; ++k) crc = table[(crc ^ data[k]) & 0xFF] ^ (crc >> 8);
-		return ~crc;
-	}
-
-	static std::uint64_t crc64Of(const std::uint8_t* data, std::size_t size) {
-		static std::uint64_t table[256];
-		static bool built = false;
-		if (!built) {
-			for (std::uint64_t k = 0; k < 256; ++k) {
-				table[k] = reflectedTableEntry(k, kCrc64Polynomial);
-			}
-
-			built = true;
-		}
-
-		std::uint64_t crc = ~0ULL;
+	static std::uint64_t crc64Of(std::uint64_t crc, const std::uint8_t* data, std::size_t size) {
+		static const std::array<std::uint64_t, 256> table = reflectedTable<std::uint64_t>(kCrc64Polynomial);
+		crc = ~crc;
 		for (std::size_t k = 0; k < size; ++k) crc = table[(crc ^ data[k]) & 0xFF] ^ (crc >> 8);
 		return ~crc;
 	}
@@ -423,6 +414,18 @@ namespace wbsh {
 		for (int shift = 0; shift < 63; shift += 7) {
 			if (at >= size) return false;
 			const std::uint8_t byte = data[at++];
+			value |= static_cast<std::uint64_t>(byte & 0x7F) << shift;
+			if ((byte & 0x80) == 0) return true;
+		}
+
+		return false;
+	}
+
+	static bool readStreamVli(InputBuffer& in, std::uint64_t& value) {
+		value = 0;
+		for (int shift = 0; shift < 63; shift += 7) {
+			const int byte = in.get();
+			if (byte < 0) return false;
 			value |= static_cast<std::uint64_t>(byte & 0x7F) << shift;
 			if ((byte & 0x80) == 0) return true;
 		}
@@ -444,6 +447,7 @@ namespace wbsh {
 
 		if (id == 0x03 && props_size == 1) {
 			filters.delta = true;
+			filters.delta_listed_first = !filters.x86;
 			filters.delta_distance = props[0] + 1u;
 			return true;
 		}
@@ -456,21 +460,9 @@ namespace wbsh {
 		return false;
 	}
 
-	static bool parseBlockHeader(const std::uint8_t* header, std::size_t header_size,
-	                             BlockFilters& filters, std::string& error) {
-		if (crc32Of(header, header_size - 4) != readLe32(header + header_size - 4)) {
-			error = "block header checksum mismatch";
-			return false;
-		}
-
-		const std::uint8_t flags = header[1];
-		std::size_t at = 2;
-		std::uint64_t ignored = 0;
-		if ((flags & 0x40) != 0 && !readVli(header, header_size, at, ignored)) return false;
-		if ((flags & 0x80) != 0 && !readVli(header, header_size, at, ignored)) return false;
-
-		const int filter_count = (flags & 3) + 1;
-		for (int k = 0; k < filter_count; ++k) {
+	static bool parseFilters(const std::uint8_t* header, std::size_t header_size, std::size_t at, int count,
+	                         BlockFilters& filters, std::string& error) {
+		for (int k = 0; k < count; ++k) {
 			std::uint64_t id = 0;
 			std::uint64_t props_size = 0;
 			const bool parsed = readVli(header, header_size, at, id)
@@ -488,21 +480,34 @@ namespace wbsh {
 		return filters.dictionary != 0;
 	}
 
-	static void undoDelta(std::uint8_t* data, std::size_t size, unsigned distance) {
-		for (std::size_t k = distance; k < size; ++k) {
-			data[k] = static_cast<std::uint8_t>(data[k] + data[k - distance]);
+	static bool parseBlockHeader(const std::uint8_t* header, std::size_t header_size,
+	                             BlockFilters& filters, std::string& error) {
+		if (crc32Of(0, header, header_size - 4) != readLe32(header + header_size - 4)) {
+			error = "block header checksum mismatch";
+			return false;
 		}
+
+		const std::uint8_t flags = header[1];
+		std::size_t at = 2;
+		std::uint64_t ignored = 0;
+		if ((flags & 0x40) != 0 && !readVli(header, header_size, at, ignored)) return false;
+		if ((flags & 0x80) != 0) {
+			if (!readVli(header, header_size, at, filters.unpacked)) return false;
+			filters.unpacked_known = true;
+		}
+
+		return parseFilters(header, header_size, at, (flags & 3) + 1, filters, error);
 	}
 
 	static bool isX86PrefixByte(std::uint8_t byte) {
 		return byte == 0x00 || byte == 0xFF;
 	}
 
-	static std::uint32_t x86Destination(std::uint32_t source, std::size_t position,
+	static std::uint32_t x86Destination(std::uint32_t source, std::uint32_t position,
 	                                    std::uint32_t mask) {
 		static const unsigned kMaskToBits[8] = { 0, 1, 2, 2, 3, 3, 3, 3 };
 		for (;;) {
-			const std::uint32_t destination = source - static_cast<std::uint32_t>(position + 5);
+			const std::uint32_t destination = source - (position + 5);
 			if (mask == 0) return destination;
 
 			const unsigned shift = kMaskToBits[mask] * 8;
@@ -521,24 +526,76 @@ namespace wbsh {
 		return !kAllowed[mask] || isX86PrefixByte(call[4 - kMaskToBits[mask]]);
 	}
 
+	namespace xz_detail {
+
+		// Undoes the block's filters on the decoder output as it streams by,
+		// counts it and keeps the running check value.
+		class BlockSink : public ByteSink {
+		public:
+			BlockSink(ByteSink& out, const BlockFilters& filters, unsigned check)
+				: out_(out), filters_(filters), check_(check) {}
+
+			bool write(const std::uint8_t* data, std::size_t size) override;
+			bool finish();
+			std::uint64_t size() const { return size_; }
+
+			// The header lists filters in encoding order, so the one listed
+			// last is undone first.
+			bool x86UndoneFirst() const { return filters_.delta && filters_.x86 && filters_.delta_listed_first; }
+			bool matches(const std::uint8_t* stored) const;
+
+		private:
+			void undoDelta(std::uint8_t* data, std::size_t size);
+			std::size_t undoX86(std::uint8_t* data, std::size_t size, bool final_chunk);
+			bool forward(const std::uint8_t* data, std::size_t size);
+
+			ByteSink& out_;
+			BlockFilters filters_;
+			unsigned check_;
+			std::uint64_t size_ = 0;
+			std::uint32_t crc32_ = 0;
+			std::uint64_t crc64_ = 0;
+			std::uint8_t delta_history_[256] = {};
+			std::uint8_t delta_pos_ = 0;
+			std::vector<std::uint8_t> carry_;
+			std::uint64_t x86_position_ = 0;
+			std::uint64_t x86_previous_ = ~0ULL;
+			std::uint32_t x86_mask_ = 0;
+		};
+
+	}  // namespace xz_detail
+
+	using xz_detail::BlockSink;
+
+	void BlockSink::undoDelta(std::uint8_t* data, std::size_t size) {
+		for (std::size_t k = 0; k < size; ++k) {
+			const auto earlier_pos = static_cast<std::uint8_t>(delta_pos_ - filters_.delta_distance);
+			const std::uint8_t earlier = delta_history_[earlier_pos];
+			data[k] = static_cast<std::uint8_t>(data[k] + earlier);
+			delta_history_[delta_pos_++] = data[k];
+		}
+	}
+
 	// The BCJ x86 filter turned relative CALL / JMP targets into absolute
 	// ones; this mirrors the reference decoder (xz-embedded's bcj_x86),
-	// whose previous-position bookkeeping starts at "minus one".
-	static void undoX86(std::uint8_t* data, std::size_t size) {
-		std::uint32_t mask = 0;
-		std::size_t previous = ~static_cast<std::size_t>(0);
-		for (std::size_t k = 0; k + 4 < size; ++k) {
+	// whose previous-position bookkeeping starts at "minus one". Returns how
+	// many bytes are final; the rest wait for the bytes that follow them.
+	std::size_t BlockSink::undoX86(std::uint8_t* data, std::size_t size, bool final_chunk) {
+		std::size_t k = 0;
+		for (; k + 4 < size; ++k) {
 			if ((data[k] & 0xFE) != 0xE8) continue;
 
-			const std::size_t gap = k - previous;
-			previous = k;
-			mask = gap > 3 ? 0 : (mask << (gap - 1)) & 7;
-			if (x86MaskRejects(mask, data + k) || !isX86PrefixByte(data[k + 4])) {
-				mask = (mask << 1) | 1;
+			const std::uint64_t at = x86_position_ + k;
+			const std::uint64_t gap = at - x86_previous_;
+			x86_previous_ = at;
+			x86_mask_ = gap > 3 ? 0 : (x86_mask_ << (gap - 1)) & 7;
+			if (x86MaskRejects(x86_mask_, data + k) || !isX86PrefixByte(data[k + 4])) {
+				x86_mask_ = (x86_mask_ << 1) | 1;
 				continue;
 			}
 
-			std::uint32_t destination = x86Destination(readLe32(data + k + 1), k, mask);
+			const auto position = static_cast<std::uint32_t>(at);
+			std::uint32_t destination = x86Destination(readLe32(data + k + 1), position, x86_mask_);
 			destination &= 0x01FFFFFF;
 			destination |= 0u - (destination & 0x01000000);
 			for (int byte = 0; byte < 4; ++byte) {
@@ -547,63 +604,125 @@ namespace wbsh {
 
 			k += 4;
 		}
+
+		const std::size_t done = final_chunk ? size : (std::min)(k, size);
+		x86_position_ += done;
+		return done;
 	}
 
-	static bool lzma2Chunk(const std::uint8_t* in, std::size_t size, std::size_t& at,
-	                       LzmaState& lzma, Window& window, std::uint8_t control) {
-		if (at + 4 > size) return false;
+	bool BlockSink::forward(const std::uint8_t* data, std::size_t size) {
+		if (size == 0) return true;
+
+		size_ += size;
+		if (check_ == 1) crc32_ = crc32Of(crc32_, data, size);
+		if (check_ == 4) crc64_ = crc64Of(crc64_, data, size);
+		return out_.write(data, size);
+	}
+
+	bool BlockSink::write(const std::uint8_t* data, std::size_t size) {
+		if (!filters_.delta && !filters_.x86) return forward(data, size);
+
+		std::vector<std::uint8_t> chunk(data, data + size);
+		if (filters_.delta && !x86UndoneFirst()) undoDelta(chunk.data(), chunk.size());
+		if (!filters_.x86) return forward(chunk.data(), chunk.size());
+
+		carry_.insert(carry_.end(), chunk.begin(), chunk.end());
+		const std::size_t done = undoX86(carry_.data(), carry_.size(), false);
+		if (x86UndoneFirst()) undoDelta(carry_.data(), done);
+		const bool ok = forward(carry_.data(), done);
+		carry_.erase(carry_.begin(), carry_.begin() + static_cast<std::ptrdiff_t>(done));
+		return ok;
+	}
+
+	bool BlockSink::finish() {
+		if (carry_.empty()) return true;
+
+		const std::size_t done = undoX86(carry_.data(), carry_.size(), true);
+		if (x86UndoneFirst()) undoDelta(carry_.data(), done);
+		const bool ok = forward(carry_.data(), done);
+		carry_.clear();
+		return ok;
+	}
+
+	bool BlockSink::matches(const std::uint8_t* stored) const {
+		if (check_ == 1) return crc32_ == readLe32(stored);
+		if (check_ != 4) return true;
+
+		std::uint64_t expected = 0;
+		for (int k = 7; k >= 0; --k) expected = (expected << 8) | stored[k];
+		return crc64_ == expected;
+	}
+
+	static bool skipBytes(InputBuffer& in, std::uint64_t count) {
+		for (; count > 0; --count) {
+			if (in.get() < 0) return false;
+		}
+
+		return true;
+	}
+
+	static bool lzma2Chunk(InputBuffer& in, LzmaState& lzma, Window& window, std::uint8_t control) {
+		std::uint8_t sizes[4];
+		if (!in.readExact(sizes, sizeof(sizes))) return false;
+
 		const std::size_t unpacked = ((static_cast<std::size_t>(control & 0x1F) << 16)
-			| (static_cast<std::size_t>(in[at]) << 8) | in[at + 1]) + 1;
-		const std::size_t packed = ((static_cast<std::size_t>(in[at + 2]) << 8) | in[at + 3]) + 1;
-		at += 4;
+			| (static_cast<std::size_t>(sizes[0]) << 8) | sizes[1]) + 1;
+		const std::size_t packed = ((static_cast<std::size_t>(sizes[2]) << 8) | sizes[3]) + 1;
 
 		const unsigned reset = (control >> 5) & 3;
 		if (reset >= 2) {
-			if (at >= size || !decodePropertiesByte(in[at++], lzma.props)) return false;
+			const int props = in.get();
+			if (props < 0 || !decodePropertiesByte(static_cast<std::uint8_t>(props), lzma.props)) return false;
 			if (lzma.props.lc + lzma.props.lp > 4) return false;
 		}
 
 		if (reset >= 1) resetLzmaState(lzma);
-		if (at + packed > size) return false;
 
 		RangeDecoder rc;
-		rc.data = in + at;
-		rc.size = packed;
+		rc.in = &in;
+		rc.limit = packed;
 		if (!rc.start()) return false;
 
-		const DecodeEnd end = decodeSymbols(rc, lzma, window, window.out->size() + unpacked);
-		at += packed;
-		return end == DecodeEnd::Limit;
+		const DecodeEnd end = decodeSymbols(rc, lzma, window, window.out->total() + unpacked);
+		return end == DecodeEnd::Limit && skipBytes(in, packed - rc.used);
 	}
 
-	static bool decodeLzma2(const std::uint8_t* in, std::size_t size, std::size_t& at,
-	                        std::uint32_t dictionary, std::vector<std::uint8_t>& out) {
+	static bool copyStoredChunk(InputBuffer& in, LzWindow& out) {
+		std::uint8_t sizes[2];
+		if (!in.readExact(sizes, sizeof(sizes))) return false;
+
+		const std::size_t length = ((static_cast<std::size_t>(sizes[0]) << 8) | sizes[1]) + 1;
+		for (std::size_t k = 0; k < length; ++k) {
+			const int byte = in.get();
+			if (byte < 0) return false;
+			out.put(static_cast<std::uint8_t>(byte));
+		}
+
+		return out.ok();
+	}
+
+	static bool decodeLzma2(InputBuffer& in, std::uint32_t dictionary, LzWindow& out) {
 		LzmaState lzma;
 		Window window;
 		window.out = &out;
-		window.dictionary_start = out.size();
 		window.dictionary_size = dictionary;
 		bool need_properties = true;
 		for (;;) {
-			if (at >= size) return false;
-			const std::uint8_t control = in[at++];
-			if (control == 0x00) return true;
-			if (control == 0x01 || control >= 0xE0) window.dictionary_start = out.size();
+			const int next = in.get();
+			if (next < 0) return false;
+
+			const std::uint8_t control = static_cast<std::uint8_t>(next);
+			if (control == 0x00) return out.flush();
+			if (control == 0x01 || control >= 0xE0) out.forgetHistory();
 
 			if (control < 0x80) {
-				if (control > 0x02 || at + 2 > size) return false;
-				const std::size_t high = static_cast<std::size_t>(in[at]) << 8;
-				const std::size_t length = (high | in[at + 1]) + 1;
-				at += 2;
-				if (at + length > size) return false;
-				out.insert(out.end(), in + at, in + at + length);
-				at += length;
+				if (control > 0x02 || !copyStoredChunk(in, out)) return false;
 				continue;
 			}
 
 			if (need_properties && control < 0xC0) return false;
 			need_properties = false;
-			if (!lzma2Chunk(in, size, at, lzma, window, control)) return false;
+			if (!lzma2Chunk(in, lzma, window, control)) return false;
 		}
 	}
 
@@ -614,104 +733,125 @@ namespace wbsh {
 		return kSizes[check & 15];
 	}
 
-	static bool verifyCheck(unsigned check, const std::uint8_t* data, std::size_t size,
-	                        const std::uint8_t* stored) {
-		if (check == 1) return crc32Of(data, size) == readLe32(stored);
-		if (check != 4) return true;
-
-		std::uint64_t expected = 0;
-		for (int k = 7; k >= 0; --k) expected = (expected << 8) | stored[k];
-		return crc64Of(data, size) == expected;
+	static bool readBlockHeader(InputBuffer& in, int first, BlockFilters& filters, std::string& error) {
+		const std::size_t header_size = (static_cast<std::size_t>(first) + 1) * 4;
+		std::vector<std::uint8_t> header(header_size);
+		header[0] = static_cast<std::uint8_t>(first);
+		if (!in.readExact(header.data() + 1, header_size - 1)) return false;
+		return parseBlockHeader(header.data(), header_size, filters, error);
 	}
 
-	static bool decodeBlock(const std::uint8_t* in, std::size_t size, std::size_t& at,
-	                        unsigned check,
-	                        std::vector<std::uint8_t>& out, std::string& error) {
-		const std::size_t header_size = (static_cast<std::size_t>(in[at]) + 1) * 4;
-		if (at + header_size > size) return false;
-
-		BlockFilters filters;
-		if (!parseBlockHeader(in + at, header_size, filters, error)) return false;
-		at += header_size;
-
-		const std::size_t start = out.size();
-		const std::size_t data_start = at;
-		if (!decodeLzma2(in, size, at, filters.dictionary, out)) {
-			error = "data is corrupt";
-			return false;
+	static bool skipBlockPadding(InputBuffer& in, std::uint64_t data_start) {
+		while ((in.consumed() - data_start) % 4 != 0) {
+			if (in.get() != 0) return false;
 		}
 
-		std::uint8_t* produced = out.data() + start;
-		const std::size_t produced_size = out.size() - start;
-		if (filters.delta) undoDelta(produced, produced_size, filters.delta_distance);
-		if (filters.x86) undoX86(out.data() + start, out.size() - start);
-
-		while ((at - data_start) % 4 != 0) {
-			if (at >= size || in[at++] != 0) return false;
-		}
-
-		const std::size_t check_bytes = checkSize(check);
-		if (at + check_bytes > size) return false;
-		if (!verifyCheck(check, out.data() + start, out.size() - start, in + at)) {
-			error = "checksum mismatch";
-			return false;
-		}
-
-		at += check_bytes;
 		return true;
 	}
 
-	static bool skipIndexAndFooter(const std::uint8_t* in, std::size_t size, std::size_t& at) {
-		const std::size_t index_start = at++;
+	static bool decodeBlock(InputBuffer& in, int first, unsigned check, ByteSink& out, std::string& error) {
+		BlockFilters filters;
+		if (!readBlockHeader(in, first, filters, error)) return false;
+
+		BlockSink block(out, filters, check);
+		LzWindow window(block, windowSizeFor(filters.dictionary, filters.unpacked, filters.unpacked_known));
+		const std::uint64_t data_start = in.consumed();
+		if (!decodeLzma2(in, filters.dictionary, window)) {
+			if (window.ok()) error = "data is corrupt";
+			return false;
+		}
+
+		if (!block.finish()) return false;
+
+		std::uint8_t stored[64];
+		const std::size_t check_bytes = checkSize(check);
+		if (!skipBlockPadding(in, data_start) || !in.readExact(stored, check_bytes)) return false;
+		if (block.matches(stored)) return true;
+
+		error = "checksum mismatch";
+		return false;
+	}
+
+	static bool skipIndexAndFooter(InputBuffer& in) {
+		const std::uint64_t index_start = in.consumed() - 1;
 		std::uint64_t records = 0;
-		if (!readVli(in, size, at, records)) return false;
+		if (!readStreamVli(in, records)) return false;
 		for (std::uint64_t k = 0; k < records * 2; ++k) {
 			std::uint64_t ignored = 0;
-			if (!readVli(in, size, at, ignored)) return false;
+			if (!readStreamVli(in, ignored)) return false;
 		}
 
-		while ((at - index_start) % 4 != 0) ++at;
-		at += 4;
-		if (at + 12 > size || in[at + 10] != 'Y' || in[at + 11] != 'Z') return false;
-		at += 12;
-		return true;
+		while ((in.consumed() - index_start) % 4 != 0) {
+			if (in.get() < 0) return false;
+		}
+
+		std::uint8_t tail[4 + kStreamFooterSize];
+		return in.readExact(tail, sizeof(tail)) && tail[4 + 10] == 'Y' && tail[4 + 11] == 'Z';
 	}
 
-	static bool decodeStream(const std::uint8_t* in, std::size_t size, std::size_t& at,
-	                         std::vector<std::uint8_t>& out, std::string& error) {
-		if (at + kStreamHeaderSize > size || std::memcmp(in + at, kXzMagic, 6) != 0) {
+	static bool readStreamHeader(InputBuffer& in, unsigned& check, std::string& error) {
+		std::uint8_t header[kStreamHeaderSize];
+		if (!in.readExact(header, sizeof(header)) || std::memcmp(header, kXzMagic, 6) != 0) {
 			error = "not in xz format";
 			return false;
 		}
 
-		if (crc32Of(in + at + 6, 2) != readLe32(in + at + 8)) {
+		if (crc32Of(0, header + 6, 2) != readLe32(header + 8)) {
 			error = "stream header checksum mismatch";
 			return false;
 		}
 
-		const unsigned check = in[at + 7] & 0x0F;
-		at += kStreamHeaderSize;
-		while (at < size && in[at] != 0x00) {
-			if (!decodeBlock(in, size, at, check, out, error)) {
-				if (error.empty()) error = "data is corrupt";
-				return false;
+		check = header[7] & 0x0F;
+		return true;
+	}
+
+	static bool decodeXzStream(InputBuffer& in, ByteSink& out, std::string& error) {
+		unsigned check = 0;
+		if (!readStreamHeader(in, check, error)) return false;
+
+		for (;;) {
+			const int first = in.get();
+			if (first < 0) break;
+			if (first == 0x00) {
+				if (skipIndexAndFooter(in)) return true;
+				break;
 			}
+
+			if (!decodeBlock(in, first, check, out, error)) return false;
 		}
 
-		if (at < size && skipIndexAndFooter(in, size, at)) return true;
 		error = "truncated or corrupt index";
 		return false;
 	}
 
-	bool unxzData(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
-	              std::string& error) {
-		std::size_t at = 0;
+	static void skipStreamPadding(InputBuffer& in) {
+		const std::uint8_t* next = nullptr;
+		while (in.peek(next, 4) == 4 && readLe32(next) == 0) skipBytes(in, 4);
+	}
+
+	bool unxzStream(InputBuffer& in, ByteSink& out, std::string& error) {
 		do {
-			if (!decodeStream(in, size, at, out, error)) return false;
-			while (at + 4 <= size && readLe32(in + at) == 0) at += 4;
-		} while (at < size);
+			if (!decodeXzStream(in, out, error)) return false;
+			skipStreamPadding(in);
+		} while (!in.atEnd());
 
 		return true;
+	}
+
+	bool unxzData(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
+	              std::string& error) {
+		MemorySource source(in, size);
+		InputBuffer input(source);
+		VectorSink sink(out);
+		return unxzStream(input, sink, error);
+	}
+
+	bool unlzmaData(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
+	                std::string& error) {
+		MemorySource source(in, size);
+		InputBuffer input(source);
+		VectorSink sink(out);
+		return unlzmaStream(input, sink, error);
 	}
 
 }  // namespace wbsh

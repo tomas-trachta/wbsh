@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "bytestream.h"
 #include "executor.h"
 #include "deflate.h"
 #include "inflate.h"
@@ -24,8 +25,6 @@ namespace wbsh {
 	namespace fs = std::filesystem;
 
 	static const std::size_t kReadChunk = 4096;
-
-	static const std::uint32_t kCrcPolynomial = 0xEDB88320u;
 
 	static const std::uint32_t kZipLocalHeaderSig = 0x04034B50u;
 	static const std::uint32_t kZipCentralDirSig  = 0x02014B50u;
@@ -39,33 +38,9 @@ namespace wbsh {
 	static const std::uint16_t kZipVersion = 20;
 	static const int kZipDeflateLevel = 6;
 
-	static void buildCrcTable(std::uint32_t (&table)[256]) {
-		for (std::uint32_t i = 0; i < 256; ++i) {
-			std::uint32_t entry = i;
-			for (int k = 0; k < 8; ++k) {
-				entry = ((entry & 1) != 0) ? (kCrcPolynomial ^ (entry >> 1)) : (entry >> 1);
-			}
-
-			table[i] = entry;
-		}
-	}
-
-	// CRC-32/IEEE 802.3 (poly 0xEDB88320), as zip, gzip and crc32 use it.
 	std::uint32_t crc32Update(std::uint32_t crc, const std::uint8_t* data,
 			std::size_t length) {
-		static std::uint32_t table[256];
-		static bool built = false;
-		if (!built) {
-			buildCrcTable(table);
-			built = true;
-		}
-
-		crc ^= 0xFFFFFFFFu;
-		for (std::size_t i = 0; i < length; ++i) {
-			crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-		}
-
-		return crc ^ 0xFFFFFFFFu;
+		return crc32Of(crc, data, length);
 	}
 
 	static std::vector<std::uint8_t> readAllBytesFromFile(FILE* file) {

@@ -5,7 +5,9 @@
  *
  * The keys come from CONIN$ and the screen goes to CONOUT$, so the pager
  * still works at the end of a pipeline. ANSI colour sequences pass
- * through (less -R behaviour) and count as zero width.
+ * through (less -R behaviour) and count as zero width. Input is read on
+ * demand by a background thread (pager_feed.cpp), so a pipe shows its
+ * first page at once however much more is still to come.
  */
 
 #include "coreutils_internal.h"
@@ -27,6 +29,7 @@
 #include "consolekeys.h"
 #include "executor.h"
 #include "numparse.h"
+#include "pager_feed.h"
 
 namespace wbsh {
 
@@ -73,6 +76,13 @@ namespace wbsh {
 			std::string message;
 			std::string title;
 			bool done = false;
+			PagerFeed* feed = nullptr;
+			std::string partial;
+			std::string raw;
+			bool keep_raw = true;
+			bool eof = false;
+			bool following = false;
+			bool searching = false;
 		};
 
 	}  // namespace pager_detail
@@ -136,72 +146,59 @@ namespace wbsh {
 		return out;
 	}
 
-	static void splitIntoLines(const std::string& content, std::vector<std::string>& lines) {
-		std::size_t start = 0;
-		while (start < content.size()) {
-			std::size_t end = content.find('\n', start);
-			if (end == std::string::npos) end = content.size();
-			std::string line = content.substr(start, end - start);
-			if (!line.empty() && line.back() == '\r') line.pop_back();
-			lines.push_back(expandControls(line));
-			start = end + 1;
-		}
-	}
-
-	static bool readStreamText(std::FILE* stream, std::string& content) {
-		char chunk[65536];
-		for (std::size_t got = 0; (got = std::fread(chunk, 1, sizeof(chunk), stream)) != 0;) {
-			content.append(chunk, got);
-		}
-
-		return std::ferror(stream) == 0;
-	}
-
-	static bool loadPagerInput(Executor& exec, const PagerOptions& options, std::string& content) {
-		std::vector<std::string> files = options.files;
-		if (files.empty()) files.push_back("-");
-
-		bool ok = true;
-		for (const std::string& file : files) {
-			std::FILE* stream = file == "-" ? stdin : fopenNative(exec, file, "rb");
-			if (stream == nullptr) {
-				perr("less", file + ": " + std::strerror(errno));
-				ok = false;
-				continue;
+	static void layoutLine(Pager& pager, std::size_t index) {
+		const int number_width = pager.options.line_numbers ? kNumberWidth : 0;
+		const int width = (std::max)(1, pager.console.columns - number_width);
+		const std::string& line = pager.lines[index];
+		std::size_t begin = 0;
+		int used = 0;
+		for (std::size_t at = 0; at < line.size();) {
+			const std::size_t step = line[at] == '\x1B' ? escapeLength(line, at) : 1;
+			const bool visible = line[at] != '\x1B' && !isContinuationByte(static_cast<unsigned char>(line[at]));
+			if (visible && used == width && !pager.options.chop) {
+				pager.rows.push_back(DisplayRow{ index, begin, at });
+				begin = at;
+				used = 0;
 			}
 
-			if (files.size() > 1) content += "::::::::::::::\n" + file + "\n::::::::::::::\n";
-			readStreamText(stream, content);
-			if (stream != stdin) std::fclose(stream);
+			if (visible) ++used;
+			at += step;
 		}
 
-		return ok;
+		pager.rows.push_back(DisplayRow{ index, begin, line.size() });
+	}
+
+	static void appendLine(Pager& pager, std::string line) {
+		if (!line.empty() && line.back() == '\r') line.pop_back();
+		pager.lines.push_back(expandControls(line));
+		layoutLine(pager, pager.lines.size() - 1);
+	}
+
+	// Moves whatever the feed has read into lines and rows; a final line
+	// without a newline is only complete at the end of the input.
+	static bool absorbInput(Pager& pager) {
+		std::string text;
+		pager.eof = pager.feed->take(text);
+		if (pager.keep_raw) pager.raw += text;
+		pager.partial += text;
+
+		std::size_t start = 0;
+		for (std::size_t end; (end = pager.partial.find('\n', start)) != std::string::npos; start = end + 1) {
+			appendLine(pager, pager.partial.substr(start, end - start));
+		}
+
+		pager.partial.erase(0, start);
+		if (pager.eof && !pager.partial.empty()) {
+			appendLine(pager, pager.partial);
+			pager.partial.clear();
+		}
+
+		return !text.empty();
 	}
 
 	static void layoutRows(Pager& pager) {
 		pager.rows.clear();
-		const int number_width = pager.options.line_numbers ? kNumberWidth : 0;
-		const int width = (std::max)(1, pager.console.columns - number_width);
-		for (std::size_t index = 0; index < pager.lines.size(); ++index) {
-			const std::string& line = pager.lines[index];
-			std::size_t begin = 0;
-			int used = 0;
-			for (std::size_t at = 0; at < line.size();) {
-				const std::size_t step = line[at] == '\x1B' ? escapeLength(line, at) : 1;
-				const bool visible = line[at] != '\x1B'
-					&& !isContinuationByte(static_cast<unsigned char>(line[at]));
-				if (visible && used == width && !pager.options.chop) {
-					pager.rows.push_back(DisplayRow{ index, begin, at });
-					begin = at;
-					used = 0;
-				}
-
-				if (visible) ++used;
-				at += step;
-			}
-
-			pager.rows.push_back(DisplayRow{ index, begin, line.size() });
-		}
+		for (std::size_t index = 0; index < pager.lines.size(); ++index) layoutLine(pager, index);
 	}
 
 	static std::size_t pageHeight(const Pager& pager) {
@@ -215,6 +212,13 @@ namespace wbsh {
 
 	static bool atEnd(const Pager& pager) {
 		return pager.top >= lastTop(pager);
+	}
+
+	// Keeps the reader a few screens ahead of the view.
+	static void requestRows(Pager& pager) {
+		if (pager.following || pager.searching) return;
+		const std::size_t line = pager.rows.empty() ? 0 : pager.rows[(std::min)(pager.top, pager.rows.size() - 1)].line;
+		pager.feed->want(line + 4 * pageHeight(pager) + 1);
 	}
 
 	static bool sameText(const std::string& haystack, std::size_t at, const std::string& needle,
@@ -278,7 +282,10 @@ namespace wbsh {
 
 	static std::string statusText(const Pager& pager) {
 		if (!pager.message.empty()) return pager.message;
-		if (atEnd(pager)) return "(END)";
+		if (pager.following) return "Waiting for data... (any key to stop)";
+		if (pager.searching) return "Searching...";
+		if (atEnd(pager) && pager.eof) return "(END)";
+		if (atEnd(pager)) return ":";
 		if (pager.top == 0 && !pager.title.empty()) return pager.title;
 		return ":";
 	}
@@ -351,7 +358,7 @@ namespace wbsh {
 	}
 
 	static void scrollBy(Pager& pager, long delta) {
-		if (delta > 0 && atEnd(pager) && pager.options.quit_at_eof) {
+		if (delta > 0 && atEnd(pager) && pager.eof && pager.options.quit_at_eof) {
 			pager.done = true;
 			return;
 		}
@@ -361,9 +368,13 @@ namespace wbsh {
 		pager.top = static_cast<std::size_t>((std::max)(0L, (std::min)(target, limit)));
 	}
 
+	// Forward searches past the input read so far wait for more of it; the
+	// search wraps around only once the input is complete.
 	static bool searchFrom(Pager& pager, bool backward) {
 		const std::size_t count = pager.rows.size();
+		const bool partial = !pager.eof && !backward;
 		for (std::size_t step = 1; step <= count; ++step) {
+			if (partial && pager.top + step >= count) break;
 			const std::size_t index = backward ? (pager.top + count - step) % count
 				: (pager.top + step) % count;
 			const DisplayRow& row = pager.rows[index];
@@ -375,11 +386,39 @@ namespace wbsh {
 			}
 
 			pager.top = (std::min)(index, lastTop(pager));
+			pager.searching = false;
 			return true;
 		}
 
+		if (partial) {
+			pager.searching = true;
+			pager.feed->wantAll();
+			return false;
+		}
+
+		pager.searching = false;
 		pager.message = "Pattern not found";
 		return false;
+	}
+
+	// True for a record the pager acts on: a key press, the wheel or a resize.
+	static bool classifyRecord(const INPUT_RECORD& record, KEY_EVENT_RECORD& key, int& wheel) {
+		if (record.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+			key = KEY_EVENT_RECORD{};
+			return true;
+		}
+
+		const MOUSE_EVENT_RECORD& mouse = record.Event.MouseEvent;
+		if (record.EventType == MOUSE_EVENT && mouse.dwEventFlags == MOUSE_WHEELED) {
+			const short direction = static_cast<short>(HIWORD(mouse.dwButtonState));
+			wheel = direction > 0 ? -kWheelLines : kWheelLines;
+			key = KEY_EVENT_RECORD{};
+			return true;
+		}
+
+		if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) return false;
+		key = record.Event.KeyEvent;
+		return true;
 	}
 
 	static bool readKey(const PagerConsole& console, KEY_EVENT_RECORD& key, int& wheel) {
@@ -387,23 +426,7 @@ namespace wbsh {
 			INPUT_RECORD record;
 			DWORD read = 0;
 			if (::ReadConsoleInputW(console.in, &record, 1, &read) == 0 || read == 0) return false;
-			if (record.EventType == WINDOW_BUFFER_SIZE_EVENT) {
-				key = KEY_EVENT_RECORD{};
-				return true;
-			}
-
-			const MOUSE_EVENT_RECORD& mouse = record.Event.MouseEvent;
-			if (record.EventType == MOUSE_EVENT && mouse.dwEventFlags == MOUSE_WHEELED) {
-				const short direction = static_cast<short>(HIWORD(mouse.dwButtonState));
-				wheel = direction > 0 ? -kWheelLines : kWheelLines;
-				key = KEY_EVENT_RECORD{};
-				return true;
-			}
-
-			if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown) {
-				key = record.Event.KeyEvent;
-				return true;
-			}
+			if (classifyRecord(record, key, wheel)) return true;
 		}
 	}
 
@@ -450,6 +473,16 @@ namespace wbsh {
 		if (!pager.pattern.empty()) searchFrom(pager, backward);
 	}
 
+	// G reads to the end of the input, F keeps following it as it grows;
+	// any key stops either.
+	static void followToEnd(Pager& pager, bool forever) {
+		pager.top = lastTop(pager);
+		if (pager.eof && !forever) return;
+
+		pager.following = true;
+		pager.feed->wantAll();
+	}
+
 	static bool handleMotionKey(Pager& pager, WORD virtual_key, wchar_t ch) {
 		const long page = static_cast<long>(pageHeight(pager));
 		const bool page_down = ch == ' ' || ch == 'f' || ch == 'z' || virtual_key == VK_NEXT;
@@ -465,7 +498,8 @@ namespace wbsh {
 		else if (ch == 'd') scrollBy(pager, page / 2);
 		else if (ch == 'u') scrollBy(pager, -page / 2);
 		else if (to_top)    pager.top = 0;
-		else if (to_end)    pager.top = lastTop(pager);
+		else if (to_end)    followToEnd(pager, false);
+		else if (ch == 'F') followToEnd(pager, true);
 		else return false;
 		return true;
 	}
@@ -517,7 +551,7 @@ namespace wbsh {
 	}
 
 	static void applyStartPosition(Pager& pager) {
-		if (pager.options.start_at_end) pager.top = lastTop(pager);
+		if (pager.options.start_at_end) followToEnd(pager, false);
 		if (pager.options.start_line > 0) {
 			const std::size_t wanted = static_cast<std::size_t>(pager.options.start_line - 1);
 			while (pager.top < lastTop(pager) && pager.rows[pager.top].line < wanted) ++pager.top;
@@ -533,9 +567,61 @@ namespace wbsh {
 		return key.wVirtualKeyCode != 0 || key.uChar.UnicodeChar != 0;
 	}
 
+	// Reads the console's queued events without blocking; true for one that
+	// needs handling (a key, the wheel or a resize).
+	static bool pendingKey(const PagerConsole& console, KEY_EVENT_RECORD& key, int& wheel) {
+		DWORD queued = 0;
+		while (::GetNumberOfConsoleInputEvents(console.in, &queued) != 0 && queued > 0) {
+			INPUT_RECORD record;
+			DWORD read = 0;
+			if (::ReadConsoleInputW(console.in, &record, 1, &read) == 0 || read == 0) return false;
+			if (classifyRecord(record, key, wheel)) return true;
+		}
+
+		return false;
+	}
+
+	enum class PagerEvent { Key, Data, Failed };
+
+	static PagerEvent waitForEvent(Pager& pager, KEY_EVENT_RECORD& key, int& wheel) {
+		const HANDLE handles[2] = { pager.console.in, static_cast<HANDLE>(pager.feed->event()) };
+		for (;;) {
+			const DWORD count = pager.eof ? 1 : 2;
+			const DWORD woke = ::WaitForMultipleObjects(count, handles, FALSE, INFINITE);
+			if (woke == WAIT_OBJECT_0 + 1) return PagerEvent::Data;
+			if (woke != WAIT_OBJECT_0) return PagerEvent::Failed;
+			if (pendingKey(pager.console, key, wheel)) return PagerEvent::Key;
+		}
+	}
+
+	static void onInput(Pager& pager) {
+		absorbInput(pager);
+		if (pager.following) pager.top = lastTop(pager);
+		if (pager.following && pager.eof) pager.following = false;
+		if (pager.searching) searchFrom(pager, false);
+	}
+
+	static void stopWaiting(Pager& pager) {
+		pager.following = false;
+		pager.searching = false;
+		requestRows(pager);
+	}
+
+	static void onKey(Pager& pager, const KEY_EVENT_RECORD& key, int wheel) {
+		if (pager.following || pager.searching) {
+			stopWaiting(pager);
+			return;
+		}
+
+		if (wheel != 0) scrollBy(pager, wheel);
+		else if (isKeyPress(key)) handlePagerKey(pager, key);
+		requestRows(pager);
+	}
+
 	static void runPagerLoop(Pager& pager) {
 		if (!pager.options.keep_screen) writeConsole(pager.console, "\x1b[?1049h");
 		refreshSize(pager);
+		requestRows(pager);
 		applyStartPosition(pager);
 		while (!pager.done) {
 			refreshSize(pager);
@@ -543,9 +629,10 @@ namespace wbsh {
 
 			KEY_EVENT_RECORD key{};
 			int wheel = 0;
-			if (!readKey(pager.console, key, wheel)) break;
-			if (wheel != 0) scrollBy(pager, wheel);
-			else if (isKeyPress(key)) handlePagerKey(pager, key);
+			const PagerEvent event = waitForEvent(pager, key, wheel);
+			if (event == PagerEvent::Failed) break;
+			if (event == PagerEvent::Data) onInput(pager);
+			else onKey(pager, key, wheel);
 		}
 
 		writeConsole(pager.console, pager.options.keep_screen ? "\r\n" : "\x1b[?1049l");
@@ -615,12 +702,83 @@ namespace wbsh {
 		std::fflush(stdout);
 	}
 
+	// Writes what was read so far, then the rest as it arrives.
+	static void passThrough(Pager& pager) {
+		writeThrough(pager.raw);
+		pager.raw.clear();
+		pager.feed->wantAll();
+		for (;;) {
+			std::string text;
+			const bool eof = pager.feed->take(text);
+			writeThrough(text);
+			if (eof) return;
+			::WaitForSingleObject(static_cast<HANDLE>(pager.feed->event()), INFINITE);
+		}
+	}
+
+	// -F: read until there is more than a screen or the input ended.
 	static bool fitsOnOneScreen(Pager& pager) {
 		pager.console.columns = 80;
 		pager.console.rows = 24;
 		if (!queryConsoleSize(pager.console.columns, pager.console.rows)) return false;
-		layoutRows(pager);
-		return pager.rows.size() <= pageHeight(pager);
+
+		pager.feed->want(pageHeight(pager) + 1);
+		for (;;) {
+			absorbInput(pager);
+			if (pager.rows.size() > pageHeight(pager)) return false;
+			if (pager.eof) return true;
+			::WaitForSingleObject(static_cast<HANDLE>(pager.feed->event()), INFINITE);
+		}
+	}
+
+	static bool openInputs(Executor& exec, const PagerOptions& options, std::vector<PagerInput>& inputs) {
+		std::vector<std::string> files = options.files;
+		if (files.empty()) files.push_back("-");
+
+		bool ok = true;
+		for (const std::string& file : files) {
+			std::FILE* stream = file == "-" ? stdin : fopenNative(exec, file, "rb");
+			if (stream == nullptr) {
+				perr("less", file + ": " + std::strerror(errno));
+				ok = false;
+				continue;
+			}
+
+			PagerInput input;
+			input.file = stream;
+			if (files.size() > 1) input.header = "::::::::::::::\n" + file + "\n::::::::::::::\n";
+			inputs.push_back(input);
+		}
+
+		return ok;
+	}
+
+	static void closeInputs(const std::vector<PagerInput>& inputs) {
+		for (const PagerInput& input : inputs) {
+			if (input.file != stdin) std::fclose(input.file);
+		}
+	}
+
+	static void showInputs(const std::vector<PagerInput>& inputs, const PagerOptions& options) {
+		PagerFeed feed(inputs);
+		Pager pager;
+		pager.options = options;
+		pager.feed = &feed;
+		pager.title = options.files.size() == 1 ? options.files[0] : "";
+		if (options.quit_if_one_screen && fitsOnOneScreen(pager)) {
+			writeThrough(pager.raw);
+			return;
+		}
+
+		if (!openPagerConsole(pager.console)) {
+			passThrough(pager);
+			return;
+		}
+
+		pager.keep_raw = false;
+		pager.raw.clear();
+		runPagerLoop(pager);
+		closePagerConsole(pager.console);
 	}
 
 	static int runPager(Executor& exec, const std::vector<std::string>& args,
@@ -635,30 +793,13 @@ namespace wbsh {
 			return 1;
 		}
 
-		std::string content;
-		const bool loaded = loadPagerInput(exec, options, content);
-		if (!isConsoleStream(stdout)) {
-			writeThrough(content);
-			return loaded ? 0 : 1;
-		}
+		std::vector<PagerInput> inputs;
+		const bool opened = openInputs(exec, options, inputs);
+		if (isConsoleStream(stdout)) showInputs(inputs, options);
+		else streamInputs(inputs);
 
-		Pager pager;
-		pager.options = options;
-		pager.title = options.files.size() == 1 ? options.files[0] : "";
-		splitIntoLines(content, pager.lines);
-		if (options.quit_if_one_screen && fitsOnOneScreen(pager)) {
-			writeThrough(content);
-			return loaded ? 0 : 1;
-		}
-
-		if (!openPagerConsole(pager.console)) {
-			writeThrough(content);
-			return loaded ? 0 : 1;
-		}
-
-		runPagerLoop(pager);
-		closePagerConsole(pager.console);
-		return loaded ? 0 : 1;
+		closeInputs(inputs);
+		return opened ? 0 : 1;
 	}
 
 	static bool preferExternalLess(Executor& exec) {

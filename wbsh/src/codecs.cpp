@@ -1,7 +1,8 @@
 /**
  * @file codecs.cpp
- * @brief Format detection and the gzip (RFC 1952) member framing; the
- *        other formats delegate to their own decoders.
+ * @brief Format detection, the gzip (RFC 1952) member framing and the
+ *        streaming entry points; the other formats delegate to their own
+ *        decoders and encoders.
  */
 
 #include "codecs.h"
@@ -22,27 +23,87 @@ namespace wbsh {
 	static const std::uint8_t kGzipFlagComment = 0x10;
 	static const std::size_t  kGzipHeaderSize  = 10;
 	static const std::size_t  kGzipTrailerSize = 8;
+	static const std::size_t  kDetectBytes     = 14;
+	static const std::size_t  kCopyChunk       = 64 * 1024;
 
-	static std::uint32_t gzipCrc(const std::uint8_t* data, std::size_t size) {
-		static std::uint32_t table[256];
-		static bool built = false;
-		if (!built) {
-			for (std::uint32_t k = 0; k < 256; ++k) {
-				std::uint32_t entry = k;
-				for (int bit = 0; bit < 8; ++bit) {
-					entry = (entry & 1) != 0 ? 0xEDB88320u ^ (entry >> 1) : entry >> 1;
-				}
+	namespace codecs_detail {
 
-				table[k] = entry;
+		/// Keeps the CRC-32 and length of a gzip member's output.
+		class CrcSink : public ByteSink {
+		public:
+			explicit CrcSink(ByteSink& next) : next_(next) {}
+
+			bool write(const std::uint8_t* data, std::size_t size) override {
+				crc_ = crc32Of(crc_, data, size);
+				size_ += size;
+				return next_.write(data, size);
 			}
 
-			built = true;
-		}
+			std::uint32_t crc() const { return crc_; }
+			std::uint32_t size32() const { return static_cast<std::uint32_t>(size_); }
 
-		std::uint32_t crc = 0xFFFFFFFFu;
-		for (std::size_t k = 0; k < size; ++k) crc = table[(crc ^ data[k]) & 0xFF] ^ (crc >> 8);
-		return ~crc;
-	}
+		private:
+			ByteSink& next_;
+			std::uint32_t crc_ = 0;
+			std::uint64_t size_ = 0;
+		};
+
+		class GzipCompressor : public Compressor {
+		public:
+			GzipCompressor(ByteSink& out, int level) : out_(out), deflate_(out, level) {
+				std::uint8_t header[kGzipHeaderSize] = {
+					0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+				};
+				header[8] = static_cast<std::uint8_t>(level >= 9 ? 2 : (level <= 1 ? 4 : 0));
+				ok_ = out_.write(header, sizeof(header));
+			}
+
+			bool write(const std::uint8_t* data, std::size_t size) override {
+				crc_ = crc32Of(crc_, data, size);
+				size_ += size;
+				return ok_ && deflate_.write(data, size);
+			}
+
+			bool finish() override {
+				if (!ok_ || !deflate_.finish()) return false;
+
+				std::uint8_t trailer[kGzipTrailerSize];
+				for (int k = 0; k < 4; ++k) trailer[k] = static_cast<std::uint8_t>(crc_ >> (8 * k));
+				for (int k = 0; k < 4; ++k) trailer[4 + k] = static_cast<std::uint8_t>(size_ >> (8 * k));
+				return out_.write(trailer, sizeof(trailer));
+			}
+
+		private:
+			ByteSink& out_;
+			DeflateEncoder deflate_;
+			bool ok_ = true;
+			std::uint32_t crc_ = 0;
+			std::uint64_t size_ = 0;
+		};
+
+		class Bzip2Compressor : public Compressor {
+		public:
+			Bzip2Compressor(ByteSink& out, int level) : encoder_(out, level) {}
+			bool write(const std::uint8_t* data, std::size_t size) override { return encoder_.write(data, size); }
+			bool finish() override { return encoder_.finish(); }
+
+		private:
+			Bzip2Encoder encoder_;
+		};
+
+		class PlainCompressor : public Compressor {
+		public:
+			explicit PlainCompressor(ByteSink& out) : out_(out) {}
+			bool write(const std::uint8_t* data, std::size_t size) override { return out_.write(data, size); }
+			bool finish() override { return true; }
+
+		private:
+			ByteSink& out_;
+		};
+
+	}  // namespace codecs_detail
+
+	using codecs_detail::CrcSink;
 
 	static std::uint32_t readLe32(const std::uint8_t* bytes) {
 		return static_cast<std::uint32_t>(bytes[0]) | (static_cast<std::uint32_t>(bytes[1]) << 8)
@@ -50,90 +111,97 @@ namespace wbsh {
 			| (static_cast<std::uint32_t>(bytes[3]) << 24);
 	}
 
-	static void appendLe32(std::vector<std::uint8_t>& out, std::uint32_t value) {
-		for (int k = 0; k < 4; ++k) out.push_back(static_cast<std::uint8_t>(value >> (8 * k)));
+	static bool skipZeroTerminated(InputBuffer& in) {
+		for (;;) {
+			const int byte = in.get();
+			if (byte < 0) return false;
+			if (byte == 0) return true;
+		}
 	}
 
-	static bool skipZeroTerminated(const std::uint8_t* in, std::size_t size, std::size_t& at) {
-		while (at < size && in[at] != 0) ++at;
-		if (at >= size) return false;
-		++at;
+	static bool skipCount(InputBuffer& in, std::size_t count) {
+		for (; count > 0; --count) {
+			if (in.get() < 0) return false;
+		}
+
 		return true;
 	}
 
-	static bool gzipHeaderEnd(const std::uint8_t* in, std::size_t size, std::size_t& at) {
-		if (at + kGzipHeaderSize > size) return false;
-		if (in[at] != 0x1F || in[at + 1] != 0x8B || in[at + 2] != 8) {
-			return false;
-		}
-
-		const std::uint8_t flags = in[at + 3];
-		at += kGzipHeaderSize;
+	static bool skipGzipExtras(InputBuffer& in, std::uint8_t flags) {
 		if ((flags & kGzipFlagExtra) != 0) {
-			if (at + 2 > size) return false;
-			const std::size_t extra = static_cast<std::size_t>(in[at])
-				| (static_cast<std::size_t>(in[at + 1]) << 8);
-			at += 2 + extra;
+			std::uint8_t length[2];
+			if (!in.readExact(length, 2)) return false;
+			if (!skipCount(in, static_cast<std::size_t>(length[0]) | (static_cast<std::size_t>(length[1]) << 8))) {
+				return false;
+			}
 		}
 
-		if ((flags & kGzipFlagName) != 0 && !skipZeroTerminated(in, size, at)) return false;
-		if ((flags & kGzipFlagComment) != 0 && !skipZeroTerminated(in, size, at)) return false;
-		if ((flags & kGzipFlagCrc) != 0) at += 2;
-		return at <= size;
+		if ((flags & kGzipFlagName) != 0 && !skipZeroTerminated(in)) return false;
+		if ((flags & kGzipFlagComment) != 0 && !skipZeroTerminated(in)) return false;
+		return (flags & kGzipFlagCrc) == 0 || skipCount(in, 2);
 	}
 
-	static bool inflateMember(const std::uint8_t* in, std::size_t size, std::size_t& at,
-	                          std::vector<std::uint8_t>& out, std::string& error) {
-		const std::size_t start = out.size();
-		if (!inflateRawConsumed(in + at, size - at, out, at)) {
-			error = "invalid compressed data";
+	static bool gzipHeaderFollows(InputBuffer& in) {
+		const std::uint8_t* next = nullptr;
+		return in.peek(next, 3) == 3 && next[0] == 0x1F && next[1] == 0x8B && next[2] == 8;
+	}
+
+	static bool readGzipHeader(InputBuffer& in) {
+		std::uint8_t header[kGzipHeaderSize];
+		if (!gzipHeaderFollows(in) || !in.readExact(header, sizeof(header))) return false;
+		return skipGzipExtras(in, header[3]);
+	}
+
+	static bool inflateMember(InputBuffer& in, ByteSink& out, std::string& error) {
+		CrcSink checked(out);
+		LzWindow window(checked, kDeflateWindow);
+		if (!inflateStream(in, window)) {
+			if (window.ok()) error = in.atEnd() ? "unexpected end of file" : "invalid compressed data";
 			return false;
 		}
 
-		if (at + kGzipTrailerSize > size) {
+		std::uint8_t trailer[kGzipTrailerSize];
+		if (!in.readExact(trailer, sizeof(trailer))) {
 			error = "unexpected end of file";
 			return false;
 		}
 
-		const std::uint32_t crc = readLe32(in + at);
-		const std::uint32_t length = readLe32(in + at + 4);
-		at += kGzipTrailerSize;
-		const std::size_t produced = out.size() - start;
-		if (crc == gzipCrc(out.data() + start, produced)
-		    && length == static_cast<std::uint32_t>(produced)) {
-			return true;
-		}
-
+		if (readLe32(trailer) == checked.crc() && readLe32(trailer + 4) == checked.size32()) return true;
 		error = "invalid compressed data--crc error";
 		return false;
 	}
 
-	static bool gunzipData(const std::uint8_t* in, std::size_t size, std::vector<std::uint8_t>& out,
-	                       std::string& error) {
-		std::size_t at = 0;
-		do {
-			if (!gzipHeaderEnd(in, size, at)) {
-				error = at == 0 ? "not in gzip format" : "trailing garbage ignored";
-				return at != 0;
-			}
-
-			if (!inflateMember(in, size, at, out, error)) return false;
-			while (at < size && in[at] == 0) ++at;
-		} while (at < size);
-
-		return true;
+	static void skipZeroPadding(InputBuffer& in) {
+		const std::uint8_t* next = nullptr;
+		while (in.peek(next, 1) == 1 && next[0] == 0) in.get();
 	}
 
-	static void gzipData(const std::uint8_t* in, std::size_t size, int level,
-	                     std::vector<std::uint8_t>& out) {
-		static const std::uint8_t kHeader[kGzipHeaderSize] = {
-			0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
-		};
-		out.insert(out.end(), kHeader, kHeader + kGzipHeaderSize);
-		out[out.size() - 2] = level >= 9 ? 2 : (level <= 1 ? 4 : 0);
-		deflateRaw(in, size, level, out);
-		appendLe32(out, gzipCrc(in, size));
-		appendLe32(out, static_cast<std::uint32_t>(size));
+	// Members after the first that are not gzip are trailing garbage, which
+	// gzip ignores.
+	static bool gunzipStream(InputBuffer& in, ByteSink& out, std::string& error) {
+		if (!readGzipHeader(in)) {
+			error = "not in gzip format";
+			return false;
+		}
+
+		for (;;) {
+			if (!inflateMember(in, out, error)) return false;
+			skipZeroPadding(in);
+			if (in.atEnd() || !readGzipHeader(in)) return true;
+		}
+	}
+
+	static bool copyStream(InputBuffer& in, ByteSink& out, std::string& error) {
+		std::vector<std::uint8_t> chunk(kCopyChunk);
+		for (;;) {
+			const std::size_t got = in.readSome(chunk.data(), chunk.size());
+			if (got == 0) break;
+			if (!out.write(chunk.data(), got)) return false;
+		}
+
+		if (!in.sourceFailed()) return true;
+		error = "read error";
+		return false;
 	}
 
 	// .lzma has no magic number: accept the header xz and lzma-utils write,
@@ -163,6 +231,12 @@ namespace wbsh {
 		return Codec::None;
 	}
 
+	Codec detectCodec(InputBuffer& in) {
+		const std::uint8_t* data = nullptr;
+		const std::size_t size = in.peek(data, kDetectBytes);
+		return detectCodec(data, size);
+	}
+
 	static bool endsWith(const std::string& text, const char* suffix) {
 		const std::size_t length = std::strlen(suffix);
 		return text.size() >= length && text.compare(text.size() - length, length, suffix) == 0;
@@ -183,37 +257,50 @@ namespace wbsh {
 		return Codec::None;
 	}
 
+	bool decompressStream(Codec codec, InputBuffer& in, ByteSink& out, std::string& error) {
+		switch (codec) {
+			case Codec::Gzip:
+				return gunzipStream(in, out, error);
+			case Codec::Bzip2:
+				return bunzip2Stream(in, out, error);
+			case Codec::Xz:
+				return unxzStream(in, out, error);
+			case Codec::Lzma:
+				return unlzmaStream(in, out, error);
+			case Codec::Compress:
+				return uncompressStream(in, out, error);
+			default:
+				return copyStream(in, out, error);
+		}
+	}
+
+	std::unique_ptr<Compressor> makeCompressor(Codec codec, int level, ByteSink& out, std::string& error) {
+		switch (codec) {
+			case Codec::Gzip:
+				return std::make_unique<codecs_detail::GzipCompressor>(out, level);
+			case Codec::Bzip2:
+				return std::make_unique<codecs_detail::Bzip2Compressor>(out, level);
+			case Codec::None:
+				return std::make_unique<codecs_detail::PlainCompressor>(out);
+			default:
+				error = "compression to this format is not supported";
+				return nullptr;
+		}
+	}
+
 	bool decompressWith(Codec codec, const std::uint8_t* in, std::size_t size,
 	                    std::vector<std::uint8_t>& out, std::string& error) {
-		switch (codec) {
-		case Codec::Gzip:     return gunzipData(in, size, out, error);
-		case Codec::Bzip2:    return bunzip2Data(in, size, out, error);
-		case Codec::Xz:       return unxzData(in, size, out, error);
-		case Codec::Lzma:     return unlzmaData(in, size, out, error);
-		case Codec::Compress: return uncompressData(in, size, out, error);
-		case Codec::None:
-		default:
-			out.insert(out.end(), in, in + size);
-			return true;
-		}
+		MemorySource source(in, size);
+		InputBuffer input(source);
+		VectorSink sink(out);
+		return decompressStream(codec, input, sink, error);
 	}
 
 	bool compressWith(Codec codec, const std::uint8_t* in, std::size_t size, int level,
 	                  std::vector<std::uint8_t>& out, std::string& error) {
-		switch (codec) {
-		case Codec::Gzip:
-			gzipData(in, size, level, out);
-			return true;
-		case Codec::Bzip2:
-			bzip2Data(in, size, level, out);
-			return true;
-		case Codec::None:
-			out.insert(out.end(), in, in + size);
-			return true;
-		default:
-			error = "compression to this format is not supported";
-			return false;
-		}
+		VectorSink sink(out);
+		const std::unique_ptr<Compressor> compressor = makeCompressor(codec, level, sink, error);
+		return compressor && compressor->write(in, size) && compressor->finish();
 	}
 
 }  // namespace wbsh

@@ -7,6 +7,8 @@
  * the codec named by -z / -j / -a. Long names are written as GNU 'L'
  * records; pax 'x' headers and base-256 sizes are understood on read.
  * Members are refused when they would land outside the target directory.
+ * Archives stream in both directions: one member at a time, never the
+ * whole archive in memory.
  */
 
 #include "coreutils_internal.h"
@@ -26,10 +28,12 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
 
+#include "bytestream.h"
 #include "codecs.h"
 #include "executor.h"
 #include "fnmatch.h"
@@ -77,13 +81,10 @@ namespace wbsh {
 			unsigned mode = 0644;
 			std::string owner = "root";
 			std::string group = "root";
-			const std::uint8_t* data = nullptr;
 		};
 
 		struct TarWriter {
-			std::FILE* file = nullptr;
-			bool buffered = false;
-			std::vector<std::uint8_t> buffer;
+			ByteSink* sink = nullptr;
 			bool failed = false;
 		};
 
@@ -366,12 +367,7 @@ namespace wbsh {
 	}
 
 	static void writeBytes(TarWriter& writer, const std::uint8_t* data, std::size_t size) {
-		if (writer.buffered) {
-			writer.buffer.insert(writer.buffer.end(), data, data + size);
-			return;
-		}
-
-		if (std::fwrite(data, 1, size, writer.file) != size) writer.failed = true;
+		if (!writer.failed && !writer.sink->write(data, size)) writer.failed = true;
 	}
 
 	static void writePadding(TarWriter& writer, std::uint64_t size) {
@@ -567,19 +563,10 @@ namespace wbsh {
 		return stdout;
 	}
 
-	static bool finishArchive(TarWriter& writer, Codec codec) {
+	static bool finishArchive(TarWriter& writer, Compressor& compressor) {
 		static const std::uint8_t kTrailer[kBlock * 2] = {};
 		writeBytes(writer, kTrailer, sizeof(kTrailer));
-		if (!writer.buffered) return !writer.failed;
-
-		std::vector<std::uint8_t> packed;
-		std::string error;
-		if (!compressWith(codec, writer.buffer.data(), writer.buffer.size(), 6, packed, error)) {
-			perr("tar", error);
-			return false;
-		}
-
-		return std::fwrite(packed.data(), 1, packed.size(), writer.file) == packed.size();
+		return !writer.failed && compressor.finish();
 	}
 
 	static fs::path baseDirectory(Executor& exec, const TarOptions& options) {
@@ -600,68 +587,34 @@ namespace wbsh {
 			return 2;
 		}
 
-		TarWriter writer;
-		writer.file = openArchiveOutput(exec, options);
-		if (writer.file == nullptr) {
+		std::FILE* file = openArchiveOutput(exec, options);
+		if (file == nullptr) {
 			if (options.archive != "-") perr("tar", options.archive + ": " + std::strerror(errno));
 			return 2;
 		}
 
-		writer.buffered = codec != Codec::None;
+		FileSink file_sink(file);
+		std::string error;
+		const std::unique_ptr<Compressor> compressor = makeCompressor(codec, 6, file_sink, error);
+		TarWriter writer;
+		writer.sink = compressor.get();
 		const fs::path base = baseDirectory(exec, options);
 		for (const std::string& item : options.members) {
 			const fs::path native = base.empty() ? toNative(exec, item) : base / utf8ToPath(item);
 			addTree(exec, writer, native, archiveName(item, options.absolute), options);
 		}
 
-		const bool ok = finishArchive(writer, codec);
-		if (writer.file != stdout) std::fclose(writer.file);
+		bool ok = finishArchive(writer, *compressor);
+		if (file != stdout) ok = std::fclose(file) == 0 && ok;
 		std::fflush(stdout);
+		if (!ok) perr("tar", options.archive + ": Cannot write");
 		return ok ? 0 : 2;
 	}
 
-	static bool readArchiveBytes(Executor& exec, const TarOptions& options,
-	                             std::vector<std::uint8_t>& bytes) {
-		std::FILE* in = options.archive == "-" ? stdin : fopenNative(exec, options.archive, "rb");
-		if (in == nullptr) {
-			perr("tar", options.archive + ": Cannot open: " + std::strerror(errno));
-			return false;
-		}
-
-		std::vector<std::uint8_t> chunk(64 * 1024);
-		for (std::size_t got = 0; (got = std::fread(chunk.data(), 1, chunk.size(), in)) != 0;) {
-			const auto end = chunk.begin() + static_cast<std::ptrdiff_t>(got);
-			bytes.insert(bytes.end(), chunk.begin(), end);
-		}
-
-		if (in != stdin) std::fclose(in);
-		return true;
-	}
-
-	static bool isPlainTar(const std::vector<std::uint8_t>& bytes) {
-		return bytes.size() >= kMagicOffset + 5
-			&& std::memcmp(bytes.data() + kMagicOffset, "ustar", 5) == 0;
-	}
-
-	static bool loadArchive(Executor& exec, const TarOptions& options,
-	                        std::vector<std::uint8_t>& archive) {
-		std::vector<std::uint8_t> raw;
-		if (!readArchiveBytes(exec, options, raw)) return false;
-
-		Codec codec = options.codec;
-		if (!options.codec_forced) {
-			codec = isPlainTar(raw) ? Codec::None : detectCodec(raw.data(), raw.size());
-		}
-
-		if (codec == Codec::None) {
-			archive.swap(raw);
-			return true;
-		}
-
-		std::string error;
-		if (decompressWith(codec, raw.data(), raw.size(), archive, error)) return true;
-		perr("tar", "Child returned status 1: " + error);
-		return false;
+	static bool isPlainTar(InputBuffer& in) {
+		const std::uint8_t* data = nullptr;
+		return in.peek(data, kMagicOffset + 5) == kMagicOffset + 5
+			&& std::memcmp(data + kMagicOffset, "ustar", 5) == 0;
 	}
 
 	static std::string fieldText(const std::uint8_t* header, std::size_t offset,
@@ -883,8 +836,45 @@ namespace wbsh {
 		fs::last_write_time(path, fileTimeOf(entry.mtime), ec);
 	}
 
+	static const std::size_t kCopyChunk = 64 * 1024;
+
+	// Copies @p size archive bytes to @p out (nullptr discards them); false
+	// when the archive ends first.
+	static bool copyData(InputBuffer& in, std::uint64_t size, std::FILE* out, bool& write_ok) {
+		std::vector<std::uint8_t> chunk(kCopyChunk);
+		while (size > 0) {
+			const std::size_t want = static_cast<std::size_t>((std::min<std::uint64_t>)(size, chunk.size()));
+			if (!in.readExact(chunk.data(), want)) return false;
+			if (out != nullptr && write_ok) write_ok = std::fwrite(chunk.data(), 1, want, out) == want;
+			size -= want;
+		}
+
+		return true;
+	}
+
+	static bool skipData(InputBuffer& in, std::uint64_t size) {
+		bool ignored = true;
+		return copyData(in, size, nullptr, ignored);
+	}
+
+	// The data of the member being handled: whoever reads it says so, and
+	// the walker skips whatever was left unread.
+	struct MemberData {
+		InputBuffer& in;
+		std::uint64_t size = 0;
+		bool consumed = false;
+		bool truncated = false;
+
+		bool copyTo(std::FILE* out) {
+			bool write_ok = true;
+			consumed = true;
+			truncated = !copyData(in, size, out, write_ok);
+			return write_ok && !truncated;
+		}
+	};
+
 	static bool writeMemberFile(const fs::path& path, const TarEntry& entry,
-	                            const TarOptions& options) {
+	                            const TarOptions& options, MemberData& data) {
 		std::error_code ec;
 		if (options.keep_old && fs::exists(path, ec)) {
 			std::fprintf(stderr, "tar: %s: Cannot open: File exists\n", entry.name.c_str());
@@ -900,9 +890,8 @@ namespace wbsh {
 			return false;
 		}
 
-		const std::size_t size = static_cast<std::size_t>(entry.size);
-		const bool ok = std::fwrite(entry.data, 1, size, out) == size;
-		std::fclose(out);
+		bool ok = data.copyTo(out);
+		ok = std::fclose(out) == 0 && ok;
 		setTimes(path, entry, options);
 		if ((entry.mode & 0222) == 0) {
 			fs::permissions(path, fs::perms::owner_write, fs::perm_options::remove, ec);
@@ -943,51 +932,53 @@ namespace wbsh {
 		return outputPath(exec, options, target);
 	}
 
-	static void extractMember(Executor& exec, const TarOptions& options, TarEntry entry,
-	                          ExtractState& state) {
-		if (!safeMemberName(options, state, entry.name)) return;
+	static bool isRegularType(char type) {
+		return type == '0' || type == '\0' || type == '7';
+	}
 
-		if (options.to_stdout) {
-			if (entry.type == '0' || entry.type == '\0' || entry.type == '7') {
-				std::fwrite(entry.data, 1, static_cast<std::size_t>(entry.size), stdout);
-			}
-
-			return;
-		}
-
+	static void extractToDisk(Executor& exec, const TarOptions& options, const TarEntry& entry,
+	                          MemberData& data, ExtractState& state) {
 		if (options.verbose > 0) std::printf("%s\n", entry.name.c_str());
 		const fs::path path = outputPath(exec, options, entry.name);
 		std::error_code ec;
 		switch (entry.type) {
-		case '5':
-			fs::create_directories(path, ec);
-			state.directory_times.emplace_back(path, entry.mtime);
-			break;
-		case '1':
-		case '2':
-			if (!writeMemberLink(path, entry, hardLinkTarget(exec, options, entry))) {
-				++state.failures;
-			}
-
-			break;
-		case '0':
-		case '\0':
-		case '7':
-			if (!writeMemberFile(path, entry, options)) ++state.failures;
-			break;
-		default:
-			std::fprintf(stderr, "tar: %s: Unsupported member type '%c'\n", entry.name.c_str(),
-				entry.type);
-			break;
+			case '5':
+				fs::create_directories(path, ec);
+				state.directory_times.emplace_back(path, entry.mtime);
+				break;
+			case '1':
+			case '2':
+				if (!writeMemberLink(path, entry, hardLinkTarget(exec, options, entry))) ++state.failures;
+				break;
+			case '0':
+			case '\0':
+			case '7':
+				if (!writeMemberFile(path, entry, options, data)) ++state.failures;
+				break;
+			default:
+				std::fprintf(stderr, "tar: %s: Unsupported member type '%c'\n", entry.name.c_str(), entry.type);
+				break;
 		}
 	}
 
+	static void extractMember(Executor& exec, const TarOptions& options, TarEntry entry,
+	                          MemberData& data, ExtractState& state) {
+		if (!safeMemberName(options, state, entry.name)) return;
+
+		if (options.to_stdout) {
+			if (isRegularType(entry.type)) data.copyTo(stdout);
+			return;
+		}
+
+		extractToDisk(exec, options, entry, data, state);
+	}
+
 	static void handleMember(Executor& exec, const TarOptions& options, const TarEntry& entry,
-	                         ExtractState& state) {
+	                         MemberData& data, ExtractState& state) {
 		if (!memberSelected(options, entry.name) || isExcluded(options, entry.name)) return;
 
 		if (options.mode == TarMode::Extract) {
-			extractMember(exec, options, entry, state);
+			extractMember(exec, options, entry, data, state);
 			return;
 		}
 
@@ -998,39 +989,74 @@ namespace wbsh {
 	static bool consumeSpecialHeader(const TarEntry& raw, const std::uint8_t* data,
 	                                 PendingNames& pending) {
 		switch (raw.type) {
-		case 'L': pending.long_name = trimmedText(data, raw.size);         return true;
-		case 'K': pending.long_link = trimmedText(data, raw.size);         return true;
-		case 'x': parsePax(data, static_cast<std::size_t>(raw.size), pending); return true;
-		case 'g': return true;
-		default:  return false;
+			case 'L':
+				pending.long_name = trimmedText(data, raw.size);
+				return true;
+			case 'K':
+				pending.long_link = trimmedText(data, raw.size);
+				return true;
+			case 'x':
+				parsePax(data, static_cast<std::size_t>(raw.size), pending);
+				return true;
+			case 'g':
+				return true;
+			default:
+				return false;
 		}
 	}
 
-	static int walkArchive(Executor& exec, const TarOptions& options,
-	                       const std::vector<std::uint8_t>& archive, ExtractState& state) {
+	static bool isSpecialType(char type) {
+		return type == 'L' || type == 'K' || type == 'x' || type == 'g';
+	}
+
+	static const std::uint64_t kMaxSpecialRecord = 64ULL * 1024 * 1024;
+
+	static int unexpectedEof() {
+		perr("tar", "Unexpected EOF in archive");
+		return 2;
+	}
+
+	static int readSpecialRecord(InputBuffer& in, const TarEntry& raw, PendingNames& pending) {
+		if (raw.size > kMaxSpecialRecord) {
+			perr("tar", "Archive header record too large");
+			return 2;
+		}
+
+		std::vector<std::uint8_t> record(static_cast<std::size_t>(raw.size));
+		if (!in.readExact(record.data(), record.size())) return unexpectedEof();
+		if (!skipData(in, paddedSize(raw.size) - raw.size)) return unexpectedEof();
+
+		consumeSpecialHeader(raw, record.data(), pending);
+		return 0;
+	}
+
+	static int processMember(Executor& exec, const TarOptions& options, InputBuffer& in,
+	                         const TarEntry& entry, ExtractState& state) {
+		MemberData data{ in, entry.size };
+		handleMember(exec, options, entry, data, state);
+		if (data.truncated) return unexpectedEof();
+		if (!data.consumed && !skipData(in, entry.size)) return unexpectedEof();
+		if (!skipData(in, paddedSize(entry.size) - entry.size)) return unexpectedEof();
+		return 0;
+	}
+
+	static int walkArchive(Executor& exec, const TarOptions& options, ByteSource& source,
+	                       ExtractState& state) {
+		InputBuffer in(source);
 		PendingNames pending;
-		std::size_t at = 0;
-		while (at + kBlock <= archive.size()) {
-			const std::uint8_t* header = archive.data() + at;
+		std::uint8_t header[kBlock];
+		while (in.readExact(header, kBlock)) {
 			if (isZeroBlock(header)) break;
 			if (!checksumMatches(header)) {
 				perr("tar", "This does not look like a tar archive");
 				return 2;
 			}
 
-			TarEntry entry = entryFromHeader(header, pending);
-			const std::size_t data_at = at + kBlock;
-			if (data_at + entry.size > archive.size()) {
-				perr("tar", "Unexpected EOF in archive");
-				return 2;
-			}
-
-			entry.data = archive.data() + data_at;
-			at = data_at + static_cast<std::size_t>(paddedSize(entry.size));
-			if (consumeSpecialHeader(entry, entry.data, pending)) continue;
-
-			pending = PendingNames();
-			handleMember(exec, options, entry, state);
+			const TarEntry entry = entryFromHeader(header, pending);
+			const int status = isSpecialType(entry.type) ? readSpecialRecord(in, entry, pending)
+				: processMember(exec, options, in, entry, state);
+			if (status != 0) return status;
+			if (!isSpecialType(entry.type)) pending = PendingNames();
 		}
 
 		return 0;
@@ -1044,12 +1070,51 @@ namespace wbsh {
 		}
 	}
 
-	static int readArchive(Executor& exec, const TarOptions& options) {
-		std::vector<std::uint8_t> archive;
-		if (!loadArchive(exec, options, archive)) return 2;
+	struct DecodeJob {
+		Codec codec;
+		InputBuffer* input;
+	};
 
+	static bool decodeArchive(void* context, ByteSink& out, std::string& error) {
+		DecodeJob& job = *static_cast<DecodeJob*>(context);
+		return decompressStream(job.codec, *job.input, out, error);
+	}
+
+	static Codec archiveCodec(const TarOptions& options, InputBuffer& raw) {
+		if (options.codec_forced) return options.codec;
+		return isPlainTar(raw) ? Codec::None : detectCodec(raw);
+	}
+
+	// A compressed archive is decoded on a second thread, so tar reads it
+	// member by member as the decoder produces it.
+	static int walkInput(Executor& exec, const TarOptions& options, InputBuffer& raw, ExtractState& state) {
+		DecodeJob job{ archiveCodec(options, raw), &raw };
+		if (job.codec == Codec::None) {
+			BufferedSource plain(raw);
+			return walkArchive(exec, options, plain, state);
+		}
+
+		ProducerSource decoded(decodeArchive, &job);
+		const int status = walkArchive(exec, options, decoded, state);
+		if (!decoded.failed()) return status;
+
+		perr("tar", "Child returned status 1: " + decoded.error());
+		return 2;
+	}
+
+	static int readArchive(Executor& exec, const TarOptions& options) {
+		std::FILE* file = options.archive == "-" ? stdin : fopenNative(exec, options.archive, "rb");
+		if (file == nullptr) {
+			perr("tar", options.archive + ": Cannot open: " + std::strerror(errno));
+			return 2;
+		}
+
+		FileSource source(file);
+		InputBuffer raw(source);
 		ExtractState state;
-		const int status = walkArchive(exec, options, archive, state);
+		const int status = walkInput(exec, options, raw, state);
+		if (file != stdin) std::fclose(file);
+
 		applyDirectoryTimes(state, options);
 		std::fflush(stdout);
 		if (status != 0) return status;

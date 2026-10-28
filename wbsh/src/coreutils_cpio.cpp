@@ -1,7 +1,8 @@
 /**
  * @file coreutils_cpio.cpp
  * @brief cpio (read newc / crc / odc, write newc) and ar (read-only:
- *        list, extract, print; GNU and BSD long names).
+ *        list, extract, print; GNU and BSD long names). cpio streams its
+ *        archives one member at a time in both directions.
  */
 
 #include "coreutils_internal.h"
@@ -16,6 +17,7 @@
 #include <system_error>
 #include <vector>
 
+#include "bytestream.h"
 #include "executor.h"
 #include "fnmatch.h"
 #include "numparse.h"
@@ -49,7 +51,13 @@ namespace wbsh {
 			std::uint32_t mode = 0;
 			std::uint64_t size = 0;
 			std::int64_t mtime = 0;
-			const std::uint8_t* data = nullptr;
+			bool newc = true;
+		};
+
+		struct CpioWriter {
+			ByteSink* sink = nullptr;
+			std::uint64_t written = 0;
+			bool failed = false;
 		};
 
 		struct ArMember {
@@ -64,6 +72,7 @@ namespace wbsh {
 	using cpio_detail::CpioEntry;
 	using cpio_detail::CpioMode;
 	using cpio_detail::CpioOptions;
+	using cpio_detail::CpioWriter;
 
 	static const std::uint32_t kTypeMask      = 0170000;
 	static const std::uint32_t kTypeDirectory = 0040000;
@@ -103,59 +112,72 @@ namespace wbsh {
 		return numberField(header + offset, width, 8);
 	}
 
-	static std::size_t alignFour(std::size_t value) {
-		return (value + 3) & ~static_cast<std::size_t>(3);
+	static bool readName(InputBuffer& in, std::size_t name_size, CpioEntry& entry) {
+		if (name_size == 0) return false;
+
+		std::string name(name_size, '\0');
+		if (!in.readExact(reinterpret_cast<std::uint8_t*>(&name[0]), name_size)) return false;
+		name.pop_back();
+		entry.name = name;
+		return true;
+	}
+
+	static bool skipBytes(InputBuffer& in, std::uint64_t count) {
+		for (; count > 0; --count) {
+			if (in.get() < 0) return false;
+		}
+
+		return true;
+	}
+
+	static bool skipToFour(InputBuffer& in) {
+		return skipBytes(in, (4 - in.consumed() % 4) % 4);
 	}
 
 	// newc / crc: 13 eight-digit hex fields; header plus name, and the data,
 	// are each padded to a multiple of four bytes.
-	static bool parseNewc(const std::vector<std::uint8_t>& archive, std::size_t& at,
-	                      CpioEntry& entry) {
-		if (at + kNewcHeader > archive.size()) return false;
-		const std::uint8_t* header = archive.data() + at;
+	static bool parseNewc(InputBuffer& in, const std::uint8_t* magic, CpioEntry& entry) {
+		std::uint8_t header[kNewcHeader];
+		std::memcpy(header, magic, 6);
+		if (!in.readExact(header + 6, kNewcHeader - 6)) return false;
+
+		entry.newc = true;
 		entry.mode = static_cast<std::uint32_t>(hexField(header, 1));
 		entry.mtime = static_cast<std::int64_t>(hexField(header, 5));
 		entry.size = hexField(header, 6);
 		const std::size_t name_size = static_cast<std::size_t>(hexField(header, 11));
-		if (at + kNewcHeader + name_size > archive.size() || name_size == 0) return false;
-
-		entry.name.assign(reinterpret_cast<const char*>(header + kNewcHeader), name_size - 1);
-		const std::size_t data_at = alignFour(at + kNewcHeader + name_size);
-		if (data_at + entry.size > archive.size()) return false;
-
-		entry.data = archive.data() + data_at;
-		at = alignFour(data_at + static_cast<std::size_t>(entry.size));
-		return true;
+		return readName(in, name_size, entry) && skipToFour(in);
 	}
 
 	// odc: fixed-width octal fields with no padding at all.
-	static bool parseOdc(const std::vector<std::uint8_t>& archive, std::size_t& at,
-	                     CpioEntry& entry) {
-		if (at + kOdcHeader > archive.size()) return false;
-		const std::uint8_t* header = archive.data() + at;
+	static bool parseOdc(InputBuffer& in, const std::uint8_t* magic, CpioEntry& entry) {
+		std::uint8_t header[kOdcHeader];
+		std::memcpy(header, magic, 6);
+		if (!in.readExact(header + 6, kOdcHeader - 6)) return false;
+
+		entry.newc = false;
 		entry.mode = static_cast<std::uint32_t>(octalField(header, 18, 6));
 		entry.mtime = static_cast<std::int64_t>(octalField(header, 48, 11));
 		const std::size_t name_size = static_cast<std::size_t>(octalField(header, 59, 6));
 		entry.size = octalField(header, 65, 11);
-		if (name_size == 0) return false;
-		if (at + kOdcHeader + name_size + entry.size > archive.size()) return false;
-
-		entry.name.assign(reinterpret_cast<const char*>(header + kOdcHeader), name_size - 1);
-		entry.data = header + kOdcHeader + name_size;
-		at += kOdcHeader + name_size + static_cast<std::size_t>(entry.size);
-		return true;
+		return readName(in, name_size, entry);
 	}
 
-	static bool nextCpioEntry(const std::vector<std::uint8_t>& archive, std::size_t& at,
-	                          CpioEntry& entry) {
-		if (at + 6 > archive.size()) return false;
-		const char* magic = reinterpret_cast<const char*>(archive.data() + at);
-		if (std::strncmp(magic, "070701", 6) == 0 || std::strncmp(magic, "070702", 6) == 0) {
-			return parseNewc(archive, at, entry);
+	static bool nextCpioEntry(InputBuffer& in, CpioEntry& entry) {
+		std::uint8_t magic[6];
+		if (!in.readExact(magic, sizeof(magic))) return false;
+
+		const char* text = reinterpret_cast<const char*>(magic);
+		if (std::strncmp(text, "070701", 6) == 0 || std::strncmp(text, "070702", 6) == 0) {
+			return parseNewc(in, magic, entry);
 		}
 
-		if (std::strncmp(magic, "070707", 6) == 0) return parseOdc(archive, at, entry);
+		if (std::strncmp(text, "070707", 6) == 0) return parseOdc(in, magic, entry);
 		return false;
+	}
+
+	static bool finishEntryData(InputBuffer& in, const CpioEntry& entry, std::uint64_t left) {
+		return skipBytes(in, left) && (!entry.newc || skipToFour(in));
 	}
 
 	static bool cpioSelected(const CpioOptions& options, const std::string& name) {
@@ -174,8 +196,24 @@ namespace wbsh {
 			&& (name.size() < 3 || name.compare(name.size() - 3, 3, "/..") != 0);
 	}
 
+	static const std::size_t kCopyChunk = 64 * 1024;
+
+	// Copies the entry's data to @p out, returning how much of it is left
+	// unread when the archive ends early.
+	static std::uint64_t copyEntryData(InputBuffer& in, std::uint64_t size, std::FILE* out) {
+		std::vector<std::uint8_t> chunk(kCopyChunk);
+		while (size > 0) {
+			const std::size_t want = static_cast<std::size_t>((std::min<std::uint64_t>)(size, chunk.size()));
+			if (!in.readExact(chunk.data(), want)) return size;
+			std::fwrite(chunk.data(), 1, want, out);
+			size -= want;
+		}
+
+		return 0;
+	}
+
 	static bool extractCpioFile(Executor& exec, const CpioEntry& entry,
-	                            const CpioOptions& options) {
+	                            const CpioOptions& options, InputBuffer& in, std::uint64_t& left) {
 		const fs::path path = toNative(exec, entry.name);
 		std::error_code ec;
 		if (!options.unconditional && fs::exists(path, ec)) {
@@ -191,13 +229,27 @@ namespace wbsh {
 			return false;
 		}
 
-		std::fwrite(entry.data, 1, static_cast<std::size_t>(entry.size), out);
+		left = copyEntryData(in, entry.size, out);
 		std::fclose(out);
-		return true;
+		return left == 0;
+	}
+
+	static const std::uint64_t kMaxLinkTarget = 64 * 1024;
+
+	static bool extractCpioLink(Executor& exec, const CpioEntry& entry, InputBuffer& in, std::uint64_t& left) {
+		if (entry.size > kMaxLinkTarget) return false;
+
+		std::string target(static_cast<std::size_t>(entry.size), '\0');
+		if (!target.empty() && !in.readExact(reinterpret_cast<std::uint8_t*>(&target[0]), target.size())) return false;
+		left = 0;
+
+		std::error_code ec;
+		fs::create_symlink(utf8ToPath(target), toNative(exec, entry.name), ec);
+		return !ec;
 	}
 
 	static bool extractCpioEntry(Executor& exec, const CpioEntry& entry,
-	                             const CpioOptions& options) {
+	                             const CpioOptions& options, InputBuffer& in, std::uint64_t& left) {
 		if (!safeCpioName(entry.name)) {
 			std::fprintf(stderr, "cpio: %s: refusing to write outside the current directory\n",
 				entry.name.c_str());
@@ -211,45 +263,62 @@ namespace wbsh {
 			return true;
 		}
 
-		if (type == kTypeSymlink) {
-			const std::string target(reinterpret_cast<const char*>(entry.data),
-				static_cast<std::size_t>(entry.size));
-			fs::create_symlink(utf8ToPath(target), toNative(exec, entry.name), ec);
-			return !ec;
-		}
-
+		if (type == kTypeSymlink) return extractCpioLink(exec, entry, in, left);
 		if (type != kTypeRegular) return true;
-		return extractCpioFile(exec, entry, options);
+		return extractCpioFile(exec, entry, options, in, left);
 	}
 
-	static int readCpio(Executor& exec, const CpioOptions& options) {
-		std::vector<std::uint8_t> archive;
-		if (!readWhole(exec, options.archive, archive)) {
-			perr("cpio", options.archive + ": " + std::strerror(errno));
-			return 1;
-		}
-
-		int status = 0;
-		std::uint64_t blocks = 0;
-		std::size_t at = 0;
-		CpioEntry entry;
-		while (nextCpioEntry(archive, at, entry)) {
-			if (entry.name == kTrailer) break;
-			blocks += entry.size;
-			if (!cpioSelected(options, entry.name)) continue;
-
+	static bool handleCpioEntry(Executor& exec, const CpioOptions& options, InputBuffer& in,
+	                            const CpioEntry& entry, bool& ok) {
+		std::uint64_t left = entry.size;
+		if (cpioSelected(options, entry.name)) {
 			const bool list = options.mode == CpioMode::List;
 			std::FILE* report = list ? stdout : stderr;
 			if (list || options.verbose) std::fprintf(report, "%s\n", entry.name.c_str());
-			if (!list && !extractCpioEntry(exec, entry, options)) status = 1;
+			if (!list && !extractCpioEntry(exec, entry, options, in, left)) ok = false;
 		}
 
-		if (at == 0) {
+		return finishEntryData(in, entry, left);
+	}
+
+	static int walkCpio(Executor& exec, const CpioOptions& options, InputBuffer& in) {
+		int status = 0;
+		bool any = false;
+		CpioEntry entry;
+		while (nextCpioEntry(in, entry)) {
+			any = true;
+			if (entry.name == kTrailer) break;
+
+			bool ok = true;
+			const bool complete = handleCpioEntry(exec, options, in, entry, ok);
+			if (!ok) status = 1;
+			if (!complete) {
+				perr("cpio", "premature end of archive");
+				return 2;
+			}
+		}
+
+		if (!any) {
 			perr("cpio", "unrecognized archive format");
 			return 2;
 		}
 
-		std::fprintf(stderr, "%llu blocks\n", static_cast<unsigned long long>((at + 511) / 512));
+		std::fprintf(stderr, "%llu blocks\n", static_cast<unsigned long long>((in.consumed() + 511) / 512));
+		return status;
+	}
+
+	static int readCpio(Executor& exec, const CpioOptions& options) {
+		const bool from_stdin = options.archive.empty() || options.archive == "-";
+		std::FILE* file = from_stdin ? stdin : fopenNative(exec, options.archive, "rb");
+		if (file == nullptr) {
+			perr("cpio", options.archive + ": " + std::strerror(errno));
+			return 1;
+		}
+
+		FileSource source(file);
+		InputBuffer in(source);
+		const int status = walkCpio(exec, options, in);
+		if (file != stdin) std::fclose(file);
 		std::fflush(stdout);
 		return status;
 	}
@@ -261,23 +330,49 @@ namespace wbsh {
 		header += text;
 	}
 
-	static void appendNewcEntry(std::vector<std::uint8_t>& out, const std::string& name,
-	                            std::uint32_t mode, std::int64_t mtime,
-	                            const std::vector<std::uint8_t>& data) {
+	static void emit(CpioWriter& writer, const void* data, std::size_t size) {
+		if (writer.failed || size == 0) return;
+		writer.failed = !writer.sink->write(static_cast<const std::uint8_t*>(data), size);
+		writer.written += size;
+	}
+
+	static void padTo(CpioWriter& writer, std::uint64_t multiple) {
+		static const std::uint8_t kZeros[512] = {};
+		emit(writer, kZeros, static_cast<std::size_t>((multiple - writer.written % multiple) % multiple));
+	}
+
+	static void writeNewcHeader(CpioWriter& writer, const std::string& name, std::uint32_t mode,
+	                            std::int64_t mtime, std::uint64_t size) {
 		static std::uint64_t inode = 1;
 		std::string header = "070701";
 		const std::uint64_t fields[13] = {
-			inode++, mode, 0, 0, 1, static_cast<std::uint64_t>(mtime), data.size(), 0, 0, 0, 0,
+			inode++, mode, 0, 0, 1, static_cast<std::uint64_t>(mtime), size, 0, 0, 0, 0,
 			name.size() + 1, 0,
 		};
 		for (const std::uint64_t field : fields) appendHexField(header, field);
 
-		out.insert(out.end(), header.begin(), header.end());
-		out.insert(out.end(), name.begin(), name.end());
-		out.push_back(0);
-		while (out.size() % 4 != 0) out.push_back(0);
-		out.insert(out.end(), data.begin(), data.end());
-		while (out.size() % 4 != 0) out.push_back(0);
+		emit(writer, header.data(), header.size());
+		emit(writer, name.c_str(), name.size() + 1);
+		padTo(writer, 4);
+	}
+
+	// Streams exactly @p size bytes of @p path: a file that shrank meanwhile
+	// is padded with zeros so the header stays true.
+	static bool writeFileData(Executor& exec, CpioWriter& writer, const std::string& name, std::uint64_t size) {
+		std::FILE* in = fopenNative(exec, name, "rb");
+		if (in == nullptr) return false;
+
+		std::vector<std::uint8_t> chunk(kCopyChunk);
+		while (size > 0) {
+			const std::size_t want = static_cast<std::size_t>((std::min<std::uint64_t>)(size, chunk.size()));
+			const std::size_t got = std::fread(chunk.data(), 1, want, in);
+			if (got < want) std::memset(chunk.data() + got, 0, want - got);
+			emit(writer, chunk.data(), want);
+			size -= want;
+		}
+
+		std::fclose(in);
+		return true;
 	}
 
 	static std::int64_t mtimeOf(const fs::path& path) {
@@ -288,28 +383,7 @@ namespace wbsh {
 			- 11644473600LL;
 	}
 
-	static bool memberContents(Executor& exec, const std::string& name, fs::file_status status,
-	                           std::uint32_t& mode, std::vector<std::uint8_t>& data) {
-		if (fs::is_directory(status)) {
-			mode = kTypeDirectory | 0755;
-			return true;
-		}
-
-		if (!fs::is_symlink(status)) {
-			mode = kTypeRegular | 0644;
-			return readWhole(exec, name, data);
-		}
-
-		std::error_code ec;
-		mode = kTypeSymlink | 0777;
-		const std::string target = pathToUtf8(fs::read_symlink(toNative(exec, name), ec)
-			.generic_wstring());
-		data.assign(target.begin(), target.end());
-		return true;
-	}
-
-	static bool addCpioMember(Executor& exec, const std::string& name,
-	                          std::vector<std::uint8_t>& out) {
+	static bool addCpioMember(Executor& exec, const std::string& name, CpioWriter& writer) {
 		const fs::path path = toNative(exec, name);
 		std::error_code ec;
 		const fs::file_status status = fs::symlink_status(path, ec);
@@ -318,44 +392,59 @@ namespace wbsh {
 			return false;
 		}
 
-		std::vector<std::uint8_t> data;
-		std::uint32_t mode = 0;
-		if (!memberContents(exec, name, status, mode, data)) {
+		if (fs::is_directory(status)) {
+			writeNewcHeader(writer, name, kTypeDirectory | 0755, mtimeOf(path), 0);
+			return true;
+		}
+
+		if (fs::is_symlink(status)) {
+			const std::string target = pathToUtf8(fs::read_symlink(path, ec).generic_wstring());
+			writeNewcHeader(writer, name, kTypeSymlink | 0777, mtimeOf(path), target.size());
+			emit(writer, target.data(), target.size());
+			padTo(writer, 4);
+			return true;
+		}
+
+		const std::uint64_t size = static_cast<std::uint64_t>(fs::file_size(path, ec));
+		std::FILE* probe = ec ? nullptr : fopenNative(exec, name, "rb");
+		if (probe == nullptr) {
 			std::fprintf(stderr, "cpio: %s: %s\n", name.c_str(), std::strerror(errno));
 			return false;
 		}
 
-		appendNewcEntry(out, name, mode, mtimeOf(path), data);
-		return true;
+		std::fclose(probe);
+		writeNewcHeader(writer, name, kTypeRegular | 0644, mtimeOf(path), size);
+		const bool ok = writeFileData(exec, writer, name, size);
+		padTo(writer, 4);
+		return ok;
 	}
 
 	static int createCpio(Executor& exec, const CpioOptions& options) {
 		std::vector<std::string> names;
 		readAllLines(exec, "-", names);
 
-		std::vector<std::uint8_t> out;
-		int status = 0;
-		for (const std::string& name : names) {
-			if (name.empty()) continue;
-			if (options.verbose) std::fprintf(stderr, "%s\n", name.c_str());
-			if (!addCpioMember(exec, name, out)) status = 1;
-		}
-
-		appendNewcEntry(out, kTrailer, 0, 0, {});
-		while (out.size() % 512 != 0) out.push_back(0);
-
-		std::FILE* file = options.archive.empty() ? stdout
-			: fopenNative(exec, options.archive, "wb");
+		std::FILE* file = options.archive.empty() ? stdout : fopenNative(exec, options.archive, "wb");
 		if (file == nullptr) {
 			perr("cpio", options.archive + ": " + std::strerror(errno));
 			return 1;
 		}
 
-		std::fwrite(out.data(), 1, out.size(), file);
+		FileSink sink(file);
+		CpioWriter writer;
+		writer.sink = &sink;
+		int status = 0;
+		for (const std::string& name : names) {
+			if (name.empty()) continue;
+			if (options.verbose) std::fprintf(stderr, "%s\n", name.c_str());
+			if (!addCpioMember(exec, name, writer)) status = 1;
+		}
+
+		writeNewcHeader(writer, kTrailer, 0, 0, 0);
+		padTo(writer, 512);
 		if (file != stdout) std::fclose(file);
 		std::fflush(stdout);
-		std::fprintf(stderr, "%llu blocks\n", static_cast<unsigned long long>(out.size() / 512));
-		return status;
+		std::fprintf(stderr, "%llu blocks\n", static_cast<unsigned long long>(writer.written / 512));
+		return writer.failed ? 1 : status;
 	}
 
 	static bool applyCpioCluster(const std::string& cluster, CpioOptions& options) {
