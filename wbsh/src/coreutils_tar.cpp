@@ -495,7 +495,7 @@ namespace wbsh {
 		std::error_code ec;
 		std::vector<fs::path> children;
 		for (fs::directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec)) {
-			children.push_back(it->path());
+			children.push_back(longPathSafe(it->path()));
 		}
 
 		std::sort(children.begin(), children.end());

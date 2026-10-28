@@ -206,7 +206,7 @@ namespace wbsh {
 		const std::filesystem::path cwd = std::filesystem::current_path(ec);
 		if (ec) return;
 
-		env.set("PWD", path_conv.toPosix(pathToUtf8(cwd)));
+		env.set("PWD", path_conv.toPosix(pathToUtf8(expandShortNames(cwd))));
 		env.exportVar("PWD");
 	}
 

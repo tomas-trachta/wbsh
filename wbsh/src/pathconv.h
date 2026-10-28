@@ -31,14 +31,39 @@ namespace wbsh {
 	std::string  wideToUtf8(const std::wstring& w);
 
 	/// Builds the path from the wide form, bypassing the CP_ACP
-	/// interpretation that `path(std::string)` applies on MSVC.
+	/// interpretation that `path(std::string)` applies on MSVC. A path
+	/// longer than plain Win32 calls take comes back in its `\\?\` form,
+	/// so std::filesystem works on it. A short relative name stays relative
+	/// (it may be a component still to be joined); see longPathSafe.
 	std::filesystem::path utf8ToPath(const std::string& s);
 
 	/// Reads the native (wide) form, bypassing the CP_ACP downgrade
-	/// that `path::string()` applies on MSVC.
+	/// that `path::string()` applies on MSVC. A `\\?\` prefix is dropped,
+	/// so a long path reads back the way the user writes it.
 	std::string pathToUtf8(const std::filesystem::path& p);
 
-	/// `fopen` on a UTF-8 path (`_wfopen` on Windows).
+	/// utf8ToWide for a file name handed straight to a Win32 / CRT file
+	/// API: a path longer than plain Win32 calls take gets its `\\?\` form.
+	std::wstring utf8ToFileWide(const std::string& s);
+
+	/// @p p in its `\\?\` (or `\\?\UNC\`) form, absolute and normalised, when
+	/// it is too long for Win32 calls without one (MAX_PATH less room for an
+	/// 8.3 name, counted after resolving it against the current directory);
+	/// otherwise @p p unchanged. Recursive walkers pass the paths they build
+	/// through this; the children of a prefixed path inherit the prefix.
+	std::filesystem::path longPathSafe(const std::filesystem::path& p);
+
+	/// @p p without a `\\?\` prefix: the form the current directory has to
+	/// be set with, because child processes inherit it.
+	std::filesystem::path withoutExtendedPrefix(const std::filesystem::path& p);
+
+	/// @p p with 8.3 short names expanded to the long ones (GetLongPathName);
+	/// @p p unchanged when it cannot be resolved. A child started in a
+	/// directory past MAX_PATH is given its short form, and reads it back
+	/// through this.
+	std::filesystem::path expandShortNames(const std::filesystem::path& p);
+
+	/// `fopen` on a UTF-8 path (`_wfopen` on Windows, long paths included).
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode);
 
 	/// `stat` on a Win32-form path that also sees Windows App Execution

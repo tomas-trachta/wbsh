@@ -204,7 +204,7 @@ namespace wbsh {
 	}
 
 	static void removeFile(const std::string& path) {
-		_wremove(utf8ToWide(path).c_str());
+		_wremove(utf8ToFileWide(path).c_str());
 	}
 
 	static std::string makeTempFile() {
@@ -443,6 +443,42 @@ namespace wbsh {
 		return shellStatusFromExitCode(exit_code);
 	}
 
+	static std::wstring currentDirectoryWide() {
+		const DWORD needed = ::GetCurrentDirectoryW(0, nullptr);
+		std::wstring cwd(needed, L'\0');
+		const DWORD length = ::GetCurrentDirectoryW(needed, cwd.data());
+		cwd.resize(length < needed ? length : 0);
+		return cwd;
+	}
+
+	static std::wstring shortPathWide(const std::wstring& path) {
+		const std::wstring extended = longPathSafe(std::filesystem::path(path)).native();
+		const DWORD needed = ::GetShortPathNameW(extended.c_str(), nullptr, 0);
+		if (needed == 0) return std::wstring();
+
+		std::wstring shortened(needed, L'\0');
+		const DWORD length = ::GetShortPathNameW(extended.c_str(), shortened.data(), needed);
+		if (length == 0 || length >= needed) return std::wstring();
+
+		shortened.resize(length);
+		return withoutExtendedPrefix(std::filesystem::path(shortened)).native();
+	}
+
+	// CreateProcess refuses to start a child in a current directory past
+	// MAX_PATH even in a long-path-aware process, but the 8.3 form of a deep
+	// directory usually fits; empty means "inherit ours as it is".
+	static std::wstring childCurrentDirectory() {
+		const std::wstring cwd = currentDirectoryWide();
+		if (cwd.size() < MAX_PATH) return std::wstring();
+
+		const std::wstring shortened = shortPathWide(cwd);
+		return shortened.size() < MAX_PATH ? shortened : std::wstring();
+	}
+
+	static const wchar_t* optionalDirectory(const std::wstring& directory) {
+		return directory.empty() ? nullptr : directory.c_str();
+	}
+
 	static LPPROC_THREAD_ATTRIBUTE_LIST allocAttrList() {
 		SIZE_T attr_size = 0;
 		::InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
@@ -531,11 +567,12 @@ namespace wbsh {
 		}
 
 		STARTUPINFOEXW info = makeStartupInfo(stdio, attr_list);
+		const std::wstring directory = childCurrentDirectory();
 		PROCESS_INFORMATION process{};
 		const BOOL created = ::CreateProcessW(command.exe.c_str(), command.cmdline.data(),
 			nullptr, nullptr, TRUE,
 			EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | placementFlags(placement),
-			command.envblock.data(), nullptr, &info.StartupInfo, &process);
+			command.envblock.data(), optionalDirectory(directory), &info.StartupInfo, &process);
 		freeAttrList(attr_list);
 
 		if (created == 0) {
@@ -1354,7 +1391,7 @@ namespace wbsh {
 		fd = openTcpUdpStream(path);
 		if (fd >= 0) return fd;
 
-		const std::wstring win_path = utf8ToWide(path_conv_.toWin32(path));
+		const std::wstring win_path = utf8ToFileWide(path_conv_.toWin32(path));
 		return _wopen(win_path.c_str(), flags | _O_BINARY, _S_IREAD | _S_IWRITE);
 	}
 
@@ -2057,7 +2094,7 @@ namespace wbsh {
 	bool changeDirectory(Executor& exec, const std::string& target, std::string& err,
 	                     bool physical) {
 		namespace fs = std::filesystem;
-		fs::path win_target = utf8ToPath(exec.pathConv().toWin32(target));
+		fs::path win_target = withoutExtendedPrefix(utf8ToPath(exec.pathConv().toWin32(target)));
 		if (physical) win_target = physicalPath(win_target);
 
 		std::error_code ec;
@@ -2237,9 +2274,11 @@ namespace wbsh {
 	                                    int* exit_status) {
 		giveBackStdinReadAhead();
 		STARTUPINFOW info = inheritedStdioStartupInfo();
+		const std::wstring directory = childCurrentDirectory();
 		PROCESS_INFORMATION process{};
 		const BOOL created = ::CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, TRUE,
-			CREATE_UNICODE_ENVIRONMENT, envblock.data(), nullptr, &info, &process);
+			CREATE_UNICODE_ENVIRONMENT, envblock.data(), optionalDirectory(directory), &info,
+			&process);
 		if (created == 0) return false;
 
 		::CloseHandle(process.hThread);
