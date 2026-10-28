@@ -112,6 +112,9 @@ namespace wbsh {
 		 */
 		std::string expandPattern(const Word& w);
 
+		/// The `[[ =~ ]]` right side as a POSIX ERE: quoted characters match literally.
+		std::string expandRegex(const Word& w);
+
 		/**
 		 * @brief Expand a heredoc body.
 		 *

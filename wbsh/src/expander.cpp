@@ -3149,4 +3149,24 @@ namespace wbsh {
 		return taggedAsPattern(renderWord(tilded));
 	}
 
+	static bool isEreSpecial(char c) {
+		return c != '\0' && std::strchr("\\.[]()*+?{}|^$", c) != nullptr;
+	}
+
+	static std::string taggedAsRegex(const Expander::Tagged& t) {
+		std::string regex;
+		regex.reserve(t.size());
+		for (std::size_t i = 0; i < t.size(); ++i) {
+			if (quotedAt(t, i) && isEreSpecial(t.text[i])) regex.push_back('\\');
+			regex.push_back(t.text[i]);
+		}
+
+		return regex;
+	}
+
+	std::string Expander::expandRegex(const Word& w) {
+		const Word tilded = applyTildeExpansion(w);
+		return taggedAsRegex(renderWord(tilded));
+	}
+
 }  // namespace wbsh

@@ -45,6 +45,7 @@
 #include "lexer.h"
 #include "numparse.h"
 #include "parser.h"
+#include "posixregex.h"
 #include "regexutil.h"
 #include "stdinsync.h"
 #include "testops.h"
@@ -2746,6 +2747,7 @@ namespace wbsh {
 			Executor& exec;
 			Expander& expander;
 			bool nocasematch;
+			bool& invalid_regex;
 		};
 	}
 
@@ -2773,14 +2775,31 @@ namespace wbsh {
 		return false;
 	}
 
-	static bool evalDBracketRegexOp(const std::string& lhs, const std::string& rhs,
-	                                bool nocasematch) {
-		auto flags = std::regex::ECMAScript;
-		if (nocasematch) flags = flags | std::regex::icase;
+	static std::vector<std::string> rematchGroups(const std::smatch& match) {
+		std::vector<std::string> groups;
+		for (std::size_t k = 0; k < match.size(); ++k) {
+			groups.push_back(match[k].matched ? match[k].str() : std::string());
+		}
 
+		return groups;
+	}
+
+	// An invalid regex makes the whole `[[ ]]` return 2 and leaves
+	// BASH_REMATCH alone; otherwise BASH_REMATCH is rebuilt, empty on
+	// no match.
+	static bool evalDBracketRegexOp(const std::string& lhs, const std::string& rhs,
+	                                const DBracketContext& ctx) {
 		std::regex re;
-		if (!compileRegex(re, rhs, flags)) return false;
-		return searchRegex(lhs, re);
+		if (!compilePosixRegex(re, rhs, true, ctx.nocasematch)) {
+			ctx.invalid_regex = true;
+			return false;
+		}
+
+		std::smatch match;
+		const bool matched = searchRegex(lhs, re, &match);
+		ctx.exec.env().setIndexedArrayFromList("BASH_REMATCH",
+			matched ? rematchGroups(match) : std::vector<std::string>());
+		return matched;
 	}
 
 	// `[[ ]]` evaluates both sides of -eq and friends as arithmetic.
@@ -2802,6 +2821,7 @@ namespace wbsh {
 	// glob characters are wildcards; `[[ x == "a*" ]]` compares literally.
 	static std::string expandDBracketRhs(const DBracketCond::Expr& expr, Expander& expander) {
 		if (isDBracketPatternOp(expr.op)) return expander.expandPattern(expr.rhs);
+		if (expr.op == "=~") return expander.expandRegex(expr.rhs);
 		return expander.expandStringValue(expr.rhs);
 	}
 
@@ -2816,7 +2836,7 @@ namespace wbsh {
 			return evalDBracketStringOp(expr.op, cmp_lhs, cmp_rhs);
 		}
 
-		if (expr.op == "=~") return evalDBracketRegexOp(lhs, rhs, ctx.nocasematch);
+		if (expr.op == "=~") return evalDBracketRegexOp(lhs, rhs, ctx);
 		if (isDBracketArithOp(expr.op)) return evalDBracketArithOp(expr.op, lhs, rhs, ctx.expander);
 		if (isFileCompareOperator(expr.op)) return evalFileCompare(ctx.exec, expr.op, lhs, rhs);
 		return false;
@@ -2849,8 +2869,10 @@ namespace wbsh {
 
 		int status = 1;
 		if (ok && dc.root != nullptr) {
-			const DBracketContext ctx{ *this, expander_, env_.nocasematch() };
+			bool invalid_regex = false;
+			const DBracketContext ctx{ *this, expander_, env_.nocasematch(), invalid_regex };
 			status = evalDBracketExpr(*dc.root, ctx) ? 0 : 1;
+			if (invalid_regex) status = 2;
 		}
 
 		if (expander_.failed()) {
