@@ -1,0 +1,10 @@
+=== 1. $(cat) in a function stage
+3
+shell stdin still has [line1]
+=== 2. external stages do not run side effects in the shell
+i=0
+x=[]
+the substitution ran in the stage
+=== 3. plain words still launch the external directly
+hello
+word

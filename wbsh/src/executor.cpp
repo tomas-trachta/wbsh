@@ -954,6 +954,58 @@ namespace wbsh {
 		return true;
 	}
 
+	static bool textMayHaveSideEffects(const std::string& text) {
+		return text.find("$(") != std::string::npos || text.find('`') != std::string::npos
+			|| text.find('=') != std::string::npos || text.find("++") != std::string::npos
+			|| text.find("--") != std::string::npos;
+	}
+
+	static bool segmentsMayHaveSideEffects(const std::vector<WordSegment>& segments);
+
+	static bool segmentMayHaveSideEffects(const WordSegment& segment) {
+		using K = WordSegment::Kind;
+		switch (segment.kind) {
+			case K::CmdSubst:
+			case K::ProcSubst:
+				return true;
+			case K::ParamExp:
+			case K::ArithExp:
+				return textMayHaveSideEffects(segment.text);
+			case K::DoubleQuoted:
+				return segmentsMayHaveSideEffects(segment.nested);
+			default:
+				return false;
+		}
+	}
+
+	static bool segmentsMayHaveSideEffects(const std::vector<WordSegment>& segments) {
+		for (const WordSegment& segment : segments) {
+			if (segmentMayHaveSideEffects(segment)) return true;
+		}
+
+		return false;
+	}
+
+	// A stage's words belong to its own subshell: `$(cat)` there reads
+	// the pipe, `${x:=v}` and `$((i++))` must not touch this shell. Only
+	// words without such effects may be expanded here to launch an
+	// external directly.
+	static bool wordsExpandHere(const std::vector<Word>& words) {
+		for (const Word& word : words) {
+			if (segmentsMayHaveSideEffects(word.segments)) return false;
+		}
+
+		return true;
+	}
+
+	static bool assignmentsExpandHere(const std::vector<Assignment>& assignments) {
+		for (const Assignment& assignment : assignments) {
+			if (segmentsMayHaveSideEffects(assignment.value.segments)) return false;
+		}
+
+		return true;
+	}
+
 	HANDLE Executor::tryDirectExternalLaunch(const Node& elem,
 	                                         HANDLE h_in, HANDLE h_out, HANDLE h_err,
 	                                         bool* tried) {
@@ -962,6 +1014,9 @@ namespace wbsh {
 
 		const auto& command = static_cast<const SimpleCommand&>(elem);
 		if (!command.redirs.empty()) return INVALID_HANDLE_VALUE;
+		if (!wordsExpandHere(command.words) || !assignmentsExpandHere(command.assignments)) {
+			return INVALID_HANDLE_VALUE;
+		}
 
 		std::vector<std::string> argv;
 		if (!expandWordsForDirectLaunch(expander_, command.words, argv)) {
