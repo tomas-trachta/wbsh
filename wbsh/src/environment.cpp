@@ -152,7 +152,115 @@ namespace wbsh {
 		return true;
 	}
 
+	// Like bash, a chain longer than this is treated as circular.
+	static const int kMaxNamerefDepth = 8;
+
+	const std::string& Environment::resolveRef(const std::string& name) const {
+		if (namerefs_.empty()) return name;
+
+		const std::string* current = &name;
+		for (int depth = 0; depth < kMaxNamerefDepth; ++depth) {
+			const auto found = namerefs_.find(*current);
+			if (found == namerefs_.end() || found->second.empty()) return *current;
+
+			current = &found->second;
+		}
+
+		return *current;
+	}
+
+	std::string Environment::namerefTarget(const std::string& name) const {
+		const auto found = namerefs_.find(name);
+		return found == namerefs_.end() ? std::string() : found->second;
+	}
+
+	void Environment::setNameref(const std::string& name, std::string target) {
+		vars_.erase(name);
+		indexed_.erase(name);
+		assoc_.erase(name);
+		namerefs_[name] = std::move(target);
+	}
+
+	void Environment::clearNameref(const std::string& name) {
+		const auto found = namerefs_.find(name);
+		if (found == namerefs_.end()) return;
+
+		std::string target = std::move(found->second);
+		namerefs_.erase(found);
+		if (!target.empty()) vars_[name] = std::move(target);
+	}
+
+	void Environment::unsetNameref(const std::string& name) {
+		if (namerefs_.erase(name) == 0) {
+			unset(name);
+			return;
+		}
+
+		exported_.erase(name);
+		attributes_.erase(name);
+	}
+
+	// `a[1]` as a nameref target: the subscript of an indexed array is
+	// arithmetic, that of an associative array a key.
+	bool Environment::splitElementRef(const std::string& ref, ElementRef& out) const {
+		if (ref.empty() || ref.back() != ']') return false;
+
+		const std::size_t open = ref.find('[');
+		if (open == std::string::npos || open == 0) return false;
+
+		out.base = ref.substr(0, open);
+		out.key = ref.substr(open + 1, ref.size() - open - 2);
+		out.assoc = assoc_.count(out.base) != 0;
+		if (out.assoc) return true;
+
+		if (arith_evaluator_ == nullptr || !arith_evaluator_(arith_context_, out.key, out.index)) {
+			if (!parseLL(out.key, out.index)) out.index = 0;
+		}
+
+		return true;
+	}
+
+	std::string Environment::getElement(const ElementRef& element) const {
+		if (element.assoc) {
+			const AssocArray& array = assoc_.at(element.base);
+			const auto found = array.find(element.key);
+			return found == array.end() ? std::string() : found->second;
+		}
+
+		const auto indexed = indexed_.find(element.base);
+		if (indexed == indexed_.end()) return element.index == 0 ? getResolved(element.base) : "";
+
+		const auto found = indexed->second.find(element.index);
+		return found == indexed->second.end() ? std::string() : found->second;
+	}
+
+	bool Environment::hasElement(const ElementRef& element) const {
+		if (element.assoc) return assoc_.at(element.base).count(element.key) != 0;
+
+		const auto indexed = indexed_.find(element.base);
+		if (indexed == indexed_.end()) return element.index == 0 && hasResolved(element.base);
+		return indexed->second.count(element.index) != 0;
+	}
+
 	void Environment::set(const std::string& name, std::string value) {
+		const auto unbound = namerefs_.find(name);
+		if (unbound != namerefs_.end() && unbound->second.empty()) {
+			unbound->second = std::move(value);
+			return;
+		}
+
+		const std::string& target = resolveRef(name);
+		ElementRef element;
+		if (!splitElementRef(target, element)) {
+			setResolved(target, std::move(value));
+			return;
+		}
+
+		if (element.assoc) setAssocElement(element.base, element.key, std::move(value));
+		else setIndexedElement(element.base, element.index, std::move(value));
+	}
+
+	void Environment::setResolved(const std::string& name, std::string value) {
 		if (name == "RANDOM") {
 			unsigned long seed = 0;
 			if (parseUL(value, seed)) setRandomSeed(static_cast<unsigned int>(seed));
@@ -184,101 +292,125 @@ namespace wbsh {
 
 	void Environment::setIndexedArrayFromList(const std::string& name,
 			std::vector<std::string> values) {
-		if (rejectIfReadonly(name)) return;
+		const std::string& target = resolveRef(name);
+		if (rejectIfReadonly(target)) return;
 
-		vars_.erase(name);
-		assoc_.erase(name);
+		vars_.erase(target);
+		assoc_.erase(target);
 
 		IndexedArray array;
 		for (std::size_t i = 0; i < values.size(); ++i) {
-			if (!applyAttributes(name, values[i])) continue;
+			if (!applyAttributes(target, values[i])) continue;
 			array[static_cast<long long>(i)] = std::move(values[i]);
 		}
 
-		indexed_[name] = std::move(array);
+		indexed_[target] = std::move(array);
 	}
 
 	void Environment::setIndexedArraySparse(const std::string& name,
 			std::map<long long, std::string> elems) {
-		if (rejectIfReadonly(name)) return;
+		const std::string& target = resolveRef(name);
+		if (rejectIfReadonly(target)) return;
 
-		for (auto& element : elems) applyAttributes(name, element.second);
-		vars_.erase(name);
-		assoc_.erase(name);
-		indexed_[name] = std::move(elems);
+		for (auto& element : elems) applyAttributes(target, element.second);
+		vars_.erase(target);
+		assoc_.erase(target);
+		indexed_[target] = std::move(elems);
 	}
 
 	void Environment::setIndexedElement(const std::string& name, long long idx, std::string val) {
-		if (rejectIfReadonly(name)) return;
-		if (!applyAttributes(name, val)) return;
+		const std::string& target = resolveRef(name);
+		if (rejectIfReadonly(target)) return;
+		if (!applyAttributes(target, val)) return;
 
-		if (assoc_.count(name) != 0) {
-			assoc_[name][std::to_string(idx)] = std::move(val);
+		if (assoc_.count(target) != 0) {
+			assoc_[target][std::to_string(idx)] = std::move(val);
 			return;
 		}
 
-		auto indexed = indexed_.find(name);
+		auto indexed = indexed_.find(target);
 		if (indexed != indexed_.end()) {
 			indexed->second[idx] = std::move(val);
 			return;
 		}
 
 		IndexedArray array;
-		auto scalar = vars_.find(name);
+		auto scalar = vars_.find(target);
 		if (scalar != vars_.end()) {
 			array[0] = std::move(scalar->second);
 			vars_.erase(scalar);
 		}
 
 		array[idx] = std::move(val);
-		indexed_[name] = std::move(array);
+		indexed_[target] = std::move(array);
 	}
 
 	void Environment::declareAssocArray(const std::string& name) {
-		if (rejectIfReadonly(name)) return;
+		const std::string& target = resolveRef(name);
+		if (rejectIfReadonly(target)) return;
 
-		vars_.erase(name);
-		indexed_.erase(name);
-		assoc_.emplace(name, AssocArray{});
+		vars_.erase(target);
+		indexed_.erase(target);
+		assoc_.emplace(target, AssocArray{});
 	}
 
 	void Environment::setAssocElement(const std::string& name, std::string key, std::string val) {
-		if (rejectIfReadonly(name)) return;
-		if (!applyAttributes(name, val)) return;
+		const std::string& target = resolveRef(name);
+		if (rejectIfReadonly(target)) return;
+		if (!applyAttributes(target, val)) return;
 
-		auto assoc = assoc_.find(name);
+		auto assoc = assoc_.find(target);
 		if (assoc != assoc_.end()) {
 			assoc->second[std::move(key)] = std::move(val);
 			return;
 		}
 
-		vars_.erase(name);
-		indexed_.erase(name);
-		assoc_[name][std::move(key)] = std::move(val);
+		vars_.erase(target);
+		indexed_.erase(target);
+		assoc_[target][std::move(key)] = std::move(val);
 	}
 
 	void Environment::unsetElement(const std::string& name, long long idx, const std::string& key) {
-		if (rejectIfReadonly(name)) return;
+		const std::string& target = resolveRef(name);
+		if (rejectIfReadonly(target)) return;
 
-		auto assoc = assoc_.find(name);
+		auto assoc = assoc_.find(target);
 		if (assoc != assoc_.end()) {
 			assoc->second.erase(key);
 			return;
 		}
 
-		auto indexed = indexed_.find(name);
+		auto indexed = indexed_.find(target);
 		if (indexed != indexed_.end()) indexed->second.erase(idx);
 	}
 
+	// Unsetting a nameref unsets the variable it names; one with no
+	// target goes itself.
 	void Environment::unset(const std::string& name) {
-		vars_.erase(name);
-		indexed_.erase(name);
-		assoc_.erase(name);
-		exported_.erase(name);
-		attributes_.erase(name);
+		const std::string target = resolveRef(name);
+		if (target == name) namerefs_.erase(name);
+
+		ElementRef element;
+		if (splitElementRef(target, element)) {
+			unsetElement(element.base, element.index, element.key);
+			return;
+		}
+
+		vars_.erase(target);
+		indexed_.erase(target);
+		assoc_.erase(target);
+		exported_.erase(target);
+		attributes_.erase(target);
 	}
 
 	bool Environment::has(const std::string& name) const {
+		const std::string& target = resolveRef(name);
+		ElementRef element;
+		if (splitElementRef(target, element)) return hasElement(element);
+		return hasResolved(target);
+	}
+
+	bool Environment::hasResolved(const std::string& name) const {
 		if (vars_.find(name) != vars_.end()) return true;
 		if (indexed_.count(name) != 0) return true;
 		if (assoc_.count(name) != 0) return true;
@@ -290,6 +422,13 @@ namespace wbsh {
 	}
 
 	std::string Environment::get(const std::string& name) const {
+		const std::string& target = resolveRef(name);
+		ElementRef element;
+		if (splitElementRef(target, element)) return getElement(element);
+		return getResolved(target);
+	}
+
+	std::string Environment::getResolved(const std::string& name) const {
 		auto scalar = vars_.find(name);
 		if (scalar != vars_.end()) return scalar->second;
 
@@ -309,29 +448,43 @@ namespace wbsh {
 	}
 
 	void Environment::exportVar(const std::string& name) {
-		exported_.insert(name);
+		exported_.insert(resolveRef(name));
 	}
 
 	void Environment::unexportVar(const std::string& name) {
-		exported_.erase(name);
+		exported_.erase(resolveRef(name));
 	}
 
 	bool Environment::isExported(const std::string& name) const {
-		return exported_.count(name) != 0;
+		return exported_.count(resolveRef(name)) != 0;
 	}
 
 	unsigned Environment::attributes(const std::string& name) const {
-		const auto found = attributes_.find(name);
+		const auto found = attributes_.find(resolveRef(name));
 		return found == attributes_.end() ? 0u : found->second;
 	}
 
+	std::string Environment::attributeLetters(const std::string& name) const {
+		const unsigned attrs = attributes(name);
+		std::string letters;
+		if (isIndexedArray(name))          letters += 'a';
+		if (isAssocArray(name))            letters += 'A';
+		if ((attrs & kAttrInteger) != 0)   letters += 'i';
+		if (isReadonly(name))              letters += 'r';
+		if (isExported(name))              letters += 'x';
+		if ((attrs & kAttrLowercase) != 0) letters += 'l';
+		if ((attrs & kAttrUppercase) != 0) letters += 'u';
+		return letters;
+	}
+
 	void Environment::setAttributes(const std::string& name, unsigned attributes) {
+		const std::string& target = resolveRef(name);
 		if (attributes == 0) {
-			attributes_.erase(name);
+			attributes_.erase(target);
 			return;
 		}
 
-		attributes_[name] = attributes;
+		attributes_[target] = attributes;
 	}
 
 	std::string Environment::appendedValue(const std::string& name,
@@ -365,27 +518,39 @@ namespace wbsh {
 		return true;
 	}
 
+	template <typename Map>
+	static const typename Map::mapped_type* findEntry(const Map& map, const std::string& name) {
+		const auto found = map.find(name);
+		return found == map.end() ? nullptr : &found->second;
+	}
+
+	// Saves @p name itself, without following a nameref.
 	Environment::VarState Environment::saveVar(const std::string& name) const {
 		VarState state;
-		const auto scalar = vars_.find(name);
-		if (scalar != vars_.end()) {
+		if (const std::string* scalar = findEntry(vars_, name)) {
 			state.has_scalar = true;
-			state.scalar = scalar->second;
+			state.scalar = *scalar;
 		}
 
-		if (const IndexedArray* indexed = getIndexedArray(name)) {
+		if (const IndexedArray* indexed = findEntry(indexed_, name)) {
 			state.has_indexed = true;
 			state.indexed = *indexed;
 		}
 
-		if (const AssocArray* assoc = getAssocArray(name)) {
+		if (const AssocArray* assoc = findEntry(assoc_, name)) {
 			state.has_assoc = true;
 			state.assoc = *assoc;
 		}
 
-		state.exported = isExported(name);
-		state.readonly = isReadonly(name);
-		state.attributes = attributes(name);
+		if (const std::string* target = findEntry(namerefs_, name)) {
+			state.has_nameref = true;
+			state.nameref = *target;
+		}
+
+		const unsigned* attributes = findEntry(attributes_, name);
+		state.exported = exported_.count(name) != 0;
+		state.readonly = readonly_.count(name) != 0;
+		state.attributes = attributes == nullptr ? 0u : *attributes;
 		return state;
 	}
 
@@ -399,13 +564,16 @@ namespace wbsh {
 		vars_.erase(name);
 		indexed_.erase(name);
 		assoc_.erase(name);
+		namerefs_.erase(name);
 		if (state.has_scalar)  vars_[name] = std::move(state.scalar);
 		if (state.has_indexed) indexed_[name] = std::move(state.indexed);
 		if (state.has_assoc)   assoc_[name] = std::move(state.assoc);
+		if (state.has_nameref) namerefs_[name] = std::move(state.nameref);
 
 		setMembership(exported_, name, state.exported);
 		setMembership(readonly_, name, state.readonly);
-		setAttributes(name, state.attributes);
+		if (state.attributes == 0) attributes_.erase(name);
+		else attributes_[name] = state.attributes;
 	}
 
 	void Environment::setPositional(std::vector<std::string> args) {
@@ -449,6 +617,7 @@ namespace wbsh {
 		exported_     = snapshot.exported_;
 		readonly_     = snapshot.readonly_;
 		attributes_   = snapshot.attributes_;
+		namerefs_     = snapshot.namerefs_;
 		positional_   = snapshot.positional_;
 		last_bg_pid_  = snapshot.last_bg_pid_;
 		shell_name_   = snapshot.shell_name_;

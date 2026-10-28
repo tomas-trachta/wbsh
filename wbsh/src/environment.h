@@ -129,12 +129,16 @@ namespace wbsh {
 		bool   isExported(const std::string& name) const;
 		const std::unordered_set<std::string>& exportedSet() const { return exported_; }
 		/// Mark @p name as readonly; further set() calls will fail.
-		void   markReadonly(const std::string& name)   { readonly_.insert(name); }
-		bool   isReadonly(const std::string& name) const { return readonly_.count(name) != 0; }
+		void   markReadonly(const std::string& name)   { readonly_.insert(resolveRef(name)); }
+		bool   isReadonly(const std::string& name) const {
+			return readonly_.count(resolveRef(name)) != 0;
+		}
 		const std::unordered_set<std::string>& readonlySet() const { return readonly_; }
 		void   clearReadonly(const std::string& name) { readonly_.erase(name); }
 
 		unsigned attributes(const std::string& name) const;
+		/// The attribute letters `declare -p` and `${x@a}` show, in bash's order.
+		std::string attributeLetters(const std::string& name) const;
 		void     setAttributes(const std::string& name, unsigned attributes);
 		const std::unordered_map<std::string, unsigned>& attributeMap() const {
 			return attributes_;
@@ -152,6 +156,32 @@ namespace wbsh {
 
 		const std::unordered_map<std::string, std::string>& vars() const { return vars_; }
 
+		/**
+		 * @name Name references (`declare -n`)
+		 *
+		 * Every value and attribute accessor follows a nameref to the
+		 * variable it names (possibly an array element, `a[1]`); these
+		 * work on the nameref itself. A nameref with an empty target
+		 * stands for nothing until a value is assigned to it, which
+		 * becomes its target.
+		 */
+		///@{
+		bool isNameref(const std::string& name) const { return namerefs_.count(name) != 0; }
+		/// The raw target of nameref @p name; empty for an unset or plain variable.
+		std::string namerefTarget(const std::string& name) const;
+		/// Make @p name a nameref to @p target, dropping any value it held.
+		void setNameref(const std::string& name, std::string target);
+		/// `declare +n`: @p name becomes a plain variable holding the target name.
+		void clearNameref(const std::string& name);
+		/// `unset -n`: remove @p name itself, nameref or not.
+		void unsetNameref(const std::string& name);
+		const std::unordered_map<std::string, std::string>& namerefs() const {
+			return namerefs_;
+		}
+		/// The variable @p name stands for after following namerefs.
+		const std::string& resolveRef(const std::string& name) const;
+		///@}
+
 		/// Sparse indexed array — bash arrays are sparse, so a sorted map.
 		using IndexedArray = std::map<long long, std::string>;
 		using AssocArray   = std::map<std::string, std::string>;
@@ -167,19 +197,25 @@ namespace wbsh {
 			bool exported = false;
 			bool readonly = false;
 			unsigned attributes = 0;
+			bool has_nameref = false;
+			std::string nameref;
 		};
 		VarState saveVar(const std::string& name) const;
 		/// Put @p name back as saved, readonly or not.
 		void     restoreVar(const std::string& name, VarState state);
 
-		bool isIndexedArray(const std::string& name) const { return indexed_.count(name) != 0; }
-		bool isAssocArray(const std::string& name) const   { return assoc_.count(name) != 0; }
+		bool isIndexedArray(const std::string& name) const {
+			return indexed_.count(resolveRef(name)) != 0;
+		}
+		bool isAssocArray(const std::string& name) const {
+			return assoc_.count(resolveRef(name)) != 0;
+		}
 		const IndexedArray* getIndexedArray(const std::string& name) const {
-			auto it = indexed_.find(name);
+			auto it = indexed_.find(resolveRef(name));
 			return it == indexed_.end() ? nullptr : &it->second;
 		}
 		const AssocArray* getAssocArray(const std::string& name) const {
-			auto it = assoc_.find(name);
+			auto it = assoc_.find(resolveRef(name));
 			return it == assoc_.end() ? nullptr : &it->second;
 		}
 		void setIndexedArrayFromList(const std::string& name,
@@ -198,8 +234,8 @@ namespace wbsh {
 		void setAssocElement(const std::string& name, std::string key, std::string val);
 		/// Drop any array form for @p name (scalar value, if any, is preserved).
 		void unsetArray(const std::string& name) {
-			indexed_.erase(name);
-			assoc_.erase(name);
+			indexed_.erase(resolveRef(name));
+			assoc_.erase(resolveRef(name));
 		}
 		const std::unordered_map<std::string, IndexedArray>& indexedArrays() const {
 			return indexed_;
@@ -312,6 +348,19 @@ namespace wbsh {
 	private:
 		bool rejectIfReadonly(const std::string& name) const;
 		bool applyAttributes(const std::string& name, std::string& value) const;
+
+		struct ElementRef {
+			std::string base;
+			std::string key;
+			long long index = 0;
+			bool assoc = false;
+		};
+		bool        splitElementRef(const std::string& ref, ElementRef& out) const;
+		std::string getElement(const ElementRef& element) const;
+		bool        hasElement(const ElementRef& element) const;
+		void        setResolved(const std::string& name, std::string value);
+		std::string getResolved(const std::string& name) const;
+		bool        hasResolved(const std::string& name) const;
 		long long elapsedSeconds() const;
 		void importProcessVariable(std::string name, std::string value);
 
@@ -321,6 +370,7 @@ namespace wbsh {
 		std::unordered_set<std::string> exported_;
 		std::unordered_set<std::string> readonly_;
 		std::unordered_map<std::string, unsigned> attributes_;
+		std::unordered_map<std::string, std::string> namerefs_;
 		ArithEvaluator arith_evaluator_ = nullptr;
 		void* arith_context_ = nullptr;
 		std::vector<std::string> positional_;

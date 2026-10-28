@@ -17,7 +17,7 @@ namespace wbsh {
 		"then", "elif", "else", "fi", "do", "done", "esac", "in", "}"
 	};
 
-	static const char kDBracketUnaryOps[] = "abcdefghknoprstuvwxzGLNOSU";
+	static const char kDBracketUnaryOps[] = "abcdefghknoprstuvwxzGLNORSU";
 
 	namespace parser_detail {
 

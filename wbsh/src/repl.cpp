@@ -409,6 +409,11 @@ namespace wbsh {
 		return out;
 	}
 
+	std::string expandPromptEscapes(const std::string& ps, const Environment& env,
+			const PathConv& conv) {
+		return expandPrompt(ps, env, conv);
+	}
+
 	static bool parseErrorLooksIncomplete(const std::string& message) {
 		return message.find("expected `")        != std::string::npos
 		    || message.find("expected pipeline") != std::string::npos

@@ -637,6 +637,11 @@ namespace wbsh {
 			out.push_back(readDoubleQuoted());
 			return true;
 		case '$':
+			if (peek(1) == '"') {
+				readLocalizedString(out);
+				return true;
+			}
+
 			readDollar(out);
 			return true;
 		case '`':
@@ -794,6 +799,14 @@ namespace wbsh {
 		out.push_back(std::move(segment));
 	}
 
+	// `$"..."` asks for a translation from the locale's message catalog;
+	// with no catalogs it is the plain double-quoted string, as in bash
+	// without gettext data.
+	void Lexer::readLocalizedString(std::vector<WordSegment>& out) {
+		advance();
+		out.push_back(readDoubleQuoted());
+	}
+
 	void Lexer::readDollar(std::vector<WordSegment>& out) {
 		const SourceLoc start = loc_;
 		const char n1 = peek(1);
@@ -816,7 +829,6 @@ namespace wbsh {
 			readDollarSingleQuoted(start, out);
 			return;
 		case '"':
-			// $" is bash's localized string. Treat the $ as literal for now.
 			advance();
 			out.push_back(literalSegment("$"));
 			return;

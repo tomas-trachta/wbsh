@@ -27,6 +27,7 @@
 #include "lexer.h"
 #include "numparse.h"
 #include "strscan.h"
+#include "executor.h"
 #include "utf8.h"
 
 namespace wbsh {
@@ -1798,10 +1799,10 @@ namespace wbsh {
 		return replacePattern(cur, r.pat, r.rep, all, r.anchor_start, r.anchor_end);
 	}
 
-	// `##`, `%%`, `//`, `^^`, `,,` double the operator to mean "greedy"
-	// or "all"; the other operators never double.
+	// `##`, `%%`, `//`, `^^`, `,,`, `~~` double the operator to mean
+	// "greedy" or "all"; the other operators never double.
 	static bool isDoublingOp(char op) {
-		return op == '#' || op == '%' || op == '/' || op == '^' || op == ',';
+		return op == '#' || op == '%' || op == '/' || op == '^' || op == ',' || op == '~';
 	}
 
 	std::string Expander::expandParamApplyOp(char op, bool colon, std::size_t op_pos,
@@ -1826,18 +1827,30 @@ namespace wbsh {
 			return evalParamReplace(ctx.named_value, argument, doubled);
 		case '^':
 		case ',':
+		case '~':
 			return applyCaseConv(ctx.named_value, op, doubled, expandPatternArg(argument));
+		case '@':
+			return transformParam(ctx, argument);
 		default:
-			return ctx.named_value;
+			failBadSubstitution(ctx.body);
+			return {};
 		}
 	}
 
-	static char32_t convertCase(char32_t c, char op) {
-		return op == '^' ? upperCode(c) : lowerCode(c);
+	void Expander::failBadSubstitution(const std::string& body) {
+		fail("${" + body + "}: bad substitution");
 	}
 
-	// `^` uppercases and `,` lowercases the matching characters: the
-	// first one, or every one when doubled.
+	static char32_t convertCase(char32_t c, char op) {
+		if (op == '^') return upperCode(c);
+		if (op == ',') return lowerCode(c);
+
+		const char32_t upper = upperCode(c);
+		return upper != c ? upper : lowerCode(c);
+	}
+
+	// `^` uppercases, `,` lowercases and `~` toggles the case of the
+	// matching characters: the first one, or every one when doubled.
 	std::string Expander::applyCaseConv(const std::string& val, char op, bool all,
 			const std::string& pat) {
 		std::string out;
@@ -1854,12 +1867,148 @@ namespace wbsh {
 		return out;
 	}
 
+	static bool isTransformLetter(const std::string& letter) {
+		return letter.size() == 1 && std::strchr("UuLQEPAKak", letter[0]) != nullptr;
+	}
+
+	static std::string doubleQuotedText(const std::string& text) {
+		std::string quoted = "\"";
+		for (const char c : text) {
+			if (c == '"' || c == '\\' || c == '$' || c == '`') quoted.push_back('\\');
+			quoted.push_back(c);
+		}
+
+		return quoted + "\"";
+	}
+
+	static bool hasControlChar(const std::string& text) {
+		for (const char c : text) {
+			const unsigned char code = static_cast<unsigned char>(c);
+			if (code < 0x20 || code == 0x7f) return true;
+		}
+
+		return false;
+	}
+
+	static std::string keyValueText(const std::string& text) {
+		return hasControlChar(text) ? shellQuoteAlways(text) : doubleQuotedText(text);
+	}
+
+	// An associative key stays bare unless it needs quoting.
+	static std::string keyText(const std::string& key) {
+		if (hasControlChar(key)) return shellQuoteAlways(key);
+		if (key.empty() || key == "@" || key == "*" || shellQuoteForReuse(key) != key) {
+			return doubleQuotedText(key);
+		}
+
+		return key;
+	}
+
+	std::string Expander::transformValue(char letter, const std::string& value) {
+		switch (letter) {
+		case 'U': return applyCaseConv(value, '^', true, {});
+		case 'u': return applyCaseConv(value, '^', false, {});
+		case 'L': return applyCaseConv(value, ',', true, {});
+		case 'E': return interpretAnsiC(value);
+		case 'P': return expandPromptEscapes(value, env_, path_conv_);
+		default:  return shellQuoteAlways(value);
+		}
+	}
+
+	std::string Expander::assignmentText(const std::string& name, const std::string& value) const {
+		const std::string letters = env_.attributeLetters(name);
+		const std::string assignment = name + "=" + shellQuoteAlways(value);
+		return letters.empty() ? assignment : "declare -" + letters + " " + assignment;
+	}
+
+	// `${x@a}` shows attributes even of a declared but unset variable;
+	// the other transformations of an unset one are empty.
+	std::string Expander::transformParam(const ParamOpCtx& ctx, const std::string& letter) {
+		if (!isTransformLetter(letter)) {
+			failBadSubstitution(ctx.body);
+			return {};
+		}
+
+		if (letter[0] == 'a') return env_.attributeLetters(ctx.name);
+
+		const bool set = ctx.has_subscript ? ctx.slot.is_set : isParamSet(ctx.name);
+		if (!set) return {};
+		if (letter[0] == 'A') return assignmentText(ctx.name, ctx.named_value);
+		return transformValue(letter[0], ctx.named_value);
+	}
+
+	// The keys and values of array @p name, alternating.
+	std::vector<std::string> Expander::keyValueWords(const std::string& name) const {
+		std::vector<std::string> words;
+		if (const auto* indexed = env_.getIndexedArray(name)) {
+			for (const auto& entry : *indexed) {
+				words.push_back(std::to_string(entry.first));
+				words.push_back(entry.second);
+			}
+		}
+
+		if (const auto* assoc = env_.getAssocArray(name)) {
+			for (const auto& entry : *assoc) {
+				words.push_back(entry.first);
+				words.push_back(entry.second);
+			}
+		}
+
+		return words;
+	}
+
+	static std::string keyValuePairs(const std::vector<std::string>& words, bool assoc) {
+		std::string text;
+		for (std::size_t k = 0; k + 1 < words.size(); k += 2) {
+			if (!text.empty()) text.push_back(' ');
+			text += assoc ? keyText(words[k]) : words[k];
+			text += " " + keyValueText(words[k + 1]);
+		}
+
+		return text;
+	}
+
+	static std::string setPositionalText(const std::vector<std::string>& elems) {
+		std::string text = "set --";
+		for (const std::string& elem : elems) text += " " + shellQuoteAlways(elem);
+		return text;
+	}
+
+	// `@A`, `@K` and `@k` of a whole array describe the array; the other
+	// transformations, and all of them on `$@`, apply to each element.
+	std::vector<std::string> Expander::transformList(const ListParam& p, const std::string& letter,
+			std::vector<std::string> elems) {
+		if (!isTransformLetter(letter)) {
+			failBadSubstitution(p.name + "[@]@" + letter);
+			return {};
+		}
+
+		const char op = letter[0];
+		const bool array = !p.name.empty()
+			&& (env_.isIndexedArray(p.name) || env_.isAssocArray(p.name));
+		if (op == 'A' && p.name.empty()) return { setPositionalText(elems) };
+		if (op == 'A' && array) return { declarationText(env_, p.name) };
+		if (op == 'K' && array) {
+			return { keyValuePairs(keyValueWords(p.name), env_.isAssocArray(p.name)) };
+		}
+
+		if (op == 'k' && array) return keyValueWords(p.name);
+
+		for (std::string& elem : elems) {
+			if (op == 'a') elem = env_.attributeLetters(p.name);
+			else if (op == 'A') elem = assignmentText(p.name, elem);
+			else elem = transformValue(op, elem);
+		}
+
+		return elems;
+	}
+
 	// `${@=word}` is an error in bash, so `=` keeps the scalar path.
 	static bool isListOp(const std::string& body, std::size_t i) {
 		const char op = body[i];
 		if (op == ':') return i + 1 >= body.size() || body[i + 1] != '=';
 		return op == '-' || op == '+' || op == '?' || op == '#' || op == '%'
-			|| op == '/' || op == '^' || op == ',';
+			|| op == '/' || op == '^' || op == ',' || op == '~' || op == '@';
 	}
 
 	// Bare `@` / `name[@]` forms are not list params: they have no
@@ -2011,6 +2160,7 @@ namespace wbsh {
 		const bool doubled = isDoublingOp(op) && i + 1 < body.size() && body[i + 1] == op;
 		const std::string argument = body.substr(doubled ? i + 2 : i + 1);
 		if (op == ':') return sliceListParam(p, argument);
+		if (op == '@') return transformList(p, argument, listParamValues(p));
 		if (isDefaultOp(op)) {
 			const std::string subject = p.label.empty() ? body.substr(0, p.op_pos) : p.label;
 			return evalListDefaultOp(op, colon, subject, listParamValues(p), argument);
@@ -2169,6 +2319,9 @@ namespace wbsh {
 	}
 
 	std::string Expander::expandBangParam(const std::string& body) {
+		const std::string referrer = body.substr(1);
+		if (env_.isNameref(referrer)) return env_.namerefTarget(referrer);
+
 		std::string prefix;
 		bool star = false;
 		if (parsePrefixNamesForm(body, prefix, star)) {
@@ -2454,7 +2607,8 @@ namespace wbsh {
 
 		std::string resolved;
 		std::string label;
-		if (isIndirectBody(s.text) && resolveIndirectBody(s.text, resolved, label)) {
+		const bool indirect = isIndirectBody(s.text) && !env_.isNameref(s.text.substr(1));
+		if (indirect && resolveIndirectBody(s.text, resolved, label)) {
 			if (aborting()) return false;
 			return renderParamBody(resolved, label, inside_dq, out);
 		}
