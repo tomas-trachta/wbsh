@@ -1175,15 +1175,32 @@ namespace wbsh {
 		return exec.runExternal(rest, {});
 	}
 
-	static int builtin_builtin(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) return 0;
+	static bool isBuiltinOptionWord(const std::string& arg) {
+		return arg.size() > 1 && arg[0] == '-';
+	}
 
-		if (!exec.isBuiltin(args[0])) {
-			std::fprintf(stderr, "wbsh: builtin: %s: not a shell builtin\n", args[0].c_str());
+	static void reportBuiltinInvalidOption(const std::string& arg) {
+		std::fprintf(stderr, "wbsh: builtin: %s: invalid option\n", arg.substr(0, 2).c_str());
+		std::fprintf(stderr, "builtin: usage: builtin [shell-builtin [arg ...]]\n");
+	}
+
+	static int builtin_builtin(Executor& exec, const std::vector<std::string>& args) {
+		std::size_t first = 0;
+		if (first < args.size() && args[first] == "--") ++first;
+		else if (first < args.size() && isBuiltinOptionWord(args[first])) {
+			reportBuiltinInvalidOption(args[first]);
+			return 2;
+		}
+
+		if (first >= args.size()) return 0;
+
+		const std::string& name = args[first];
+		if (!exec.isBuiltin(name)) {
+			std::fprintf(stderr, "wbsh: builtin: %s: not a shell builtin\n", name.c_str());
 			return 1;
 		}
 
-		return exec.callBuiltin(args[0], { args.begin() + 1, args.end() });
+		return exec.callBuiltin(name, { args.begin() + first + 1, args.end() });
 	}
 
 	namespace shopt_detail {
