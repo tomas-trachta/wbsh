@@ -110,6 +110,7 @@ namespace wbsh {
 		using EditCommand = void (LineEditor::*)();
 
 		void resetLine(const std::string& prompt);
+		void setPrompt(const std::string& prompt);
 		LineStatus readLineRaw(const std::string& prompt, std::string& out);
 		LineStatus readLineCooked(std::string& out);
 		LineStatus lineStatus() const;
@@ -158,6 +159,7 @@ namespace wbsh {
 		std::size_t screenColumns() const;
 		std::string describeCursorCell() const;
 		void moveToLineEnd();
+		void showPrompt();
 		void appendLineText(std::string& out) const;
 		void insertChars(const std::string& text);
 		void killRange(std::size_t start, std::size_t end, bool prepend);
@@ -308,7 +310,8 @@ namespace wbsh {
 		std::string buffer_;
 		std::size_t cursor_ = 0;
 		std::string prompt_raw_;
-		std::size_t prompt_visible_len_ = 0;
+		std::string prompt_lead_;      // lines of a multi-line prompt above its last one
+		std::string prompt_visible_;   // the cells the last line takes, as text
 
 		// Row offset of the cursor below the prompt's first row, as of the
 		// most recent redraw. When the buffer wraps, redraw() must walk

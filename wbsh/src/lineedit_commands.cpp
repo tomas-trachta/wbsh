@@ -321,7 +321,7 @@ namespace wbsh {
 		env.unset("READLINE_LINE");
 		env.unset("READLINE_POINT");
 		last_command_.clear();
-		last_cursor_row_ = 0;
+		showPrompt();
 		redraw();
 	}
 
@@ -731,7 +731,7 @@ namespace wbsh {
 	void LineEditor::clearScreen() {
 		emit("\x1b[H\x1b[2J\x1b[3J");
 		requestScrollbackClear();
-		last_cursor_row_ = 0;
+		showPrompt();
 	}
 
 	void LineEditor::pasteFromClipboard() {

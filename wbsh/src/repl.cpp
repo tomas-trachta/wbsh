@@ -72,6 +72,11 @@ namespace wbsh {
 	static const char* const kBranchStyle = "\x1b[33;1m";
 	static const char* const kDefaultHistorySize = "5000";
 
+	// readline's marks around the prompt bytes that take no cells, which
+	// the line editor measures the prompt by.
+	static const char kPromptStartIgnore = '\x01';
+	static const char kPromptEndIgnore = '\x02';
+
 	struct ReplState {
 		std::string buffer;
 		std::string history_entry;
@@ -382,8 +387,8 @@ namespace wbsh {
 		case '\\': return "\\";
 		case '$':  return "$";
 		case 's':  return "wbsh";
-		case '[':  return {};
-		case ']':  return {};
+		case '[':  return std::string(1, kPromptStartIgnore);
+		case ']':  return std::string(1, kPromptEndIgnore);
 		case 'u':  return promptUser(env);
 		case 'h':
 		case 'H':  return promptHost(env, code);

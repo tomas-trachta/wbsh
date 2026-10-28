@@ -1,0 +1,29 @@
+=== a two-line prompt: only its last line is redrawn
+[a][b] @0:3
+user@host ~\r\n
+$ \r\e[J$ a\r\e[3C\r\e[J$ ab\r\e[4C\r\e[J$ ab\r\e[3C
+=== a three-line prompt
+[x][] @0:3
+one\r\n
+two\r\n
+> \r\e[J> x\r\e[3C
+=== \[ \] around a window-title OSC and colours take no cells
+[abc][] @0:5
+[abc][] @0:10
+=== escape sequences and a bell take none even without \[ \]
+[abc][] @0:5
+[abc][] @0:10
+[abc][] @0:5
+=== a newline inside \[ \] does not start a line
+[a][] @0:3
+=== a long last line wraps, and the cursor follows
+[x][] @1:5
+abcdefghijkl$ \e[1A\r\e[Jabcdefghijkl$ x\r\e[5C
+[x][] @1:1
+[x][] @1:1
+top\r\n
+abcdefghij\r\e[Jabcdefghijx\r\e[1C
+=== the REPL turns \[ \] into the marks and prints the prompt without them
+0000000 033 [ 1 m B 033 [ 0 m \n $ r a n \n
+0000020 033 [ 1 m B 033 [ 0 m \n $ \n
+0000035

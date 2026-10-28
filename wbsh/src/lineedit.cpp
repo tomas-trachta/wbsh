@@ -46,34 +46,96 @@ namespace wbsh {
 		return _isatty(_fileno(stdin)) != 0;
 	}
 
-	static std::size_t skipCsiSequence(const std::string& text, std::size_t i) {
-		i += 2;
-		while (i < text.size() && !(text[i] >= '@' && text[i] <= '~')) ++i;
-		if (i < text.size()) ++i;
-		return i;
-	}
+#endif /* _WIN32 */
 
-	static std::string withoutCsiSequences(const std::string& text) {
-		std::string shown;
-		std::size_t i = 0;
-		while (i < text.size()) {
-			if (text[i] == '\x1b' && i + 1 < text.size() && text[i + 1] == '[') {
-				i = skipCsiSequence(text, i);
-				continue;
-			}
+	// A prompt marks the bytes that take no cells -- what PS1 writes as
+	// \[ and \] -- with \001 and \002, as readline expects them. Escape
+	// sequences and control characters outside the marks take none either.
+	namespace prompt_detail {
 
-			shown.push_back(text[i]);
-			++i;
+		static const char kStartIgnore = '\x01';
+		static const char kEndIgnore = '\x02';
+		static const char kEscape = '\x1b';
+		static const char kBell = '\x07';
+
+		static std::size_t skipCsi(const std::string& text, std::size_t i) {
+			i += 2;
+			while (i < text.size() && !(text[i] >= '@' && text[i] <= '~')) ++i;
+			return i < text.size() ? i + 1 : i;
 		}
 
-		return shown;
-	}
+		static std::size_t skipOsc(const std::string& text, std::size_t i) {
+			for (i += 2; i < text.size(); ++i) {
+				if (text[i] == kBell) return i + 1;
+				if (text[i] == kEscape && i + 1 < text.size() && text[i + 1] == '\\') return i + 2;
+			}
 
-	static std::size_t visibleLen(const std::string& text) {
-		const std::string shown = withoutCsiSequences(text);
-		return displayWidth(shown, shown.size());
-	}
-#endif /* _WIN32 */
+			return i;
+		}
+
+		static std::size_t skipEscape(const std::string& text, std::size_t i) {
+			const char kind = i + 1 < text.size() ? text[i + 1] : '\0';
+			if (kind == '[') return skipCsi(text, i);
+			if (kind == ']') return skipOsc(text, i);
+
+			return std::min<std::size_t>(i + 2, text.size());
+		}
+
+		static std::size_t skipIgnored(const std::string& text, std::size_t i) {
+			const std::size_t end = text.find(kEndIgnore, i);
+			return end == std::string::npos ? text.size() : end + 1;
+		}
+
+		static bool takesNoCells(char letter) {
+			const auto byte = static_cast<unsigned char>(letter);
+			return (byte < 0x20 && letter != '\n') || byte == 0x7f;
+		}
+
+		static std::string visiblePart(const std::string& text) {
+			std::string shown;
+			std::size_t i = 0;
+			while (i < text.size()) {
+				if (text[i] == kStartIgnore) {
+					i = skipIgnored(text, i);
+				} else if (text[i] == kEscape) {
+					i = skipEscape(text, i);
+				} else {
+					if (!takesNoCells(text[i])) shown.push_back(text[i]);
+					++i;
+				}
+			}
+
+			return shown;
+		}
+
+		static std::string withoutMarks(const std::string& text) {
+			std::string shown;
+			for (const char letter : text) {
+				if (letter != kStartIgnore && letter != kEndIgnore) shown.push_back(letter);
+			}
+
+			return shown;
+		}
+
+		// Where the prompt's last line starts: past its last newline that
+		// is not inside \[ \].
+		static std::size_t lastLineStart(const std::string& text) {
+			std::size_t start = 0;
+			std::size_t i = 0;
+			while (i < text.size()) {
+				if (text[i] == kStartIgnore) {
+					i = skipIgnored(text, i);
+					continue;
+				}
+
+				if (text[i] == '\n') start = i + 1;
+				++i;
+			}
+
+			return start;
+		}
+
+	}  // namespace prompt_detail
 
 	static bool isSpaceByte(char letter) {
 		return std::isspace(static_cast<unsigned char>(letter)) != 0;
@@ -219,7 +281,7 @@ namespace wbsh {
 		if (stdinIsTty()) return readLineRaw(prompt, out);
 #endif /* _WIN32 */
 
-		std::fputs(prompt.c_str(), stdout);
+		std::fputs(prompt_detail::withoutMarks(prompt).c_str(), stdout);
 		std::fflush(stdout);
 		return readLineCooked(out);
 	}
@@ -243,11 +305,16 @@ namespace wbsh {
 		last_command_.clear();
 		undo_.clear();
 		insert_run_ = 0;
-		prompt_raw_ = prompt;
+		setPrompt(prompt);
+	}
 
-#ifdef _WIN32
-		prompt_visible_len_ = visibleLen(prompt);
-#endif /* _WIN32 */
+	// Only the prompt's last line is drawn again as the line changes; the
+	// lines above it are written once.
+	void LineEditor::setPrompt(const std::string& prompt) {
+		const std::size_t last_line = prompt_detail::lastLineStart(prompt);
+		prompt_lead_ = prompt_detail::withoutMarks(prompt.substr(0, last_line));
+		prompt_raw_ = prompt_detail::withoutMarks(prompt.substr(last_line));
+		prompt_visible_ = prompt_detail::visiblePart(prompt.substr(last_line));
 	}
 
 	LineStatus LineEditor::readLineCooked(std::string& out) {
@@ -399,13 +466,13 @@ namespace wbsh {
 		return forced_columns_ != 0 ? forced_columns_ : consoleWidth();
 	}
 
-	static ScreenPos promptEnd(std::size_t visible, std::size_t width) {
-		return { visible / width, visible % width };
+	static ScreenPos promptEnd(const std::string& visible, std::size_t width) {
+		return advanceOver(visible, visible.size(), { 0, 0 }, width);
 	}
 
 	std::string LineEditor::describeCursorCell() const {
 		const std::size_t width = screenColumns();
-		const ScreenPos start = promptEnd(prompt_visible_len_, width);
+		const ScreenPos start = promptEnd(prompt_visible_, width);
 		const ScreenPos cursor = settled(advanceOver(buffer_, cursor_, start, width), width);
 		return "@" + std::to_string(cursor.row) + ":" + std::to_string(cursor.col);
 	}
@@ -414,7 +481,7 @@ namespace wbsh {
 		const std::size_t width = screenColumns();
 		refreshSuggestion();
 
-		const ScreenPos start = promptEnd(prompt_visible_len_, width);
+		const ScreenPos start = promptEnd(prompt_visible_, width);
 		const ScreenPos cursor = settled(advanceOver(buffer_, cursor_, start, width), width);
 		const ScreenPos text_end = advanceOver(buffer_, buffer_.size(), start, width);
 		const ScreenPos end = advanceOver(suggestion_, suggestion_.size(), text_end, width);
@@ -432,6 +499,13 @@ namespace wbsh {
 
 		last_cursor_row_ = cursor.row;
 		emit(out);
+	}
+
+	// The whole prompt, the lines above its last one included, from where
+	// the cursor is; the next redraw starts from its last line.
+	void LineEditor::showPrompt() {
+		emit(withCrLf(prompt_lead_) + prompt_raw_);
+		last_cursor_row_ = promptEnd(prompt_visible_, screenColumns()).row;
 	}
 
 	void LineEditor::moveToLineEnd() {
@@ -1396,7 +1470,11 @@ namespace wbsh {
 		return line;
 	}
 
+	// The list goes below the whole line, and the prompt comes back whole
+	// under it.
 	void LineEditor::printMatches(const std::vector<std::string>& matches) {
+		const std::size_t cursor = cursor_;
+		moveToLineEnd();
 		emit("\r\n");
 
 		const std::size_t pad = longestLength(matches) + 2;
@@ -1406,7 +1484,8 @@ namespace wbsh {
 			emit(matchesRow(matches, row, rows, cols, pad) + "\r\n");
 		}
 
-		last_cursor_row_ = 0;
+		cursor_ = cursor;
+		showPrompt();
 		redraw();
 	}
 
@@ -1513,7 +1592,7 @@ namespace wbsh {
 	void LineEditor::revsearchRefresh(const std::string& query,
 	                                  std::size_t match_index) {
 		prompt_raw_ = "(reverse-i-search)`" + query + "': ";
-		prompt_visible_len_ = visibleLen(prompt_raw_);
+		prompt_visible_ = prompt_raw_;
 
 		const auto& history = exec_.history();
 		if (match_index < history.size()) {
@@ -1731,7 +1810,7 @@ namespace wbsh {
 		const std::string saved_buffer = buffer_;
 		const std::size_t saved_cursor = cursor_;
 		const std::string saved_prompt = prompt_raw_;
-		const std::size_t saved_visible = prompt_visible_len_;
+		const std::string saved_visible = prompt_visible_;
 
 		revsearch_active_ = true;
 		std::string query;
@@ -1753,7 +1832,7 @@ namespace wbsh {
 		}
 
 		prompt_raw_ = saved_prompt;
-		prompt_visible_len_ = saved_visible;
+		prompt_visible_ = saved_visible;
 		if (cancel) {
 			buffer_ = saved_buffer;
 			cursor_ = saved_cursor;
@@ -1881,7 +1960,7 @@ namespace wbsh {
 		}
 
 		enterRawMode();
-		emit(prompt);
+		showPrompt();
 		editUntilDone();
 		leaveRawMode();
 
@@ -2051,7 +2130,7 @@ namespace wbsh {
 		capture_output_ = options.show_output;
 		captured_output_.clear();
 		headless_ = true;
-		emit(prompt_raw_);
+		showPrompt();
 		const bool finished = editUntilDone();
 		headless_ = false;
 		replay_keys_.clear();
@@ -2076,6 +2155,7 @@ namespace wbsh {
 	void LineEditor::emit(const std::string&) {}
 	void LineEditor::redraw() {}
 	void LineEditor::moveToLineEnd() {}
+	void LineEditor::showPrompt() {}
 	void LineEditor::appendLineText(std::string&) const {}
 	bool LineEditor::editUntilDone() { return false; }
 	void LineEditor::leaveRawMode() {}
