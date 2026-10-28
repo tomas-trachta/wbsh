@@ -96,6 +96,15 @@ namespace wbsh {
 		return isBlank(c) || c == '\n' || isOperatorStart(c);
 	}
 
+	// The lexer cannot see `shopt -s extglob`, so `?(`, `*(`, `+(`, `@(`
+	// and `!(` always open a group (bash rejects them as syntax errors
+	// when extglob is off), except a command-leading `!(`, which stays
+	// the `!` keyword before a subshell.
+	static bool isExtglobOpen(char c, char next) {
+		const bool op = c == '?' || c == '*' || c == '+' || c == '@' || c == '!';
+		return op && next == '(';
+	}
+
 	static bool endsRegexWord(char c) {
 		return isBlank(c) || c == '\n' || c == ')' || c == '&' || c == ';' || c == '<' || c == '>';
 	}
@@ -319,6 +328,7 @@ namespace wbsh {
 		token.kind = kind;
 		token.text = text;
 		tokens_.push_back(std::move(token));
+		trackCaseOperator(kind);
 
 		if (kind != TokKind::Newline) {
 			at_line_start_ = false;
@@ -469,6 +479,7 @@ namespace wbsh {
 	void Lexer::scanWord() {
 		const std::size_t start_pos = pos_;
 		const bool command_start = atCommandWordStart();
+		bang_is_keyword_ = command_start && !inCasePattern();
 		Token word;
 		word.kind = TokKind::Word;
 		word.loc = loc_;
@@ -485,17 +496,43 @@ namespace wbsh {
 
 		markHeredocDelimiter(word);
 		trackDBracket(word, command_start);
+		trackCaseWord(word, command_start);
 		tokens_.push_back(std::move(word));
 		if (tokens_.back().is_heredoc_delim) pending_heredocs_.push_back({ tokens_.size() - 1 });
 	}
 
 	void Lexer::scanWordSegments(Token& word) {
+		int group_depth = 0;
 		while (!eof()) {
 			skipLineContinuations();
 			if (eof()) break;
-			if (endsWord(peek())) break;
-			if (!readWordSegment(word.segments)) break;
+			if (!readWordPart(word.segments, group_depth)) break;
 		}
+	}
+
+	// Inside an extglob group `X(...)` the operator characters, `|`
+	// and blanks are word text, up to the group's closing parenthesis.
+	bool Lexer::readWordPart(std::vector<WordSegment>& out, int& group_depth) {
+		const char c = peek();
+		if (atExtglobOpen(out.empty())) {
+			appendLiteralChar(out, advance());
+			appendLiteralChar(out, advance());
+			++group_depth;
+			return true;
+		}
+
+		if (group_depth == 0) {
+			if (endsWord(c)) return false;
+			return readWordSegment(out);
+		}
+
+		if (c == '\n') return false;
+		if (isSegmentStart(c)) return readWordSegment(out);
+
+		if (c == '(') ++group_depth;
+		else if (c == ')') --group_depth;
+		appendLiteralChar(out, advance());
+		return true;
 	}
 
 	void Lexer::scanRegexSegments(Token& word) {
@@ -528,6 +565,48 @@ namespace wbsh {
 
 		const Token& previous = tokens_.back();
 		return isCommandSeparator(previous.kind) || isCommandPrefixWord(previous);
+	}
+
+	bool Lexer::atExtglobOpen(bool word_start) const {
+		const char c = peek();
+		if (!isExtglobOpen(c, peek(1))) return false;
+		return c != '!' || !word_start || !bang_is_keyword_;
+	}
+
+	bool Lexer::inCasePattern() const {
+		return !case_states_.empty() && case_states_.back() == CaseState::Pattern;
+	}
+
+	void Lexer::trackCaseWord(const Token& word, bool command_start) {
+		const CaseState state = case_states_.empty() ? CaseState::Body : case_states_.back();
+		switch (state) {
+		case CaseState::Subject:
+			case_states_.back() = CaseState::In;
+			return;
+		case CaseState::In:
+			if (isWordSpelled(word, "in")) case_states_.back() = CaseState::Pattern;
+			return;
+		case CaseState::Pattern:
+			if (isWordSpelled(word, "esac")) case_states_.pop_back();
+			return;
+		case CaseState::Body:
+			if (!command_start) return;
+			if (isWordSpelled(word, "case")) case_states_.push_back(CaseState::Subject);
+			else if (isWordSpelled(word, "esac") && !case_states_.empty()) case_states_.pop_back();
+			return;
+		default:
+			return;
+		}
+	}
+
+	void Lexer::trackCaseOperator(TokKind kind) {
+		if (case_states_.empty()) return;
+
+		CaseState& state = case_states_.back();
+		const bool ends_item = kind == TokKind::DSemi || kind == TokKind::SemiAmp
+			|| kind == TokKind::DSemiAmp;
+		if (state == CaseState::Pattern && kind == TokKind::RParen) state = CaseState::Body;
+		else if (state == CaseState::Body && ends_item) state = CaseState::Pattern;
 	}
 
 	void Lexer::trackDBracket(const Token& word, bool command_start) {
@@ -585,7 +664,8 @@ namespace wbsh {
 			if (eof()) break;
 
 			const char c = peek();
-			if (isSegmentStart(c) || endsWord(c)) break;
+			const bool word_start = out.empty() && text.empty();
+			if (isSegmentStart(c) || endsWord(c) || atExtglobOpen(word_start)) break;
 
 			text.push_back(advance());
 		}

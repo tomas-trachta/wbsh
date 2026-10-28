@@ -1845,7 +1845,7 @@ namespace wbsh {
 		for (std::size_t k = 0; k < val.size();) {
 			const Utf8Char c = decodeUtf8(val, k);
 			const bool wanted = (all || k == 0)
-				&& (pat.empty() || fnmatchRange(pat, val, k, c.length));
+				&& (pat.empty() || fnmatchRange(pat, val, k, c.length, env_.extglob()));
 			if (wanted) appendUtf8(out, convertCase(c.code, op));
 			else out.append(val, k, c.length);
 			k += c.length;
@@ -2256,6 +2256,11 @@ namespace wbsh {
 	// The byte offset of every character start, plus the end.
 	using CharBounds = std::vector<std::size_t>;
 
+	struct PatternRef {
+		const std::string& text;
+		bool extglob;
+	};
+
 	static CharBounds charBounds(const std::string& val) {
 		CharBounds bounds;
 		bounds.reserve(val.size() + 1);
@@ -2268,13 +2273,13 @@ namespace wbsh {
 	}
 
 	static bool matchesBetween(const std::string& val, const CharBounds& bounds, std::size_t from,
-			std::size_t to, const std::string& pat) {
-		return fnmatchRange(pat, val, bounds[from], bounds[to] - bounds[from]);
+			std::size_t to, const PatternRef& pat) {
+		return fnmatchRange(pat.text, val, bounds[from], bounds[to] - bounds[from], pat.extglob);
 	}
 
 	// Bound index of the farthest end matching `pat` from bounds[from], or npos.
 	static std::size_t longestMatchAt(const std::string& val, const CharBounds& bounds,
-			std::size_t from, const std::string& pat) {
+			std::size_t from, const PatternRef& pat) {
 		for (std::size_t to = bounds.size() - 1;; --to) {
 			if (matchesBetween(val, bounds, from, to, pat)) return to;
 			if (to == from) return std::string::npos;
@@ -2282,7 +2287,7 @@ namespace wbsh {
 	}
 
 	static std::size_t shortestPrefixMatch(const std::string& val, const CharBounds& bounds,
-			const std::string& pat) {
+			const PatternRef& pat) {
 		for (std::size_t to = 0; to < bounds.size(); ++to) {
 			if (matchesBetween(val, bounds, 0, to, pat)) return to;
 		}
@@ -2292,7 +2297,7 @@ namespace wbsh {
 
 	// Bound index where the longest suffix matching `pat` starts, or npos.
 	static std::size_t longestSuffixMatch(const std::string& val, const CharBounds& bounds,
-			const std::string& pat) {
+			const PatternRef& pat) {
 		const std::size_t last = bounds.size() - 1;
 		for (std::size_t from = 0; from <= last; ++from) {
 			if (matchesBetween(val, bounds, from, last, pat)) return from;
@@ -2302,7 +2307,7 @@ namespace wbsh {
 	}
 
 	static std::size_t shortestSuffixMatch(const std::string& val, const CharBounds& bounds,
-			const std::string& pat) {
+			const PatternRef& pat) {
 		const std::size_t last = bounds.size() - 1;
 		for (std::size_t from = last;; --from) {
 			if (matchesBetween(val, bounds, from, last, pat)) return from;
@@ -2314,9 +2319,10 @@ namespace wbsh {
 			bool greedy) {
 		if (pat.empty()) return val;
 
+		const PatternRef ref{ pat, env_.extglob() };
 		const CharBounds bounds = charBounds(val);
-		const std::size_t to = greedy ? longestMatchAt(val, bounds, 0, pat)
-			: shortestPrefixMatch(val, bounds, pat);
+		const std::size_t to = greedy ? longestMatchAt(val, bounds, 0, ref)
+			: shortestPrefixMatch(val, bounds, ref);
 		if (to == std::string::npos) return val;
 		return val.substr(bounds[to]);
 	}
@@ -2325,14 +2331,15 @@ namespace wbsh {
 			bool greedy) {
 		if (pat.empty()) return val;
 
+		const PatternRef ref{ pat, env_.extglob() };
 		const CharBounds bounds = charBounds(val);
-		const std::size_t from = greedy ? longestSuffixMatch(val, bounds, pat)
-			: shortestSuffixMatch(val, bounds, pat);
+		const std::size_t from = greedy ? longestSuffixMatch(val, bounds, ref)
+			: shortestSuffixMatch(val, bounds, ref);
 		if (from == std::string::npos) return val;
 		return val.substr(0, bounds[from]);
 	}
 
-	static std::string replaceAnchoredPrefix(const std::string& val, const std::string& pat,
+	static std::string replaceAnchoredPrefix(const std::string& val, const PatternRef& pat,
 			const std::string& rep) {
 		const CharBounds bounds = charBounds(val);
 		const std::size_t to = longestMatchAt(val, bounds, 0, pat);
@@ -2340,7 +2347,7 @@ namespace wbsh {
 		return rep + val.substr(bounds[to]);
 	}
 
-	static std::string replaceAnchoredSuffix(const std::string& val, const std::string& pat,
+	static std::string replaceAnchoredSuffix(const std::string& val, const PatternRef& pat,
 			const std::string& rep) {
 		const CharBounds bounds = charBounds(val);
 		const std::size_t from = longestSuffixMatch(val, bounds, pat);
@@ -2357,7 +2364,7 @@ namespace wbsh {
 
 	// A zero-width match copies the next character, so a pattern that
 	// always matches `""` still makes progress.
-	static std::string replaceUnanchored(const std::string& val, const std::string& pat,
+	static std::string replaceUnanchored(const std::string& val, const PatternRef& pat,
 			const std::string& rep, bool all) {
 		const CharBounds bounds = charBounds(val);
 		const std::size_t last = bounds.size() - 1;
@@ -2386,9 +2393,11 @@ namespace wbsh {
 	std::string Expander::replacePattern(const std::string& val, const std::string& pat,
 			const std::string& rep, bool all, bool anchor_start, bool anchor_end) {
 		if (pat.empty())  return val;
-		if (anchor_start) return replaceAnchoredPrefix(val, pat, rep);
-		if (anchor_end)   return replaceAnchoredSuffix(val, pat, rep);
-		return replaceUnanchored(val, pat, rep, all);
+
+		const PatternRef ref{ pat, env_.extglob() };
+		if (anchor_start) return replaceAnchoredPrefix(val, ref, rep);
+		if (anchor_end)   return replaceAnchoredSuffix(val, ref, rep);
+		return replaceUnanchored(val, ref, rep, all);
 	}
 
 	static void pushText(Expander::Tagged& out, const std::string& text, std::uint8_t mark) {
@@ -2689,6 +2698,19 @@ namespace wbsh {
 		return c == '*' || c == '?' || c == '[';
 	}
 
+	// An unquoted wildcard, or with extglob an unquoted `X(` group
+	// opener; `flags` marks quoted characters with F_QUOTED.
+	static bool isUnquotedMetaAt(const std::string& text, const std::vector<std::uint8_t>& flags,
+			std::size_t i, bool extglob) {
+		const auto quoted = [&flags](std::size_t k) {
+			return (flags[k] & Expander::F_QUOTED) != 0;
+		};
+		if (quoted(i)) return false;
+		if (isGlobMeta(text[i])) return true;
+		return extglob && isExtglobOperator(text[i]) && i + 1 < text.size()
+			&& text[i + 1] == '(' && !quoted(i + 1);
+	}
+
 	namespace glob_detail {
 
 		// One `/`-separated path component with per-char quoting so a
@@ -2697,9 +2719,9 @@ namespace wbsh {
 			std::string text;
 			std::vector<std::uint8_t> quoted;
 
-			bool hasMeta() const {
+			bool hasMeta(bool extglob) const {
 				for (std::size_t i = 0; i < text.size(); ++i) {
-					if (quoted[i] == 0 && isGlobMeta(text[i])) return true;
+					if (isUnquotedMetaAt(text, quoted, i, extglob)) return true;
 				}
 
 				return false;
@@ -2723,6 +2745,7 @@ namespace wbsh {
 		struct GlobMatchOptions {
 			bool dotglob    = false;
 			bool nocaseglob = false;
+			bool extglob    = false;
 		};
 
 		static std::string joinDir(const std::string& dir, const std::string& name) {
@@ -2734,9 +2757,9 @@ namespace wbsh {
 
 	}  // namespace glob_detail
 
-	static bool taggedHasUnquotedGlobMeta(const Expander::Tagged& t) {
+	static bool taggedHasUnquotedGlobMeta(const Expander::Tagged& t, bool extglob) {
 		for (std::size_t i = 0; i < t.size(); ++i) {
-			if (!quotedAt(t, i) && isGlobMeta(t.text[i])) return true;
+			if (isUnquotedMetaAt(t.text, t.flags, i, extglob)) return true;
 		}
 
 		return false;
@@ -2763,7 +2786,7 @@ namespace wbsh {
 			}
 
 			cur.text.push_back(c);
-			cur.quoted.push_back(quoted ? 1 : 0);
+			cur.quoted.push_back(quoted ? Expander::F_QUOTED : 0);
 			first = false;
 		}
 
@@ -2821,9 +2844,10 @@ namespace wbsh {
 		return text;
 	}
 
-	static bool globNameMatches(const std::string& pat, const std::string& name, bool nocaseglob) {
-		if (!nocaseglob) return fnmatchFull(pat, name);
-		return fnmatchFull(lowerAscii(pat), lowerAscii(name));
+	static bool globNameMatches(const std::string& pat, const std::string& name,
+			const glob_detail::GlobMatchOptions& options) {
+		if (!options.nocaseglob) return fnmatchFull(pat, name, options.extglob);
+		return fnmatchFull(lowerAscii(pat), lowerAscii(name), options.extglob);
 	}
 
 	static std::vector<std::string> matchingEntries(const std::string& dir, const std::string& pat,
@@ -2842,7 +2866,7 @@ namespace wbsh {
 			const std::string name = pathToUtf8(entry.path().filename());
 			if (name.empty()) continue;
 			if (name[0] == '.' && !pat_starts_dot && !options.dotglob) continue;
-			if (globNameMatches(pat, name, options.nocaseglob)) matches.push_back(name);
+			if (globNameMatches(pat, name, options)) matches.push_back(name);
 		}
 
 		std::sort(matches.begin(), matches.end());
@@ -2853,7 +2877,7 @@ namespace wbsh {
 			const glob_detail::GlobComp& comp, const PathConv& pc,
 			const glob_detail::GlobMatchOptions& options) {
 		std::vector<std::string> next;
-		if (!comp.hasMeta()) {
+		if (!comp.hasMeta(options.extglob)) {
 			for (const std::string& dir : current) {
 				next.push_back(glob_detail::joinDir(dir, comp.asLiteral()));
 			}
@@ -2873,7 +2897,7 @@ namespace wbsh {
 
 	std::vector<std::string> Expander::globExpand(const Tagged& t) {
 		if (env_.noglob()) return { quoteRemove(t) };
-		if (!taggedHasUnquotedGlobMeta(t)) return { quoteRemove(t) };
+		if (!taggedHasUnquotedGlobMeta(t, env_.extglob())) return { quoteRemove(t) };
 
 		bool absolute = false;
 		const std::vector<glob_detail::GlobComp> comps = splitTaggedIntoGlobComps(t, absolute);
@@ -2885,6 +2909,7 @@ namespace wbsh {
 		glob_detail::GlobMatchOptions options;
 		options.dotglob    = env_.dotglob();
 		options.nocaseglob = env_.nocaseglob();
+		options.extglob    = env_.extglob();
 		const bool globstar = env_.globstar();
 
 		for (std::size_t ci = 0; ci < comps.size(); ++ci) {

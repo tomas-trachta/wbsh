@@ -1,0 +1,34 @@
+=== 1. parameter expansion
+bbb aaabbb aaa ------ X
+heLo he_
+=== 2. case patterns
+foo.txt: text
+foo.md: text
+foo.c: other
+!(bar) matches foo
+!(bar) does not match bar
+?(x) matches nothing
+*(x) matches xx
++(x) needs one
++(ab) repeats
+blank inside a group
+nested groups
+!( leading a later pattern
+=== 3. quoting keeps groups literal
+quoted bar is literal
+quoted bar does not split
+quoted group matches itself
+group from an unquoted variable
+=== 4. [[ == ]] always uses extglob
+[[ == ]] group
+[[ == ]] negation
+case without extglob is literal
+and matches itself
+=== 5. pathname expansion
+a.txt b.md
+a.txt b.md
+a.txt b.md c.c
+@(nothing|none)
+=== 6. lexing
+command-leading !( is negation of a subshell
+arithmetic subscript: v

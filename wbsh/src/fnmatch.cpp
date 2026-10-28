@@ -5,6 +5,8 @@
 
 #include "fnmatch.h"
 
+#include <vector>
+
 #include "utf8.h"
 
 namespace wbsh {
@@ -15,6 +17,7 @@ namespace wbsh {
 			const std::string& p;
 			const std::string& s;
 			std::size_t send;
+			bool extglob;
 		};
 
 		enum class BracketResult { Literal, Match, NoMatch };
@@ -26,7 +29,21 @@ namespace wbsh {
 			bool matched;
 		};
 
+		struct Span {
+			std::size_t begin;
+			std::size_t end;
+		};
+
+		// An extglob `X(alt|alt...)`: the operator, its alternatives and
+		// the pattern index just past the closing `)`.
+		struct Group {
+			char op;
+			std::vector<Span> alts;
+			std::size_t after;
+		};
+
 		static bool matchHere(const Matcher& m, std::size_t pi, std::size_t pend, std::size_t si);
+		static bool matchGroup(const Matcher& m, const Group& g, std::size_t pend, std::size_t si);
 
 		static bool isNamedOpen(const std::string& p, std::size_t k, std::size_t pend) {
 			if (k + 1 >= pend || p[k] != '[') return false;
@@ -84,33 +101,145 @@ namespace wbsh {
 
 		// Matches the subject character against the `[...]` at p[pi] and
 		// sets `next` past its `]`. A `]` in first position is a member.
-		static BracketResult matchBracket(const Matcher& m, std::size_t pi, std::size_t pend,
+		static BracketResult matchBracket(const std::string& p, std::size_t pi, std::size_t pend,
 				char32_t subject, std::size_t& next) {
 			Bracket b{ pi + 1, pend, subject, false };
-			const bool negate = b.at < pend && (m.p[b.at] == '!' || m.p[b.at] == '^');
+			const bool negate = b.at < pend && (p[b.at] == '!' || p[b.at] == '^');
 			if (negate) ++b.at;
 
 			bool first = true;
 			while (b.at < pend) {
-				if (m.p[b.at] == ']' && !first) {
+				if (p[b.at] == ']' && !first) {
 					next = b.at + 1;
 					return b.matched != negate ? BracketResult::Match : BracketResult::NoMatch;
 				}
 
 				first = false;
-				if (isNamedOpen(m.p, b.at, pend) && readNamedItem(b, m.p)) continue;
-				readRangeOrChar(b, m.p);
+				if (isNamedOpen(p, b.at, pend) && readNamedItem(b, p)) continue;
+				readRangeOrChar(b, p);
 			}
 
 			return BracketResult::Literal;
 		}
 
+		// Index just past the bracket expression at p[k], or past the `[`
+		// alone when it never closes.
+		static std::size_t skipBracket(const std::string& p, std::size_t k, std::size_t pend) {
+			std::size_t next = k + 1;
+			if (matchBracket(p, k, pend, 0, next) == BracketResult::Literal) return k + 1;
+			return next;
+		}
+
+		static bool isExtglobAt(const Matcher& m, std::size_t pi, std::size_t pend) {
+			return m.extglob && pi + 1 < pend && isExtglobOperator(m.p[pi]) && m.p[pi + 1] == '(';
+		}
+
+		static void closeAlternative(Group& g, std::size_t& alt_start, std::size_t k) {
+			g.alts.push_back({ alt_start, k });
+			alt_start = k + 1;
+		}
+
+		// Splits the `X(...)` at p[pi] into its alternatives; false when
+		// the parenthesis never closes, so the operator is literal.
+		static bool parseGroup(const std::string& p, std::size_t pi, std::size_t pend, Group& g) {
+			g.op = p[pi];
+			std::size_t alt_start = pi + 2;
+			int depth = 0;
+			for (std::size_t k = alt_start; k < pend;) {
+				const char c = p[k];
+				if (c == '\\') {
+					k += 2;
+					continue;
+				}
+
+				if (c == '[') {
+					k = skipBracket(p, k, pend);
+					continue;
+				}
+
+				if (c == ')' && depth == 0) {
+					closeAlternative(g, alt_start, k);
+					g.after = k + 1;
+					return true;
+				}
+
+				if (c == '(') ++depth;
+				if (c == ')') --depth;
+				if (c == '|' && depth == 0) closeAlternative(g, alt_start, k);
+				++k;
+			}
+
+			return false;
+		}
+
+		static bool anyAlternativeMatches(const Matcher& m, const Group& g, std::size_t from,
+				std::size_t to) {
+			const Matcher sub{ m.p, m.s, to, m.extglob };
+			for (const Span& alt : g.alts) {
+				if (matchHere(sub, alt.begin, alt.end, from)) return true;
+			}
+
+			return false;
+		}
+
+		static std::size_t nextBoundary(const Matcher& m, std::size_t k) {
+			return k + utf8CharLength(m.s, k, m.send);
+		}
+
+		static bool matchOnce(const Matcher& m, const Group& g, std::size_t pend, std::size_t si) {
+			for (std::size_t k = si;; k = nextBoundary(m, k)) {
+				const bool matched = anyAlternativeMatches(m, g, si, k);
+				if (matched && matchHere(m, g.after, pend, k)) return true;
+				if (k >= m.send) return false;
+			}
+		}
+
+		// One or more alternatives back to back, then the rest; only a
+		// non-empty match may repeat, so the recursion always advances.
+		static bool matchRepeated(const Matcher& m, const Group& g, std::size_t pend,
+				std::size_t si) {
+			for (std::size_t k = si;; k = nextBoundary(m, k)) {
+				if (anyAlternativeMatches(m, g, si, k)) {
+					if (matchHere(m, g.after, pend, k)) return true;
+					if (k > si && matchRepeated(m, g, pend, k)) return true;
+				}
+
+				if (k >= m.send) return false;
+			}
+		}
+
+		static bool matchNegated(const Matcher& m, const Group& g, std::size_t pend,
+				std::size_t si) {
+			for (std::size_t k = si;; k = nextBoundary(m, k)) {
+				const bool matched = anyAlternativeMatches(m, g, si, k);
+				if (!matched && matchHere(m, g.after, pend, k)) return true;
+				if (k >= m.send) return false;
+			}
+		}
+
+		static bool matchGroup(const Matcher& m, const Group& g, std::size_t pend, std::size_t si) {
+			switch (g.op) {
+			case '@':
+				return matchOnce(m, g, pend, si);
+			case '?':
+				return matchHere(m, g.after, pend, si) || matchOnce(m, g, pend, si);
+			case '*':
+				return matchHere(m, g.after, pend, si) || matchRepeated(m, g, pend, si);
+			case '+':
+				return matchRepeated(m, g, pend, si);
+			case '!':
+				return matchNegated(m, g, pend, si);
+			default:
+				return false;
+			}
+		}
+
 		// The byte a pattern position must match literally, or -1 when
 		// it is a wildcard.
-		static int literalByteAt(const std::string& p, std::size_t pi, std::size_t pend) {
-			const char c = p[pi];
-			if (c == '*' || c == '?' || c == '[') return -1;
-			if (c == '\\' && pi + 1 < pend) return static_cast<unsigned char>(p[pi + 1]);
+		static int literalByteAt(const Matcher& m, std::size_t pi, std::size_t pend) {
+			const char c = m.p[pi];
+			if (c == '*' || c == '?' || c == '[' || isExtglobAt(m, pi, pend)) return -1;
+			if (c == '\\' && pi + 1 < pend) return static_cast<unsigned char>(m.p[pi + 1]);
 			return static_cast<unsigned char>(c);
 		}
 
@@ -118,11 +247,11 @@ namespace wbsh {
 		// boundary of the remaining subject against the rest of the
 		// pattern, skipping those where a literal next byte cannot match.
 		static bool matchStar(const Matcher& m, std::size_t pi, std::size_t pend, std::size_t si) {
-			while (pi < pend && m.p[pi] == '*') ++pi;
+			while (pi < pend && m.p[pi] == '*' && !isExtglobAt(m, pi, pend)) ++pi;
 			if (pi >= pend) return true;
 
-			const int next_byte = literalByteAt(m.p, pi, pend);
-			for (std::size_t k = si;; k += utf8CharLength(m.s, k, m.send)) {
+			const int next_byte = literalByteAt(m, pi, pend);
+			for (std::size_t k = si;; k = nextBoundary(m, k)) {
 				const bool viable = next_byte < 0
 				    || (k < m.send && static_cast<unsigned char>(m.s[k]) == next_byte);
 				if (viable && matchHere(m, pi, pend, k)) return true;
@@ -136,7 +265,7 @@ namespace wbsh {
 				std::size_t& si) {
 			const Utf8Char c = decodeUtf8(m.s, si, m.send);
 			std::size_t next = pi;
-			const BracketResult result = matchBracket(m, pi, pend, c.code, next);
+			const BracketResult result = matchBracket(m.p, pi, pend, c.code, next);
 			if (result != BracketResult::Match) return result;
 
 			pi = next;
@@ -147,6 +276,11 @@ namespace wbsh {
 		static bool matchHere(const Matcher& m, std::size_t pi, std::size_t pend, std::size_t si) {
 			while (pi < pend) {
 				const char pc = m.p[pi];
+				Group group;
+				if (isExtglobAt(m, pi, pend) && parseGroup(m.p, pi, pend, group)) {
+					return matchGroup(m, group, pend, si);
+				}
+
 				if (pc == '*') return matchStar(m, pi, pend, si);
 				if (si >= m.send) return false;
 
@@ -157,7 +291,7 @@ namespace wbsh {
 				}
 
 				if (pc == '?') {
-					si += utf8CharLength(m.s, si, m.send);
+					si = nextBoundary(m, si);
 					++pi;
 					continue;
 				}
@@ -173,14 +307,14 @@ namespace wbsh {
 
 	}  // namespace fnmatch_detail
 
-	bool fnmatchFull(const std::string& p, const std::string& s) {
-		const fnmatch_detail::Matcher m{ p, s, s.size() };
+	bool fnmatchFull(const std::string& p, const std::string& s, bool extglob) {
+		const fnmatch_detail::Matcher m{ p, s, s.size(), extglob };
 		return fnmatch_detail::matchHere(m, 0, p.size(), 0);
 	}
 
 	bool fnmatchRange(const std::string& p, const std::string& s,
-	                  std::size_t start, std::size_t len) {
-		const fnmatch_detail::Matcher m{ p, s, start + len };
+	                  std::size_t start, std::size_t len, bool extglob) {
+		const fnmatch_detail::Matcher m{ p, s, start + len, extglob };
 		return fnmatch_detail::matchHere(m, 0, p.size(), start);
 	}
 

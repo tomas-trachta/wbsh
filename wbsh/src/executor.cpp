@@ -2734,7 +2734,7 @@ namespace wbsh {
 	}
 
 	bool Executor::patternMatches(const std::string& pat, const std::string& s) {
-		return fnmatchFull(pat, s);
+		return fnmatchFull(pat, s, env_.extglob());
 	}
 
 	bool Executor::caseItemMatches(const CaseClause::Item& item, const std::string& subject) {
@@ -2823,10 +2823,11 @@ namespace wbsh {
 		    || op == "-le" || op == "-gt" || op == "-ge";
 	}
 
+	// As in bash, `[[ == ]]` patterns are matched as if extglob were on.
 	static bool evalDBracketStringOp(const std::string& op, const std::string& lhs,
 	                                 const std::string& rhs) {
-		if (op == "==" || op == "=") return fnmatchFull(rhs, lhs);
-		if (op == "!=")              return !fnmatchFull(rhs, lhs);
+		if (op == "==" || op == "=") return fnmatchFull(rhs, lhs, true);
+		if (op == "!=")              return !fnmatchFull(rhs, lhs, true);
 		if (op == "<")               return lhs < rhs;
 		if (op == ">")               return lhs > rhs;
 		return false;
