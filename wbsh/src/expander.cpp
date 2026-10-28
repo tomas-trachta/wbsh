@@ -2412,7 +2412,12 @@ namespace wbsh {
 	struct PatternRef {
 		const std::string& text;
 		bool extglob;
+		PatternShape shape;
 	};
+
+	static PatternRef makePatternRef(const std::string& pat, bool extglob) {
+		return { pat, extglob, analyzePattern(pat, extglob) };
+	}
 
 	static CharBounds charBounds(const std::string& val) {
 		CharBounds bounds;
@@ -2430,10 +2435,30 @@ namespace wbsh {
 		return fnmatchRange(pat.text, val, bounds[from], bounds[to] - bounds[from], pat.extglob);
 	}
 
+	// A pattern that starts with a literal byte cannot match where the
+	// value has another one.
+	static bool canMatchFrom(const std::string& val, const CharBounds& bounds, std::size_t from,
+			const PatternRef& pat) {
+		if (pat.shape.first_byte < 0) return true;
+
+		const std::size_t at = bounds[from];
+		return at < val.size() && static_cast<unsigned char>(val[at]) == pat.shape.first_byte;
+	}
+
+	// The farthest bound index a match starting at bounds[from] can reach.
+	static std::size_t farthestEnd(const CharBounds& bounds, std::size_t from,
+			const PatternRef& pat) {
+		const std::size_t last = bounds.size() - 1;
+		const std::size_t reach = pat.shape.max_chars;
+		return (reach == std::string::npos || last - from <= reach) ? last : from + reach;
+	}
+
 	// Bound index of the farthest end matching `pat` from bounds[from], or npos.
 	static std::size_t longestMatchAt(const std::string& val, const CharBounds& bounds,
 			std::size_t from, const PatternRef& pat) {
-		for (std::size_t to = bounds.size() - 1;; --to) {
+		if (!canMatchFrom(val, bounds, from, pat)) return std::string::npos;
+
+		for (std::size_t to = farthestEnd(bounds, from, pat);; --to) {
 			if (matchesBetween(val, bounds, from, to, pat)) return to;
 			if (to == from) return std::string::npos;
 		}
@@ -2441,18 +2466,29 @@ namespace wbsh {
 
 	static std::size_t shortestPrefixMatch(const std::string& val, const CharBounds& bounds,
 			const PatternRef& pat) {
-		for (std::size_t to = 0; to < bounds.size(); ++to) {
+		if (!canMatchFrom(val, bounds, 0, pat)) return std::string::npos;
+
+		const std::size_t farthest = farthestEnd(bounds, 0, pat);
+		for (std::size_t to = 0; to <= farthest; ++to) {
 			if (matchesBetween(val, bounds, 0, to, pat)) return to;
 		}
 
 		return std::string::npos;
 	}
 
+	// The first bound index a suffix match can start at.
+	static std::size_t earliestSuffixStart(const CharBounds& bounds, const PatternRef& pat) {
+		const std::size_t last = bounds.size() - 1;
+		const std::size_t reach = pat.shape.max_chars;
+		return (reach == std::string::npos || last <= reach) ? 0 : last - reach;
+	}
+
 	// Bound index where the longest suffix matching `pat` starts, or npos.
 	static std::size_t longestSuffixMatch(const std::string& val, const CharBounds& bounds,
 			const PatternRef& pat) {
 		const std::size_t last = bounds.size() - 1;
-		for (std::size_t from = 0; from <= last; ++from) {
+		for (std::size_t from = earliestSuffixStart(bounds, pat); from <= last; ++from) {
+			if (!canMatchFrom(val, bounds, from, pat)) continue;
 			if (matchesBetween(val, bounds, from, last, pat)) return from;
 		}
 
@@ -2462,17 +2498,32 @@ namespace wbsh {
 	static std::size_t shortestSuffixMatch(const std::string& val, const CharBounds& bounds,
 			const PatternRef& pat) {
 		const std::size_t last = bounds.size() - 1;
+		const std::size_t earliest = earliestSuffixStart(bounds, pat);
 		for (std::size_t from = last;; --from) {
-			if (matchesBetween(val, bounds, from, last, pat)) return from;
-			if (from == 0) return std::string::npos;
+			const bool viable = canMatchFrom(val, bounds, from, pat);
+			if (viable && matchesBetween(val, bounds, from, last, pat)) return from;
+			if (from == earliest) return std::string::npos;
 		}
+	}
+
+	static bool startsWith(const std::string& val, const std::string& text) {
+		return val.size() >= text.size() && val.compare(0, text.size(), text) == 0;
+	}
+
+	static bool endsWith(const std::string& val, const std::string& text) {
+		return val.size() >= text.size()
+			&& val.compare(val.size() - text.size(), text.size(), text) == 0;
 	}
 
 	std::string Expander::stripPrefix(const std::string& val, const std::string& pat,
 			bool greedy) {
 		if (pat.empty()) return val;
 
-		const PatternRef ref{ pat, env_.extglob() };
+		const PatternRef ref = makePatternRef(pat, env_.extglob());
+		if (ref.shape.literal) {
+			return startsWith(val, ref.shape.text) ? val.substr(ref.shape.text.size()) : val;
+		}
+
 		const CharBounds bounds = charBounds(val);
 		const std::size_t to = greedy ? longestMatchAt(val, bounds, 0, ref)
 			: shortestPrefixMatch(val, bounds, ref);
@@ -2484,7 +2535,12 @@ namespace wbsh {
 			bool greedy) {
 		if (pat.empty()) return val;
 
-		const PatternRef ref{ pat, env_.extglob() };
+		const PatternRef ref = makePatternRef(pat, env_.extglob());
+		if (ref.shape.literal) {
+			if (!endsWith(val, ref.shape.text)) return val;
+			return val.substr(0, val.size() - ref.shape.text.size());
+		}
+
 		const CharBounds bounds = charBounds(val);
 		const std::size_t from = greedy ? longestSuffixMatch(val, bounds, ref)
 			: shortestSuffixMatch(val, bounds, ref);
@@ -2494,6 +2550,11 @@ namespace wbsh {
 
 	static std::string replaceAnchoredPrefix(const std::string& val, const PatternRef& pat,
 			const std::string& rep) {
+		if (pat.shape.literal) {
+			if (!startsWith(val, pat.shape.text)) return val;
+			return rep + val.substr(pat.shape.text.size());
+		}
+
 		const CharBounds bounds = charBounds(val);
 		const std::size_t to = longestMatchAt(val, bounds, 0, pat);
 		if (to == std::string::npos) return val;
@@ -2502,6 +2563,11 @@ namespace wbsh {
 
 	static std::string replaceAnchoredSuffix(const std::string& val, const PatternRef& pat,
 			const std::string& rep) {
+		if (pat.shape.literal) {
+			if (!endsWith(val, pat.shape.text)) return val;
+			return val.substr(0, val.size() - pat.shape.text.size()) + rep;
+		}
+
 		const CharBounds bounds = charBounds(val);
 		const std::size_t from = longestSuffixMatch(val, bounds, pat);
 		if (from == std::string::npos) return val;
@@ -2515,10 +2581,28 @@ namespace wbsh {
 		out.append(val, bounds[index], bounds[index + 1] - bounds[index]);
 	}
 
+	// A literal pattern is found with a plain substring search.
+	static std::string replaceLiteral(const std::string& val, const std::string& text,
+			const std::string& rep, bool all) {
+		std::string out;
+		std::size_t from = 0;
+		for (std::size_t at = val.find(text); at != std::string::npos; at = val.find(text, from)) {
+			out.append(val, from, at - from);
+			out += rep;
+			from = at + text.size();
+			if (!all) break;
+		}
+
+		out.append(val, from, std::string::npos);
+		return out;
+	}
+
 	// A zero-width match copies the next character, so a pattern that
 	// always matches `""` still makes progress.
 	static std::string replaceUnanchored(const std::string& val, const PatternRef& pat,
 			const std::string& rep, bool all) {
+		if (pat.shape.literal) return replaceLiteral(val, pat.shape.text, rep, all);
+
 		const CharBounds bounds = charBounds(val);
 		const std::size_t last = bounds.size() - 1;
 		std::string out;
@@ -2547,7 +2631,7 @@ namespace wbsh {
 			const std::string& rep, bool all, bool anchor_start, bool anchor_end) {
 		if (pat.empty())  return val;
 
-		const PatternRef ref{ pat, env_.extglob() };
+		const PatternRef ref = makePatternRef(pat, env_.extglob());
 		if (anchor_start) return replaceAnchoredPrefix(val, ref, rep);
 		if (anchor_end)   return replaceAnchoredSuffix(val, ref, rep);
 		return replaceUnanchored(val, ref, rep, all);

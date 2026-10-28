@@ -30,6 +30,16 @@ namespace wbsh {
 	bool fnmatchRange(const std::string& p, const std::string& s,
 	                  std::size_t start, std::size_t len, bool extglob = false);
 
+	/// What the expander's match loops can skip without calling the matcher.
+	struct PatternShape {
+		bool literal = false;                      ///< no wildcards at all
+		std::string text;                          ///< a literal pattern, unescaped
+		std::size_t max_chars = std::string::npos; ///< bound on a match's length, or npos
+		int first_byte = -1;                       ///< byte every match starts with, or -1
+	};
+
+	PatternShape analyzePattern(const std::string& p, bool extglob = false);
+
 	inline bool isExtglobOperator(char c) {
 		return c == '?' || c == '*' || c == '+' || c == '@' || c == '!';
 	}

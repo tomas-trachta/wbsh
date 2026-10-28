@@ -44,6 +44,7 @@ namespace wbsh {
 
 		static bool matchHere(const Matcher& m, std::size_t pi, std::size_t pend, std::size_t si);
 		static bool matchGroup(const Matcher& m, const Group& g, std::size_t pend, std::size_t si);
+		static std::size_t maxMatchChars(const Matcher& m, std::size_t pi, std::size_t pend);
 
 		static bool isNamedOpen(const std::string& p, std::size_t k, std::size_t pend) {
 			if (k + 1 >= pend || p[k] != '[') return false;
@@ -196,16 +197,56 @@ namespace wbsh {
 
 		// One or more alternatives back to back, then the rest; only a
 		// non-empty match may repeat, so the recursion always advances.
+		// The most characters one alternative of @p g can match, or npos.
+		static std::size_t widestAlternative(const Matcher& m, const Group& g) {
+			std::size_t widest = 0;
+			for (const Span& alt : g.alts) {
+				const std::size_t chars = maxMatchChars(m, alt.begin, alt.end);
+				if (chars == std::string::npos) return chars;
+				if (chars > widest) widest = chars;
+			}
+
+			return widest;
+		}
+
+		struct Repetition {
+			std::vector<bool> reached;
+			std::vector<std::size_t> pending;
+		};
+
+		// Marks `end` reached by one more alternative; true once the rest
+		// of the pattern matches from there.
+		static bool reachRepetitionEnd(const Matcher& m, const Group& g, std::size_t pend,
+				std::size_t si, std::size_t end, Repetition& rep) {
+			if (rep.reached[end - si]) return false;
+
+			rep.reached[end - si] = true;
+			rep.pending.push_back(end);
+			return matchHere(m, g.after, pend, end);
+		}
+
+		// One or more alternatives back to back, then the rest. Explores
+		// every reachable end once, without recursing per repetition, so
+		// long subjects cannot exhaust the stack.
 		static bool matchRepeated(const Matcher& m, const Group& g, std::size_t pend,
 				std::size_t si) {
-			for (std::size_t k = si;; k = nextBoundary(m, k)) {
-				if (anyAlternativeMatches(m, g, si, k)) {
-					if (matchHere(m, g.after, pend, k)) return true;
-					if (k > si && matchRepeated(m, g, pend, k)) return true;
-				}
+			const std::size_t reach = widestAlternative(m, g);
+			Repetition rep{ std::vector<bool>(m.send - si + 1, false), { si } };
+			while (!rep.pending.empty()) {
+				const std::size_t from = rep.pending.back();
+				rep.pending.pop_back();
 
-				if (k >= m.send) return false;
+				std::size_t chars = 0;
+				for (std::size_t k = from;; k = nextBoundary(m, k), ++chars) {
+					if (reach != std::string::npos && chars > reach) break;
+
+					const bool matched = anyAlternativeMatches(m, g, from, k);
+					if (matched && reachRepetitionEnd(m, g, pend, si, k, rep)) return true;
+					if (k >= m.send) break;
+				}
 			}
+
+			return false;
 		}
 
 		static bool matchNegated(const Matcher& m, const Group& g, std::size_t pend,
@@ -305,7 +346,60 @@ namespace wbsh {
 			return si == m.send;
 		}
 
+		static std::size_t maxGroupChars(const Matcher& m, const Group& g) {
+			if (g.op == '*' || g.op == '+' || g.op == '!') return std::string::npos;
+			return widestAlternative(m, g);
+		}
+
+		// An upper bound on the characters p[pi, pend) can match, or npos
+		// when a `*` (or a repeating extglob group) makes it unbounded.
+		// Literal bytes count one each, which over-counts multibyte ones.
+		static std::size_t maxMatchChars(const Matcher& m, std::size_t pi, std::size_t pend) {
+			std::size_t total = 0;
+			while (pi < pend) {
+				Group group;
+				if (isExtglobAt(m, pi, pend) && parseGroup(m.p, pi, pend, group)) {
+					const std::size_t chars = maxGroupChars(m, group);
+					if (chars == std::string::npos) return chars;
+
+					total += chars;
+					pi = group.after;
+					continue;
+				}
+
+				const char c = m.p[pi];
+				if (c == '*') return std::string::npos;
+
+				if (c == '[') pi = skipBracket(m.p, pi, pend);
+				else pi += (c == '\\' && pi + 1 < pend) ? 2 : 1;
+				++total;
+			}
+
+			return total;
+		}
+
+		static bool literalText(const Matcher& m, std::string& out) {
+			for (std::size_t pi = 0; pi < m.p.size(); ++pi) {
+				const char c = m.p[pi];
+				if (literalByteAt(m, pi, m.p.size()) < 0) return false;
+				if (c == '\\' && pi + 1 < m.p.size()) ++pi;
+				out.push_back(m.p[pi]);
+			}
+
+			return true;
+		}
+
 	}  // namespace fnmatch_detail
+
+	PatternShape analyzePattern(const std::string& p, bool extglob) {
+		const std::string none;
+		const fnmatch_detail::Matcher m{ p, none, 0, extglob };
+		PatternShape shape;
+		shape.literal = fnmatch_detail::literalText(m, shape.text);
+		shape.max_chars = fnmatch_detail::maxMatchChars(m, 0, p.size());
+		if (!p.empty()) shape.first_byte = fnmatch_detail::literalByteAt(m, 0, p.size());
+		return shape;
+	}
 
 	bool fnmatchFull(const std::string& p, const std::string& s, bool extglob) {
 		const fnmatch_detail::Matcher m{ p, s, s.size(), extglob };
