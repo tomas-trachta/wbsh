@@ -1,0 +1,14 @@
+-n: x
+-n: x
+-nx y
+-e: a\tb
+-E: a\tb
+-
+--
+a	b|
+c\td|
+e	f|
+-- x
+x
+-x g	h
+x -n
