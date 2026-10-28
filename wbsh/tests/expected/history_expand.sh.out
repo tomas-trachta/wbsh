@@ -1,0 +1,91 @@
+=== quoting and the contexts where ! is not an event
+$ first
+$ $ $ val
+$ a!!b
+$ echo "aecho 'a!!b'b"
+aecho 'a!!b'b
+$ x!
+$ !!
+$ a=! b!
+$ bracket
+$ dollar-bang
+$ 
+=== events
+$ one
+$ two
+$ echo echo two
+echo two
+$ echo echo one
+echo one
+$ echo echo one
+echo one
+$ echo echo echo two
+echo echo two
+$ echo echo echo echo two
+echo echo echo two
+$ echo echo 
+echo
+$ 
+=== word designators
+$ alpha beta gamma
+$ echo gamma alpha alpha beta gamma
+gamma alpha alpha beta gamma
+$ echo alpha
+alpha
+$ echo gamma alpha echo
+gamma alpha echo
+$ echo alpha alpha beta gamma x
+alpha alpha beta gamma x
+$ echo gamma alpha alpha beta
+gamma alpha alpha beta
+$ ls -d / > /dev/null; echo beta
+beta
+$ 
+=== modifiers and quick substitution
+$ /tmp/dir/file.tar.gz
+$ echo /tmp/dir file.tar.gz /tmp/dir/file.tar .gz
+/tmp/dir file.tar.gz /tmp/dir/file.tar .gz
+$ one two one
+$ echo echo 1 two one
+echo 1 two one
+$ echo echo 1 two 1
+echo 1 two 1
+$ echo echo 1 2 1
+echo 1 2 1
+$ echo 'echo one two one'
+echo one two one
+$ echo stays; echo echo 'echo one two one'
+$     7  echo 'echo one two one'
+    8  echo stays; echo echo 'echo one two one'
+    9  history 3
+$ 
+=== errors drop the line
+$ hi
+$ wbsh: !nosuchcommand: event not found
+$ wbsh: !99: event not found
+$ wbsh: !!:9: bad word specifier
+$ hi
+$ wbsh: :s/zzz/y/: substitution failed
+$     1  echo hi
+    2  echo hi
+    3  history
+$ 
+=== a continuation line inside single quotes is left alone
+$ base
+$ > a
+!!
+$ > echo 'a
+!!'"
+b
+echo 'a
+!!'
+$ 
+=== set +H turns expansion off
+$ on
+$ $ !!
+$ $ echo set -H
+set -H
+$ 
+=== a script is not history-expanded
+hi
+!!

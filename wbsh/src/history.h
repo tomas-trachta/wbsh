@@ -35,6 +35,36 @@ namespace wbsh {
 	/** True when @p text ends with an unescaped backslash that continues it on the next line. */
 	bool endsWithLineContinuation(const std::string& text);
 
+	/** The last `s/old/new/`, which `:&`, `:g&` and an empty old text reuse. */
+	struct HistorySubstitution {
+		std::string old_text;
+		std::string new_text;
+	};
+
+	struct HistoryExpansion {
+		enum class Kind {
+			kUnchanged,   // no `!` to expand; `text` is the line
+			kExpanded,    // `text` is the line to run
+			kPrintOnly,   // `:p` -- `text` is shown and saved, not run
+			kFailed,      // `text` is the message, e.g. "!foo: event not found"
+		};
+		Kind kind = Kind::kUnchanged;
+		std::string text;
+	};
+
+	/**
+	 * bash's history expansion of one input line against @p history:
+	 * events (`!!`, `!n`, `!-n`, `!str`, `!?str?`, `!#`), word designators
+	 * (`:n`, `^`, `$`, `*`, `x-y`, `%`), modifiers (`h t r e p q x s & g`)
+	 * and `^old^new^`. Nothing in single quotes, after a backslash, before
+	 * a blank, `=`, `(` or a closing `"`, or in `[!...]`, `${!name}` and
+	 * `$!` is expanded. @p starting_quote is the quote (`'` or `"`) a
+	 * continuation line starts inside of, or `\0`.
+	 */
+	HistoryExpansion expandHistoryLine(const std::string& line,
+	                                   const std::vector<std::string>& history,
+	                                   char starting_quote, HistorySubstitution& last);
+
 	/** The entries of a history file, oldest first, with each command's exit status. */
 	struct HistoryList {
 		std::vector<std::string> commands;
@@ -80,7 +110,7 @@ namespace wbsh {
 	 */
 	void installHistoryCloseHandler();
 
-	/** The entry of the command about to run, for the close handler to write if the session ends. */
+	/** The entry of the command about to run, for the close handler to write. */
 	void holdUnsavedHistory(const std::string& path, const std::string& command);
 
 	/**

@@ -23,7 +23,7 @@
 namespace wbsh {
 
 	/// The `set -o` options. Those wbsh has no counterpart for (monitor,
-	/// histexpand, posix, ...) are only stored, so scripts that set them
+	/// posix, ...) are only stored, so scripts that set them
 	/// keep working and `set -o` reports them back.
 	struct SetOptions {
 		bool allexport   = false;
