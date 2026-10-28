@@ -134,11 +134,16 @@ namespace wbsh {
 		void scanGreatRun(SourceLoc start);
 		void scanWord();
 		void scanWordSegments(Token& word);
+		bool readWordPart(std::vector<WordSegment>& out, int& group_depth);
 		void scanRegexSegments(Token& word);
 		bool readRegexPart(std::vector<WordSegment>& out, int& paren_depth);
 		bool atRegexOperand() const;
 		bool atCommandWordStart() const;
 		void trackDBracket(const Token& word, bool command_start);
+		bool atExtglobOpen(bool word_start) const;
+		bool inCasePattern() const;
+		void trackCaseWord(const Token& word, bool command_start);
+		void trackCaseOperator(TokKind kind);
 		void markHeredocDelimiter(Token& word) const;
 		void skipWhitespace();
 		void skipComment();
@@ -192,6 +197,13 @@ namespace wbsh {
 		// Inside `[[ ... ]]` the word after `=~` is a regex in which
 		// `(`, `)` and `|` (and blanks inside parentheses) are word text.
 		bool in_dbracket_ = false;
+
+		// Where the words of each open `case` stand, innermost last: a
+		// `!(` that leads a pattern is an extglob group, while one that
+		// leads a command (bang_is_keyword_) is `!` before a subshell.
+		enum class CaseState { Subject, In, Pattern, Body };
+		std::vector<CaseState> case_states_;
+		bool bang_is_keyword_ = false;
 
 		// Heredoc delimiters waiting for their body after the next
 		// newline, as indices into `tokens_` so the body can be filled in.

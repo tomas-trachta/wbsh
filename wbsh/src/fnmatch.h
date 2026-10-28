@@ -21,18 +21,25 @@
 
 namespace wbsh {
 
-	bool fnmatchFull(const std::string& p, const std::string& s);
+	/// With @p extglob, `?(...)`, `*(...)`, `+(...)`, `@(...)` and `!(...)`
+	/// (alternatives separated by `|`) are patterns too.
+	bool fnmatchFull(const std::string& p, const std::string& s, bool extglob = false);
 
 	/// fnmatchFull against the substring s[start, start+len), without
 	/// the cost of copying it out.
 	bool fnmatchRange(const std::string& p, const std::string& s,
-	                  std::size_t start, std::size_t len);
+	                  std::size_t start, std::size_t len, bool extglob = false);
 
-	// Includes the characters that are only special inside `[...]`, so
-	// quoted text spliced into a bracket expression stays literal too.
+	inline bool isExtglobOperator(char c) {
+		return c == '?' || c == '*' || c == '+' || c == '@' || c == '!';
+	}
+
+	// Includes the characters that are only special inside `[...]` or
+	// an extglob group, so quoted text spliced into either stays literal.
 	inline bool isFnmatchSpecial(char c) {
 		return c == '*' || c == '?' || c == '[' || c == ']' || c == '\\'
-		    || c == '-' || c == '!' || c == '^';
+		    || c == '-' || c == '!' || c == '^'
+		    || c == '+' || c == '@' || c == '(' || c == ')' || c == '|';
 	}
 
 	inline void appendFnmatchLiteral(std::string& pattern, char c) {
