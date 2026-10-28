@@ -96,6 +96,9 @@ namespace wbsh {
 	/// True only for a real console: _isatty also says yes for NUL.
 	bool isConsoleStream(std::FILE* stream);
 
+	/// A regular file, where a read never waits for a writer.
+	bool isDiskStream(std::FILE* stream);
+
 	/// A write to stdout failed, typically because the pipe's reader exited.
 	/// Producer loops stop then, as SIGPIPE would stop them on POSIX.
 	bool stdoutFailed();

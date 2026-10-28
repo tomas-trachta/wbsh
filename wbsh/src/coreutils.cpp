@@ -227,6 +227,11 @@ namespace wbsh {
 #endif
 	}
 
+	bool isDiskStream(std::FILE* stream) {
+		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stream)));
+		return handle != INVALID_HANDLE_VALUE && ::GetFileType(handle) == FILE_TYPE_DISK;
+	}
+
 	static bool isPipeStream(std::FILE* stream) {
 		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stream)));
 		return handle != INVALID_HANDLE_VALUE && ::GetFileType(handle) == FILE_TYPE_PIPE;

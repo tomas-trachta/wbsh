@@ -108,6 +108,7 @@ namespace wbsh {
 		struct LineReader {
 			std::FILE* stream = nullptr;
 			char delimiter = '\n';
+			bool line_at_a_time = false;
 			std::vector<char> buffer = std::vector<char>(64 * 1024);
 			std::size_t position = 0;
 			std::size_t length = 0;
@@ -809,13 +810,32 @@ namespace wbsh {
 	}
 
 
+	static std::size_t readUpToDelimiter(LineReader& reader) {
+		std::size_t got = 0;
+		int c = EOF;
+		_lock_file(reader.stream);
+		while (got < reader.buffer.size() && (c = _fgetc_nolock(reader.stream)) != EOF) {
+			reader.buffer[got++] = static_cast<char>(c);
+			if (c == static_cast<unsigned char>(reader.delimiter)) break;
+		}
+
+		_unlock_file(reader.stream);
+		return got;
+	}
+
+	// fread waits for a whole chunk, which from a pipe (tail -f | grep)
+	// would hold matches back until 64 KiB arrived; there a line is enough.
+	static std::size_t refillLineReader(LineReader& reader) {
+		if (reader.line_at_a_time) return readUpToDelimiter(reader);
+		return std::fread(reader.buffer.data(), 1, reader.buffer.size(), reader.stream);
+	}
+
 	static bool readLine(LineReader& reader, std::string& line, bool& terminated) {
 		line.clear();
 		for (;;) {
 			if (reader.position == reader.length) {
 				reader.position = 0;
-				reader.length = std::fread(reader.buffer.data(), 1, reader.buffer.size(),
-					reader.stream);
+				reader.length = refillLineReader(reader);
 				if (reader.length == 0) {
 					terminated = false;
 					return !line.empty();
@@ -994,6 +1014,7 @@ namespace wbsh {
 		LineReader reader;
 		reader.stream = stream;
 		reader.delimiter = options.null_data ? '\0' : '\n';
+		reader.line_at_a_time = !isDiskStream(stream);
 
 		std::string line;
 		bool terminated = true;
