@@ -74,7 +74,9 @@ namespace wbsh {
 	// typed with AltGr; <RESIZE:N> makes the screen N columns wide. Before
 	// the keys, `-p PROMPT` sets the prompt,
 	// `-c COLUMNS` a screen width (the cursor's cell is then reported as
-	// @row:col), and `-o` prints what the editor wrote.
+	// @row:col), and `-o` prints what the editor wrote. A line run with
+	// operate-and-get-next is followed by `then [ENTRY]`, the history
+	// entry the next prompt would start with.
 	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args);
 
 	// A place reverse-i-search found its query: the history entry and
@@ -177,6 +179,8 @@ namespace wbsh {
 		void runBinding(const KeyBinding& binding);
 		void runCommand(const std::string& name);
 		EditCommand commandNamed(const std::string& name) const;
+		EditCommand basicCommandNamed(const std::string& name) const;
+		EditCommand readlineCommandNamed(const std::string& name) const;
 		void typeMacro(const std::string& text);
 		void runShellBinding(const std::string& command);
 		void recordUndo(const UndoPoint& before, const std::string& name);
@@ -247,6 +251,46 @@ namespace wbsh {
 		void yankLastArg();
 		void yankNthArg();
 		void yankPop();
+
+		// lineedit_readline.cpp: more of readline's commands.
+		void backwardKillLine();
+		void characterSearch();
+		void characterSearchBackward();
+		void completeCommand();
+		void completeFilename();
+		void completeVariable();
+		void copyBackwardWord();
+		void copyForwardWord();
+		void copyRegionAsKill();
+		void deleteCharOrList();
+		void exchangePointAndMark();
+		void forwardBackwardDeleteChar();
+		void historySearchBackward();
+		void historySearchForward();
+		void historySubstringSearchBackward();
+		void historySubstringSearchForward();
+		void insertCompletions();
+		void killRegion();
+		void menuComplete();
+		void menuCompleteBackward();
+		void operateAndGetNext();
+		void overwriteMode();
+		void quotedInsert();
+		void redrawCurrentLine();
+		void setMark();
+		void tabInsert();
+		void unixFilenameRubout();
+
+		enum class PendingKey { kNone, kQuotedInsert, kSearchForward, kSearchBackward };
+		bool takePendingKey(const std::string& keys);
+		void searchCharacter(const std::string& target, bool forward);
+		void searchHistory(bool older, bool anchored);
+		void stepMenu(bool forward);
+		bool startMenu();
+		void completeWith(std::vector<std::string> matches);
+		void copyToKillRing(const std::string& text);
+		void overwriteChars(const std::string& text);
+		void loadOperateNext();
 
 		// PowerShell-style inline prediction: refreshSuggestion() fills
 		// suggestion_ from history when the cursor sits at end-of-buffer
@@ -332,6 +376,7 @@ namespace wbsh {
 		                     const std::vector<std::string>& matches);
 		void printMatches(const std::vector<std::string>& matches);
 		bool confirmLongList(std::size_t count);
+		bool listsAmbiguous(bool extended) const;
 		void listMatches(const std::vector<std::string>& matches);
 		bool askYesNo();
 		std::string longestCommonPrefix(const std::vector<std::string>& words);
@@ -378,6 +423,20 @@ namespace wbsh {
 		std::string current_keys_;
 		std::string last_command_;
 		int macro_depth_ = 0;
+
+		// The mark, overwrite mode, a key a command waits for, the text a
+		// history search looks for, menu completion's matches, and the
+		// entry operate-and-get-next brings up at the next prompt.
+		std::size_t mark_ = 0;
+		bool overwrite_ = false;
+		PendingKey pending_key_ = PendingKey::kNone;
+		std::string history_search_text_;
+		std::vector<std::string> menu_matches_;
+		std::size_t menu_index_ = 0;
+		std::size_t menu_end_ = 0;
+		std::string menu_word_;
+		Tok menu_tok_;
+		std::size_t operate_next_ = static_cast<std::size_t>(-1);
 
 		std::vector<std::string> kill_ring_;
 		std::size_t kill_ring_top_ = 0;

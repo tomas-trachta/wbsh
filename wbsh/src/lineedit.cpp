@@ -316,7 +316,12 @@ namespace wbsh {
 		last_command_.clear();
 		undo_.clear();
 		insert_run_ = 0;
+		mark_ = 0;
+		overwrite_ = false;
+		pending_key_ = PendingKey::kNone;
+		menu_matches_.clear();
 		setPrompt(prompt);
+		loadOperateNext();
 	}
 
 	// Only the prompt's last line is drawn again as the line changes; the
@@ -1256,6 +1261,7 @@ namespace wbsh {
 		enterRawMode();
 		typeahead_records_ = pendingInputRecords();
 		showPrompt();
+		if (!buffer_.empty()) redraw();
 		editUntilDone();
 		leaveRawMode();
 
@@ -1313,17 +1319,21 @@ namespace wbsh {
 
 			if (letter == '_' || letter == '-') return VK_OEM_MINUS;
 			if (letter == '/') return VK_OEM_2;
+			if (letter == '@') return '2';
+			if (letter == ' ') return VK_SPACE;
+			if (letter == ']') return VK_OEM_6;
 
 			return 0;
 		}
 
 		// What the console puts in uChar for the chord: a control code
-		// for Ctrl with a letter, `_` or `@`, nothing for Ctrl+/.
+		// for Ctrl with a letter, `_` or `]`, nothing for Ctrl+/ or Ctrl+@.
 		static WCHAR chordChar(char letter, bool ctrl) {
 			if (!ctrl) return static_cast<WCHAR>(static_cast<unsigned char>(letter));
 			const auto byte = static_cast<unsigned char>(letter);
 			if (std::isalpha(byte) != 0) return static_cast<WCHAR>(std::toupper(byte) - 'A' + 1);
 			if (letter == '_') return 0x1F;
+			if (letter == ']') return 0x1D;
 			if (letter == '/' || letter == '@' || letter == ' ') return 0;
 
 			return static_cast<WCHAR>(letter);
@@ -1459,6 +1469,10 @@ namespace wbsh {
 
 		std::string report = describeReplay(finished);
 		if (options.columns != 0 && !finished) report += " " + describeCursorCell();
+		if (operate_next_ < exec_.history().size()) {
+			report += " then [" + exec_.history()[operate_next_] + "]";
+		}
+
 		if (options.show_output) report += "\n" + spelledOut(captured_output_);
 
 		forced_columns_ = 0;

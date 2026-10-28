@@ -1242,15 +1242,26 @@ namespace wbsh {
 		}
 
 		const std::string common = longestCommonPrefix(matches);
+		const bool extended = complete_detail::extendsWord(common, tok.word);
 		last_was_tab_ = true;
-		if (complete_detail::extendsWord(common, tok.word)) {
-			insertMatch(tok, common, false);
-			last_tab_word_ = common;
-			return;
-		}
+		last_tab_word_ = extended ? common : tok.word;
+		if (extended) insertMatch(tok, common, false);
 
-		printMatches(matches);
-		last_tab_word_ = tok.word;
+		if (listsAmbiguous(extended)) {
+			printMatches(matches);
+		} else if (!extended) {
+			ding();
+		}
+	}
+
+	// readline's choice for an ambiguous word: show-all-if-ambiguous lists
+	// at once, show-all-if-unmodified when nothing could be added, and
+	// otherwise a second Tab lists.
+	bool LineEditor::listsAmbiguous(bool extended) const {
+		if (shellKeymap().isOn("show-all-if-ambiguous")) return true;
+		if (extended) return false;
+
+		return shellKeymap().isOn("show-all-if-unmodified") || last_command_ == "complete";
 	}
 
 	// A whole match is finished off -- its quote closed and a space after

@@ -1,0 +1,75 @@
+=== lines from a typical .bashrc load without errors
+status 0
+status 0
+status 0
+status 0
+status 0
+status 0
+status 0
+status 0
+status 0
+"\C-g": abort
+=== unknown function names are refused only where bash refuses them
+wbsh: bind: `some-function-wbsh-lacks': unknown function name
+status 1
+wbsh: bind: `some-function-wbsh-lacks': unknown function name
+status 1
+=== history-search-backward / -forward match the text before the cursor
+[git][ commit -m one]
+[git][ status]
+[git][ status]
+[git][ commit -m one]
+[zzz][]
+=== history-substring-search finds the text anywhere
+[echo git][]
+[git][ commit -m one]
+=== menu-complete steps through the matches, then back to the word
+[cat alpha1][]
+[cat alpha2][]
+[cat al][]
+[cat alpha2][]
+[cat beta ][]
+=== insert-completions (M-*) puts every match in
+[cat alpha1 alpha2 ][]
+=== complete-filename (M-/), complete-command (M-!), complete-variable (M-$)
+[echo alpha][]
+[history ][]
+[echo $zzvariable_one][]
+[echo ${zzvariable_one}][]
+=== the mark and the region
+[oneX][ two three]
+[one][ three]
+[one two threeone][]
+=== copy-backward-word, copy-forward-word, backward-kill-line, unix-filename-rubout
+[one two two][]
+[one two one][]
+[][in]
+[cd /usr/local/][]
+[cd /usr/][]
+=== character-search (C-]) and character-search-backward (M-C-])
+[fiX][nd . -name x]
+[X][find . -name x]
+[find X][. -name x]
+=== quoted-insert (C-q) types the next key as it is
+[ab][]
+[a	b][]
+=== tab-insert (M-TAB), overwrite-mode
+[a	b][]
+[Jé][llo]
+[abcd][]
+[J][hello]
+=== delete-char-or-list, forward-backward-delete-char
+[][bc]
+[][bc]
+[ab][]
+=== operate-and-get-next (C-o) runs the line and brings up the next entry
+accept [echo first] then [echo second]
+accept [echo third]
+accept [echo new]
+=== a second Tab lists an ambiguous word unless show-all-if-unmodified is on
+1
+0
+1
+0
+1
+[ls same][]
