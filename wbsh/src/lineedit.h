@@ -70,7 +70,9 @@ namespace wbsh {
 	// literal text or, in angle brackets, a named key -- LEFT RIGHT UP DOWN
 	// HOME END BS DEL TAB ENTER ESC -- or a character, either with C- / M- /
 	// C-M- in front (<C-LEFT>, <M-.>, <C-_>), or <AltGr-x> for a character
-	// typed with AltGr.
+	// typed with AltGr. Before the keys, `-p PROMPT` sets the prompt,
+	// `-c COLUMNS` a screen width (the cursor's cell is then reported as
+	// @row:col), and `-o` prints what the editor wrote.
 	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args);
 
 	enum class LineStatus {
@@ -88,9 +90,16 @@ namespace wbsh {
 		// The typed line goes to `out` without its newline.
 		LineStatus readLine(const std::string& prompt, std::string& out);
 
+		struct ReplayOptions {
+			std::string prompt;
+			std::size_t columns = 0;    // a screen this wide instead of the console's
+			bool show_output = false;   // also what the editor wrote, escapes spelled out
+		};
+
 		// Test hook behind `__lineedit`: types `keys` into an empty line
-		// with the console left alone, and describes the line it ends with.
-		std::string replayKeys(const std::vector<std::string>& keys);
+		// with the console left alone, and describes the line it ends with
+		// -- with `columns`, also the screen cell the cursor is left in.
+		std::string replayKeys(const std::vector<std::string>& keys, const ReplayOptions& options);
 
 	private:
 		struct UndoPoint {
@@ -124,7 +133,8 @@ namespace wbsh {
 		void revsearchStepOlder(const std::string& query, std::size_t& match_index);
 		void revsearchStepNewer(const std::string& query, std::size_t& match_index);
 		void revsearchEraseQueryChar(std::string& query, std::size_t& match_index);
-		void revsearchExtendQuery(std::string& query, char letter, std::size_t& match_index);
+		void revsearchExtendQuery(std::string& query, const std::string& text,
+		                          std::size_t& match_index);
 #endif
 
 		// False when the input ran out before a key finished the line.
@@ -145,6 +155,8 @@ namespace wbsh {
 
 		void redraw();
 		void emit(const std::string& text);
+		std::size_t screenColumns() const;
+		std::string describeCursorCell() const;
 		void moveToLineEnd();
 		void appendLineText(std::string& out) const;
 		void insertChars(const std::string& text);
@@ -278,6 +290,9 @@ namespace wbsh {
 		Environment& env_;
 		Executor& exec_;
 		bool headless_ = false;
+		std::size_t forced_columns_ = 0;
+		bool capture_output_ = false;
+		std::string captured_output_;
 		bool interrupted_ = false;
 		bool done_ = false;
 		bool eof_ = false;
