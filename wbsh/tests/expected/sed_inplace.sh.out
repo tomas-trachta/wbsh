@@ -1,0 +1,49 @@
+=== plain edit
+rc=0
+X
+b
+=== backup suffix
+rc=0
+X
+b
+X
+Y
+=== backup with * goes where the suffix says
+rc=0
+f.old
+X
+Y
+Z
+Y
+=== --in-place=SUFFIX
+x
+y
+=== several files, one missing
+sed: can't read nofile: No such file or directory
+rc=2
+2
+y
+=== a directory is not editable, - is a file name, stdin is not used
+sed: couldn't edit d: not a regular file
+rc=4
+sed: can't read -: No such file or directory
+rc=2
+sed: no input files
+rc=4
+=== a read-only file is replaced and stays read-only
+rc=0
+rw
+still read-only
+=== no temporary files are left behind
+bak
+d
+f
+f.orig
+g
+g.b
+h
+ro
+=== the original survives when the temporary file cannot be created
+sed: couldn't open temporary file locked/sedXXXXXX: Permission denied
+keep
+k

@@ -9,7 +9,17 @@
  * posixregex.h, so \n, \t, \w, \< \> and back-references work in both
  * basic and extended mode; replacements understand & \1-\9 \n \t and
  * the GNU case conversions \U \L \u \l \E.
+ *
+ * -i never truncates the original: the result goes to a temporary file in
+ * the same directory, which is renamed over the target only once every
+ * write succeeded (the original is renamed to the backup name first).
  */
+
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#endif /* _WIN32 */
 
 #include "coreutils_internal.h"
 
@@ -26,6 +36,7 @@
 
 #include "executor.h"
 #include "numparse.h"
+#include "pathconv.h"
 #include "posixregex.h"
 #include "regexutil.h"
 
@@ -132,6 +143,7 @@ namespace wbsh {
 			std::size_t next_file = 0;
 			std::FILE* current = nullptr;
 			char delimiter = '\n';
+			bool dash_is_stdin = true;
 			bool has_ahead = false;
 			std::string ahead;
 			bool ahead_terminated = true;
@@ -187,6 +199,7 @@ namespace wbsh {
 
 	static const int kSedSyntaxStatus = 1;
 	static const int kSedInputStatus = 2;
+	static const int kSedPanicStatus = 4;
 	static const std::size_t kListWidth = 70;
 
 	static bool atEnd(const ScriptParser& p) {
@@ -642,7 +655,8 @@ namespace wbsh {
 	static bool openNextFile(LineSource& source) {
 		while (source.next_file < source.files.size()) {
 			const std::string& name = source.files[source.next_file++];
-			source.current = name == "-" ? stdin : fopenNative(*source.exec, name, "rb");
+			const bool from_stdin = name == "-" && source.dash_is_stdin;
+			source.current = from_stdin ? stdin : fopenNative(*source.exec, name, "rb");
 			if (source.current != nullptr) return true;
 
 			std::fprintf(stderr, "sed: can't read %s: %s\n", name.c_str(), std::strerror(errno));
@@ -1285,7 +1299,7 @@ namespace wbsh {
 		}
 
 		options.files = operands;
-		if (options.files.empty()) options.files.push_back("-");
+		if (options.files.empty() && !options.in_place) options.files.push_back("-");
 		return options.have_script;
 	}
 
@@ -1299,34 +1313,142 @@ namespace wbsh {
 		source.exec = &exec;
 		source.files = files;
 		source.delimiter = options.null_data ? '\0' : '\n';
+		source.dash_is_stdin = !options.in_place;
 		state.out.delimiter = source.delimiter;
 		runProgram(program, state, source, exec, options.quiet || program.quiet);
 		if (source.current != nullptr && source.current != stdin) std::fclose(source.current);
 		return source.failed ? kSedInputStatus : 0;
 	}
 
-	static bool writeInPlace(Executor& exec, const std::string& file, const std::string& content,
-	                         const std::string& suffix) {
-		std::error_code ec;
-		if (!suffix.empty()) {
-			fs::copy_file(toNative(exec, file), toNative(exec, file + suffix),
-				fs::copy_options::overwrite_existing, ec);
+	static const DWORD kReplaceBlockingAttributes =
+		FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM;
+	static const DWORD kSettableAttributes = kReplaceBlockingAttributes | FILE_ATTRIBUTE_ARCHIVE
+		| FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+
+	static std::string lastErrorText() {
+		return posixErrorText(std::error_code(static_cast<int>(::GetLastError()),
+			std::system_category()));
+	}
+
+	static std::string shownSibling(const std::string& file, const fs::path& sibling) {
+		const std::size_t slash = file.find_last_of("/\\");
+		const std::string directory = slash == std::string::npos ? "." : file.substr(0, slash);
+		return directory + "/" + pathToUtf8(sibling.filename());
+	}
+
+	static fs::path backupPath(const fs::path& target, const std::string& suffix) {
+		const std::string base = pathToUtf8(target.filename());
+		if (suffix.find('*') == std::string::npos) {
+			return target.parent_path() / utf8ToPath(base + suffix);
 		}
 
-		std::FILE* out = fopenNative(exec, file, "wb");
-		if (out == nullptr) {
-			std::fprintf(stderr, "sed: couldn't open %s: %s\n", file.c_str(), std::strerror(errno));
+		std::string name;
+		for (char c : suffix) {
+			if (c == '*') name += base;
+			else name.push_back(c);
+		}
+
+		return target.parent_path() / utf8ToPath(name);
+	}
+
+	static bool isEditableFile(Executor& exec, const std::string& file) {
+		std::error_code ec;
+		const fs::file_status status = fs::status(toNative(exec, file), ec);
+		const bool missing = ec || status.type() == fs::file_type::not_found;
+		if (missing || fs::is_regular_file(status)) return true;
+
+		std::fprintf(stderr, "sed: couldn't edit %s: not a regular file\n", file.c_str());
+		return false;
+	}
+
+	static bool writeAndClose(std::FILE* out, const std::string& content,
+	                          const std::string& shown) {
+		const std::size_t written = std::fwrite(content.data(), 1, content.size(), out);
+		if (written != content.size() || std::fflush(out) != 0) {
+			std::fprintf(stderr, "sed: couldn't write %zu items to %s: %s\n",
+				content.size() - written, shown.c_str(), std::strerror(errno));
+			std::fclose(out);
 			return false;
 		}
 
-		std::fwrite(content.data(), 1, content.size(), out);
-		std::fclose(out);
-		return true;
+		if (std::fclose(out) == 0) return true;
+
+		std::fprintf(stderr, "sed: couldn't close %s: %s\n", shown.c_str(), std::strerror(errno));
+		return false;
+	}
+
+	static bool writeTempCopy(const fs::path& target, const std::string& file,
+	                          const std::string& content, fs::path& temp) {
+		std::FILE* out = createSiblingTempFile(target, "sed", temp);
+		if (out == nullptr) {
+			std::fprintf(stderr, "sed: couldn't open temporary file %s: %s\n",
+				shownSibling(file, temp).c_str(), std::strerror(errno));
+			return false;
+		}
+
+		if (writeAndClose(out, content, shownSibling(file, temp))) return true;
+
+		std::error_code ec;
+		fs::remove(temp, ec);
+		return false;
+	}
+
+	static bool moveBackup(const fs::path& target, const fs::path& backup,
+	                       const std::string& file) {
+		if (::MoveFileExW(target.c_str(), backup.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE) {
+			return true;
+		}
+
+		std::fprintf(stderr, "sed: cannot rename %s: %s\n", file.c_str(), lastErrorText().c_str());
+		return false;
+	}
+
+	static bool replaceTarget(const fs::path& temp, const fs::path& target, const std::string& file,
+	                          DWORD attributes) {
+		const bool blocking = attributes != INVALID_FILE_ATTRIBUTES
+			&& (attributes & kReplaceBlockingAttributes) != 0;
+		if (blocking) ::SetFileAttributesW(target.c_str(), FILE_ATTRIBUTE_NORMAL);
+
+		const DWORD flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+		const bool moved = ::MoveFileExW(temp.c_str(), target.c_str(), flags) != FALSE;
+		const std::string error = moved ? std::string() : lastErrorText();
+		if (blocking) ::SetFileAttributesW(target.c_str(), attributes & kSettableAttributes);
+		if (moved) return true;
+
+		std::fprintf(stderr, "sed: cannot rename %s: %s\n",
+			shownSibling(file, temp).c_str(), error.c_str());
+		return false;
+	}
+
+	static bool writeInPlace(Executor& exec, const std::string& file, const std::string& content,
+	                         const std::string& suffix) {
+		const fs::path target = toNative(exec, file);
+		const DWORD attributes = ::GetFileAttributesW(target.c_str());
+		fs::path temp;
+		if (!writeTempCopy(target, file, content, temp)) return false;
+
+		const bool backed_up = suffix.empty()
+			|| moveBackup(target, backupPath(target, suffix), file);
+		if (backed_up && replaceTarget(temp, target, file, attributes)) return true;
+
+		std::error_code ec;
+		fs::remove(temp, ec);
+		return false;
 	}
 
 	static int editInPlace(Executor& exec, Program& program, const SedOptions& options) {
+		if (options.files.empty()) {
+			std::fprintf(stderr, "sed: no input files\n");
+			return kSedPanicStatus;
+		}
+
 		int status = 0;
 		for (const std::string& file : options.files) {
+			if (!isEditableFile(exec, file)) {
+				status = kSedPanicStatus;
+				continue;
+			}
+
 			RunState state;
 			std::string buffer;
 			state.out.buffer = &buffer;
@@ -1338,7 +1460,7 @@ namespace wbsh {
 				continue;
 			}
 
-			if (!writeInPlace(exec, file, buffer, options.backup_suffix)) status = 4;
+			if (!writeInPlace(exec, file, buffer, options.backup_suffix)) status = kSedPanicStatus;
 			if (state.quit) return state.exit_code != 0 ? state.exit_code : status;
 		}
 
