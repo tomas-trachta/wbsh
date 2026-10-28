@@ -217,6 +217,8 @@
     <ClCompile Include="src\builtins_declare.cpp" />
     <ClCompile Include="src\builtins_read.cpp" />
     <ClCompile Include="src\stdinsync.cpp" />
+    <ClCompile Include="src\testops.cpp" />
+    <ClCompile Include="src\builtins_test.cpp" />
     <ClCompile Include="src\coreutils.cpp" />
     <ClCompile Include="src\coreutils_archive.cpp" />
     <ClCompile Include="src\coreutils_bc.cpp" />

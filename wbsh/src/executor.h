@@ -796,6 +796,7 @@ namespace wbsh {
 	void registerCoreBuiltins(Executor& exec);
 	void registerDeclarationBuiltins(Executor& exec);
 	void registerReadBuiltin(Executor& exec);
+	void registerTestBuiltins(Executor& exec);
 	void registerCoreutils(Executor& exec);
 
 }  // namespace wbsh
