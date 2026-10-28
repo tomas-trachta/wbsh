@@ -201,7 +201,7 @@ namespace wbsh::posixregex_detail {
 	static bool parseInterval(Parser& p, Interval& interval) {
 		skipOperator(p);
 		if (!parseIntervalBody(p, interval)) return false;
-		if (!atOperator(p, '}')) return fail(p, basic(p) ? "Unmatched \\{" : "Unmatched {");
+		if (!atOperator(p, '}')) return fail(p, "Unmatched \\{");
 
 		skipOperator(p);
 		return true;
@@ -209,6 +209,19 @@ namespace wbsh::posixregex_detail {
 
 	static bool isOneOf(const char* set, char c) {
 		return c != '\0' && std::strchr(set, c) != nullptr;
+	}
+
+	static std::size_t skipDigits(const std::string& text, std::size_t at) {
+		while (at < text.size() && std::isdigit(static_cast<unsigned char>(text[at])) != 0) ++at;
+		return at;
+	}
+
+	// GNU ERE reads a { that does not open something shaped like an
+	// interval ({n}, {n,}, {,m}, {n,m}) as a literal brace.
+	static bool intervalShapeAt(const std::string& pattern, std::size_t open) {
+		std::size_t at = skipDigits(pattern, open + 1);
+		if (at < pattern.size() && pattern[at] == ',') at = skipDigits(pattern, at + 1);
+		return at < pattern.size() && pattern[at] == '}';
 	}
 
 	static bool quantifierAhead(const Parser& p, char& kind) {
@@ -222,7 +235,8 @@ namespace wbsh::posixregex_detail {
 
 		if (!basic(p)) {
 			kind = c;
-			return isOneOf("+?{", c);
+			if (c == '{') return intervalShapeAt(p.pattern, p.at);
+			return isOneOf("+?", c);
 		}
 
 		const bool escaped = c == '\\' && p.at + 1 < p.pattern.size();
