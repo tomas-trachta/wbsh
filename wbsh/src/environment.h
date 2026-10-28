@@ -14,6 +14,7 @@
  */
 
 #include <chrono>
+#include <ctime>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -342,6 +343,8 @@ namespace wbsh {
 		 *        constructed, offset by any user assignment.
 		 */
 		long long    secondsSinceStart() const;
+		/// The wall-clock time this Environment was constructed (`printf '%(...)T' -2`).
+		std::time_t  startEpoch() const { return start_epoch_; }
 		void         setSecondsOffset(long long s);
 
 		int          currentLineno() const   { return current_lineno_; }
@@ -389,6 +392,7 @@ namespace wbsh {
 		std::chrono::steady_clock::time_point start_time_ =
 		    std::chrono::steady_clock::now();
 		long long seconds_offset_ = 0;
+		std::time_t start_epoch_ = std::time(nullptr);
 		unsigned int random_state_ = 0;
 		int current_lineno_ = 0;
 		std::string current_command_;
