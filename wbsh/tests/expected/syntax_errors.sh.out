@@ -1,0 +1,48 @@
+=== 1. missing done: only the line before runs
+before
+parse error 4:1: expected `done`
+rc=2
+=== 2. stray tokens are errors
+a
+parse error 2:1: syntax error near unexpected token `)'
+rc=2
+a
+parse error 2:1: syntax error near unexpected token `fi'
+rc=2
+a
+parse error 2:9: syntax error near unexpected token `done'
+rc=2
+=== 3. the whole line with the error is skipped
+parse error 2:1: expected `then`
+parse error 2:1: expected `fi`
+rc=2
+in f
+parse error 4:31: expected word after `case`
+rc=2
+=== 4. lexer errors
+a
+lex error 2:6: unterminated double-quoted string
+rc=2
+a
+lex error 2:8: unterminated $(...) substitution
+rc=2
+=== 5. exit before the error wins; the EXIT trap sees 2
+a
+rc=3
+a
+parse error 3:1: syntax error near unexpected token `fi'
+trap 2
+rc=2
+=== 6. -c
+a
+parse error 2:1: syntax error near unexpected token `fi'
+rc=2
+=== 7. eval and source return 2 and the shell goes on
+wbsh: eval:1:9: syntax error near unexpected token `fi'
+eval rc=2
+y
+wbsh: eval:2:1: syntax error near unexpected token `fi'
+eval rc=2
+sourced
+wbsh: _run_tmp/syntax_probe.sh:2:1: syntax error near unexpected token `fi'
+source rc=2

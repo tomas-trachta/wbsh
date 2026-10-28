@@ -347,7 +347,21 @@ namespace wbsh {
 		dumpExpanded(dump, *root, 0);
 	}
 
-	static int executeProgram(NodePtr root, const ScriptRun& run) {
+	static void printSyntaxErrors(const Lexer& lex, const Parser& parser) {
+		const ErrorColors colors = errorColors(stderrIsTty());
+		for (const auto& e : lex.errors()) printDiagnostic(colors, "lex error", e.loc, e.message);
+		for (const auto& e : parser.errors()) printDiagnostic(colors, "parse error", e.loc, e.message);
+	}
+
+	static bool hasSyntaxErrors(const Lexer& lex, const Parser& parser) {
+		return !lex.errors().empty() || !parser.errors().empty();
+	}
+
+	// Like bash, the commands on the lines before a syntax error run
+	// first; the error is reported, and the script ends with status 2,
+	// only when execution reaches it.
+	static int executeProgram(NodePtr root, const ScriptRun& run, const Lexer& lex,
+	                          const Parser& parser) {
 		Environment env;
 		prepareEnv(env);
 		applyScriptArguments(env, run);
@@ -356,42 +370,46 @@ namespace wbsh {
 		exec.setSourceText(run.source);
 		absorbInheritedState(env, exec);
 
+		const std::size_t error_offset = firstSyntaxErrorOffset(lex.errors(), parser.errors());
+		truncateAtSyntaxError(*root, parser, error_offset);
 		int status = exec.executeInput(*root, run.source);
-		exec.consumeFlow(FlowSignal::Kind::Exit, &status);
+		if (!exec.consumeFlow(FlowSignal::Kind::Exit, &status) && hasSyntaxErrors(lex, parser)) {
+			printSyntaxErrors(lex, parser);
+			status = kSyntaxErrorStatus;
+		}
+
 		return exec.fireExitTrap(status);
 	}
 
-	int runScript(const ScriptRun& run) {
-		Lexer lex(run.source);
-		auto tokens = lex.tokenize();
+	static void showDumps(const ScriptRun& run, const std::vector<Token>& tokens, NodePtr root) {
 		const bool out_color = stdoutIsTty();
-		const ErrorColors colors = errorColors(stderrIsTty());
-
 		if (run.show_tokens) {
 			printHeader(out_color, "TOKENS");
 			dumpTokens(std::cout, tokens);
 		}
 
-		for (const auto& e : lex.errors()) {
-			printDiagnostic(colors, "lex error", e.loc, e.message);
-		}
-
-		Parser parser(std::move(tokens), run.source);
-		auto root = parser.parseProgram();
 		if (run.show_ast) {
 			printHeader(out_color, "AST");
 			if (root != nullptr) dumpAst(std::cout, *root);
 			else std::cout << "(empty)\n";
 		}
 
-		for (const auto& e : parser.errors()) {
-			printDiagnostic(colors, "parse error", e.loc, e.message);
-		}
-
 		if (run.show_expansions && root != nullptr) dumpExpansions(root, out_color, run);
-		if (run.execute && root != nullptr) return executeProgram(root, run);
+	}
 
-		return (parser.errors().empty() && lex.errors().empty()) ? 0 : 1;
+	int runScript(const ScriptRun& run) {
+		Lexer lex(run.source);
+		auto tokens = lex.tokenize();
+		const std::vector<Token> dumped_tokens = run.show_tokens ? tokens : std::vector<Token>{};
+
+		Parser parser(std::move(tokens), run.source);
+		auto root = parser.parseProgram();
+		showDumps(run, dumped_tokens, root);
+
+		if (run.execute && root != nullptr) return executeProgram(root, run, lex, parser);
+
+		printSyntaxErrors(lex, parser);
+		return hasSyntaxErrors(lex, parser) ? 1 : 0;
 	}
 
 }  // namespace wbsh

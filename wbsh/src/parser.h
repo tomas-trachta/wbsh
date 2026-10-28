@@ -61,6 +61,11 @@ namespace wbsh {
 		const std::vector<ParseError>& errors() const { return errors_; }
 		bool ok() const { return errors_.empty(); }
 
+		/// How many leading top-level commands of parseProgram's result sit
+		/// on complete lines that end before `offset`: what bash, reading
+		/// line by line, has already run when it meets a syntax error there.
+		std::size_t completeCommandsBefore(std::size_t offset) const;
+
 		/// Parse the whole input as one `name=(...)` assignment.
 		bool parseLoneArrayAssignment(Assignment& out);
 
@@ -96,6 +101,8 @@ namespace wbsh {
 		void stampSpan(Node& node, std::size_t start_offset);
 
 		NodePtr parseList(bool top_level);
+		void recordLineEnd(std::size_t complete_items);
+		std::string tokenSpelling(const Token& token) const;
 		bool matchListSeparator(ListItem& item);
 		NodePtr parseAndOr();
 		NodePtr parsePipeline();
@@ -152,6 +159,25 @@ namespace wbsh {
 		const std::string* source_ = nullptr;
 		std::size_t pos_ = 0;
 		std::vector<ParseError> errors_;
+
+		// Top-level newlines that end a complete line, with the number of
+		// top-level commands parsed by then, in source order.
+		struct LineEnd {
+			std::size_t complete_items;
+			std::size_t offset;
+		};
+		std::vector<LineEnd> line_ends_;
 	};
+
+	/// Status of a script, `eval` or `source` that stopped at a syntax error.
+	constexpr int kSyntaxErrorStatus = 2;
+
+	/// Offset of the earliest lexer or parser error, or npos when there is none.
+	std::size_t firstSyntaxErrorOffset(const std::vector<LexError>& lex_errors,
+	                                   const std::vector<ParseError>& parse_errors);
+
+	/// Keeps only the top-level commands bash runs before it reports a
+	/// syntax error at `error_offset` (all of them when it is npos).
+	void truncateAtSyntaxError(Node& program, const Parser& parser, std::size_t error_offset);
 
 }  // namespace wbsh

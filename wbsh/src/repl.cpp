@@ -698,7 +698,9 @@ namespace wbsh {
 		recordHistoryEntry(exec, state);
 		printLexParseErrors(lex.errors(), parser.errors());
 
-		if (root && parser.errors().empty() && lex.errors().empty()) {
+		if (!parser.errors().empty() || !lex.errors().empty()) {
+			exec.setLastStatus(kSyntaxErrorStatus);
+		} else if (root) {
 			exec.adoptArena(parser.takeArena());
 			exec.setSourceText(text);
 			exec.executeInput(*root, text);

@@ -529,7 +529,12 @@ namespace wbsh {
 			std::size_t        cursor = 0;
 		};
 
-		Node* parseText(const std::string& source_text, const std::string& origin);
+		struct ParsedText {
+			Node* root = nullptr;
+			std::string diagnostics;
+		};
+		ParsedText parseText(const std::string& source_text, const std::string& origin);
+		int finishParsedText(const ParsedText& parsed, int status);
 		void  echoInputBefore(const List& list, std::size_t index);
 		void  echoInputUpTo(std::size_t end);
 

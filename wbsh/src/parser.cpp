@@ -5,6 +5,7 @@
 
 #include "parser.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <utility>
@@ -261,10 +262,19 @@ namespace wbsh {
 	}
 
 	NodePtr Parser::parseProgram() {
-		return parseList(true);
+		NodePtr program = parseList(true);
+		if (!atEnd() && errors_.empty()) {
+			error(peek(), "syntax error near unexpected token `" + tokenSpelling(peek()) + "'");
+		}
+
+		return program;
 	}
 
-	NodePtr Parser::parseList(bool /*top_level*/) {
+	std::string Parser::tokenSpelling(const Token& token) const {
+		return token.kind == TokKind::Newline ? std::string("newline") : token.text;
+	}
+
+	NodePtr Parser::parseList(bool top_level) {
 		const std::size_t start = srcOffsetHere();
 		auto list = arena_.make<List>();
 		list->loc = peek().loc;
@@ -281,10 +291,47 @@ namespace wbsh {
 			if (!had_separator) break;
 
 			skipNewlines();
+			if (top_level) recordLineEnd(list->items.size());
 		}
 
 		stampSpan(*list, start);
 		return list;
+	}
+
+	void Parser::recordLineEnd(std::size_t complete_items) {
+		if (pos_ == 0) return;
+
+		const Token& previous = toks_[pos_ - 1];
+		if (previous.kind != TokKind::Newline) return;
+
+		line_ends_.push_back({ complete_items, previous.loc.offset });
+	}
+
+	std::size_t Parser::completeCommandsBefore(std::size_t offset) const {
+		std::size_t complete = 0;
+		for (const LineEnd& line_end : line_ends_) {
+			if (line_end.offset >= offset) break;
+
+			complete = line_end.complete_items;
+		}
+
+		return complete;
+	}
+
+	std::size_t firstSyntaxErrorOffset(const std::vector<LexError>& lex_errors,
+	                                   const std::vector<ParseError>& parse_errors) {
+		std::size_t first = std::string::npos;
+		for (const LexError& error : lex_errors) first = std::min(first, error.loc.offset);
+		for (const ParseError& error : parse_errors) first = std::min(first, error.loc.offset);
+		return first;
+	}
+
+	void truncateAtSyntaxError(Node& program, const Parser& parser, std::size_t error_offset) {
+		if (error_offset == std::string::npos || program.kind != Node::Kind::List) return;
+
+		List& list = static_cast<List&>(program);
+		const std::size_t keep = parser.completeCommandsBefore(error_offset);
+		if (keep < list.items.size()) list.items.resize(keep);
 	}
 
 	bool Parser::matchListSeparator(ListItem& item) {
