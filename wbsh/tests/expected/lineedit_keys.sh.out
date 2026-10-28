@@ -58,8 +58,7 @@ accept [echo bye]
 [zz][]
 [[aX][bc]]
 [two one][]
-wbsh: bind: nosuchfunction: unknown function name
-status 1
+status 0
 === bind lists and queries
 backward-char can be invoked via "\C-b", "\C-t", "\e[D".
 kill-whole-line is not bound to any keys.
@@ -70,7 +69,7 @@ yank-pop can be found on "\ey".
 "\C-o": "zz"
 "\ez": "macro text"
 "\C-g": "READLINE_LINE=\"[$READLINE_LINE]\"; READLINE_POINT=2"
-43
+72
 set bell-style audible
 === bind -r and bind -u remove bindings
 [abcX][]

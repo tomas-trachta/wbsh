@@ -69,12 +69,17 @@ namespace wbsh {
 
 		static bool isKillCommand(const std::string& name) {
 			return isOneOf(name, { "kill-line", "unix-line-discard", "unix-word-rubout",
-				"backward-kill-word", "kill-word", "kill-whole-line" });
+				"backward-kill-word", "kill-word", "kill-whole-line", "backward-kill-line",
+				"unix-filename-rubout", "kill-region" });
 		}
 
 		static bool movesThroughHistory(const std::string& name) {
 			return isOneOf(name, { "previous-history", "next-history", "beginning-of-history",
-				"end-of-history", "reverse-search-history", "forward-search-history" });
+				"end-of-history", "reverse-search-history", "forward-search-history",
+				"history-search-backward", "history-search-forward",
+				"history-substring-search-backward", "history-substring-search-forward",
+				"non-incremental-reverse-search-history",
+				"non-incremental-forward-search-history" });
 		}
 
 		// Typed text inserts itself; a key with control bytes in it, or a
@@ -179,6 +184,11 @@ namespace wbsh {
 	}  // namespace commands_detail
 
 	LineEditor::EditCommand LineEditor::commandNamed(const std::string& name) const {
+		const EditCommand basic = basicCommandNamed(name);
+		return basic != nullptr ? basic : readlineCommandNamed(name);
+	}
+
+	LineEditor::EditCommand LineEditor::basicCommandNamed(const std::string& name) const {
 		static const commands_detail::NamedCommand kCommands[] = {
 			{ "abort",                    &LineEditor::abortKeys },
 			{ "accept-line",              &LineEditor::acceptLine },
@@ -233,6 +243,8 @@ namespace wbsh {
 	}
 
 	void LineEditor::dispatchKeys(const std::string& keys) {
+		if (takePendingKey(keys)) return;
+
 		pending_keys_ += keys;
 
 		KeyBinding binding;
@@ -674,6 +686,7 @@ namespace wbsh {
 	}
 
 	void LineEditor::selfInsert() {
+		if (overwrite_) overwriteChars(current_keys_);
 		insertChars(current_keys_);
 	}
 

@@ -25,15 +25,24 @@ namespace wbsh {
 
 		static const char* const kCommandNames[] = {
 			"abort", "accept-line", "backward-char", "backward-delete-char",
-			"backward-kill-word", "backward-word", "beginning-of-history",
-			"beginning-of-line", "bracketed-paste-begin", "capitalize-word", "clear-screen",
-			"complete", "delete-char", "delete-horizontal-space", "downcase-word",
-			"edit-and-execute-command", "end-of-history", "end-of-line",
-			"forward-char", "forward-search-history", "forward-word", "insert-comment",
-			"kill-line", "kill-whole-line", "kill-word", "next-history",
-			"paste-from-clipboard", "possible-completions", "previous-history",
-			"re-read-init-file", "reverse-search-history", "revert-line", "self-insert",
-			"transpose-chars", "transpose-words", "undo", "unix-line-discard",
+			"backward-kill-line", "backward-kill-word", "backward-word", "beginning-of-history",
+			"beginning-of-line", "bracketed-paste-begin", "capitalize-word", "character-search",
+			"character-search-backward", "clear-screen", "complete", "complete-command",
+			"complete-filename", "complete-variable", "copy-backward-word", "copy-forward-word",
+			"copy-region-as-kill", "delete-char", "delete-char-or-list",
+			"delete-horizontal-space", "downcase-word", "edit-and-execute-command",
+			"end-of-history", "end-of-line", "exchange-point-and-mark",
+			"forward-backward-delete-char", "forward-char", "forward-search-history",
+			"forward-word", "history-search-backward", "history-search-forward",
+			"history-substring-search-backward", "history-substring-search-forward",
+			"insert-comment", "insert-completions", "kill-line", "kill-region",
+			"kill-whole-line", "kill-word", "menu-complete", "menu-complete-backward",
+			"next-history", "non-incremental-forward-search-history",
+			"non-incremental-reverse-search-history", "operate-and-get-next", "overwrite-mode",
+			"paste-from-clipboard", "possible-completions", "previous-history", "quoted-insert",
+			"re-read-init-file", "redraw-current-line", "reverse-search-history",
+			"revert-line", "self-insert", "set-mark", "tab-insert", "transpose-chars",
+			"transpose-words", "undo", "unix-filename-rubout", "unix-line-discard",
 			"unix-word-rubout", "upcase-word", "yank", "yank-last-arg", "yank-nth-arg",
 			"yank-pop", nullptr,
 		};
@@ -51,6 +60,12 @@ namespace wbsh {
 			{ "\n", "accept-line" },             { "\x0b", "kill-line" },
 			{ "\x0c", "clear-screen" },          { "\r", "accept-line" },
 			{ "\x0e", "next-history" },          { "\x10", "previous-history" },
+			{ "\x0f", "operate-and-get-next" },  { "\x11", "quoted-insert" },
+			{ "\x1d", "character-search" },      { "\x1b\x1d", "character-search-backward" },
+			{ "\x18\x18", "exchange-point-and-mark" },
+			{ "\x18\x7f", "backward-kill-line" }, { "\x1b\t", "tab-insert" },
+			{ "\x1b/", "complete-filename" },     { "\x1b!", "complete-command" },
+			{ "\x1b$", "complete-variable" },     { "\x1b*", "insert-completions" },
 			{ "\x12", "reverse-search-history" }, { "\x13", "forward-search-history" },
 			{ "\x14", "transpose-chars" },       { "\x15", "unix-line-discard" },
 			{ "\x16", "paste-from-clipboard" },  { "\x17", "unix-word-rubout" },
@@ -90,6 +105,7 @@ namespace wbsh {
 			{ "enable-bracketed-paste", "on" },
 			{ "mark-directories", "on" },
 			{ "show-all-if-ambiguous", "off" },
+			{ "show-all-if-unmodified", "on" },
 		};
 
 		static std::string trimmed(const std::string& text) {
@@ -308,6 +324,8 @@ namespace wbsh {
 			bindings_[entry.keys] = { KeyBinding::Kind::kCommand, entry.command };
 		}
 
+		bindings_[std::string(1, '\0')] = { KeyBinding::Kind::kCommand, "set-mark" };
+
 		for (const keymap_detail::DefaultVariable& entry : keymap_detail::kVariables) {
 			variables_[entry.name] = entry.value;
 		}
@@ -437,6 +455,9 @@ namespace wbsh {
 			    && (line[3] == ' ' || line[3] == '\t');
 		}
 
+		// As readline, a function the editor does not have leaves the key
+		// as it was without a word, so a .bashrc or .inputrc written for
+		// bash loads cleanly.
 		static bool applyBindingLine(const std::string& line, std::string& error) {
 			std::string keys;
 			std::size_t colon = 0;
@@ -444,8 +465,7 @@ namespace wbsh {
 
 			const KeyBinding binding = bindingFrom(trimmed(line.substr(colon + 1)));
 			if (binding.kind == KeyBinding::Kind::kCommand && !isCommandName(binding.value)) {
-				error = binding.value + ": unknown function name";
-				return false;
+				return true;
 			}
 
 			shellKeymap().bind(keys, binding);

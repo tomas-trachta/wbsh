@@ -308,6 +308,7 @@
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\lineedit_commands.cpp" />
     <ClCompile Include="src\lineedit_complete.cpp" />
+    <ClCompile Include="src\lineedit_readline.cpp" />
     <ClCompile Include="src\textcells.cpp" />
     <ClCompile Include="src\fnmatch.cpp" />
     <ClCompile Include="src\utf8.cpp" />

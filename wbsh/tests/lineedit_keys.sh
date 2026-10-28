@@ -10,7 +10,7 @@ echo "=== Meta keys nobody bound insert nothing; ESC works as Meta"
 __lineedit 'echo hello' '<M-z>'
 __lineedit 'echo hello' '<M-.>'
 __lineedit 'one two' '<ESC>' 'b' 'X'
-__lineedit 'abc' '<C-o>'
+__lineedit 'abc' '<C-z>'
 
 echo "=== AltGr characters are typed, not taken for Ctrl+Alt chords"
 __lineedit 'mail ' '<AltGr-@>' 'x' '<AltGr-{>'
