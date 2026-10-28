@@ -281,6 +281,7 @@
     <ClCompile Include="src\awk_value.cpp" />
     <ClCompile Include="src\inflate.cpp" />
     <ClCompile Include="src\setup.cpp" />
+    <ClCompile Include="src\histexpand.cpp" />
     <ClCompile Include="src\history.cpp" />
     <ClCompile Include="src\historyfile.cpp" />
     <ClCompile Include="src\repl.cpp" />

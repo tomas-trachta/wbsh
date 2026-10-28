@@ -46,11 +46,9 @@
 #include "history.h"
 #include "lexer.h"
 #include "lineedit.h"
-#include "numparse.h"
 #include "parser.h"
 #include "pathconv.h"
 #include "setup.h"
-#include "strscan.h"
 
 #if !defined(WBSH_VERSION_MAJOR) || !defined(WBSH_VERSION_MINOR) || !defined(WBSH_VERSION_PATCH)
 #define WBSH_VERSION_MAJOR 0
@@ -77,6 +75,7 @@ namespace wbsh {
 		std::string buffer;
 		std::string history_entry;
 		bool        history_recorded = false;
+		HistorySubstitution last_substitution;
 		bool        waiting_for_more = false;
 		bool        color_ok = false;
 #ifdef _WIN32
@@ -410,146 +409,6 @@ namespace wbsh {
 		return out;
 	}
 
-	static bool expandHistoryCarat(const std::string& line,
-	                               const std::vector<std::string>& history,
-	                               std::string& expanded) {
-		StrScan in(line);
-		std::string old_text;
-		if (history.empty() || !in.consume("^") || !in.readUpTo('^', old_text)) {
-			expanded = line;
-			return false;
-		}
-
-		std::string new_text;
-		if (!in.readUpTo('^', new_text)) new_text = in.rest();
-
-		const std::string& base = history.back();
-		const std::size_t found = base.find(old_text);
-		if (found == std::string::npos) {
-			expanded = line;
-			return false;
-		}
-
-		expanded = base.substr(0, found) + new_text + base.substr(found + old_text.size());
-		return true;
-	}
-
-	static bool isDigitChar(char letter) {
-		return std::isdigit(static_cast<unsigned char>(letter)) != 0;
-	}
-
-	static bool isHistoryWordChar(char letter) {
-		return std::isalnum(static_cast<unsigned char>(letter)) != 0
-		    || letter == '_' || letter == '-';
-	}
-
-	static std::size_t scanDigits(const std::string& line, std::size_t from) {
-		std::size_t end = from;
-		while (end < line.size() && isDigitChar(line[end])) ++end;
-		return end;
-	}
-
-	static std::size_t scanHistoryWord(const std::string& line, std::size_t from) {
-		std::size_t end = from;
-		while (end < line.size() && isHistoryWordChar(line[end])) ++end;
-		return end;
-	}
-
-	// `!n` counts from the first entry, `!-n` from the last.
-	static bool historyByNumber(const std::vector<std::string>& history,
-	                            const std::string& digits, bool from_end, std::string& sub) {
-		int number = 0;
-		if (!parseInt(digits, number)) return false;
-		if (number <= 0 || static_cast<std::size_t>(number) > history.size()) return false;
-
-		sub = from_end ? history[history.size() - number] : history[number - 1];
-		return true;
-	}
-
-	static bool historyByPrefix(const std::vector<std::string>& history,
-	                            const std::string& prefix, std::string& sub) {
-		for (auto it = history.rbegin(); it != history.rend(); ++it) {
-			if (it->compare(0, prefix.size(), prefix) != 0) continue;
-
-			sub = *it;
-			return true;
-		}
-
-		return false;
-	}
-
-	static bool resolveHistoryBang(const std::string& line, std::size_t i,
-	                               const std::vector<std::string>& history,
-	                               std::string& sub, std::size_t& advance) {
-		const char next = line[i + 1];
-		if (next == '!') {
-			if (history.empty()) return false;
-
-			sub = history.back();
-			advance = 2;
-			return true;
-		}
-
-		if (next == '-' && i + 2 < line.size() && isDigitChar(line[i + 2])) {
-			const std::size_t end = scanDigits(line, i + 2);
-			advance = end - i;
-			return historyByNumber(history, line.substr(i + 2, end - i - 2), true, sub);
-		}
-
-		if (isDigitChar(next)) {
-			const std::size_t end = scanDigits(line, i + 1);
-			advance = end - i;
-			return historyByNumber(history, line.substr(i + 1, end - i - 1), false, sub);
-		}
-
-		if (std::isalpha(static_cast<unsigned char>(next)) != 0 || next == '_') {
-			const std::size_t end = scanHistoryWord(line, i + 1);
-			advance = end - i;
-			return historyByPrefix(history, line.substr(i + 1, end - i - 1), sub);
-		}
-
-		return false;
-	}
-
-	static bool bangIsLiteral(char next) {
-		return next == ' ' || next == '\t' || next == '\n' || next == '='
-		    || next == '"' || next == '\\';
-	}
-
-	static bool expandHistory(const std::string& line,
-	                          const std::vector<std::string>& history,
-	                          std::string& expanded) {
-		expanded.clear();
-		if (line.empty()) {
-			expanded = line;
-			return false;
-		}
-
-		if (line[0] == '^') return expandHistoryCarat(line, history, expanded);
-
-		bool any = false;
-		for (std::size_t i = 0; i < line.size(); ++i) {
-			const char letter = line[i];
-			if (letter != '!' || i + 1 >= line.size() || bangIsLiteral(line[i + 1])) {
-				expanded.push_back(letter);
-				continue;
-			}
-
-			std::string sub;
-			std::size_t advance = 0;
-			if (!resolveHistoryBang(line, i, history, sub, advance)) {
-				expanded.push_back(letter);
-				continue;
-			}
-
-			expanded += sub;
-			i += advance - 1;
-			any = true;
-		}
-
-		return any;
-	}
-
 	static bool parseErrorLooksIncomplete(const std::string& message) {
 		return message.find("expected `")        != std::string::npos
 		    || message.find("expected pipeline") != std::string::npos
@@ -826,15 +685,50 @@ namespace wbsh {
 		return expandPrompt(ps_raw, env, exec.pathConv());
 	}
 
-	static void maybeExpandHistory(const std::vector<std::string>& history, std::string& line) {
-		if (line.empty() || line[0] == ' ') return;
+	// A continuation line that starts inside a quoted string keeps its
+	// `!`s as long as the quote is single.
+	static char openQuoteOf(const std::string& pending) {
+		Lexer lex(pending);
+		lex.tokenize();
+		for (const LexError& error : lex.errors()) {
+			if (error.message.find("single-quoted") != std::string::npos) return '\'';
+			if (error.message.find("$'...'") != std::string::npos) return '\'';
+			if (error.message.find("double-quoted") != std::string::npos) return '"';
+		}
 
-		std::string expanded;
-		if (!expandHistory(line, history, expanded)) return;
+		return '\0';
+	}
 
-		std::fprintf(stdout, "%s\n", expanded.c_str());
-		std::fflush(stdout);
-		line = expanded;
+	static void showExpandedLine(const std::string& text) {
+		std::fprintf(stderr, "%s\n", text.c_str());
+		std::fflush(stderr);
+	}
+
+	// As in bash, the expanded line is shown before it runs; a failed
+	// expansion drops the line, and `:p` only shows and saves it.
+	static bool expandHistoryInLine(Executor& exec, ReplState& state, std::string& line) {
+		if (!exec.env().options().histexpand) return true;
+
+		const char quote = state.waiting_for_more ? openQuoteOf(state.buffer) : '\0';
+		const HistoryExpansion expansion =
+			expandHistoryLine(line, exec.history(), quote, state.last_substitution);
+		switch (expansion.kind) {
+		case HistoryExpansion::Kind::kExpanded:
+			showExpandedLine(expansion.text);
+			line = expansion.text;
+			return true;
+		case HistoryExpansion::Kind::kPrintOnly:
+			showExpandedLine(expansion.text);
+			exec.addHistoryEntry(expansion.text);
+			discardPendingInput(state);
+			return false;
+		case HistoryExpansion::Kind::kFailed:
+			std::fprintf(stderr, "wbsh: %s\n", expansion.text.c_str());
+			discardPendingInput(state);
+			return false;
+		default:
+			return true;
+		}
 	}
 
 	static void collectHistoryLine(ReplState& state, const std::string& line) {
@@ -962,7 +856,8 @@ namespace wbsh {
 	}
 
 	static void runLine(Executor& exec, ReplState& state, std::string& line) {
-		if (!state.waiting_for_more) maybeExpandHistory(exec.history(), line);
+		if (!expandHistoryInLine(exec, state, line)) return;
+
 		collectHistoryLine(state, line);
 		appendToBuffer(state, line);
 

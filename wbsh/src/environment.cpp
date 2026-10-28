@@ -142,6 +142,7 @@ namespace wbsh {
 		interactive_ = b;
 		options_.emacs = b;
 		options_.history = b;
+		options_.histexpand = b;
 	}
 
 	bool Environment::rejectIfReadonly(const std::string& name) const {
