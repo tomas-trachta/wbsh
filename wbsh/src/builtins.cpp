@@ -1615,9 +1615,16 @@ namespace wbsh {
 		return true;
 	}
 
+	// A PID that is no job can be a `<(...)` / `>(...)` process (`wait $!`).
+	static bool waitForProcSubstSpec(Executor& exec, const std::string& spec, int& status) {
+		long long pid = 0;
+		return parseLL(spec, pid) && exec.waitForProcSubstChild(pid, status);
+	}
+
 	static int builtin_wait(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
 			exec.waitForAllJobs();
+			exec.waitForProcSubstChildren();
 			return 0;
 		}
 
@@ -1625,7 +1632,7 @@ namespace wbsh {
 		for (const std::string& spec : args) {
 			int id = -1;
 			if (!resolveJobSpec(exec, spec, id) || id < 0) {
-				status = 1;
+				if (!waitForProcSubstSpec(exec, spec, status)) status = 1;
 				continue;
 			}
 

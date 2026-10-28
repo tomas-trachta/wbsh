@@ -182,6 +182,7 @@
     <ClInclude Include="src\ast.h" />
     <ClInclude Include="src\parser.h" />
     <ClInclude Include="src\printer.h" />
+    <ClInclude Include="src\procsubst.h" />
     <ClInclude Include="src\environment.h" />
     <ClInclude Include="src\expander.h" />
     <ClInclude Include="src\executor.h" />
@@ -228,6 +229,7 @@
     <ClCompile Include="src\lexer.cpp" />
     <ClCompile Include="src\parser.cpp" />
     <ClCompile Include="src\printer.cpp" />
+    <ClCompile Include="src\procsubst.cpp" />
     <ClCompile Include="src\environment.cpp" />
     <ClCompile Include="src\expander.cpp" />
     <ClCompile Include="src\executor.cpp" />

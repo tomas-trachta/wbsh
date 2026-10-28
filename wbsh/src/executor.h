@@ -25,6 +25,7 @@
 #include "expander.h"
 #include "history.h"
 #include "pathconv.h"
+#include "procsubst.h"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -173,6 +174,7 @@ namespace wbsh {
 
 		std::string run(const std::string& body) override;
 		std::string runRaw(const std::string& body) override;
+		std::string startProcessSubstitution(const std::string& body, char direction) override;
 
 		Environment& env()        { return env_; }
 		Expander&    expander()   { return expander_; }
@@ -240,6 +242,9 @@ namespace wbsh {
 		/// Wait for one job; returns its exit status, or -1 if id unknown.
 		int  waitForJob(int id);
 		void waitForAllJobs();
+		/// `wait PID` for a `<(...)` / `>(...)` process; false if @p pid is not one.
+		bool waitForProcSubstChild(long long pid, int& status);
+		void waitForProcSubstChildren();
 
 		/// Install the trap action for @p sig. Replaces any prior action.
 		///
@@ -825,6 +830,19 @@ namespace wbsh {
 		                            const std::vector<std::string>& argv,
 		                            const std::string& exec_path,
 		                            HANDLE h_in, HANDLE h_out, HANDLE h_err);
+		HANDLE spawnSelfCommand(const std::string& command_text,
+		                        HANDLE h_in, HANDLE h_out, HANDLE h_err);
+		void   rememberProcSubstChild(HANDLE process);
+
+		// Process substitutions started while a node runs are released
+		// once it is done (see releaseProcSubstRelay).
+		std::size_t procSubstWatermark() const { return proc_substs_.size(); }
+		void releaseProcessSubstitutionsSince(std::size_t watermark);
+		std::vector<ProcSubstRelay> proc_substs_;
+		std::vector<HANDLE> proc_subst_children_;
+#else
+		std::size_t procSubstWatermark() const { return 0; }
+		void releaseProcessSubstitutionsSince(std::size_t) {}
 #endif
 		bool isAbsoluteOrRelativePath(const std::string& name) const;
 		bool patternMatches(const std::string& pat, const std::string& s);

@@ -42,10 +42,18 @@ namespace wbsh {
 		/**
 		 * @brief Like run() but preserves stdout byte-for-byte.
 		 *
-		 * Used for `<(...)`. Defaults to run() for substitutors that
-		 * don't distinguish raw and trimmed output.
+		 * Defaults to run() for substitutors that don't distinguish raw
+		 * and trimmed output.
 		 */
 		virtual std::string runRaw(const std::string& body) { return run(body); }
+		/**
+		 * @brief Start `<(body)` / `>(body)` and return the path that
+		 * names it, or an empty string when it could not be started.
+		 */
+		virtual std::string startProcessSubstitution(const std::string& /*body*/,
+		                                             char /*direction*/) {
+			return {};
+		}
 		/**
 		 * @brief Did a substitution raise shell control flow?
 		 *
@@ -183,27 +191,6 @@ namespace wbsh {
 			return true;
 		}
 
-		/**
-		 * @brief Watermark of pending `<(...)` temp files.
-		 *
-		 * Used by the executor to scope temp-file cleanup so nested
-		 * SimpleCommands only delete the files they themselves
-		 * produced — without this they'd clobber outer files on the
-		 * way out.
-		 */
-		std::size_t pendingTempFileWatermark() const {
-			return pending_temp_files_.size();
-		}
-		/// Drain temp files produced after @p watermark; caller now owns them.
-		std::vector<std::string> drainTempFilesSince(std::size_t watermark) {
-			std::vector<std::string> out;
-			if (watermark >= pending_temp_files_.size()) return out;
-
-			out.assign(pending_temp_files_.begin() + watermark, pending_temp_files_.end());
-			pending_temp_files_.resize(watermark);
-			return out;
-		}
-
 		// Tagged text used internally during expansion. Each character
 		// carries flags describing its provenance.
 		// Public because file-static helpers in expander.cpp consume it as
@@ -280,7 +267,6 @@ namespace wbsh {
 		Environment& env_;
 		CommandSubstitutor* sub_;
 		PathConv path_conv_;
-		std::vector<std::string> pending_temp_files_;
 		std::string pending_error_;
 		bool fatal_error_ = false;
 

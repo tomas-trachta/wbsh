@@ -54,6 +54,7 @@ get the shape of the codebase:
 | Regex | `wbsh/src/posixregex.h`, `posixregex_internal.h`, `posixregex.cpp`, `posixregex_parse.cpp`, `posixregex_pike.cpp`, `posixregex_dfa.cpp`, `posixregex_backtrack.cpp` | Our own POSIX BRE / ERE / awk regex engine (GNU `\w \s \b \< \>` and back-references included) with leftmost-longest, UTF-8 aware matching. The parser builds a Pike VM program; a lazily built DFA answers "does it match", the Pike VM finds spans and groups, and patterns with back-references go to a backtracker that keeps its stack on the heap. Used by `grep`, `sed`, `awk`, `find -regex`, `nl`, `pgrep` and `[[ =~ ]]`. |
 | Literal search | `wbsh/src/strsearch.cpp/h` | Boyer-Moore-Horspool for one needle, Aho-Corasick for many, with ASCII case folding. `grep` runs metachar-free patterns through it and uses it as a required-literal prefilter in front of the regex. |
 | Devices | `wbsh/src/devices.cpp/h` | Pipe-backed `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/full` for redirections and the coreutils' file opening. |
+| Process substitution | `wbsh/src/procsubst.cpp/h` | The named pipe behind `<(...)` / `>(...)`: a relay thread joins it to the substituted process's anonymous pipe once a client opens it. |
 | CLI | `wbsh/src/main.cpp`, `wbsh/src/script.cpp` | Entry point: UTF-8 argv decoding, flag dispatch, the non-interactive run / dump driver. |
 | REPL | `wbsh/src/repl.cpp`, `wbsh/src/lineedit.cpp` | Interactive loop: console / VT mode setup, prompt expansion, raw-mode line editor (history, completion, `Ctrl-R`, inline predictions). |
 | Setup | `wbsh/src/setup.cpp` | Startup environment seeding: registry PATH merge, git / docker install discovery, `WBSH_*` state inheritance from a parent wbsh. |
@@ -308,7 +309,6 @@ land cleanly today:
 - Test coverage for behavior that currently has none: bc's compound
   assignment / `&&` / `||` / `++`, awk's BEGIN-only no-stdin rule, traps,
   job control.
-- Output process substitution `>(...)` (the input side `<(...)` works).
 - The `executor.cpp` split (see above) — pure mechanical refactor,
   well-bounded, a good way to get familiar with the codebase.
 - More per-tool tab completions in `lineedit.cpp` (the git / docker /

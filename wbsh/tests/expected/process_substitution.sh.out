@@ -1,0 +1,35 @@
+rc=0
+=== 1. <(...) with builtins, functions and redirections
+hello
+x
+y
+2c2
+< b
+---
+> c
+diff rc=1
+got one
+got two
+in-function
+in-substitution
+nested
+sourced
+the path exists
+empty producer ok
+slow producer
+=== 2. endless producers end with the reader
+y
+head done
+abc
+a
+100000
+unread producer released
+=== 3. external readers
+typed
+=== 4. >(...)
+to-cat
+3
+empty writer ok
+to-file
+=== 5. the word is a pipe name
+\\.\pipe\wbsh-N-N

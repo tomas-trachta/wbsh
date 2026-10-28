@@ -660,7 +660,9 @@ namespace wbsh {
 		const bool tracks_line = nodeTracksLineno(node);
 		if (tracks_line) env_.setCurrentLineno(static_cast<int>(node.loc.line));
 
+		const std::size_t proc_substs = procSubstWatermark();
 		const int status = dispatchNode(node);
+		releaseProcessSubstitutionsSince(proc_substs);
 		if (tracks_line) env_.setCurrentLineno(static_cast<int>(node.loc.line));
 		exitOnFatalExpansionError();
 		return status;
@@ -1322,8 +1324,13 @@ namespace wbsh {
 			appendHeredocBodiesToSlice(static_cast<const SimpleCommand&>(elem), slice);
 		}
 
+		return spawnSelfCommand(slice, h_in, h_out, h_err);
+	}
+
+	HANDLE Executor::spawnSelfCommand(const std::string& command_text,
+	                                  HANDLE h_in, HANDLE h_out, HANDLE h_err) {
 		const std::string self = getSelfExecutablePath();
-		const SelfSpawnLine line = buildSelfSpawnLine(selfSpawnArgv(self, slice));
+		const SelfSpawnLine line = buildSelfSpawnLine(selfSpawnArgv(self, command_text));
 
 		const NameValueList overrides = buildSelfSpawnOverrides();
 		SpawnCommand command;
@@ -1334,6 +1341,71 @@ namespace wbsh {
 		const HANDLE process = spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err });
 		if (process == INVALID_HANDLE_VALUE) discardSelfSpawnFiles(line, overrides);
 		return process;
+	}
+
+	// `<(body)` writes into the pipe the command reads, `>(body)` reads
+	// what the command writes; the other two streams are the shell's.
+	std::string Executor::startProcessSubstitution(const std::string& body, char direction) {
+		ProcSubstRelay relay;
+		if (!startProcSubstRelay(direction, relay)) {
+			std::fprintf(stderr, "wbsh: process substitution: %s\n", lastErrorString().c_str());
+			return {};
+		}
+
+		std::fflush(stdout);
+		std::fflush(stderr);
+		StdioHandles stdio = currentStdio();
+		if (direction == '<') stdio.out = relay.child_end;
+		else                  stdio.in  = relay.child_end;
+
+		const HANDLE process = spawnSelfCommand(body, stdio.in, stdio.out, stdio.err);
+		::CloseHandle(relay.child_end);
+		if (process == INVALID_HANDLE_VALUE) {
+			releaseProcSubstRelay(relay);
+			return {};
+		}
+
+		env_.setLastBgPid(static_cast<long long>(::GetProcessId(process)));
+		rememberProcSubstChild(process);
+		proc_substs_.push_back(relay);
+		return relay.path;
+	}
+
+	void Executor::rememberProcSubstChild(HANDLE process) {
+		auto finished = [](HANDLE child) {
+			if (::WaitForSingleObject(child, 0) != WAIT_OBJECT_0) return false;
+
+			::CloseHandle(child);
+			return true;
+		};
+		proc_subst_children_.erase(std::remove_if(proc_subst_children_.begin(),
+			proc_subst_children_.end(), finished), proc_subst_children_.end());
+		proc_subst_children_.push_back(process);
+	}
+
+	void Executor::releaseProcessSubstitutionsSince(std::size_t watermark) {
+		while (proc_substs_.size() > watermark) {
+			releaseProcSubstRelay(proc_substs_.back());
+			proc_substs_.pop_back();
+		}
+	}
+
+	bool Executor::waitForProcSubstChild(long long pid, int& status) {
+		for (std::size_t i = 0; i < proc_subst_children_.size(); ++i) {
+			const HANDLE child = proc_subst_children_[i];
+			if (static_cast<long long>(::GetProcessId(child)) != pid) continue;
+
+			status = waitProcessAndClose(child);
+			proc_subst_children_.erase(proc_subst_children_.begin() + static_cast<long>(i));
+			return true;
+		}
+
+		return false;
+	}
+
+	void Executor::waitForProcSubstChildren() {
+		for (HANDLE child : proc_subst_children_) waitProcessAndClose(child);
+		proc_subst_children_.clear();
 	}
 
 	HANDLE Executor::launchPipelineElement(const Node& elem,
@@ -2258,7 +2330,6 @@ namespace wbsh {
 
 	// As POSIX orders it, the words expand before the assignment values.
 	int Executor::execSimpleCommand(const SimpleCommand& sc) {
-		const std::size_t proc_subst_watermark = expander_.pendingTempFileWatermark();
 		cmdsubst_ran_ = false;
 
 		std::vector<std::string> argv;
@@ -2289,10 +2360,6 @@ namespace wbsh {
 		undoRedirections(state);
 		exitIfStdoutReaderGone();
 		if (flowPending()) return status;
-
-		for (const auto& temp_file : expander_.drainTempFilesSince(proc_subst_watermark)) {
-			removeFile(temp_file);
-		}
 
 		setLastStatus(status);
 		return status;
@@ -3451,6 +3518,19 @@ namespace wbsh {
 			if (job.running) waitJobToFinish(job);
 		}
 	}
+
+#ifndef _WIN32
+	bool Executor::waitForProcSubstChild(long long, int&) {
+		return false;
+	}
+
+	void Executor::waitForProcSubstChildren() {
+	}
+
+	std::string Executor::startProcessSubstitution(const std::string&, char) {
+		return {};
+	}
+#endif
 
 	int Executor::fireExitTrap(int status) {
 		const auto it = trap_handlers_.find("EXIT");

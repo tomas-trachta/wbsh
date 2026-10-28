@@ -336,7 +336,6 @@ integrate. If you need a real Linux environment, use WSL.
 
 - True ConPTY for child processes.
 - Real job control: `Ctrl-Z` and stopped jobs.
-- Output process substitution `>(...)`; input-side `<(...)` already works.
 - CI running the golden suite on every push.
 - winget / scoop publication and code-signed releases.
 
