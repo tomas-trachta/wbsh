@@ -1,7 +1,7 @@
 /**
  * @file coreutils_process.cpp
- * @brief Process and system-state builtins: ps, pgrep, pkill, pidof,
- *        killall, timeout, watch, uptime, free.
+ * @brief Process and system-state builtins: pgrep, pkill, pidof,
+ *        killall, timeout, watch, uptime, free (ps is coreutils_ps.cpp).
  *
  * Windows has no signals to deliver, so every "signal" a user names is
  * accepted for compatibility and ends the target the only way Windows
@@ -44,12 +44,6 @@ namespace wbsh {
 
 	namespace process_detail {
 
-		struct ProcessInfo {
-			DWORD pid = 0;
-			DWORD parent_pid = 0;
-			std::string name;
-		};
-
 		struct SignalName {
 			const char* name;
 			int number;
@@ -69,6 +63,8 @@ namespace wbsh {
 			bool newest = false;
 			bool oldest = false;
 			bool list_name = false;
+			bool list_full = false;
+			bool full = false;
 			int signal = 15;
 			std::string delimiter = "\n";
 			std::string pattern;
@@ -96,7 +92,6 @@ namespace wbsh {
 	}  // namespace process_detail
 
 	using process_detail::MatchOptions;
-	using process_detail::ProcessInfo;
 	using process_detail::TimeoutOptions;
 	using process_detail::WatchOptions;
 
@@ -141,26 +136,6 @@ namespace wbsh {
 		}
 
 		return name;
-	}
-
-	static std::vector<ProcessInfo> listProcesses() {
-		std::vector<ProcessInfo> processes;
-		const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-		if (snapshot == INVALID_HANDLE_VALUE) return processes;
-
-		PROCESSENTRY32W entry{};
-		entry.dwSize = sizeof(entry);
-		for (BOOL more = ::Process32FirstW(snapshot, &entry); more != 0;
-		     more = ::Process32NextW(snapshot, &entry)) {
-			ProcessInfo info;
-			info.pid = entry.th32ProcessID;
-			info.parent_pid = entry.th32ParentProcessID;
-			info.name = wideToUtf8(entry.szExeFile);
-			processes.push_back(info);
-		}
-
-		::CloseHandle(snapshot);
-		return processes;
 	}
 
 	ProcessProbe probeProcess(unsigned long pid) {
@@ -214,78 +189,6 @@ namespace wbsh {
 		return true;
 	}
 
-	static std::string sidAccountName(PSID sid) {
-		wchar_t name[256];
-		wchar_t domain[256];
-		DWORD name_length = 256;
-		DWORD domain_length = 256;
-		SID_NAME_USE use;
-		if (::LookupAccountSidW(nullptr, sid, name, &name_length, domain, &domain_length,
-		                        &use) == 0) {
-			return "?";
-		}
-
-		return wideToUtf8(std::wstring(name, name_length));
-	}
-
-	static std::string tokenUserName(HANDLE token) {
-		DWORD needed = 0;
-		::GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
-		if (needed == 0) return "?";
-
-		std::vector<unsigned char> buffer(needed);
-		if (::GetTokenInformation(token, TokenUser, buffer.data(), needed, &needed) == 0) {
-			return "?";
-		}
-
-		const auto* user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
-		return sidAccountName(user->User.Sid);
-	}
-
-	static std::string processUserName(DWORD pid) {
-		const HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-		if (process == nullptr) return "?";
-
-		HANDLE token = nullptr;
-		std::string user = "?";
-		if (::OpenProcessToken(process, TOKEN_QUERY, &token) != 0) {
-			user = tokenUserName(token);
-			::CloseHandle(token);
-		}
-
-		::CloseHandle(process);
-		return user;
-	}
-
-	static std::string formatCpuTime(unsigned long long cpu_ms) {
-		const unsigned long long total_seconds = cpu_ms / kMsPerSecond;
-		char text[32];
-		std::snprintf(text, sizeof(text), "%llu:%02llu", total_seconds / 60ULL,
-			total_seconds % 60ULL);
-		return text;
-	}
-
-	static void printProcessRow(const ProcessInfo& process) {
-		unsigned long long cpu_ms = 0;
-		unsigned long long created_ms = 0;
-		const bool has_times = processTimes(process.pid, cpu_ms, created_ms);
-		const std::string user = processUserName(process.pid);
-		const std::string time = has_times ? formatCpuTime(cpu_ms) : "0:00";
-		std::printf("%6lu %6lu %-12.12s %7s %s\n",
-			static_cast<unsigned long>(process.pid),
-			static_cast<unsigned long>(process.parent_pid),
-			user.c_str(), time.c_str(), process.name.c_str());
-	}
-
-	// Every option is accepted and ignored: Windows shows every process to
-	// whoever may query it, so `ps`, `ps aux` and `ps -ef` print the same list.
-	static int builtin_ps(Executor&, const std::vector<std::string>&) {
-		std::printf("%6s %6s %-12s %7s %s\n", "PID", "PPID", "USER", "TIME", "COMMAND");
-		for (const ProcessInfo& process : listProcesses()) printProcessRow(process);
-		std::fflush(stdout);
-		return 0;
-	}
-
 	static bool applyMatchFlag(char flag, MatchOptions& options) {
 		switch (flag) {
 		case 'x': options.exact = true;       return true;
@@ -294,7 +197,8 @@ namespace wbsh {
 		case 'n': options.newest = true;      return true;
 		case 'o': options.oldest = true;      return true;
 		case 'l': options.list_name = true;   return true;
-		case 'f': return true;
+		case 'a': options.list_full = true;   return true;
+		case 'f': options.full = true;        return true;
 		default:  return false;
 		}
 	}
@@ -353,6 +257,19 @@ namespace wbsh {
 		return matchRegex(stem, pattern) || matchRegex(name, pattern);
 	}
 
+	static std::string commandLineOrName(const ProcessInfo& process) {
+		const std::string line = processCommandLine(process.pid);
+		return line.empty() ? process.name : line;
+	}
+
+	static bool processMatches(const ProcessInfo& process, const std::regex& pattern,
+	                           const MatchOptions& options) {
+		if (!options.full) return nameMatches(process.name, pattern, options.exact);
+
+		const std::string line = commandLineOrName(process);
+		return options.exact ? matchRegex(line, pattern) : searchRegex(line, pattern);
+	}
+
 	static void keepNewestOrOldest(std::vector<ProcessInfo>& matches, bool newest) {
 		if (matches.size() < 2) return;
 
@@ -385,7 +302,7 @@ namespace wbsh {
 		const DWORD self = ::GetCurrentProcessId();
 		for (const ProcessInfo& process : listProcesses()) {
 			if (process.pid == self || process.pid == 0) continue;
-			const bool hit = nameMatches(process.name, pattern, options.exact);
+			const bool hit = processMatches(process, pattern, options);
 			if (hit != options.invert) matches.push_back(process);
 		}
 
@@ -397,7 +314,11 @@ namespace wbsh {
 		for (std::size_t i = 0; i < matches.size(); ++i) {
 			if (i != 0) std::fputs(options.delimiter.c_str(), stdout);
 			std::printf("%lu", static_cast<unsigned long>(matches[i].pid));
-			if (options.list_name) std::printf(" %s", processNameStem(matches[i].name).c_str());
+			if (options.list_full) {
+				std::printf(" %s", commandLineOrName(matches[i]).c_str());
+			} else if (options.list_name) {
+				std::printf(" %s", processNameStem(matches[i].name).c_str());
+			}
 		}
 
 		if (!matches.empty()) std::fputc('\n', stdout);
@@ -848,7 +769,6 @@ namespace wbsh {
 	}
 
 	void registerProcessBuiltins(Executor& exec) {
-		exec.registerBuiltin("ps",      builtin_ps);
 		exec.registerBuiltin("pgrep",   builtin_pgrep);
 		exec.registerBuiltin("pkill",   builtin_pkill);
 		exec.registerBuiltin("pidof",   builtin_pidof);

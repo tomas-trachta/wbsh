@@ -78,7 +78,7 @@ system utilities plus the shared helpers), `coreutils_text.cpp`, `coreutils_tr.c
 `coreutils_filter.cpp`, `coreutils_encoding.cpp`, `coreutils_dump.cpp`,
 `coreutils_hash.cpp`, `coreutils_archive.cpp` (zip), `coreutils_tar.cpp`,
 `coreutils_compress.cpp`, `coreutils_cpio.cpp`, `coreutils_fileops.cpp`,
-`coreutils_patch.cpp`, `coreutils_process.cpp`, `coreutils_remove.cpp`, `coreutils_copy.cpp`, `coreutils_system.cpp`,
+`coreutils_patch.cpp`, `coreutils_process.cpp`, `coreutils_ps.cpp`, `coreutils_remove.cpp`, `coreutils_copy.cpp`, `coreutils_system.cpp`,
 `coreutils_misc.cpp`, `coreutils_pager.cpp`, `coreutils_bc.cpp`,
 `coreutils_curl.cpp`, `coreutils_wget.cpp`. Follow the same pattern when
 adding a new group:
