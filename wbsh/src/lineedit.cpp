@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -195,7 +196,7 @@ namespace wbsh {
 	LineEditor::LineEditor(Environment& env, Executor& exec)
 		: env_(env), exec_(exec) {}
 
-	bool LineEditor::readLine(const std::string& prompt, std::string& out) {
+	LineStatus LineEditor::readLine(const std::string& prompt, std::string& out) {
 		resetLine(prompt);
 
 #ifdef _WIN32
@@ -218,6 +219,7 @@ namespace wbsh {
 		suggestion_.clear();
 		suggestion_cache_idx_ = kNoHistoryIndex;
 		revsearch_active_ = false;
+		interrupted_ = false;
 		prompt_raw_ = prompt;
 
 #ifdef _WIN32
@@ -225,16 +227,23 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
-	bool LineEditor::readLineCooked(std::string& out) {
+	LineStatus LineEditor::readLineCooked(std::string& out) {
 		out.clear();
 
 		int byte;
 		while ((byte = std::fgetc(stdin)) != EOF) {
-			if (byte == '\n') return true;
+			if (byte == '\n') return LineStatus::kLine;
 			out.push_back(static_cast<char>(byte));
 		}
 
-		return !out.empty();
+		return out.empty() ? LineStatus::kEof : LineStatus::kLine;
+	}
+
+	LineStatus LineEditor::lineStatus(const std::string& out, bool eof) const {
+		if (interrupted_) return LineStatus::kInterrupted;
+		if (eof && out.empty()) return LineStatus::kEof;
+
+		return LineStatus::kLine;
 	}
 
 #ifdef _WIN32
@@ -459,12 +468,15 @@ namespace wbsh {
 		redraw();
 	}
 
-	void LineEditor::handleInterrupt() {
-		emit("^C\r\n");
-		buffer_.clear();
-		cursor_ = 0;
-		last_cursor_row_ = 0;
-		emit(prompt_raw_);
+	// The whole line stays on screen with ^C after it, as readline leaves
+	// it; the ghost-text prediction behind the cursor is wiped first.
+	void LineEditor::handleInterrupt(bool& done) {
+		cursor_ = buffer_.size();
+		redraw();
+		emit("\x1b[J^C\r\n");
+
+		interrupted_ = true;
+		done = true;
 	}
 
 	void LineEditor::handleEofOrDelete(bool& done, bool& eof) {
@@ -1270,8 +1282,23 @@ namespace wbsh {
 		redraw();
 	}
 
+	std::string LineEditor::replayCharacter(wchar_t ch) {
+		WCHAR units[2] = { ch, 0 };
+		const bool high = ch >= 0xD800 && ch <= 0xDBFF;
+		const bool low_follows = !replay_keys_.empty()
+			&& replay_keys_.front().uChar.UnicodeChar >= 0xDC00
+			&& replay_keys_.front().uChar.UnicodeChar <= 0xDFFF;
+		if (!high || !low_follows) return utf16ToUtf8(units, 1);
+
+		units[1] = replay_keys_.front().uChar.UnicodeChar;
+		replay_keys_.pop_front();
+		return utf16ToUtf8(units, 2);
+	}
+
 	void LineEditor::insertWideCharFromConsole(wchar_t ch) {
-		const std::string utf8 = readConsoleCharacter(::GetStdHandle(STD_INPUT_HANDLE), ch);
+		const std::string utf8 = headless_
+			? replayCharacter(ch)
+			: readConsoleCharacter(::GetStdHandle(STD_INPUT_HANDLE), ch);
 		if (utf8.empty()) return;
 
 		insertChars(utf8);
@@ -1404,7 +1431,8 @@ namespace wbsh {
 
 		if (is_ctrl && vk == 'R') { revsearchStepOlder(query, match_index); return true; }
 		if (is_ctrl && vk == 'S') { revsearchStepNewer(query, match_index); return true; }
-		if (is_ctrl && (vk == 'G' || vk == 'C')) { cancel = true; return false; }
+		if (is_ctrl && vk == 'G') { cancel = true; return false; }
+		if (is_ctrl && vk == 'C') { cancel = true; interrupted_ = true; return false; }
 		if (is_ctrl) return false;
 
 		if (!isPrintableAscii(ch)) return false;
@@ -1424,24 +1452,15 @@ namespace wbsh {
 		std::size_t match_index = exec_.history().size();
 		revsearchRefresh(query, match_index);
 
-		const HANDLE input = ::GetStdHandle(STD_INPUT_HANDLE);
 		bool cancel = false;
 		bool submit = false;
 		bool looping = true;
 		while (looping) {
-			INPUT_RECORD record;
-			if (!readInputRecord(input, record)) {
+			KEY_EVENT_RECORD key;
+			if (!nextKeyDown(key)) {
 				cancel = true;
 				eof = true;
 				break;
-			}
-
-			if (record.EventType != KEY_EVENT) continue;
-
-			const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
-			if (!key.bKeyDown) {
-				handleAltKeyUp(key);
-				continue;
 			}
 
 			looping = revsearchHandleKey(key, query, match_index, cancel, submit);
@@ -1459,6 +1478,7 @@ namespace wbsh {
 		emit(kEraseToEnd);
 		emit(prompt_raw_);
 		redraw();
+		if (interrupted_) handleInterrupt(done);
 		if (submit) handleEnter(out, done);
 	}
 
@@ -1493,7 +1513,7 @@ namespace wbsh {
 	bool LineEditor::handleCtrlKey(const KEY_EVENT_RECORD& key,
 	                               std::string& out, bool& done, bool& eof) {
 		switch (key.wVirtualKeyCode) {
-		case 'C': handleInterrupt();                    return true;
+		case 'C': handleInterrupt(done);                return true;
 		case 'D': handleEofOrDelete(done, eof);         return true;
 		case 'A': moveCursorHome();                     return true;
 		case 'E': moveCursorEnd();                      return true;
@@ -1561,7 +1581,48 @@ namespace wbsh {
 		last_was_tab_ = was_tab;
 	}
 
-	bool LineEditor::readLineRaw(const std::string& prompt, std::string& out) {
+	// Key-ups only matter for Alt-code input; every other event is passed
+	// over. While replaying, the keys come from the replay queue instead
+	// of the console.
+	bool LineEditor::nextKeyDown(KEY_EVENT_RECORD& key) {
+		for (;;) {
+			if (headless_) return takeReplayKey(key);
+
+			INPUT_RECORD record;
+			if (!readInputRecord(::GetStdHandle(STD_INPUT_HANDLE), record)) return false;
+			if (record.EventType != KEY_EVENT) continue;
+
+			key = record.Event.KeyEvent;
+			if (key.bKeyDown) return true;
+
+			handleAltKeyUp(key);
+		}
+	}
+
+	bool LineEditor::takeReplayKey(KEY_EVENT_RECORD& key) {
+		if (replay_keys_.empty()) return false;
+
+		key = replay_keys_.front();
+		replay_keys_.pop_front();
+		return true;
+	}
+
+	bool LineEditor::editUntilDone(std::string& out, bool& eof) {
+		bool done = false;
+		while (!done) {
+			KEY_EVENT_RECORD key;
+			if (!nextKeyDown(key)) {
+				eof = true;
+				return false;
+			}
+
+			dispatchKeyDown(key, out, done, eof);
+		}
+
+		return true;
+	}
+
+	LineStatus LineEditor::readLineRaw(const std::string& prompt, std::string& out) {
 		const HANDLE input  = ::GetStdHandle(STD_INPUT_HANDLE);
 		const HANDLE output = ::GetStdHandle(STD_OUTPUT_HANDLE);
 		if (input == INVALID_HANDLE_VALUE || output == INVALID_HANDLE_VALUE) {
@@ -1571,28 +1632,11 @@ namespace wbsh {
 		const DWORD saved_in_mode = enterRawInputMode(input);
 		emit(prompt);
 
-		bool done = false;
 		bool eof = false;
-		while (!done) {
-			INPUT_RECORD record;
-			if (!readInputRecord(input, record)) {
-				eof = true;
-				break;
-			}
-
-			if (record.EventType != KEY_EVENT) continue;
-
-			const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
-			if (!key.bKeyDown) {
-				handleAltKeyUp(key);
-				continue;
-			}
-
-			dispatchKeyDown(key, out, done, eof);
-		}
+		editUntilDone(out, eof);
 
 		::SetConsoleMode(input, saved_in_mode);
-		return !eof || !out.empty();
+		return lineStatus(out, eof);
 	}
 
 	namespace replay_detail {
@@ -1670,62 +1714,63 @@ namespace wbsh {
 			return namedKey(name, 0, key) || chordKey(name, key);
 		}
 
-		static std::string describe(const std::string& buffer, std::size_t cursor,
-		                            const std::string& out, bool done, bool eof) {
-			if (eof) return "eof";
-			if (done) return "accept [" + out + "]";
+		static std::wstring widen(const std::string& text) {
+			const int count = static_cast<int>(text.size());
+			const int length = ::MultiByteToWideChar(CP_UTF8, 0, text.data(), count, nullptr, 0);
+			if (length <= 0) return {};
 
-			return "[" + buffer.substr(0, cursor) + "][" + buffer.substr(cursor) + "]";
+			std::wstring wide(static_cast<std::size_t>(length), L'\0');
+			::MultiByteToWideChar(CP_UTF8, 0, text.data(), count, wide.data(), length);
+			return wide;
+		}
+
+		static void queueText(const std::string& text, std::deque<KEY_EVENT_RECORD>& queue) {
+			for (const wchar_t unit : widen(text)) queue.push_back(pressOf(0, unit, 0));
+		}
+
+		static void queueToken(const std::string& token, std::deque<KEY_EVENT_RECORD>& queue) {
+			KEY_EVENT_RECORD key{};
+			if (keyFor(token, key)) {
+				queue.push_back(key);
+				return;
+			}
+
+			queueText(token, queue);
 		}
 
 	}  // namespace replay_detail
 
-	void LineEditor::replayText(const std::string& text, std::string& out, bool& done, bool& eof) {
-		std::size_t at = 0;
-		while (at < text.size() && !done) {
-			const std::size_t length = codePointLength(text, at);
-			if (length == 1) {
-				const auto letter = static_cast<WCHAR>(static_cast<unsigned char>(text[at]));
-				dispatchKeyDown(replay_detail::pressOf(0, letter, 0), out, done, eof);
-			} else {
-				insertChars(text.substr(at, length));
-				redraw();
-			}
-
-			at += length;
-		}
-	}
-
-	void LineEditor::replayKey(const std::string& key, std::string& out, bool& done, bool& eof) {
-		KEY_EVENT_RECORD record{};
-		if (replay_detail::keyFor(key, record)) {
-			dispatchKeyDown(record, out, done, eof);
-			return;
+	std::string LineEditor::describeReplay(const std::string& out, bool finished, bool eof) const {
+		if (!finished) {
+			return "[" + buffer_.substr(0, cursor_) + "][" + buffer_.substr(cursor_) + "]";
 		}
 
-		replayText(key, out, done, eof);
+		switch (lineStatus(out, eof)) {
+		case LineStatus::kInterrupted: return "interrupt";
+		case LineStatus::kEof:         return "eof";
+		case LineStatus::kLine:        return "accept [" + out + "]";
+		default:                       return {};
+		}
 	}
 
 	std::string LineEditor::replayKeys(const std::vector<std::string>& keys) {
 		resetLine("");
+		replay_keys_.clear();
+		for (const std::string& token : keys) replay_detail::queueToken(token, replay_keys_);
+
 		headless_ = true;
-
 		std::string out;
-		bool done = false;
 		bool eof = false;
-		for (const std::string& key : keys) {
-			if (done) break;
-
-			replayKey(key, out, done, eof);
-		}
-
+		const bool finished = editUntilDone(out, eof);
 		headless_ = false;
-		return replay_detail::describe(buffer_, cursor_, out, done, eof);
+
+		replay_keys_.clear();
+		return describeReplay(out, finished, eof);
 	}
 
 #else  /* !_WIN32 */
 
-	bool LineEditor::readLineRaw(const std::string& prompt, std::string& out) {
+	LineStatus LineEditor::readLineRaw(const std::string& prompt, std::string& out) {
 		std::fputs(prompt.c_str(), stdout);
 		std::fflush(stdout);
 		return readLineCooked(out);
