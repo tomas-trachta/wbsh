@@ -30,6 +30,7 @@
 
 #include "executor.h"
 #include "exitstatus.h"
+#include "interrupt.h"
 #include "keymap.h"
 #include "lexer.h"
 #include "lineedit.h"
@@ -1589,19 +1590,49 @@ namespace wbsh {
 		}
 	}
 
-	static int builtin_jobs(Executor& exec, const std::vector<std::string>&) {
-		exec.reapJobs();
-		for (const Executor::Job& job : exec.jobsTable()) {
-			std::printf("[%d]  %s   %s\n", job.id, job.running ? "Running" : "Done",
-				job.cmd_text.empty() ? "<command>" : job.cmd_text.c_str());
+	static void printJob(const Executor& exec, const Executor::Job& job, char format) {
+		if (format == 'p') {
+			std::printf("%lld\n", job.pid);
+			return;
 		}
 
+		std::string line = exec.jobLine(job);
+		if (format == 'l') {
+			char pid[32];
+			std::snprintf(pid, sizeof(pid), "%5lld ", job.pid);
+			line.replace(line.find(']') + 3, 1, pid);
+		}
+
+		std::printf("%s\n", line.c_str());
+	}
+
+	// `jobs`, `jobs -l` (with PIDs), `jobs -p` (PIDs only). Jobs shown as
+	// finished leave the table, as bash's do once reported.
+	static int builtin_jobs(Executor& exec, const std::vector<std::string>& args) {
+		char format = ' ';
+		for (const std::string& arg : args) {
+			if (arg == "-l") format = 'l';
+			else if (arg == "-p") format = 'p';
+		}
+
+		exec.reapJobs();
+		std::vector<int> finished;
+		for (const Executor::Job& job : exec.jobsTable()) {
+			printJob(exec, job, format);
+			if (!job.running) finished.push_back(job.id);
+		}
+
+		for (const int id : finished) exec.forgetJob(id);
 		return 0;
 	}
 
 	static bool resolveJobSpec(Executor& exec, const std::string& spec, int& out_id) {
 		out_id = -1;
-		if (!spec.empty() && spec[0] == '%') return parseInt(spec.substr(1), out_id);
+		if (!spec.empty() && spec[0] == '%') {
+			const Executor::Job* job = exec.findJob(spec);
+			if (job != nullptr) out_id = job->id;
+			return job != nullptr;
+		}
 
 		long long pid = 0;
 		if (!parseLL(spec, pid)) return false;
@@ -1616,13 +1647,22 @@ namespace wbsh {
 		return true;
 	}
 
-	// A PID that is no job can be a `<(...)` / `>(...)` process (`wait $!`).
+	// A PID that is no job can be a `<(...)` / `>(...)` process (`wait $!`)
+	// or a job that already finished and left the table.
 	static bool waitForProcSubstSpec(Executor& exec, const std::string& spec, int& status) {
 		long long pid = 0;
-		return parseLL(spec, pid) && exec.waitForProcSubstChild(pid, status);
+		if (!parseLL(spec, pid)) return false;
+
+		return exec.waitForProcSubstChild(pid, status) || exec.finishedJobStatus(pid, status);
+	}
+
+	static int builtinWaitAny(Executor& exec) {
+		const int status = exec.waitForAnyJob();
+		return status < 0 ? 127 : status;
 	}
 
 	static int builtin_wait(Executor& exec, const std::vector<std::string>& args) {
+		if (!args.empty() && args[0] == "-n") return builtinWaitAny(exec);
 		if (args.empty()) {
 			exec.waitForAllJobs();
 			exec.waitForProcSubstChildren();
@@ -1633,7 +1673,7 @@ namespace wbsh {
 		for (const std::string& spec : args) {
 			int id = -1;
 			if (!resolveJobSpec(exec, spec, id) || id < 0) {
-				if (!waitForProcSubstSpec(exec, spec, status)) status = 1;
+				if (!waitForProcSubstSpec(exec, spec, status)) status = 127;
 				continue;
 			}
 
@@ -1658,42 +1698,45 @@ namespace wbsh {
 
 		for (const std::string& spec : args) {
 			int id = -1;
-			if (!spec.empty() && spec[0] == '%' && !parseInt(spec.substr(1), id)) continue;
-			removeJob(exec, id);
+			if (resolveJobSpec(exec, spec, id) && id >= 0) removeJob(exec, id);
 		}
 
 		return 0;
 	}
 
-	static int newestRunningJobId(Executor& exec) {
-		const std::vector<Executor::Job>& jobs = exec.jobsTable();
-		for (auto it = jobs.rbegin(); it != jobs.rend(); ++it) {
-			if (it->running) return it->id;
-		}
-
-		return -1;
-	}
-
-	static int jobIdFromFgArg(const std::string& spec) {
-		int id = -1;
-		if (!spec.empty() && spec[0] == '%' && !parseInt(spec.substr(1), id)) id = -1;
-		return id;
-	}
-
 	static int builtin_fg(Executor& exec, const std::vector<std::string>& args) {
 		exec.reapJobs();
-		const int id = args.empty() ? newestRunningJobId(exec) : jobIdFromFgArg(args[0]);
-		if (id < 0) {
-			printerr("fg: no current job");
+		const std::string spec = args.empty() ? std::string("%+") : args[0];
+		const Executor::Job* job = exec.findJob(spec);
+		if (job == nullptr) {
+			if (args.empty()) printerr("fg: current: no such job");
+			else std::fprintf(stderr, "wbsh: fg: %s: no such job\n", spec.c_str());
 			return 1;
 		}
 
-		const int status = exec.waitForJob(id);
+		std::printf("%s\n", job->cmd_text.c_str());
+		const int status = exec.waitForJob(job->id);
 		return status < 0 ? 1 : status;
 	}
 
-	static int builtin_bg(Executor& exec, const std::vector<std::string>&) {
-		return builtin_jobs(exec, {});
+	// Every job wbsh starts already runs in the background, so `bg` only
+	// confirms that, the way bash answers for a job that is not stopped.
+	static int builtin_bg(Executor& exec, const std::vector<std::string>& args) {
+		if (!exec.env().interactive()) {
+			printerr("bg: no job control");
+			return 1;
+		}
+
+		exec.reapJobs();
+		const std::string spec = args.empty() ? std::string("%+") : args[0];
+		const Executor::Job* job = exec.findJob(spec);
+		if (job == nullptr) {
+			std::fprintf(stderr, "wbsh: bg: %s: no such job\n", spec.c_str());
+			return 1;
+		}
+
+		if (job->running) std::fprintf(stderr, "wbsh: bg: job %d already in background\n", job->id);
+		return 0;
 	}
 
 	static void printAllAliases(Executor& exec) {
@@ -1936,6 +1979,17 @@ namespace wbsh {
 	// Test hook recording a history entry's exit status (what the REPL
 	// does after each command):
 	//     __histstat INDEX STATUS    (INDEX is 1-based)
+	static int builtin_ctrlc(Executor&, const std::vector<std::string>& args) {
+		int milliseconds = 0;
+		if (args.size() != 1 || !parseInt(args[0], milliseconds) || milliseconds < 0) {
+			printerr("__ctrlc: usage: __ctrlc MILLISECONDS");
+			return 2;
+		}
+
+		pressCtrlCAfter(static_cast<unsigned long>(milliseconds));
+		return 0;
+	}
+
 	static int builtin_histstat(Executor& exec, const std::vector<std::string>& args) {
 		if (args.size() != 2) {
 			printerr("__histstat: usage: __histstat INDEX STATUS");
@@ -2166,6 +2220,7 @@ namespace wbsh {
 		exec.registerBuiltin("__lineedit",  lineEditBuiltin);
 		exec.registerBuiltin("bind",        bindBuiltin);
 		exec.registerBuiltin("__histstat",  builtin_histstat);
+		exec.registerBuiltin("__ctrlc",     builtin_ctrlc);
 		exec.registerBuiltin("trap",     builtin_trap);
 		exec.registerBuiltin("getopts",  builtin_getopts);
 		exec.registerBuiltin("mapfile",  builtin_mapfile);

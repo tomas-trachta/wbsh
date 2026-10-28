@@ -37,6 +37,7 @@
 #include "executor.h"
 #include "exitstatus.h"
 #include "inflate.h"
+#include "interrupt.h"
 #include "numparse.h"
 #include "optscan.h"
 #include "stdinsync.h"
@@ -49,6 +50,7 @@ namespace wbsh {
 	static const int         kFallbackConsoleColumns = 80;
 	static const int         kFallbackConsoleRows    = 24;
 	static const std::size_t kStreamChunk            = 4096;
+	static const int kStatusInterruptedSleep         = 130;
 	static const std::size_t kTimeTextCapacity       = 256;
 	static const int         kDefaultUserId          = 1000;
 	static const int         kDefaultGroupId         = 1000;
@@ -1530,9 +1532,8 @@ namespace wbsh {
 			return 1;
 		}
 
-		std::this_thread::sleep_for(std::chrono::milliseconds(
-			static_cast<long long>(seconds * 1000.0)));
-		return 0;
+		const unsigned long milliseconds = static_cast<unsigned long>(seconds * 1000.0);
+		return sleepUnlessCtrlC(milliseconds) ? 0 : kStatusInterruptedSleep;
 	}
 
 	static std::string stripTrailingSlashes(std::string path) {
@@ -3255,7 +3256,28 @@ namespace wbsh {
 		return false;
 	}
 
-	static int builtin_kill(Executor&, const std::vector<std::string>& args) {
+	// `%N`, `%%`, `%name`, ... name a job of this shell.
+	static bool killTargetPid(Executor& exec, const std::string& arg, int& pid) {
+		if (arg.empty() || arg[0] != '%') {
+			if (parseInt(arg, pid)) return true;
+
+			std::fprintf(stderr, "wbsh: kill: %s: arguments must be process or job IDs\n",
+				arg.c_str());
+			return false;
+		}
+
+		exec.reapJobs();
+		const Executor::Job* job = exec.findJob(arg);
+		if (job == nullptr || !job->running) {
+			std::fprintf(stderr, "wbsh: kill: %s: no such job\n", arg.c_str());
+			return false;
+		}
+
+		pid = static_cast<int>(job->pid);
+		return true;
+	}
+
+	static int builtin_kill(Executor& exec, const std::vector<std::string>& args) {
 		int signum = kSignalTerm;
 		std::vector<int> pids;
 		for (std::size_t i = 0; i < args.size(); ++i) {
@@ -3278,16 +3300,13 @@ namespace wbsh {
 			if (killSignalByName(arg, signum)) continue;
 
 			int pid = 0;
-			if (!parseInt(arg, pid)) {
-				std::fprintf(stderr, "wbsh: kill: %s: arguments must be PIDs\n", arg.c_str());
-				return 1;
-			}
+			if (!killTargetPid(exec, arg, pid)) return 1;
 
 			pids.push_back(pid);
 		}
 
 		if (pids.empty()) {
-			perr("kill", "usage: kill [-SIG] PID...");
+			perr("kill", "usage: kill [-SIG] PID | %JOB ...");
 			return 2;
 		}
 

@@ -416,6 +416,7 @@ namespace wbsh {
 		restoreConsoleModes(state);
 		handlePendingCtrlC(exec, state);
 		trackWindowSize(env, exec, state);
+		exec.reportFinishedJobs(stderr);
 #else
 		(void)env; (void)exec; (void)state;
 #endif /* _WIN32 */

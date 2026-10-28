@@ -54,6 +54,7 @@ namespace wbsh {
 	using NameValueList = std::vector<std::pair<std::string, std::string>>;
 
 	static const int kStatusCommandNotFound = 127;
+	static const int kStatusInterrupted = 130;
 	static const long long kMillisPerMinute = 60000;
 	static const std::size_t kShebangProbeBytes = 256;
 
@@ -834,7 +835,9 @@ namespace wbsh {
 #ifdef _WIN32
 	int Executor::launchBackgroundCommand(const Node& cmd) {
 		const StdioHandles stdio = currentStdio();
+		spawning_background_ = true;
 		const HANDLE process = launchPipelineElement(cmd, stdio.in, stdio.out, stdio.err);
+		spawning_background_ = false;
 		if (process == INVALID_HANDLE_VALUE) return 1;
 
 		const long long pid = static_cast<long long>(::GetProcessId(process));
@@ -845,9 +848,18 @@ namespace wbsh {
 	}
 #endif
 
+	bool Executor::stopForCtrlC(int& status) const {
+		if (!ctrlCPending()) return false;
+
+		status = kStatusInterrupted;
+		return true;
+	}
+
 	int Executor::execList(const List& list) {
 		int status = 0;
 		for (std::size_t index = 0; index < list.items.size(); ++index) {
+			if (stopForCtrlC(status)) return status;
+
 			const ListItem& item = list.items[index];
 			if (&list == input_echo_.list) echoInputBefore(list, index);
 
@@ -1452,7 +1464,8 @@ namespace wbsh {
 		command.cmdline  = line.cmdline;
 		command.envblock = buildEnvBlock(env_, overrides, /*include_unexported=*/true);
 
-		const HANDLE process = spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err });
+		const HANDLE process = spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err },
+			backgroundPlacement());
 		if (process == INVALID_HANDLE_VALUE) discardSelfSpawnFiles(line, overrides);
 		return process;
 	}
@@ -1616,7 +1629,8 @@ namespace wbsh {
 
 		SpawnCommand command = makeSpawnCommand(child_argv, exec_path,
 			buildEnvBlock(env_, overrides));
-		return spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err });
+		return spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err },
+			backgroundPlacement());
 	}
 #endif  // _WIN32
 
@@ -3121,7 +3135,7 @@ namespace wbsh {
 			if (!keep_going) break;
 
 			runBody(clause.body, status);
-			if (loopEnds(dispatchLoopFlow())) break;
+			if (loopEnds(dispatchLoopFlow()) || stopForCtrlC(status)) break;
 		}
 
 		return status;
@@ -3165,7 +3179,7 @@ namespace wbsh {
 			}
 
 			runBody(clause.body, status);
-			if (loopEnds(dispatchLoopFlow())) break;
+			if (loopEnds(dispatchLoopFlow()) || stopForCtrlC(status)) break;
 
 			const bool updates = !clause.arith_update.empty();
 			if (updates && !evalLoopArith(clause.arith_update, value)) return 1;
@@ -3241,7 +3255,7 @@ namespace wbsh {
 
 			setLoopVariable(env_, clause.var, value);
 			runBody(clause.body, status);
-			if (loopEnds(dispatchLoopFlow())) break;
+			if (loopEnds(dispatchLoopFlow()) || stopForCtrlC(status)) break;
 		}
 
 		return status;
@@ -3309,7 +3323,7 @@ namespace wbsh {
 			env_.set(clause.var, selectedValue(reply, values));
 
 			runBody(clause.body, status);
-			if (loopEnds(dispatchLoopFlow())) break;
+			if (loopEnds(dispatchLoopFlow()) || stopForCtrlC(status)) break;
 		}
 
 		return status;
@@ -3678,7 +3692,7 @@ namespace wbsh {
 
 	int Executor::registerJob(void* handle, long long pid, std::string cmd_text) {
 		Job job;
-		job.id = ++next_job_id_;
+		job.id = nextJobId();
 #ifdef _WIN32
 		job.handle = static_cast<HANDLE>(handle);
 #else
@@ -3693,7 +3707,16 @@ namespace wbsh {
 
 	void Executor::adoptInheritedJob(const Job& job) {
 		jobs_.push_back(job);
-		if (job.id > next_job_id_) next_job_id_ = job.id;
+	}
+
+	// As in bash, numbering restarts once the table is empty.
+	int Executor::nextJobId() const {
+		int highest = 0;
+		for (const Job& job : jobs_) {
+			if (job.id > highest) highest = job.id;
+		}
+
+		return highest + 1;
 	}
 
 	bool Executor::reapJobs() {
@@ -3730,16 +3753,123 @@ namespace wbsh {
 		for (auto& job : jobs_) {
 			if (job.id != id) continue;
 			if (job.running) waitJobToFinish(job);
-			return job.exit_code;
+
+			const int status = job.exit_code;
+			forgetJob(id);
+			return status;
 		}
 
 		return -1;
 	}
 
 	void Executor::waitForAllJobs() {
-		for (auto& job : jobs_) {
-			if (job.running) waitJobToFinish(job);
+		while (!jobs_.empty()) waitForJob(jobs_.front().id);
+	}
+
+	int Executor::waitForAnyJob() {
+		reapJobs();
+		for (const Job& job : jobs_) {
+			if (!job.running) return waitForJob(job.id);
 		}
+
+		return waitForFirstRunningJob();
+	}
+
+	int Executor::waitForFirstRunningJob() {
+#ifdef _WIN32
+		std::vector<HANDLE> handles;
+		std::vector<int> ids;
+		for (const Job& job : jobs_) {
+			if (!job.running || job.handle == nullptr) continue;
+
+			handles.push_back(job.handle);
+			ids.push_back(job.id);
+		}
+
+		if (handles.empty() || handles.size() > MAXIMUM_WAIT_OBJECTS) return -1;
+
+		const DWORD count = static_cast<DWORD>(handles.size());
+		const DWORD which = ::WaitForMultipleObjects(count, handles.data(), FALSE, INFINITE);
+		if (which >= WAIT_OBJECT_0 + count) return -1;
+
+		return waitForJob(ids[which - WAIT_OBJECT_0]);
+#else
+		return -1;
+#endif
+	}
+
+	void Executor::forgetJob(int id) {
+		for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
+			if (it->id != id) continue;
+
+			if (!it->running) finished_job_statuses_[it->pid] = it->exit_code;
+			jobs_.erase(it);
+			return;
+		}
+	}
+
+	bool Executor::finishedJobStatus(long long pid, int& status) const {
+		const auto found = finished_job_statuses_.find(pid);
+		if (found == finished_job_statuses_.end()) return false;
+
+		status = found->second;
+		return true;
+	}
+
+	static bool jobCommandMatches(const Executor::Job& job, const std::string& pattern) {
+		if (!pattern.empty() && pattern[0] == '?') {
+			return job.cmd_text.find(pattern.substr(1)) != std::string::npos;
+		}
+
+		return job.cmd_text.compare(0, pattern.size(), pattern) == 0;
+	}
+
+	Executor::Job* Executor::findJob(const std::string& spec) {
+		if (spec.empty() || spec[0] != '%' || jobs_.empty()) return nullptr;
+
+		const std::string rest = spec.substr(1);
+		if (rest.empty() || rest == "%" || rest == "+") return &jobs_.back();
+		if (rest == "-") return jobs_.size() > 1 ? &jobs_[jobs_.size() - 2] : &jobs_.back();
+
+		int id = 0;
+		for (Job& job : jobs_) {
+			if (parseInt(rest, id) ? job.id == id : jobCommandMatches(job, rest)) return &job;
+		}
+
+		return nullptr;
+	}
+
+	static std::string jobStateText(const Executor::Job& job) {
+		if (job.running) return "Running";
+		if (job.exit_code == 0) return "Done";
+		return "Exit " + std::to_string(job.exit_code);
+	}
+
+	// Laid out as bash does: `[1]+  Running                 sleep 9 &`.
+	std::string Executor::jobLine(const Job& job) const {
+		char mark = ' ';
+		if (!jobs_.empty() && &job == &jobs_.back()) mark = '+';
+		else if (jobs_.size() > 1 && &job == &jobs_[jobs_.size() - 2]) mark = '-';
+
+		std::string state = jobStateText(job);
+		state.resize(std::max<std::size_t>(state.size(), 24), ' ');
+
+		std::string line = "[" + std::to_string(job.id) + "]" + mark + "  " + state + job.cmd_text;
+		if (job.running) line += " &";
+		return line;
+	}
+
+	void Executor::reportFinishedJobs(std::FILE* out) {
+		reapJobs();
+		std::vector<int> finished;
+		for (const Job& job : jobs_) {
+			if (job.running) continue;
+
+			std::fprintf(out, "%s\n", jobLine(job).c_str());
+			finished.push_back(job.id);
+		}
+
+		for (const int id : finished) forgetJob(id);
 	}
 
 #ifndef _WIN32
