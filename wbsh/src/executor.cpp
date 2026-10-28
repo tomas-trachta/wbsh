@@ -428,8 +428,13 @@ namespace wbsh {
 			|| !effectiveEnvValue(overrides, env, "MSYS_NO_PATHCONV").empty();
 	}
 
+	// _get_osfhandle gives -2 for an fd with no stream behind it, which
+	// as a HANDLE would be a pseudo-handle CreateProcess rejects.
 	static HANDLE stdioHandle(int fd) {
-		return reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+		const intptr_t raw = _get_osfhandle(fd);
+		if (raw == -2) return INVALID_HANDLE_VALUE;
+
+		return reinterpret_cast<HANDLE>(raw);
 	}
 
 	static StdioHandles currentStdio() {
@@ -555,18 +560,22 @@ namespace wbsh {
 		::ResumeThread(process.hThread);
 	}
 
+	// Only the three stdio handles are inherited: anything else the shell
+	// holds open (saved fds, pipe ends of other stages) would otherwise
+	// leak into the child and keep pipes alive after it is gone.
 	// The inherits[] buffer is referenced by attr_list until
 	// DeleteProcThreadAttributeList runs, so it must live in this frame
 	// (not in a helper) — per the Win32 attribute-list ownership rules.
-	static HANDLE spawnWithHandles(SpawnCommand& command, const StdioHandles& stdio,
-	                               const SpawnPlacement& placement = SpawnPlacement()) {
+	// On failure GetLastError() still holds CreateProcess's error.
+	static HANDLE createWithHandleList(SpawnCommand& command, const StdioHandles& stdio,
+	                                   const SpawnPlacement& placement) {
 		giveBackStdinReadAhead();
 		LPPROC_THREAD_ATTRIBUTE_LIST attr_list = allocAttrList();
 		if (attr_list == nullptr) return INVALID_HANDLE_VALUE;
 
 		HANDLE inherits[3];
 		const DWORD count = collectInheritHandles(inherits, stdio);
-		if (!attachInheritList(attr_list, inherits, count)) {
+		if (count > 0 && !attachInheritList(attr_list, inherits, count)) {
 			freeAttrList(attr_list);
 			return INVALID_HANDLE_VALUE;
 		}
@@ -575,19 +584,30 @@ namespace wbsh {
 		const std::wstring directory = childCurrentDirectory();
 		PROCESS_INFORMATION process{};
 		const BOOL created = ::CreateProcessW(command.exe.c_str(), command.cmdline.data(),
-			nullptr, nullptr, TRUE,
+			nullptr, nullptr, count > 0 ? TRUE : FALSE,
 			EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | placementFlags(placement),
 			command.envblock.data(), optionalDirectory(directory), &info.StartupInfo, &process);
+		const DWORD error = ::GetLastError();
 		freeAttrList(attr_list);
 
 		if (created == 0) {
-			std::fprintf(stderr, "wbsh: CreateProcess failed: %s\n", lastErrorString().c_str());
+			::SetLastError(error);
 			return INVALID_HANDLE_VALUE;
 		}
 
 		releasePlacedChild(process, placement);
 		::CloseHandle(process.hThread);
 		return process.hProcess;
+	}
+
+	static HANDLE spawnWithHandles(SpawnCommand& command, const StdioHandles& stdio,
+	                               const SpawnPlacement& placement = SpawnPlacement()) {
+		const HANDLE process = createWithHandleList(command, stdio, placement);
+		if (process == INVALID_HANDLE_VALUE) {
+			std::fprintf(stderr, "wbsh: CreateProcess failed: %s\n", lastErrorString().c_str());
+		}
+
+		return process;
 	}
 
 	static SpawnCommand makeSpawnCommand(const std::vector<std::string>& argv,
@@ -2371,38 +2391,19 @@ namespace wbsh {
 		return out;
 	}
 
-	static STARTUPINFOW inheritedStdioStartupInfo() {
-		STARTUPINFOW info{};
-		info.cb = sizeof(info);
-		info.dwFlags = STARTF_USESTDHANDLES;
-		info.hStdInput  = stdioHandle(0);
-		info.hStdOutput = stdioHandle(1);
-		info.hStdError  = stdioHandle(2);
-
-		const HANDLE std_handles[3] = { info.hStdInput, info.hStdOutput, info.hStdError };
-		for (HANDLE handle : std_handles) {
-			if (handle == nullptr || handle == INVALID_HANDLE_VALUE) continue;
-			::SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-		}
-
-		return info;
-	}
-
 	bool Executor::spawnExternalAndWait(const std::wstring& exe,
 	                                    std::wstring& cmdline,
 	                                    std::wstring& envblock,
 	                                    int* exit_status) {
-		giveBackStdinReadAhead();
-		STARTUPINFOW info = inheritedStdioStartupInfo();
-		const std::wstring directory = childCurrentDirectory();
-		PROCESS_INFORMATION process{};
-		const BOOL created = ::CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, TRUE,
-			CREATE_UNICODE_ENVIRONMENT, envblock.data(), optionalDirectory(directory), &info,
-			&process);
-		if (created == 0) return false;
+		SpawnCommand command;
+		command.exe      = exe;
+		command.cmdline  = cmdline;
+		command.envblock = envblock;
 
-		::CloseHandle(process.hThread);
-		*exit_status = waitProcessAndClose(process.hProcess);
+		const HANDLE process = createWithHandleList(command, currentStdio(), SpawnPlacement());
+		if (process == INVALID_HANDLE_VALUE) return false;
+
+		*exit_status = waitProcessAndClose(process);
 		return true;
 	}
 #endif  // _WIN32

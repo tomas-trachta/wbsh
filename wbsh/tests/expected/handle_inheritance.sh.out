@@ -1,0 +1,6 @@
+done
+reader finished without waiting for the grandchild
+=== stdio still reaches the external
+piped
+to-stderr
+closed-stdin
