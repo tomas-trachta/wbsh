@@ -1,0 +1,8 @@
+wbsh: suspend: cannot suspend: no job control
+status 1
+wbsh: suspend: cannot suspend: no job control
+status 1
+wbsh: suspend: -x: invalid option
+suspend: usage: suspend [-f]
+status 2
+builtin

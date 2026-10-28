@@ -671,6 +671,23 @@ namespace wbsh {
 		return status;
 	}
 
+	static bool isInvalidSuspendOption(const std::string& arg) {
+		return arg.size() > 1 && arg[0] == '-' && arg != "-f" && arg != "--";
+	}
+
+	// Stopping the shell needs job control, which wbsh does not have, so
+	// this is always bash's answer for a shell without it.
+	static int builtin_suspend(Executor&, const std::vector<std::string>& args) {
+		if (!args.empty() && isInvalidSuspendOption(args[0])) {
+			printerr("suspend: " + args[0].substr(0, 2) + ": invalid option");
+			std::fprintf(stderr, "suspend: usage: suspend [-f]\n");
+			return 2;
+		}
+
+		printerr("suspend: cannot suspend: no job control");
+		return 1;
+	}
+
 	static int builtin_return(Executor& exec, const std::vector<std::string>& args) {
 		if (exec.funcDepth() == 0 && exec.sourceDepth() == 0) {
 			printerr("return: can only `return' from a function or sourced script");
@@ -2256,6 +2273,7 @@ namespace wbsh {
 		exec.registerBuiltin("pwd",      builtin_pwd);
 		exec.registerBuiltin("cd",       builtin_cd);
 		exec.registerBuiltin("exit",     builtin_exit);
+		exec.registerBuiltin("suspend",  builtin_suspend);
 		exec.registerBuiltin("return",   builtin_return);
 		exec.registerBuiltin("break",    builtin_break);
 		exec.registerBuiltin("continue", builtin_continue);
