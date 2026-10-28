@@ -929,8 +929,9 @@ namespace wbsh {
 
 		exec.beginSource(args[0]);
 		int status = exec.executeInputText(body, args[0]);
-		exec.endSource();
 		exec.consumeFlow(FlowSignal::Kind::Return, &status);
+		exec.fireReturnTrap();
+		exec.endSource();
 		exec.env().setPositional(std::move(saved));
 		return status;
 	}

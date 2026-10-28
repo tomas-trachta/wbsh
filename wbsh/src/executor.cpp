@@ -687,6 +687,7 @@ namespace wbsh {
 		case Node::Kind::AndOr:         return execAndOr(static_cast<const AndOr&>(node));
 		case Node::Kind::Pipeline:      return execPipeline(static_cast<const Pipeline&>(node));
 		case Node::Kind::SimpleCommand:
+			if (!announceLeaf(node)) return last_status_;
 			return finishLeafCommand(execSimpleCommand(static_cast<const SimpleCommand&>(node)));
 		case Node::Kind::BraceGroup:    return execBraceGroup(static_cast<const BraceGroup&>(node));
 		case Node::Kind::Subshell:
@@ -698,8 +699,11 @@ namespace wbsh {
 		case Node::Kind::FunctionDef:
 			return execFunctionDef(static_cast<const FunctionDef&>(node));
 		case Node::Kind::DBracket:
+			if (!announceLeaf(node)) return last_status_;
 			return finishLeafCommand(execDBracket(static_cast<const DBracketCond&>(node)));
 		case Node::Kind::ArithCommand:
+			announceCommand("((" + static_cast<const ArithCommand&>(node).expr + "))");
+			if (flowPending()) return last_status_;
 			return finishLeafCommand(execArithCommand(static_cast<const ArithCommand&>(node)));
 		}
 
@@ -714,6 +718,18 @@ namespace wbsh {
 		if (source == nullptr) return {};
 		if (node.src_end <= node.src_start || node.src_end > source->size()) return {};
 		return source->substr(node.src_start, node.src_end - node.src_start);
+	}
+
+	void Executor::announceNode(const Node& node) {
+		if (trap_depth_ > 0) return;
+
+		announceCommand(nodeSourceSlice(node, source_text_));
+	}
+
+	// False when the DEBUG trap left a flow signal and the command must not run.
+	bool Executor::announceLeaf(const Node& node) {
+		announceNode(node);
+		return !flowPending();
 	}
 
 	int Executor::negateBangStatus(int status) {
@@ -943,6 +959,8 @@ namespace wbsh {
 		std::vector<HANDLE> processes;
 		processes.reserve(count);
 		for (std::size_t i = 0; i < count; ++i) {
+			const Node& stage = *pipeline.commands[i];
+			if (stage.kind == Node::Kind::SimpleCommand) announceNode(stage);
 			const StdioHandles stdio = pipelineStageStdio(pipeline, i, pipe_r, pipe_w, outer);
 			const HANDLE process = launchPipelineElement(*pipeline.commands[i],
 				stdio.in, stdio.out, stdio.err);
@@ -2751,15 +2769,14 @@ namespace wbsh {
 	}
 
 	// The parent's traps, EXIT included, belong to the parent and never
-	// run in the subshell; only ignored signals stay ignored, and the ERR
-	// trap is inherited under errtrace (`set -E`).
+	// run in the subshell; only ignored signals stay ignored, and ERR /
+	// DEBUG / RETURN are inherited under errtrace / functrace.
 	void Executor::resetSubshellTraps() {
 		if (!lists_inherited_traps_) inherited_traps_ = trap_handlers_;
 		lists_inherited_traps_ = true;
 
-		const bool keep_err = env_.options().errtrace;
 		for (auto it = trap_handlers_.begin(); it != trap_handlers_.end(); ) {
-			if (it->second.empty() || (keep_err && it->first == "ERR")) ++it;
+			if (it->second.empty() || inheritsTrap(it->first)) ++it;
 			else it = trap_handlers_.erase(it);
 		}
 	}
@@ -2898,26 +2915,29 @@ namespace wbsh {
 		return false;
 	}
 
+	bool Executor::evalLoopArith(const std::string& expr, long long& value) {
+		announceCommand("((" + expr + "))");
+		if (flowPending()) return false;
+
+		return evalArithOrReport(expander_, expr, value);
+	}
+
 	int Executor::runArithLoop(const ForClause& clause) {
 		long long value = 0;
-		if (!clause.arith_init.empty() && !evalArithOrReport(expander_, clause.arith_init, value)) {
-			return 1;
-		}
+		if (!clause.arith_init.empty() && !evalLoopArith(clause.arith_init, value)) return 1;
 
 		int status = 0;
 		for (;;) {
 			if (!clause.arith_cond.empty()) {
-				if (!evalArithOrReport(expander_, clause.arith_cond, value)) return 1;
+				if (!evalLoopArith(clause.arith_cond, value)) return 1;
 				if (value == 0) break;
 			}
 
 			runBody(clause.body, status);
 			if (loopEnds(dispatchLoopFlow())) break;
 
-			if (!clause.arith_update.empty()
-			    && !evalArithOrReport(expander_, clause.arith_update, value)) {
-				return 1;
-			}
+			const bool updates = !clause.arith_update.empty();
+			if (updates && !evalLoopArith(clause.arith_update, value)) return 1;
 		}
 
 		return status;
@@ -2962,6 +2982,15 @@ namespace wbsh {
 		return true;
 	}
 
+	// BASH_COMMAND for a `for` / `select`: the header up to `; do` or the newline.
+	std::string Executor::loopHeaderText(const ForClause& clause) const {
+		if (trap_depth_ > 0) return {};
+
+		const std::string slice = nodeSourceSlice(clause, source_text_);
+		const std::size_t end = slice.find_first_of(";\n");
+		return end == std::string::npos ? slice : slice.substr(0, end);
+	}
+
 	// A nameref loop variable is pointed at each word in turn.
 	static void setLoopVariable(Environment& env, const std::string& name,
 			const std::string& value) {
@@ -2974,7 +3003,11 @@ namespace wbsh {
 		std::vector<std::string> values;
 		if (!expandForWordList(clause, values, &status)) return status;
 
+		const std::string header = loopHeaderText(clause);
 		for (const auto& value : values) {
+			announceCommand(header);
+			if (flowPending()) break;
+
 			setLoopVariable(env_, clause.var, value);
 			runBody(clause.body, status);
 			if (loopEnds(dispatchLoopFlow())) break;
@@ -3030,7 +3063,11 @@ namespace wbsh {
 		if (!expandForWordList(clause, values, &status)) return status;
 
 		const std::string ps3 = env_.has("PS3") ? env_.get("PS3") : "#? ";
+		const std::string header = loopHeaderText(clause);
 		for (;;) {
+			announceCommand(header);
+			if (flowPending()) break;
+
 			printSelectMenu(values);
 			std::fputs(ps3.c_str(), stderr);
 			std::fflush(stderr);
@@ -3103,9 +3140,30 @@ namespace wbsh {
 		return status;
 	}
 
+	static bool isBlankOrEnd(const std::string& text, std::size_t pos) {
+		return pos >= text.size() || text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n';
+	}
+
+	// BASH_COMMAND for a `case`: its header, `case WORD in `.
+	static std::string caseHeaderText(const std::string& slice) {
+		std::size_t pos = slice.find(" in");
+		while (pos != std::string::npos && !isBlankOrEnd(slice, pos + 3)) {
+			pos = slice.find(" in", pos + 1);
+		}
+
+		return pos == std::string::npos ? slice : slice.substr(0, pos + 3) + ' ';
+	}
+
 	int Executor::execCase(const CaseClause& clause) {
 		RedirState state;
 		if (!applyRedirectionsOrUndo(clause.redirs, state)) return 1;
+
+		const std::string header = caseHeaderText(nodeSourceSlice(clause, source_text_));
+		if (trap_depth_ == 0) announceCommand(header);
+		if (flowPending()) {
+			undoRedirections(state);
+			return last_status_;
+		}
 
 		const std::string subject = expander_.expandStringValue(clause.subject);
 		if (expander_.failed()) {
@@ -3341,12 +3399,13 @@ namespace wbsh {
 		pushCallFrame({ name, functionFile(name), env_.currentLineno() });
 		const std::vector<std::string> saved_positional = env_.positional();
 		env_.setPositional(args);
-		std::string saved_err_trap = suspendErrTrapForFunction();
-		const bool err_trap_kept = hasTrap("ERR");
+		std::vector<SuspendedTrap> suspended = suspendTrapsForFunction();
+		fireDebugTrap();
 
 		const int status = runFunctionBody(*def);
 
-		restoreErrTrapAfterFunction(std::move(saved_err_trap), err_trap_kept);
+		fireReturnTrap();
+		restoreTrapsAfterFunction(suspended);
 		env_.setPositional(saved_positional);
 		popCallFrame();
 		return status;

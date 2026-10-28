@@ -100,7 +100,9 @@ namespace wbsh {
 		return out;
 	}
 
-	static const char* const kDynamicSpecials[] = { "BASHPID", "LINENO", "RANDOM", "SECONDS" };
+	static const char* const kDynamicSpecials[] = {
+		"BASHPID", "BASH_COMMAND", "LINENO", "RANDOM", "SECONDS"
+	};
 
 	static bool isDynamicSpecialName(const std::string& name) {
 		for (const char* special : kDynamicSpecials) {
@@ -1496,6 +1498,7 @@ namespace wbsh {
 		if (name == "RANDOM")  { out = std::to_string(env_.randomNext());        return true; }
 		if (name == "SECONDS") { out = std::to_string(env_.secondsSinceStart()); return true; }
 		if (name == "LINENO")  { out = std::to_string(env_.currentLineno());     return true; }
+		if (name == "BASH_COMMAND") { out = env_.currentCommand();             return true; }
 		if (name == "BASHPID") {
 #ifdef _WIN32
 			out = std::to_string(static_cast<long long>(::GetCurrentProcessId()));

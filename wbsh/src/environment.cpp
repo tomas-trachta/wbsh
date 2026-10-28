@@ -276,7 +276,7 @@ namespace wbsh {
 		}
 
 		// Read-only dynamic params; writes are ignored silently.
-		if (name == "LINENO" || name == "BASHPID") return;
+		if (name == "LINENO" || name == "BASHPID" || name == "BASH_COMMAND") return;
 
 		if (rejectIfReadonly(name)) return;
 		if (!applyAttributes(name, value)) return;

@@ -240,8 +240,10 @@ namespace wbsh {
 		/// Install the trap action for @p sig. Replaces any prior action.
 		///
 		/// `EXIT` fires when a script, `-c` string, subshell, command
-		/// substitution or the REPL ends, `ERR` after a failed command;
-		/// signal-driven traps need real signal plumbing on Windows (deferred).
+		/// substitution or the REPL ends, `ERR` after a failed command,
+		/// `DEBUG` before a command, `RETURN` when a function or `source`
+		/// ends; signal-driven traps need real signal plumbing on Windows
+		/// (deferred).
 		void setTrap(const std::string& sig, std::string cmd) {
 			trap_handlers_[sig] = std::move(cmd);
 			lists_inherited_traps_ = false;
@@ -456,6 +458,8 @@ namespace wbsh {
 		/// A self-spawned subshell rebuilds its parent's call stack from the
 		/// FUNCNAME / BASH_SOURCE / BASH_LINENO arrays it inherited.
 		void adoptInheritedCallStack();
+		/// Run the RETURN trap: a function or a `source`d file is ending.
+		void fireReturnTrap();
 		/// A name line and a file line per function defined in a file (WBSH_FUNCTION_FILES).
 		std::string serializeFunctionFiles() const;
 		void adoptInheritedFunctionFiles(const std::string& text);
@@ -575,10 +579,28 @@ namespace wbsh {
 		int  negateBangStatus(int status);
 		void setPipeStatus(const std::vector<int>& statuses);
 
-		// Without errtrace a function does not inherit the ERR trap; one it
-		// sets itself stays after it returns.
-		std::string suspendErrTrapForFunction();
-		void restoreErrTrapAfterFunction(std::string saved, bool kept);
+		// A function inherits ERR only under errtrace, DEBUG and RETURN only
+		// under functrace; so do subshells and `$(...)`.
+		struct SuspendedTrap {
+			const char* name;
+			std::string action;
+			bool kept;
+		};
+		bool inheritsTrap(const std::string& name) const;
+		SuspendedTrap suspendTrap(const char* name);
+		std::vector<SuspendedTrap> suspendTrapsForFunction();
+		void restoreTrap(SuspendedTrap& trap);
+		void restoreTrapsAfterFunction(std::vector<SuspendedTrap>& suspended);
+
+		bool trapActionFor(const char* name, std::string& action) const;
+		void runTrapKeepingStatus(const std::string& action);
+		void fireDebugTrap();
+		// Sets BASH_COMMAND to @p text and runs the DEBUG trap before it.
+		void announceCommand(std::string text);
+		void announceNode(const Node& node);
+		bool announceLeaf(const Node& node);
+		std::string loopHeaderText(const ForClause& clause) const;
+		bool evalLoopArith(const std::string& expr, long long& value);
 		ParsedText parseText(const std::string& source_text, const std::string& origin,
 		                     std::size_t first_line = 1);
 		int finishParsedText(const ParsedText& parsed, int status);
@@ -889,6 +911,7 @@ namespace wbsh {
 		int  errexit_suppress_ = 0;
 		bool status_judged_ = false;
 		bool in_err_trap_ = false;
+		int  trap_depth_ = 0;
 		bool call_set_err_trap_ = false;
 		InputEcho input_echo_;
 		FlowSignal flow_;
