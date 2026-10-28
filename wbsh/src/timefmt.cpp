@@ -114,6 +114,14 @@ namespace wbsh {
 		return c == '-' || c == '_' || c == '0' || c == '^';
 	}
 
+	std::string formatFullIsoTime(const DateValue& value) {
+		const std::time_t epoch = static_cast<std::time_t>(value.seconds);
+		char nanos[16];
+		std::snprintf(nanos, sizeof(nanos), "%09ld", value.nanos);
+		return formatLocalTime("%Y-%m-%d %H:%M:%S.", epoch) + nanos
+			+ formatLocalTime(" %z", epoch);
+	}
+
 	std::string formatLocalTime(const std::string& format, std::time_t epoch) {
 		std::tm parts{};
 		if (!localParts(epoch, parts)) return {};

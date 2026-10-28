@@ -194,6 +194,8 @@
     <ClInclude Include="src\environment.h" />
     <ClInclude Include="src\expander.h" />
     <ClInclude Include="src\executor.h" />
+    <ClInclude Include="src\filetimes.h" />
+    <ClInclude Include="src\dateparse.h" />
     <ClInclude Include="src\timefmt.h" />
     <ClInclude Include="src\fnmatch.h" />
     <ClInclude Include="src\termreq.h" />
@@ -243,6 +245,9 @@
     <ClCompile Include="src\environment.cpp" />
     <ClCompile Include="src\expander.cpp" />
     <ClCompile Include="src\executor.cpp" />
+    <ClCompile Include="src\filetimes.cpp" />
+    <ClCompile Include="src\dateparse.cpp" />
+    <ClCompile Include="src\coreutils_stat.cpp" />
     <ClCompile Include="src\builtins_enable.cpp" />
     <ClCompile Include="src\builtins_ulimit.cpp" />
     <ClCompile Include="src\timefmt.cpp" />

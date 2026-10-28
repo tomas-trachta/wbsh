@@ -1,0 +1,52 @@
+=== touch -d
+2023-11-14 22:13:20.000000000
+1700000000 1700000000.500
+1700000000
+1699956000
+2023-11-14 00:00:00.000000000
+2023-11-12 22:13:20.000000000
+2023-11-15 01:13:20.000000000
+wbsh: touch: invalid date format 'garbage x'
+status 1
+no file for a bad date
+=== touch -t
+2023-01-02 13:04:05.000000000
+2023-01-02 13:04:00.000000000
+wbsh: touch: invalid date format '13'
+status 1
+=== touch -r, -a, -m, -c
+-r copies the time
+86400
+1600000000 MTIME
+1600000000 1650000000
+-c creates nothing
+plain touch creates
+=== stat -c
+s|6|regular file|644|-rw-r--r--|1|512|1
+'s'
+s	6
+c	0
+[6       ] [       6] [00000006]
+directory 755 drwxr-xr-x
+regular empty file 0
+%U is the user
+1700000000 LOCAL
+?|%
+wbsh: stat: cannot stat 'nothere': No such file or directory
+status 1
+s 6 16
+  File: s
+  Size: 6         	Blocks: 1          
+=== ls --full-time and --time-style
+2021-01-01 00:00:00.250000000
+2021-01-01 00:00:00.250000000
+2021-01-01 00:00
+2021/01
+wbsh: ls: invalid argument 'bogus' for 'time style'
+Valid arguments are:
+  - [posix-]full-iso
+  - [posix-]long-iso
+  - [posix-]iso
+  - [posix-]locale
+  - +FORMAT (e.g., +%H:%M) for a 'date'-style format
+status 2

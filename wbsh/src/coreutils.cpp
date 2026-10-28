@@ -35,6 +35,7 @@
 #include "coreutils_internal.h"
 #include "devices.h"
 #include "executor.h"
+#include "filetimes.h"
 #include "exitstatus.h"
 #include "inflate.h"
 #include "interrupt.h"
@@ -42,6 +43,7 @@
 #include "optscan.h"
 #include "stdinsync.h"
 #include "termreq.h"
+#include "timefmt.h"
 
 namespace wbsh {
 
@@ -284,6 +286,8 @@ namespace wbsh {
 		bool recursive = false;
 		bool directory_itself = false;
 		bool use_color = false;
+		enum { LongIso, FullIso, Iso, CustomStyle } time_style = LongIso;
+		std::string time_format;
 		enum { Auto, Always, Never } color = Auto;
 		enum { NoIndicator, SlashIndicator, FileTypeIndicator, ClassifyIndicator }
 			indicator = NoIndicator;
@@ -402,12 +406,19 @@ namespace wbsh {
 		return text;
 	}
 
-	static std::string formatMtime(const fs::file_time_type& mtime) {
-		using namespace std::chrono;
-		const auto system_time = time_point_cast<system_clock::duration>(
-			mtime - fs::file_time_type::clock::now() + system_clock::now());
-		const std::time_t epoch = system_clock::to_time_t(system_time);
-		return formatTime(brokenDownTime(epoch, false), "%Y-%m-%d %H:%M");
+	static std::string formatMtime(const fs::file_time_type& mtime, const LsOpts& opts) {
+		const DateValue when = dateFromFileTime(mtime);
+		const std::time_t epoch = static_cast<std::time_t>(when.seconds);
+		switch (opts.time_style) {
+			case LsOpts::FullIso:
+				return formatFullIsoTime(when);
+			case LsOpts::Iso:
+				return formatLocalTime("%m-%d %H:%M", epoch);
+			case LsOpts::CustomStyle:
+				return formatLocalTime(opts.time_format, epoch);
+			default:
+				return formatLocalTime("%Y-%m-%d %H:%M", epoch);
+		}
 	}
 
 	static char permTypeChar(const LsEntry& entry) {
@@ -548,7 +559,8 @@ namespace wbsh {
 				+ classifySuffix(entry, opts);
 			std::fprintf(stdout, "%s 1 %s %s %s%s %s %s\n",
 				permString(entry).c_str(), user.c_str(), user.c_str(),
-				padding.c_str(), size.c_str(), formatMtime(entry.mtime).c_str(), label.c_str());
+				padding.c_str(), size.c_str(), formatMtime(entry.mtime, opts).c_str(),
+				label.c_str());
 		}
 	}
 
@@ -569,6 +581,8 @@ namespace wbsh {
 			kLsRecursive,
 			kLsDirectory,
 			kLsColor,
+			kLsFullTime,
+			kLsTimeStyle,
 		};
 
 	}  // namespace ls_detail
@@ -590,8 +604,18 @@ namespace wbsh {
 			{ ls_detail::kLsRecursive,      'R', "recursive",       OptArg::None },
 			{ ls_detail::kLsDirectory,      'd', "directory",       OptArg::None },
 			{ ls_detail::kLsColor,          0,   "color",           OptArg::Optional },
+			{ ls_detail::kLsFullTime,       0,   "full-time",       OptArg::None },
+			{ ls_detail::kLsTimeStyle,      0,   "time-style",      OptArg::Required },
 		};
 		return defs;
+	}
+
+	static bool reportBadTimeStyle(const std::string& style) {
+		std::fprintf(stderr, "wbsh: ls: invalid argument '%s' for 'time style'\n", style.c_str());
+		std::fprintf(stderr, "Valid arguments are:\n  - [posix-]full-iso\n  - [posix-]long-iso\n"
+			"  - [posix-]iso\n  - [posix-]locale\n"
+			"  - +FORMAT (e.g., +%%H:%%M) for a 'date'-style format\n");
+		return false;
 	}
 
 	static bool reportBadLsArgument(const std::string& value, const char* option) {
@@ -639,6 +663,35 @@ namespace wbsh {
 		return true;
 	}
 
+	// --time-style: full-iso, long-iso, iso, locale or +FORMAT, each
+	// optionally `posix-` prefixed.
+	static bool applyLsTimeStyle(const std::string& requested, LsOpts& opts) {
+		const bool posix = requested.compare(0, 6, "posix-") == 0;
+		const std::string style = posix ? requested.substr(6) : requested;
+		if (!style.empty() && style[0] == '+') {
+			opts.time_style = LsOpts::CustomStyle;
+			opts.time_format = style.substr(1);
+		} else if (style == "full-iso") {
+			opts.time_style = LsOpts::FullIso;
+		} else if (style == "long-iso" || style == "locale") {
+			opts.time_style = LsOpts::LongIso;
+		} else if (style == "iso") {
+			opts.time_style = LsOpts::Iso;
+		} else {
+			return reportBadTimeStyle(requested);
+		}
+
+		return true;
+	}
+
+	static bool applyLsTimeOption(const OptHit& hit, LsOpts& opts) {
+		if (hit.id == ls_detail::kLsTimeStyle) return applyLsTimeStyle(hit.value, opts);
+
+		opts.long_fmt = true;
+		opts.time_style = LsOpts::FullIso;
+		return true;
+	}
+
 	static bool applyLsIndicatorOption(const OptHit& hit, LsOpts& opts) {
 		switch (hit.id) {
 			case ls_detail::kLsClassify:
@@ -651,6 +704,9 @@ namespace wbsh {
 				return true;
 			case ls_detail::kLsIndicatorStyle:
 				return applyLsIndicatorStyle(hit.value, opts);
+			case ls_detail::kLsFullTime:
+			case ls_detail::kLsTimeStyle:
+				return applyLsTimeOption(hit, opts);
 			default:
 				return applyLsColor(hit, opts);
 		}
@@ -1071,38 +1127,6 @@ namespace wbsh {
 		int status = 0;
 		for (const auto& path : args) {
 			if (!removeDirectory(exec, path)) status = 1;
-		}
-
-		return status;
-	}
-
-	static bool touchPath(Executor& exec, const std::string& path) {
-		const fs::path native = toNative(exec, path);
-		std::error_code ec;
-		if (!fs::exists(native, ec)) {
-			std::ofstream created(native, std::ios::binary | std::ios::app);
-			if (created) return true;
-			perr("touch", path + ": cannot create");
-			return false;
-		}
-
-		fs::last_write_time(native, fs::file_time_type::clock::now(), ec);
-		if (!ec) return true;
-
-		perr("touch", path, ec);
-		return false;
-	}
-
-	static int builtin_touch(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) {
-			perr("touch", "missing operand");
-			return 1;
-		}
-
-		int status = 0;
-		for (const auto& path : args) {
-			if (isOptionNotStdin(path)) continue;
-			if (!touchPath(exec, path)) status = 1;
 		}
 
 		return status;
@@ -1838,9 +1862,11 @@ namespace wbsh {
 		bool user_only = false;
 		bool group_only = false;
 		for (const auto& arg : args) {
-			if (arg == "-n") name_only = true;
-			else if (arg == "-u") user_only = true;
-			else if (arg == "-g") group_only = true;
+			if (!isShortFlagCluster(arg)) continue;
+
+			name_only = name_only || hasShortFlag(arg, 'n');
+			user_only = user_only || hasShortFlag(arg, 'u');
+			group_only = group_only || hasShortFlag(arg, 'g');
 		}
 
 		const std::string user = currentUserName(exec);
@@ -2684,50 +2710,6 @@ namespace wbsh {
 		return status;
 	}
 
-	static const char* statTypeName(const struct stat& info) {
-#ifdef S_ISDIR
-		if (S_ISDIR(info.st_mode)) return "directory";
-		if (S_ISREG(info.st_mode)) return "regular file";
-#else
-		if ((info.st_mode & S_IFMT) == S_IFDIR) return "directory";
-		if ((info.st_mode & S_IFMT) == S_IFREG) return "regular file";
-#endif
-		return "special file";
-	}
-
-	static bool statOnePath(Executor& exec, const std::string& path) {
-		const std::string native = exec.pathConv().toWin32(path);
-		struct stat info {};
-		if (!statPath(native, info)) {
-			perr("stat", withErrno(path));
-			return false;
-		}
-
-		const std::string modified = formatTime(brokenDownTime(info.st_mtime, false),
-			"%Y-%m-%d %H:%M:%S");
-		std::printf("  File: %s\n", path.c_str());
-		std::printf("  Size: %lld\tType: %s\n",
-			static_cast<long long>(info.st_size), statTypeName(info));
-		std::printf("Access: (%04o)\n", static_cast<unsigned int>(info.st_mode & 0777));
-		std::printf("Modify: %s\n", modified.c_str());
-		return true;
-	}
-
-	static int builtin_stat(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) {
-			perr("stat", "missing operand");
-			return 1;
-		}
-
-		int status = 0;
-		for (const auto& path : args) {
-			if (startsWithDash(path)) continue;
-			if (!statOnePath(exec, path)) status = 1;
-		}
-
-		return status;
-	}
-
 	// Only the owner write bit is honoured: it maps onto the read-only
 	// attribute, the one permission Windows files actually carry.
 	static bool chmodWantsWritable(const std::string& mode) {
@@ -3320,9 +3302,7 @@ namespace wbsh {
 		exec.registerBuiltin("which",    builtin_which);
 		exec.registerBuiltin("mkdir",    builtin_mkdir);
 		exec.registerBuiltin("rmdir",    builtin_rmdir);
-		exec.registerBuiltin("touch",    builtin_touch);
 		exec.registerBuiltin("wc",       builtin_wc);
-		exec.registerBuiltin("stat",     builtin_stat);
 		exec.registerBuiltin("chmod",    builtin_chmod);
 		exec.registerBuiltin("ln",       builtin_ln);
 		exec.registerBuiltin("cmp",      builtin_cmp);
@@ -3380,6 +3360,7 @@ namespace wbsh {
 		registerPsBuiltin(exec);
 		registerSystemExtraBuiltins(exec);
 		registerFileOpsBuiltins(exec);
+		registerStatBuiltins(exec);
 		registerRemoveBuiltin(exec);
 		registerCopyBuiltins(exec);
 		registerFilterBuiltins(exec);

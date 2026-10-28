@@ -9,7 +9,7 @@ an orange a day
 --
 bar-123-foo
 === stat
-wbsh: stat: tests/batch4.sh: No such file or directory
+wbsh: stat: cannot stat 'tests/batch4.sh': No such file or directory
 === chmod / readonly attribute
 wbsh: /tmp/wbsh-cmod.t: Permission denied
 (write blocked as expected)
