@@ -182,7 +182,7 @@ non-printing markers. Default `PS1`:
 `compgen`, `complete`, `compopt`, `readonly`, `jobs`, `wait`, `fg`, `bg`,
 `disown`.
 
-**Files:** `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `touch`, `ln`,
+**Files:** `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `mkfifo`, `mknod`, `rmdir`, `touch`, `ln`,
 `link`, `unlink`, `stat`, `chmod`, `chown`, `chgrp`, `chattr`, `lsattr`,
 `install`, `file`, `du`, `df`, `realpath`, `readlink`, `basename`, `dirname`,
 `find`, `dd`, `split`, `truncate`, `shred`, `sync`, `fsync`, `flock`, `mktemp`,
@@ -237,6 +237,16 @@ and their text is made when they are opened. A pipeline stage or `$(...)`
 runs in a child wbsh, so `/proc/self` there is that child, and it sees only
 the three standard descriptors.
 
+`mkfifo` and `mknod NAME p` make FIFOs. Windows keeps named pipes outside the
+file system, so a FIFO is a small marker file that wbsh joins through a
+named pipe: redirections and the bundled commands treat it as a FIFO (an
+open for reading waits for a writer and the reverse, the reader sees end of
+file when its writer closes, Ctrl+C ends the wait), and `[ -p ]`, `ls` (type
+`p`, `-F` appends `|`), `stat` ("fifo") and `find -type p` know it. Each
+connection joins one reader and one writer; a second writer waits for the
+next reader. Opened with `<>` (`exec 3<>fifo`), it opens at once and takes
+writer after writer without end of file, as on Linux, though the descriptor
+reads only. Programs outside wbsh see the marker file, not a FIFO.
 AF_UNIX socket files, the reparse points Windows 10 1803 and later create
 for them (Docker Desktop, ssh-agent ports, language servers and WSL interop
 make them), are sockets to `[ -S ]` (through links, as in bash), `ls` (type
