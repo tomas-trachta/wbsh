@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "executor.h"
 #include "numparse.h"
 #include "pathconv.h"
 #include "repl.h"
@@ -432,7 +433,7 @@ int wmain(int argc, wchar_t** wide_argv) {
 
 	char** argv = ptrs.data();
 	expandArgvFile(argc, argv, storage, ptrs);
-	return runShell(argc, argv);
+	return wbsh::processExitCode(runShell(argc, argv));
 }
 #else
 int main(int argc, char** argv) {

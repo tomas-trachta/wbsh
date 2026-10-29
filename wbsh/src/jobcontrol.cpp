@@ -164,6 +164,31 @@ namespace wbsh {
 		return ::CreateJobObjectW(nullptr, nullptr);
 	}
 
+	static bool setJobLimits(HANDLE job, DWORD flags) {
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+		limits.BasicLimitInformation.LimitFlags = flags;
+		return ::SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits,
+			sizeof(limits)) != 0;
+	}
+
+	HANDLE createExecJob() {
+		const HANDLE job = ::CreateJobObjectW(nullptr, nullptr);
+		if (job == nullptr) return nullptr;
+		if (setJobLimits(job, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK)) {
+			return job;
+		}
+
+		::CloseHandle(job);
+		return nullptr;
+	}
+
+	void releaseExecJob(HANDLE job) {
+		if (job == nullptr) return;
+
+		setJobLimits(job, JOB_OBJECT_LIMIT_BREAKAWAY_OK);
+		::CloseHandle(job);
+	}
+
 	void suspendProcessGroup(HANDLE group) {
 		jobcontrol_detail::callOnGroup(true, group);
 	}

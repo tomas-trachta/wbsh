@@ -1,0 +1,23 @@
+=== statuses as the shell sees them
+status 7
+status 232
+subshell status 5
+status 3
+from-program
+status 0
+wbsh: no-such-program-wbsh: command not found
+status 127
+in-function
+status 4
+redirection-only exec carries on
+status 0
+to-file
+=== the exit code the parent sees
+exit 1000 -> 1000
+access violation -> 0xC0000005
+subshell then exit 3 -> 3
+=== the program dies with its shell
+ping runs under the wrapper
+ping ended with its wrapper
+=== what the program leaves behind outlives it
+survived

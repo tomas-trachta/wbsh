@@ -24,6 +24,15 @@ namespace wbsh {
 	/// A job object whose processes are stopped and resumed together.
 	HANDLE createProcessGroup();
 
+	/// The job `exec` starts its program in: closing it, as happens when
+	/// the shell is killed, ends every process still in it, the way a
+	/// killed exec'd program would be gone. Processes may break away.
+	HANDLE createExecJob();
+
+	/// Lets what the program left running outlive the shell, once the
+	/// program itself has ended; closes @p job.
+	void releaseExecJob(HANDLE job);
+
 	void suspendProcessGroup(HANDLE group);
 	void resumeProcessGroup(HANDLE group);
 

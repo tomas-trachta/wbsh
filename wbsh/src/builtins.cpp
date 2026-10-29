@@ -32,6 +32,9 @@
 #include "executor.h"
 #include "exitstatus.h"
 #include "interrupt.h"
+#ifdef _WIN32
+#  include "jobcontrol.h"
+#endif /* _WIN32 */
 #include "keymap.h"
 #include "lexer.h"
 #include "lineedit.h"
@@ -971,13 +974,66 @@ namespace wbsh {
 		return exec.executeText(joinQuoted(args, quoteSingle), "<exec>");
 	}
 
+#ifdef _WIN32
+	static const int kStatusNotExecutable = 126;
+
+	static bool isExternalProgram(Executor& exec, const std::string& name) {
+		if (exec.isBuiltin(name) || exec.isFunction(name) || exec.isAlias(name)) return false;
+		return !exec.findExecutable(name).empty();
+	}
+
+	// Ctrl+C and Ctrl+Break reach the program on the console the two share;
+	// the shell only goes on waiting, so the program decides what they mean.
+	static DWORD awaitExecProgram(HANDLE process) {
+		const ScopedCtrlCCapture capture;
+		::WaitForSingleObject(process, INFINITE);
+		takeCtrlC();
+
+		DWORD code = 0;
+		::GetExitCodeProcess(process, &code);
+		::CloseHandle(process);
+		return code;
+	}
+
+	// Windows has no execve, so the program runs as a child that the shell
+	// waits for and ends with: in a job that dies with the shell, so a
+	// parent that kills the shell kills the program too, and with the
+	// program's own exit code. Its PID is not the shell's.
+	static int execProgram(Executor& exec, const std::vector<std::string>& argv) {
+		std::fflush(stdout);
+		std::fflush(stderr);
+		const HANDLE job = createExecJob();
+		SpawnPlacement placement;
+		placement.job = job;
+		const HANDLE process = exec.spawnCommand(argv, placement);
+		if (process == INVALID_HANDLE_VALUE) {
+			releaseExecJob(job);
+			return kStatusNotExecutable;
+		}
+
+		const DWORD code = awaitExecProgram(process);
+		releaseExecJob(job);
+		rememberExecExitCode(code);
+		return shellStatusFromExitCode(code);
+	}
+#else
+	static bool isExternalProgram(Executor&, const std::string&) {
+		return false;
+	}
+
+	static int execProgram(Executor& exec, const std::vector<std::string>& argv) {
+		return runExecCommand(exec, argv);
+	}
+#endif /* _WIN32 */
+
 	// The command replaces the shell: the shell ends with it, and its EXIT
 	// trap never runs.
 	static int builtin_exec(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) return 0;
 
 		exec.clearTrap("EXIT");
-		const int status = runExecCommand(exec, args);
+		const int status = isExternalProgram(exec, args[0]) ? execProgram(exec, args)
+			: runExecCommand(exec, args);
 		if (!exec.flowPending()) exec.raiseExit(status);
 		return status;
 	}

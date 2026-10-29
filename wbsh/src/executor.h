@@ -150,7 +150,20 @@ namespace wbsh {
 	/// group of its own, out of the shell's job, and on a hidden console of
 	/// its own unless @p keep_console.
 	SpawnPlacement detachedPlacement(bool keep_console);
+
 #endif
+
+	/// After `exec` ran a program: the process ends with that program's own
+	/// exit code (an NTSTATUS, or a code past 255) rather than the shell
+	/// status it maps to, when it ends with that status.
+	void rememberExecExitCode(unsigned long code);
+
+	/// An `exec` inside a subshell that runs in this process ended only
+	/// the subshell.
+	void forgetExecExitCode();
+
+	/// The exit code for a process whose shell ends with @p status.
+	int processExitCode(int status);
 
 	/// @p word as bash shows it for re-use (`set -x`, `declare`): bare when
 	/// that is safe, else single-quoted, or `$'...'` with control characters.

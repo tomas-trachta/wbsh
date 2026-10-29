@@ -22,6 +22,7 @@
 #endif /* _WIN32 */
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
@@ -686,6 +687,26 @@ namespace wbsh {
 
 		if (!expander.fatalErrorPending()) reportExpanderError(expander);
 		return false;
+	}
+
+	static std::atomic<bool> g_exec_exit_known{ false };
+	static std::atomic<unsigned long> g_exec_exit_code{ 0 };
+
+	void rememberExecExitCode(unsigned long code) {
+		g_exec_exit_code.store(code);
+		g_exec_exit_known.store(true);
+	}
+
+	void forgetExecExitCode() {
+		g_exec_exit_known.store(false);
+	}
+
+	int processExitCode(int status) {
+		if (!g_exec_exit_known.load()) return status;
+
+		const unsigned long code = g_exec_exit_code.load();
+		const bool same = shellStatusFromExitCode(static_cast<std::uint32_t>(code)) == status;
+		return same ? static_cast<int>(code) : status;
 	}
 
 	static bool fdIsPipe(int fd);
@@ -3276,7 +3297,7 @@ namespace wbsh {
 		beginScriptFrame(path);
 
 		int status = executeInputText(body, path);
-		consumeFlow(FlowSignal::Kind::Exit, &status);
+		if (consumeFlow(FlowSignal::Kind::Exit, &status)) forgetExecExitCode();
 		if (!flowPending()) status = fireExitTrap(status);
 		endExecRedirJournal();
 		restoreShellScriptScope(snap, /*force_set=*/flowPending());
@@ -3353,6 +3374,7 @@ namespace wbsh {
 
 		const int flow_status = flow_.status;
 		clearFlow();
+		forgetExecExitCode();
 		return flow_status;
 	}
 
