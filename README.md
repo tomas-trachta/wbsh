@@ -185,6 +185,15 @@ non-printing markers. Default `PS1`:
 `compgen`, `complete`, `compopt`, `readonly`, `jobs`, `wait`, `fg`, `bg`,
 `disown`.
 
+`exec PROGRAM` cannot replace the shell, since Windows has no `execve`: the
+program runs as a child the shell waits for and then ends with, passing on
+the program's own exit code (an NTSTATUS or a code past 255 included). It
+runs in a job that ends with the shell, so killing the shell kills the
+program too, while whatever the program leaves running when it exits on its
+own carries on. Ctrl+C and Ctrl+Break are left to the program. Its PID is
+not `$$`, so a script that writes `$$` to a pid file and then `exec`s a
+daemon records the wrapper's PID; use `$!` of a background start or the
+program's own pid file instead.
 **Files:** `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `mkfifo`, `mknod`, `rmdir`, `touch`, `ln`,
 `link`, `unlink`, `stat`, `chmod`, `chown`, `chgrp`, `chattr`, `lsattr`,
 `install`, `file`, `du`, `df`, `realpath`, `readlink`, `basename`, `dirname`,
