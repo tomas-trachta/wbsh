@@ -1,0 +1,15 @@
+=== users
+HOME
+HOME/Desktop
+HOME
+HOME:HOME/bin
+HOME
+=== stays literal
+~no-such-user-wbsh ~no-such-user-wbsh/x
+~Administrators
+~2 ~+1 ~-3
+~USER
+~USER ~USER
+=== completion
+[echo ~USER/][]
+[echo ~no-such-user-wbsh][]

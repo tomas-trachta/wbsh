@@ -22,6 +22,7 @@
 #include "pathconv.h"
 #include "strscan.h"
 #include "textcells.h"
+#include "userhome.h"
 #include "utils.h"
 
 namespace wbsh {
@@ -435,17 +436,27 @@ namespace wbsh {
 		return std::vector<std::string>(names.begin(), names.end());
 	}
 
-	static bool startsWithTilde(const std::string& dir) {
-		if (dir == "~") return true;
+	// `~` is $HOME and `~name` that user's home, as the expander has them.
+	static std::string expandTildeDir(const std::string& dir, const std::string& home,
+	                                  const PathConv& paths) {
+		if (dir.empty() || dir[0] != '~') return dir;
 
-		return dir.size() >= 2 && dir[0] == '~' && (dir[1] == '/' || dir[1] == '\\');
+		const std::size_t slash = dir.find_first_of("/\\");
+		const std::string name = dir.substr(1, slash == std::string::npos ? std::string::npos
+			: slash - 1);
+		const std::string base = name.empty() ? home : userHomeDirectory(paths, name);
+		if (base.empty()) return dir;
+
+		return slash == std::string::npos ? base : base + dir.substr(slash);
 	}
 
-	static std::string expandTildeDir(const std::string& dir, const std::string& home) {
-		if (!startsWithTilde(dir) || home.empty()) return dir;
-		if (dir.size() == 1) return home;
+	static std::vector<std::string> userNameCompletions(const std::string& prefix) {
+		std::vector<std::string> matches;
+		for (const std::string& name : profileUserNames()) {
+			if (matchesPrefix(name, prefix.substr(1))) matches.push_back("~" + name + "/");
+		}
 
-		return home + dir.substr(1);
+		return matches;
 	}
 
 	static bool hiddenUnlessAsked(const std::string& name, const std::string& base) {
@@ -455,6 +466,10 @@ namespace wbsh {
 	std::vector<std::string> LineEditor::pathCompletions(const std::string& prefix) {
 		filename_matches_ = true;
 		const std::size_t slash = prefix.find_last_of("/\\");
+		if (!prefix.empty() && prefix[0] == '~' && slash == std::string::npos) {
+			return userNameCompletions(prefix);
+		}
+
 		std::string dir = ".";
 		std::string base = prefix;
 		if (slash != std::string::npos) {
@@ -463,7 +478,8 @@ namespace wbsh {
 			base = prefix.substr(slash + 1);
 		}
 
-		const std::string lookup_dir = expandTildeDir(dir, exec_.env().get("HOME"));
+		const std::string home = exec_.env().get("HOME");
+		const std::string lookup_dir = expandTildeDir(dir, home, exec_.pathConv());
 		const fs::path native = utf8ToPath(exec_.pathConv().toWin32(lookup_dir));
 
 		std::vector<std::string> matches;
@@ -561,7 +577,7 @@ namespace wbsh {
 			if (match.empty() || match.back() == '/') continue;
 
 			std::error_code ec;
-			const std::string path = expandTildeDir(match, home);
+			const std::string path = expandTildeDir(match, home, exec_.pathConv());
 			const fs::path native = utf8ToPath(exec_.pathConv().toWin32(path));
 			if (fs::is_directory(native, ec)) match.push_back('/');
 		}
