@@ -27,6 +27,7 @@
 #include "executor.h"
 #include "filetimes.h"
 #include "optscan.h"
+#include "fifo.h"
 #include "pathconv.h"
 #include "timefmt.h"
 
@@ -227,6 +228,7 @@ namespace wbsh::stat_detail {
 		bool is_dir = false;
 		bool is_link = false;
 		bool is_socket = false;
+		bool is_fifo = false;
 		bool read_only = false;
 		bool executable = false;
 		unsigned long long size = 0;
@@ -332,8 +334,10 @@ namespace wbsh::stat_detail {
 		info.is_link = isLinkStatus(status);
 		info.is_dir = !info.is_link && fs::is_directory(status);
 		info.is_socket = !info.is_dir && !info.is_link && isUnixSocketFile(native);
+		info.is_fifo = !info.is_dir && !info.is_link && isFifoFile(native);
 		info.executable = info.is_dir || hasExecutableExtension(native);
-		if (!info.is_dir && !info.is_link && !info.is_socket) info.size = fs::file_size(native, ec);
+		const bool special = info.is_socket || info.is_fifo;
+		if (!info.is_dir && !info.is_link && !special) info.size = fs::file_size(native, ec);
 		if (info.is_link) readLinkTarget(exec, native, info);
 
 		readHandleInfo(native, follow, info);
@@ -352,6 +356,7 @@ namespace wbsh::stat_detail {
 		if (info.is_link) return 0120000;
 		if (info.is_dir) return 0040000;
 		if (info.is_socket) return 0140000;
+		if (info.is_fifo) return 0010000;
 		return 0100000;
 	}
 
@@ -359,6 +364,7 @@ namespace wbsh::stat_detail {
 		if (info.is_link) return 'l';
 		if (info.is_dir) return 'd';
 		if (info.is_socket) return 's';
+		if (info.is_fifo) return 'p';
 		return '-';
 	}
 
@@ -377,6 +383,7 @@ namespace wbsh::stat_detail {
 		if (info.is_link) return "symbolic link";
 		if (info.is_dir) return "directory";
 		if (info.is_socket) return "socket";
+		if (info.is_fifo) return "fifo";
 		return info.size == 0 ? "regular empty file" : "regular file";
 	}
 

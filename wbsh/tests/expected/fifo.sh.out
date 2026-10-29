@@ -1,0 +1,62 @@
+=== making
+mkfifo made p
+wbsh: mkfifo: cannot create fifo 'p': File exists
+status 1
+mknod made q
+wbsh: mknod: 'd': Operation not permitted
+status 1
+wbsh: mknod: Fifos do not have major and minor device numbers.
+status 1
+wbsh: mknod: invalid device type 'x'
+status 1
+wbsh: mknod: missing operand
+status 1
+wbsh: mkfifo: missing operand
+status 1
+wbsh: mkfifo: invalid mode 'bogus'
+status 1
+=== what it looks like
+-p fifo
+-e fifo
+! -f fifo
+! -s fifo
+! -p regular file
+prw-r--r--
+p|
+q|
+plain
+fifo prw-r--r-- 11a4 0
+./p
+./q
+=== writer first
+1
+2
+3
+=== reader first
+got a
+got b
+=== bundled commands open it
+1000 p
+200000
+through-tee
+=== external programs on the other end
+x y z
+=== a pipeline stage writes
+n1 n2 n3 n4 n5 
+=== held open with <>
+kept: first second
+after-close
+=== two FIFOs do not mix
+two
+one
+=== modes
+wbsh: ro: Permission denied
+status 1
+symbolic mode accepted
+=== Ctrl+C ends a wait
+reader status 130
+writer status 130
+=== rm
+out.txt
+plain
+sub

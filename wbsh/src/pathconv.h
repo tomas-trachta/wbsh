@@ -81,6 +81,11 @@ namespace wbsh {
 	/// `stat` take for an unreadable regular file. Not followed if a link.
 	bool isUnixSocketFile(const std::filesystem::path& native);
 
+	/// True for a `\\.\` device path such as a named pipe, which must not be
+	/// probed: asking for its attributes connects to it, taking an instance
+	/// that the real open then lacks.
+	bool isDevicePath(const std::filesystem::path& native);
+
 	/// The last-write time of @p native from its directory entry, which
 	/// a socket file has although it cannot be opened.
 	bool entryWriteTime(const std::filesystem::path& native,

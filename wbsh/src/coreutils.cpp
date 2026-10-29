@@ -10,6 +10,7 @@
 #  define NOMINMAX
 #  include <windows.h>
 
+#  include <fcntl.h>
 #  include <io.h>
 #endif /* _WIN32 */
 
@@ -37,6 +38,7 @@
 #include "executor.h"
 #include "filetimes.h"
 #include "exitstatus.h"
+#include "fifo.h"
 #include "inflate.h"
 #include "interrupt.h"
 #include "jobcontrol.h"
@@ -86,6 +88,20 @@ namespace wbsh {
 		return utf8ToPath(exec.pathConv().toWin32(p));
 	}
 
+	static std::FILE* fopenFifo(const fs::path& native, const char* mode) {
+		const bool update = std::strchr(mode, '+') != nullptr;
+		const bool reading = mode[0] == 'r' && !update;
+		int access = reading ? _O_RDONLY : _O_WRONLY;
+		if (update) access = _O_RDWR;
+
+		const int fd = openFifo(native, access);
+		if (fd < 0) return nullptr;
+
+		std::FILE* stream = _fdopen(fd, update ? "r+b" : (reading ? "rb" : "wb"));
+		if (stream == nullptr) _close(fd);
+		return stream;
+	}
+
 	static std::FILE* fopenProc(Executor& exec, const std::string& path, const char* mode) {
 		const ProcNode node = lookupProcPath(exec.pathConv(), path, true);
 		if (node.type == ProcType::Outside) return fopenNative(exec, node.target, mode);
@@ -99,7 +115,10 @@ namespace wbsh {
 		}
 
 		if (isProcPath(p)) return fopenProc(exec, p, mode);
-		return openUtf8(exec.pathConv().toWin32(p), mode);
+
+		const std::string win32 = exec.pathConv().toWin32(p);
+		if (isFifoFile(utf8ToPath(win32))) return fopenFifo(utf8ToPath(win32), mode);
+		return openUtf8(win32, mode);
 	}
 
 	fs::path shellTempDirectory(Executor& exec) {
@@ -345,6 +364,7 @@ namespace wbsh {
 		bool is_dir = false;
 		bool is_symlink = false;
 		bool is_socket = false;
+		bool is_fifo = false;
 		bool is_executable = false;
 		bool is_hidden = false;
 		bool valid = false;
@@ -394,7 +414,8 @@ namespace wbsh {
 		if (!ec && fs::is_regular_file(entry.status)) {
 			entry.size = fs::file_size(entry.full, ec);
 			entry.is_socket = ec && isUnixSocketFile(entry.full);
-			if (ec) entry.size = 0;
+			entry.is_fifo = !ec && isFifoFile(entry.full);
+			if (ec || entry.is_fifo) entry.size = 0;
 		}
 
 		std::error_code mtime_ec;
@@ -410,6 +431,7 @@ namespace wbsh {
 		if (entry.is_symlink) return "\x1b[36;1m";
 		if (entry.is_dir) return "\x1b[34;1m";
 		if (entry.is_socket) return "\x1b[35;1m";
+		if (entry.is_fifo) return "\x1b[40;33m";
 		if (entry.is_executable) return "\x1b[32;1m";
 		return nullptr;
 	}
@@ -427,6 +449,7 @@ namespace wbsh {
 		if (entry.is_symlink) return opts.indicator == LsOpts::SlashIndicator ? "" : "@";
 		if (entry.is_dir) return "/";
 		if (entry.is_socket) return opts.indicator == LsOpts::SlashIndicator ? "" : "=";
+		if (entry.is_fifo) return opts.indicator == LsOpts::SlashIndicator ? "" : "|";
 		if (entry.is_executable && opts.indicator == LsOpts::ClassifyIndicator) return "*";
 		return "";
 	}
@@ -473,6 +496,7 @@ namespace wbsh {
 		if (entry.is_symlink) return 'l';
 		if (entry.is_dir) return 'd';
 		if (entry.is_socket) return 's';
+		if (entry.is_fifo) return 'p';
 		return '-';
 	}
 
@@ -3550,6 +3574,7 @@ namespace wbsh {
 		registerHttpdBuiltin(exec);
 		registerCronBuiltins(exec);
 		registerScriptBuiltins(exec);
+		registerFifoBuiltins(exec);
 	}
 
 }  // namespace wbsh

@@ -42,6 +42,7 @@
 
 #include "devices.h"
 #include "exitstatus.h"
+#include "fifo.h"
 #include "fnmatch.h"
 #include "jobcontrol.h"
 #include "keymap.h"
@@ -1917,7 +1918,10 @@ namespace wbsh {
 		fd = openTcpUdpStream(path);
 		if (fd >= 0) return fd;
 
-		const std::wstring win_path = utf8ToFileWide(path_conv_.toWin32(path));
+		const std::string win32 = path_conv_.toWin32(path);
+		if (isFifoFile(utf8ToPath(win32))) return openFifo(utf8ToPath(win32), flags);
+
+		const std::wstring win_path = utf8ToFileWide(win32);
 		return _wopen(win_path.c_str(), flags | _O_BINARY, _S_IREAD | _S_IWRITE);
 	}
 
@@ -1926,7 +1930,7 @@ namespace wbsh {
 		saveFd(state, target);
 		const int fd = openRedirSourceFd(path, flags);
 		if (fd < 0) {
-			reportPathError(path);
+			if (errno != EINTR) reportPathError(path);
 			return false;
 		}
 
