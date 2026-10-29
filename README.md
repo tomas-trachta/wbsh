@@ -70,7 +70,10 @@ $ wbsh -c 'for i in {1..3}; do printf "%02d\n" "$((i * 7))"; done'
 
 Pipelines, redirection, control flow, functions, command substitution,
 arithmetic, brace, parameter and glob expansion, here-docs, here-strings and
-traps all work.
+traps all work. Tilde expansion covers `~`, `~+`, `~-` and `~name`, which is
+that user's profile directory (from the account's ProfileList entry, or
+where Windows would put a first profile); a name that is no user account
+stays literal, as in bash, and Tab completes `~na` to user names.
 
 ```
 wbsh                          interactive shell (TTY auto-detect)
