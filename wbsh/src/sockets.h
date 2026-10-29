@@ -59,6 +59,10 @@ namespace wbsh {
 	/// every interface, IPv6 and IPv4 alike where the system allows.
 	NetSocket netListen(const NetEndpoint& local, NetError& error);
 
+	/// Binds an AF_UNIX socket at @p win32_path and closes it, which leaves
+	/// the socket file behind as on Unix (the `__mksock` test hook).
+	bool netCreateUnixSocketFile(const std::string& win32_path, NetError& error);
+
 	NetWait netWaitReadable(NetSocket socket, int timeout_ms);
 	NetWait netWaitWritable(NetSocket socket, int timeout_ms);
 

@@ -76,6 +76,16 @@ namespace wbsh {
 	/// fail, so the fallback synthesises the entry from file attributes.
 	bool statPath(const std::string& win32_path, struct stat& info);
 
+	/// True for an AF_UNIX socket file (Windows 10 1803 and later): a
+	/// reparse point with the AF_UNIX tag, which std::filesystem and
+	/// `stat` take for an unreadable regular file. Not followed if a link.
+	bool isUnixSocketFile(const std::filesystem::path& native);
+
+	/// The last-write time of @p native from its directory entry, which
+	/// a socket file has although it cannot be opened.
+	bool entryWriteTime(const std::filesystem::path& native,
+	                    std::filesystem::file_time_type& time);
+
 	/**
 	 * @brief Bidirectional POSIX ↔ Win32 path translation.
 	 *

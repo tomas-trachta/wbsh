@@ -237,6 +237,13 @@ and their text is made when they are opened. A pipeline stage or `$(...)`
 runs in a child wbsh, so `/proc/self` there is that child, and it sees only
 the three standard descriptors.
 
+AF_UNIX socket files, the reparse points Windows 10 1803 and later create
+for them (Docker Desktop, ssh-agent ports, language servers and WSL interop
+make them), are sockets to `[ -S ]` (through links, as in bash), `ls` (type
+`s`, `-F` appends `=`), `stat` ("socket") and `find -type s`, so
+`until [ -S "$sock" ]; do sleep 0.1; done` waits for one. `-u`, `-g`, `-k` and
+`-b` stay false: Windows has no setuid, setgid or sticky bits, nor block devices.
+
 `less` hands over to a real `less` when one is on PATH and stdout is a
 console; otherwise (or with `WBSH_PAGER=builtin`) the built-in pager runs.
 

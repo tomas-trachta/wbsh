@@ -232,6 +232,53 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
+#ifdef _WIN32
+#  ifndef IO_REPARSE_TAG_AF_UNIX
+#    define IO_REPARSE_TAG_AF_UNIX 0x80000023L
+#  endif /* IO_REPARSE_TAG_AF_UNIX */
+
+	static bool findEntry(const std::filesystem::path& native, WIN32_FIND_DATAW& data) {
+		const std::wstring path = longPathSafe(native).native();
+		const HANDLE found = ::FindFirstFileExW(path.c_str(), FindExInfoBasic, &data,
+			FindExSearchNameMatch, nullptr, 0);
+		if (found == INVALID_HANDLE_VALUE) return false;
+
+		::FindClose(found);
+		return true;
+	}
+
+	// The reparse tag is only in the directory entry; the attributes say
+	// first, without a search, whether there can be one at all.
+	bool isUnixSocketFile(const std::filesystem::path& native) {
+		const DWORD attributes = ::GetFileAttributesW(longPathSafe(native).c_str());
+		if (attributes == INVALID_FILE_ATTRIBUTES) return false;
+		if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return false;
+
+		WIN32_FIND_DATAW data{};
+		return findEntry(native, data) && data.dwReserved0 == IO_REPARSE_TAG_AF_UNIX;
+	}
+
+	bool entryWriteTime(const std::filesystem::path& native,
+	                    std::filesystem::file_time_type& time) {
+		WIN32_FIND_DATAW data{};
+		if (!findEntry(native, data)) return false;
+
+		const unsigned long long ticks = (static_cast<unsigned long long>(
+			data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
+		using Ticks = std::filesystem::file_time_type::duration;
+		time = std::filesystem::file_time_type(Ticks(static_cast<long long>(ticks)));
+		return true;
+	}
+#else
+	bool isUnixSocketFile(const std::filesystem::path&) {
+		return false;
+	}
+
+	bool entryWriteTime(const std::filesystem::path&, std::filesystem::file_time_type&) {
+		return false;
+	}
+#endif /* _WIN32 */
+
 	std::FILE* openUtf8(const std::string& utf8_path, const char* mode) {
 #ifdef _WIN32
 		const std::wstring wide_path = utf8ToFileWide(utf8_path);

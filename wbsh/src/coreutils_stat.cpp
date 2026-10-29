@@ -226,6 +226,7 @@ namespace wbsh::stat_detail {
 		std::string link_target;
 		bool is_dir = false;
 		bool is_link = false;
+		bool is_socket = false;
 		bool read_only = false;
 		bool executable = false;
 		unsigned long long size = 0;
@@ -330,8 +331,9 @@ namespace wbsh::stat_detail {
 		info.user = currentUserName(exec);
 		info.is_link = isLinkStatus(status);
 		info.is_dir = !info.is_link && fs::is_directory(status);
+		info.is_socket = !info.is_dir && !info.is_link && isUnixSocketFile(native);
 		info.executable = info.is_dir || hasExecutableExtension(native);
-		if (!info.is_dir && !info.is_link) info.size = fs::file_size(native, ec);
+		if (!info.is_dir && !info.is_link && !info.is_socket) info.size = fs::file_size(native, ec);
 		if (info.is_link) readLinkTarget(exec, native, info);
 
 		readHandleInfo(native, follow, info);
@@ -349,12 +351,20 @@ namespace wbsh::stat_detail {
 	static unsigned typeBits(const Info& info) {
 		if (info.is_link) return 0120000;
 		if (info.is_dir) return 0040000;
+		if (info.is_socket) return 0140000;
 		return 0100000;
+	}
+
+	static char typeLetter(const Info& info) {
+		if (info.is_link) return 'l';
+		if (info.is_dir) return 'd';
+		if (info.is_socket) return 's';
+		return '-';
 	}
 
 	static std::string permissionText(const Info& info) {
 		const unsigned bits = modeBits(info);
-		std::string text(1, info.is_link ? 'l' : (info.is_dir ? 'd' : '-'));
+		std::string text(1, typeLetter(info));
 		const char letters[] = { 'r', 'w', 'x' };
 		for (int shift = 8; shift >= 0; --shift) {
 			text.push_back((bits >> shift) & 1 ? letters[(8 - shift) % 3] : '-');
@@ -366,6 +376,7 @@ namespace wbsh::stat_detail {
 	static std::string fileTypeText(const Info& info) {
 		if (info.is_link) return "symbolic link";
 		if (info.is_dir) return "directory";
+		if (info.is_socket) return "socket";
 		return info.size == 0 ? "regular empty file" : "regular file";
 	}
 
