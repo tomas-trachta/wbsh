@@ -63,6 +63,7 @@
     <ClInclude Include="src\pty_relay.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\procfs.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\fifo.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\userhome.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\procfs_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\ftp_session.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\vi_internal.h"><Filter>Header Files</Filter></ClInclude>
@@ -210,6 +211,7 @@
     <ClCompile Include="src\coreutils_script.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\procfs.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\fifo.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\userhome.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_fifo.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\procfs_text.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\ftp_session.cpp"><Filter>Source Files</Filter></ClCompile>

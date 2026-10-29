@@ -29,6 +29,7 @@
 #include "numparse.h"
 #include "procfs.h"
 #include "strscan.h"
+#include "userhome.h"
 #include "executor.h"
 #include "utf8.h"
 
@@ -1340,6 +1341,7 @@ namespace wbsh {
 
 	struct TildeWalk {
 		const Environment& env;
+		const PathConv& paths;
 		bool after_colons;
 		bool eligible = true;
 		bool last_segment = false;
@@ -1368,13 +1370,29 @@ namespace wbsh {
 
 	// False when the prefix names nothing this shell expands: `~user`
 	// is not implemented, and an unset HOME leaves the word alone.
-	static bool tildeReplacement(const Environment& env, const std::string& name,
-	                             std::string& out) {
+	// ~N, ~+N and ~-N name directory-stack entries, never users.
+	static bool isDirStackForm(const std::string& name) {
+		const std::size_t digits = name[0] == '+' || name[0] == '-' ? 1 : 0;
+		return digits < name.size()
+			&& name.find_first_not_of("0123456789", digits) == std::string::npos;
+	}
+
+	static bool userTildeReplacement(const PathConv& paths, const std::string& name,
+	                                 std::string& out) {
+		if (isDirStackForm(name)) return false;
+
+		out = userHomeDirectory(paths, name);
+		return !out.empty();
+	}
+
+	static bool tildeReplacement(const Environment& env, const PathConv& paths,
+	                             const std::string& name, std::string& out) {
 		const char* variable = nullptr;
 		if (name.empty())    variable = "HOME";
 		else if (name == "+") variable = "PWD";
 		else if (name == "-") variable = "OLDPWD";
-		if (variable == nullptr || !env.has(variable)) return false;
+		if (variable == nullptr) return userTildeReplacement(paths, name, out);
+		if (!env.has(variable)) return false;
 
 		out = env.get(variable);
 		return true;
@@ -1397,7 +1415,7 @@ namespace wbsh {
 		const std::string name = text.substr(i + 1, end - i - 1);
 		WordSegment replacement;
 		replacement.kind = WordSegment::Kind::SingleQuoted;
-		if (!tildeReplacement(walk.env, name, replacement.text)) return false;
+		if (!tildeReplacement(walk.env, walk.paths, name, replacement.text)) return false;
 
 		flushTildeLiteral(walk);
 		walk.out.push_back(std::move(replacement));
@@ -1432,10 +1450,11 @@ namespace wbsh {
 		walkTildeLiteral(walk, segment.text, from);
 	}
 
-	static Word expandTildePrefixes(const Environment& env, const Word& w, TildeScope scope) {
+	static Word expandTildePrefixes(const Environment& env, const PathConv& paths, const Word& w,
+	                                TildeScope scope) {
 		if (!hasLiteralTilde(w)) return w;
 
-		TildeWalk walk{env, scope.after_colons};
+		TildeWalk walk{env, paths, scope.after_colons};
 		for (std::size_t k = 0; k < w.segments.size(); ++k) {
 			walk.last_segment = k + 1 == w.segments.size();
 			walkTildeSegment(walk, w.segments[k], k == 0 ? scope.start : 0);
@@ -1475,7 +1494,7 @@ namespace wbsh {
 		TildeScope scope;
 		scope.start = assignmentWordValueStart(w);
 		scope.after_colons = scope.start != 0;
-		return expandTildePrefixes(env_, w, scope);
+		return expandTildePrefixes(env_, path_conv_, w, scope);
 	}
 
 	bool Expander::isSpecialParam1(char c) const {
@@ -3488,7 +3507,7 @@ namespace wbsh {
 	std::string Expander::expandAssignmentValue(const Word& w) {
 		TildeScope scope;
 		scope.after_colons = true;
-		const Word tilded = expandTildePrefixes(env_, w, scope);
+		const Word tilded = expandTildePrefixes(env_, path_conv_, w, scope);
 		return quoteRemove(renderWord(tilded));
 	}
 
