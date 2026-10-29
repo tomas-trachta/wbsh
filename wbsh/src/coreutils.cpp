@@ -3433,6 +3433,7 @@ namespace wbsh {
 		registerWhoisBuiltin(exec);
 		registerHttpdBuiltin(exec);
 		registerCronBuiltins(exec);
+		registerScriptBuiltins(exec);
 	}
 
 }  // namespace wbsh

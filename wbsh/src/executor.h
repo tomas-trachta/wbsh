@@ -131,10 +131,13 @@ namespace wbsh {
 	/// optionally in a console process group of its own (so a Ctrl+Break
 	/// can be aimed at it alone). @c creation_flags go to CreateProcess as
 	/// well: a priority class, or CREATE_NO_WINDOW to outlive the console.
+	/// With @c pseudo_console the child's console and all three standard
+	/// streams are that pseudoconsole, and the shell's stdio is not passed on.
 	struct SpawnPlacement {
 		HANDLE job = nullptr;
 		bool new_process_group = false;
 		DWORD creation_flags = 0;
+		HPCON pseudo_console = nullptr;
 	};
 
 	/// CREATE_BREAKAWAY_FROM_JOB when the shell runs in a job that lets a

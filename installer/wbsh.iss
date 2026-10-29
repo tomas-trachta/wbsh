@@ -50,6 +50,10 @@ Source: "stage\wbshsdk.dll";        DestDir: "{app}"; Flags: ignoreversion
 Source: "stage\msvcp140.dll";       DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage\vcruntime140.dll";   DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; Microsoft's current ConPTY (MIT, see wbshterm\conpty), for script and unbuffer.
+; Optional: without it they use the pseudoconsole built into Windows.
+Source: "stage\conpty.dll";         DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "stage\OpenConsole.exe";    DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 ; Where a third-party util goes. Created empty so there is somewhere

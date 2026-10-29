@@ -59,6 +59,8 @@
     <ClInclude Include="src\curl_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\sockets.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\stream_relay.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\pseudoconsole.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\pty_relay.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\ftp_session.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\vi_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\fileowner.h"><Filter>Header Files</Filter></ClInclude>
@@ -200,6 +202,9 @@
     <ClCompile Include="src\coreutils_httpd.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\sockets.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\stream_relay.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\pseudoconsole.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\pty_relay.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_script.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\ftp_session.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_cron.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\cron_schedule.cpp"><Filter>Source Files</Filter></ClCompile>

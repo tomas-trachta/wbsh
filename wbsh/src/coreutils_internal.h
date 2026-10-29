@@ -254,5 +254,6 @@ namespace wbsh {
 	void registerHttpdBuiltin(Executor& exec);
 
 	void registerCronBuiltins(Executor& exec);
+	void registerScriptBuiltins(Executor& exec);
 
 }  // namespace wbsh

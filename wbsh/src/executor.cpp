@@ -561,6 +561,22 @@ namespace wbsh {
 			inherits, count * sizeof(HANDLE), nullptr, nullptr) != 0;
 	}
 
+	static bool attachPseudoConsole(LPPROC_THREAD_ATTRIBUTE_LIST attr_list, HPCON console) {
+		return ::UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+			console, sizeof(console), nullptr, nullptr) != 0;
+	}
+
+	// Null standard handles with STARTF_USESTDHANDLES are what make a child
+	// adopt the pseudoconsole's own; given the shell's, it would write past
+	// the pseudoconsole while still being attached to it.
+	static StdioHandles pseudoConsoleStdio() {
+		StdioHandles stdio;
+		stdio.in  = nullptr;
+		stdio.out = nullptr;
+		stdio.err = nullptr;
+		return stdio;
+	}
+
 	static STARTUPINFOEXW makeStartupInfo(const StdioHandles& stdio,
 	                                      LPPROC_THREAD_ATTRIBUTE_LIST attr_list) {
 		STARTUPINFOEXW info{};
@@ -601,14 +617,19 @@ namespace wbsh {
 		LPPROC_THREAD_ATTRIBUTE_LIST attr_list = allocAttrList();
 		if (attr_list == nullptr) return INVALID_HANDLE_VALUE;
 
+		const bool on_pseudo_console = placement.pseudo_console != nullptr;
+		const StdioHandles child_stdio = on_pseudo_console ? pseudoConsoleStdio() : stdio;
 		HANDLE inherits[3];
-		const DWORD count = collectInheritHandles(inherits, stdio);
-		if (count > 0 && !attachInheritList(attr_list, inherits, count)) {
+		const DWORD count = collectInheritHandles(inherits, child_stdio);
+		const bool attached = on_pseudo_console
+			? attachPseudoConsole(attr_list, placement.pseudo_console)
+			: count == 0 || attachInheritList(attr_list, inherits, count);
+		if (!attached) {
 			freeAttrList(attr_list);
 			return INVALID_HANDLE_VALUE;
 		}
 
-		STARTUPINFOEXW info = makeStartupInfo(stdio, attr_list);
+		STARTUPINFOEXW info = makeStartupInfo(child_stdio, attr_list);
 		const std::wstring directory = childCurrentDirectory();
 		PROCESS_INFORMATION process{};
 		const BOOL created = ::CreateProcessW(command.exe.c_str(), command.cmdline.data(),
