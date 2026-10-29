@@ -1,0 +1,72 @@
+=== system files
+one cpuinfo block per processor
+model name present
+flags list sse2
+MemTotal MemFree MemAvailable Buffers Cached SwapCached SwapTotal SwapFree CommitLimit Committed_AS 
+MemTotal in kB
+uptime shape
+loadavg shape
+version shape
+version does not look like WSL
+1
+=== self
+self is $$
+exe is wbsh.exe
+cwd is $PWD
+wbsh
+status Pid is $$
+1
+cmdline starts with wbsh.exe
+environ has PATH
+cmdline
+comm
+cwd
+environ
+exe
+fd
+status
+=== fd
+fd 7 listed
+fd 7 is a pipe
+fd 7 gone
+fd 8 is the file
+through-fd
+wbsh version 
+=== test
+-e file
+-f file
+-d /proc
+-d self
+-L self
+! -L file
+! -s (size reads 0)
+! -e missing
+! -e pid 0
+-d cwd (outside)
+=== errors
+wbsh: cat: /proc/no-such: No such file or directory
+status 1
+wbsh: /proc/no-such: No such file or directory
+status 1
+wbsh: /proc/cpuinfo: Permission denied
+status 1
+wbsh: cat: /proc: Is a directory
+status 1
+status 1
+wbsh: ls: /proc/no-such: No such file or directory
+status 1
+=== listing and globs
+cpuinfo
+loadavg
+meminfo
+self
+uptime
+version
+own pid listed
+/proc/self
+/proc/self/cmdline /proc/self/comm /proc/self/cwd
+pid glob expands
+realpath folds . and ..
+readlink -f self
+=== grep reads pipes in full
+2

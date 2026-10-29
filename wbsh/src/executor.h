@@ -770,6 +770,7 @@ namespace wbsh {
 		// Composite of the two above: try special-fd dispatch first, then
 		// fall back to opening `path` (translated via PathConv) on the FS.
 		int openRedirSourceFd(const std::string& path, int flags) const;
+		int openProcRedirSource(const std::string& path, int flags) const;
 		// Open `path`, dup it onto `target`, save the prior fd into `s`, and
 		// print a `wbsh: <path>: <err>` diagnostic on failure.
 		bool redirectFdFromPath(const std::string& path, int flags,

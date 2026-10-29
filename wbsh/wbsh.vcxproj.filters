@@ -61,6 +61,8 @@
     <ClInclude Include="src\stream_relay.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\pseudoconsole.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\pty_relay.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\procfs.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\procfs_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\ftp_session.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\vi_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\fileowner.h"><Filter>Header Files</Filter></ClInclude>
@@ -205,6 +207,8 @@
     <ClCompile Include="src\pseudoconsole.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\pty_relay.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_script.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\procfs.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\procfs_text.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\ftp_session.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_cron.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\cron_schedule.cpp"><Filter>Source Files</Filter></ClCompile>
