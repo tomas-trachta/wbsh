@@ -24,6 +24,7 @@
 #include "executor.h"
 #include "numparse.h"
 #include "pathconv.h"
+#include "procfs.h"
 
 namespace wbsh::testops_detail {
 
@@ -176,7 +177,38 @@ namespace wbsh::testops_detail {
 		}
 	}
 
+	static bool evalFileOperator(Executor& exec, char op, const std::string& operand);
+
+	static bool procNodePasses(char op, const ProcNode& node) {
+		const bool exists = node.type != ProcType::Missing;
+		const bool descriptor = node.fd >= 0;
+		switch (op) {
+			case 'a':
+			case 'e':
+			case 'r':
+			case 'O':
+			case 'G': return exists;
+			case 'f': return node.type == ProcType::File;
+			case 'd':
+			case 'x': return node.type == ProcType::Directory;
+			case 'w': return descriptor;
+			case 'p': return descriptor && node.target.rfind("pipe:", 0) == 0;
+			case 'c': return descriptor && node.target.rfind("/dev/", 0) == 0;
+			default:  return false;
+		}
+	}
+
+	static bool evalProcOperator(Executor& exec, char op, const std::string& operand) {
+		const bool link_test = op == 'h' || op == 'L';
+		const ProcNode node = lookupProcPath(exec.pathConv(), operand, !link_test);
+		if (link_test) return node.type == ProcType::Link;
+		if (node.type == ProcType::Outside) return evalFileOperator(exec, op, node.target);
+		return procNodePasses(op, node);
+	}
+
 	static bool evalFileOperator(Executor& exec, char op, const std::string& operand) {
+		if (isProcPath(operand)) return evalProcOperator(exec, op, operand);
+
 		switch (op) {
 			case 'x': return isRunnable(exec, operand);
 			case 'h':

@@ -42,6 +42,7 @@
 #include "jobcontrol.h"
 #include "numparse.h"
 #include "optscan.h"
+#include "procfs.h"
 #include "stdinsync.h"
 #include "termreq.h"
 #include "timefmt.h"
@@ -85,12 +86,19 @@ namespace wbsh {
 		return utf8ToPath(exec.pathConv().toWin32(p));
 	}
 
+	static std::FILE* fopenProc(Executor& exec, const std::string& path, const char* mode) {
+		const ProcNode node = lookupProcPath(exec.pathConv(), path, true);
+		if (node.type == ProcType::Outside) return fopenNative(exec, node.target, mode);
+		return fopenProcNode(exec.pathConv(), node, mode);
+	}
+
 	std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode) {
 		if (isGeneratorDevice(p)) {
 			if (mode[0] == 'r') return fopenGeneratorDevice(p);
 			return openUtf8("NUL", mode);
 		}
 
+		if (isProcPath(p)) return fopenProc(exec, p, mode);
 		return openUtf8(exec.pathConv().toWin32(p), mode);
 	}
 
@@ -236,6 +244,26 @@ namespace wbsh {
 		return false;
 #endif
 	}
+
+#ifdef _WIN32
+	// GetVersionEx answers 6.2 to every program not manifested for a newer
+	// Windows; ntdll's RtlGetVersion tells the truth.
+	WindowsVersion windowsVersion() {
+		typedef LONG (WINAPI *RtlGetVersionFn)(OSVERSIONINFOW*);
+		WindowsVersion version;
+		const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+		const auto query = ntdll == nullptr ? nullptr
+			: reinterpret_cast<RtlGetVersionFn>(::GetProcAddress(ntdll, "RtlGetVersion"));
+		OSVERSIONINFOW os{};
+		os.dwOSVersionInfoSize = sizeof(os);
+		if (query == nullptr || query(&os) != 0) return version;
+
+		version.major = os.dwMajorVersion;
+		version.minor = os.dwMinorVersion;
+		version.build = os.dwBuildNumber;
+		return version;
+	}
+#endif /* _WIN32 */
 
 	bool isConsoleStream(std::FILE* stream) {
 #ifdef _WIN32
@@ -812,8 +840,61 @@ namespace wbsh {
 	static int listSubdirectories(Executor& exec, const LsOpts& opts, const std::string& path,
 	                              const std::vector<LsEntry>& items);
 
+	static LsEntry procEntry(Executor& exec, const std::string& path, const std::string& name) {
+		const ProcNode node = lookupProcPath(exec.pathConv(), path, false);
+		LsEntry entry;
+		entry.name = name;
+		entry.is_symlink = node.type == ProcType::Link;
+		entry.is_dir = node.type == ProcType::Directory
+			|| lookupProcPath(exec.pathConv(), path, true).type == ProcType::Directory;
+		entry.mtime = fs::file_time_type::clock::now();
+		entry.valid = true;
+		return entry;
+	}
+
+	static std::string childPath(const std::string& path, const std::string& name) {
+		return (!path.empty() && path.back() == '/') ? path + name : path + "/" + name;
+	}
+
+	static std::vector<LsEntry> procDirectoryEntries(Executor& exec, const std::string& path) {
+		std::vector<LsEntry> items;
+		for (const std::string& name : listProcDirectory(exec.pathConv(), path)) {
+			items.push_back(procEntry(exec, childPath(path, name), name));
+		}
+
+		return items;
+	}
+
+	static int listOnePath(Executor& exec, const LsOpts& opts, const std::string& path,
+	                       LsHeader header);
+
+	// As for real paths, a link operand is listed as the directory it leads
+	// to unless -l or -d asks about the link itself.
+	static int listProcPath(Executor& exec, const LsOpts& opts, const std::string& path,
+	                        LsHeader header) {
+		const bool follow = (!opts.directory_itself && !opts.long_fmt) || path.back() == '/';
+		const ProcNode node = lookupProcPath(exec.pathConv(), path, follow);
+		if (node.type == ProcType::Outside) return listOnePath(exec, opts, node.target, header);
+		if (node.type == ProcType::Missing) {
+			perr("ls", path + ": No such file or directory");
+			return 1;
+		}
+
+		const bool expand = node.type == ProcType::Directory && !opts.directory_itself;
+		if (expand) printLsHeader(path, header);
+
+		std::vector<LsEntry> items = expand ? procDirectoryEntries(exec, path)
+			: std::vector<LsEntry>{ procEntry(exec, path, path) };
+		sortEntries(items, opts);
+		emitLsItems(items, opts, exec);
+		if (expand && opts.recursive) return listSubdirectories(exec, opts, path, items);
+		return 0;
+	}
+
 	static int listOnePath(Executor& exec, const LsOpts& opts, const std::string& path,
 	                       LsHeader header) {
+		if (isProcPath(path)) return listProcPath(exec, opts, path, header);
+
 		const fs::path target = toNative(exec, path);
 		std::error_code ec;
 		const fs::file_status status = fs::symlink_status(target, ec);
@@ -1849,14 +1930,9 @@ namespace wbsh {
 		info.arch = exec.env().get("PROCESSOR_ARCHITECTURE");
 		if (info.arch.empty()) info.arch = "x86_64";
 
-		OSVERSIONINFOA os{};
-		os.dwOSVersionInfoSize = sizeof(os);
-#  pragma warning(push)
-#  pragma warning(disable : 4996)
-		::GetVersionExA(&os);
-#  pragma warning(pop)
-		info.release = std::to_string(os.dwMajorVersion) + "." + std::to_string(os.dwMinorVersion);
-		info.version = std::to_string(os.dwBuildNumber);
+		const WindowsVersion os = windowsVersion();
+		info.release = std::to_string(os.major) + "." + std::to_string(os.minor);
+		info.version = std::to_string(os.build);
 #else
 		info.arch = "x86_64";
 		info.release = "0";
@@ -1919,6 +1995,20 @@ namespace wbsh {
 		return 0;
 	}
 
+	static bool readLinkTarget(Executor& exec, const std::string& path, bool canonical,
+	                           std::string& target);
+
+	static bool printProcRealPath(Executor& exec, const std::string& path) {
+		std::string resolved;
+		if (!readLinkTarget(exec, path, true, resolved)) {
+			perr("realpath", path + ": No such file or directory");
+			return false;
+		}
+
+		std::printf("%s\n", resolved.c_str());
+		return true;
+	}
+
 	static int builtin_realpath(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
 			perr("realpath", "missing operand");
@@ -1928,6 +2018,11 @@ namespace wbsh {
 		int status = 0;
 		for (const auto& path : args) {
 			if (startsWithDash(path)) continue;
+
+			if (isProcPath(path)) {
+				if (!printProcRealPath(exec, path)) status = 1;
+				continue;
+			}
 
 			std::error_code ec;
 			const fs::path resolved = fs::weakly_canonical(toNative(exec, path), ec);
@@ -1943,8 +2038,23 @@ namespace wbsh {
 		return status;
 	}
 
+	static bool readProcLinkTarget(Executor& exec, const std::string& path, bool canonical,
+	                               std::string& target) {
+		const ProcNode node = lookupProcPath(exec.pathConv(), path, canonical);
+		if (node.type == ProcType::Outside) {
+			return readLinkTarget(exec, node.target, canonical, target);
+		}
+		if (node.type == ProcType::Missing) return false;
+		if (!canonical && node.type != ProcType::Link) return false;
+
+		target = canonical ? node.canonical : node.target;
+		return true;
+	}
+
 	static bool readLinkTarget(Executor& exec, const std::string& path, bool canonical,
 	                           std::string& target) {
+		if (isProcPath(path)) return readProcLinkTarget(exec, path, canonical, target);
+
 		std::error_code ec;
 		const fs::path native = toNative(exec, path);
 		const fs::path resolved = canonical

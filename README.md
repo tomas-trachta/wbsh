@@ -226,6 +226,17 @@ append, delete, move; GNU long names, deterministic headers unless `U`).
 `/dev/zero`, `/dev/random`, `/dev/urandom` and `/dev/full` exist for
 redirections and for every bundled command that reads a file.
 
+A read-only `/proc` exists the same way, for redirections, globs, `test`,
+`ls`, `readlink` / `realpath` and the bundled commands (external programs do
+not see it): `cpuinfo` (one block per logical processor, CPUID flags under
+Linux's names), `meminfo`, `uptime`, `loadavg` (Windows keeps no load average,
+so it reads 0.00), `version` (wbsh's own, so WSL checks stay false), `self`,
+and `/proc/<pid>/` with `cmdline`, `comm`, `status` and `exe`; the shell's own
+process adds `cwd`, `environ` and `fd/<n>`. Files read as size 0, as on Linux,
+and their text is made when they are opened. A pipeline stage or `$(...)`
+runs in a child wbsh, so `/proc/self` there is that child, and it sees only
+the three standard descriptors.
+
 `less` hands over to a real `less` when one is on PATH and stdout is a
 console; otherwise (or with `WBSH_PAGER=builtin`) the built-in pager runs.
 

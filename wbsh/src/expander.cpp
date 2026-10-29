@@ -27,6 +27,7 @@
 #include "fnmatch.h"
 #include "lexer.h"
 #include "numparse.h"
+#include "procfs.h"
 #include "strscan.h"
 #include "executor.h"
 #include "utf8.h"
@@ -3104,20 +3105,24 @@ namespace wbsh {
 		return fnmatchFull(lowerAscii(pat), lowerAscii(name), options.extglob);
 	}
 
-	static std::vector<std::string> matchingEntries(const std::string& dir, const std::string& pat,
-			const PathConv& pc, const glob_detail::GlobMatchOptions& options) {
+	static std::vector<std::string> directoryNames(const std::string& posix_dir, const PathConv& pc) {
 		namespace fs = std::filesystem;
-		const std::string posix_dir = dir.empty() ? "." : dir;
-		const fs::path list_dir = utf8ToPath(pc.toWin32(posix_dir));
+		if (isProcPath(posix_dir)) return listProcDirectory(pc, posix_dir);
 
 		std::error_code ec;
-		fs::directory_iterator it(list_dir, ec);
+		fs::directory_iterator it(utf8ToPath(pc.toWin32(posix_dir)), ec);
 		if (ec) return {};
 
+		std::vector<std::string> names;
+		for (const fs::directory_entry& entry : it) names.push_back(pathToUtf8(entry.path().filename()));
+		return names;
+	}
+
+	static std::vector<std::string> matchingEntries(const std::string& dir, const std::string& pat,
+			const PathConv& pc, const glob_detail::GlobMatchOptions& options) {
 		const bool pat_starts_dot = !pat.empty() && pat[0] == '.';
 		std::vector<std::string> matches;
-		for (const fs::directory_entry& entry : it) {
-			const std::string name = pathToUtf8(entry.path().filename());
+		for (const std::string& name : directoryNames(dir.empty() ? "." : dir, pc)) {
 			if (name.empty()) continue;
 			if (name[0] == '.' && !pat_starts_dot && !options.dotglob) continue;
 			if (globNameMatches(pat, name, options)) matches.push_back(name);

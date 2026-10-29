@@ -998,7 +998,11 @@ namespace wbsh {
 		rememberBefore(options, file, line_number, offset, line);
 	}
 
+	// Only a disk file can be rewound after the probe; on a pipe (a /proc
+	// file, <(...), a device) the probed bytes would be lost to the scan.
 	static bool looksBinary(std::FILE* stream) {
+		if (!isDiskStream(stream)) return false;
+
 		std::vector<char> probe(32 * 1024);
 		const std::size_t got = std::fread(probe.data(), 1, probe.size(), stream);
 		_fseeki64(stream, 0, SEEK_SET);

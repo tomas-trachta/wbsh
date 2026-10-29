@@ -133,6 +133,14 @@ namespace wbsh {
 	std::string currentUserName(Executor& exec);
 
 	/// True only for a real console: _isatty also says yes for NUL.
+	struct WindowsVersion {
+		unsigned long major = 0;
+		unsigned long minor = 0;
+		unsigned long build = 0;
+	};
+
+	WindowsVersion windowsVersion();
+
 	bool isConsoleStream(std::FILE* stream);
 
 	/// A regular file, where a read never waits for a writer.

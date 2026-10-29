@@ -49,6 +49,7 @@
 #include "numparse.h"
 #include "parser.h"
 #include "posixregex.h"
+#include "procfs.h"
 #include "stdinsync.h"
 #include "testops.h"
 
@@ -1899,12 +1900,19 @@ namespace wbsh {
 		return (flags & (_O_WRONLY | _O_RDWR)) != 0;
 	}
 
+	int Executor::openProcRedirSource(const std::string& path, int flags) const {
+		const ProcNode node = lookupProcPath(path_conv_, path, true);
+		if (node.type == ProcType::Outside) return openRedirSourceFd(node.target, flags);
+		return openProcNode(path_conv_, node, flags);
+	}
+
 	int Executor::openRedirSourceFd(const std::string& path, int flags) const {
 		int fd = dupSpecialDevFd(path);
 		if (fd >= 0) return fd;
 
 		if (isGeneratorDevice(path) && !opensForWriting(flags)) return openGeneratorDevice(path);
 		if (isGeneratorDevice(path)) return _wopen(L"NUL", flags | _O_BINARY, _S_IREAD | _S_IWRITE);
+		if (isProcPath(path)) return openProcRedirSource(path, flags);
 
 		fd = openTcpUdpStream(path);
 		if (fd >= 0) return fd;
