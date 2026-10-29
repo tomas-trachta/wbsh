@@ -37,6 +37,7 @@
 #include "lineedit.h"
 #include "numparse.h"
 #include "parser.h"
+#include "sockets.h"
 #include "timefmt.h"
 
 namespace wbsh {
@@ -2061,6 +2062,26 @@ namespace wbsh {
 		return 0;
 	}
 
+	// Test hook: leaves an AF_UNIX socket file at each PATH, as a server
+	// that has bound one would.
+	static int builtin_mksock(Executor& exec, const std::vector<std::string>& args) {
+		if (args.empty()) {
+			printerr("__mksock: usage: __mksock PATH...");
+			return 2;
+		}
+
+		int status = 0;
+		for (const std::string& path : args) {
+			NetError error;
+			if (netCreateUnixSocketFile(exec.pathConv().toWin32(path), error)) continue;
+
+			printerr("__mksock: " + path + ": " + netErrorText(error.code));
+			status = 1;
+		}
+
+		return status;
+	}
+
 	static int builtin_histstat(Executor& exec, const std::vector<std::string>& args) {
 		if (args.size() != 2) {
 			printerr("__histstat: usage: __histstat INDEX STATUS");
@@ -2294,6 +2315,7 @@ namespace wbsh {
 		exec.registerBuiltin("bind",        bindBuiltin);
 		exec.registerBuiltin("__histstat",  builtin_histstat);
 		exec.registerBuiltin("__ctrlc",     builtin_ctrlc);
+		exec.registerBuiltin("__mksock",    builtin_mksock);
 		exec.registerBuiltin("getopts",  builtin_getopts);
 		exec.registerBuiltin("mapfile",  builtin_mapfile);
 		exec.registerBuiltin("readarray",builtin_mapfile);

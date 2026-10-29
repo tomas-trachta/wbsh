@@ -344,6 +344,7 @@ namespace wbsh {
 		fs::file_time_type mtime{};
 		bool is_dir = false;
 		bool is_symlink = false;
+		bool is_socket = false;
 		bool is_executable = false;
 		bool is_hidden = false;
 		bool valid = false;
@@ -392,11 +393,13 @@ namespace wbsh {
 		entry.is_dir = !ec && fs::is_directory(real);
 		if (!ec && fs::is_regular_file(entry.status)) {
 			entry.size = fs::file_size(entry.full, ec);
+			entry.is_socket = ec && isUnixSocketFile(entry.full);
 			if (ec) entry.size = 0;
 		}
 
 		std::error_code mtime_ec;
 		entry.mtime = fs::last_write_time(entry.full, mtime_ec);
+		if (entry.is_socket) entryWriteTime(entry.full, entry.mtime);
 		entry.is_hidden = (!name.empty() && name[0] == '.') || windowsHidden(entry.full);
 		entry.is_executable = hasExecutableExtension(entry.full);
 		entry.valid = true;
@@ -406,6 +409,7 @@ namespace wbsh {
 	static const char* lsColorCode(const LsEntry& entry) {
 		if (entry.is_symlink) return "\x1b[36;1m";
 		if (entry.is_dir) return "\x1b[34;1m";
+		if (entry.is_socket) return "\x1b[35;1m";
 		if (entry.is_executable) return "\x1b[32;1m";
 		return nullptr;
 	}
@@ -422,6 +426,7 @@ namespace wbsh {
 		if (opts.indicator == LsOpts::NoIndicator) return "";
 		if (entry.is_symlink) return opts.indicator == LsOpts::SlashIndicator ? "" : "@";
 		if (entry.is_dir) return "/";
+		if (entry.is_socket) return opts.indicator == LsOpts::SlashIndicator ? "" : "=";
 		if (entry.is_executable && opts.indicator == LsOpts::ClassifyIndicator) return "*";
 		return "";
 	}
@@ -467,6 +472,7 @@ namespace wbsh {
 	static char permTypeChar(const LsEntry& entry) {
 		if (entry.is_symlink) return 'l';
 		if (entry.is_dir) return 'd';
+		if (entry.is_socket) return 's';
 		return '-';
 	}
 

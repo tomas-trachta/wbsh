@@ -1,0 +1,47 @@
+=== test
+-S socket
+-S through a link
+-S through two links
+! -S regular file
+! -S directory
+! -S dangling link
+! -S missing
+-e socket
+! -f socket
+! -f link to socket
+-f regular file
+-h link
+=== ls
+srw-r--r--
+agent.sock=
+dangling@
+dir/
+link.sock@
+link2.sock@
+plain.txt
+agent.sock
+dangling
+dir/
+link.sock
+link2.sock
+plain.txt
+0000000 033   [   3   5   ;   1   m   a   g   e   n   t   .   s   o   c
+0000020   k 033   [   0   m  \n
+=== stat
+socket srw-r--r-- c1a4 0
+regular empty file -rw-r--r-- 81a4 0
+=== find
+./agent.sock
+./plain.txt
+d .
+d ./dir
+f ./plain.txt
+l ./dangling
+l ./link.sock
+l ./link2.sock
+s ./agent.sock
+=== waiting for a socket
+late.sock appeared
+=== hook usage
+wbsh: __mksock: usage: __mksock PATH...
+status 2

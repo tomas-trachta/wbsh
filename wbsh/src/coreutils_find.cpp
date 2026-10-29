@@ -305,9 +305,15 @@ namespace wbsh {
 			}
 		}
 
+		// std::filesystem takes a socket file for a regular one.
+		static char withSockets(char type, const fs::path& native) {
+			return type == 'f' && isUnixSocketFile(native) ? 's' : type;
+		}
+
 		static char linkType(const Entry& entry) {
 			std::error_code ec;
-			return typeLetter(fs::symlink_status(entry.native, ec).type());
+			const char type = typeLetter(fs::symlink_status(entry.native, ec).type());
+			return withSockets(type, entry.native);
 		}
 
 		static char targetType(const Entry& entry) {

@@ -12,11 +12,13 @@
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
 #  include <windows.h>
+#  include <afunix.h>
 #  pragma comment(lib, "ws2_32.lib")
 #endif /* _WIN32 */
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <string>
 
@@ -312,6 +314,32 @@ namespace wbsh {
 			started = ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
 		});
 		return started;
+	}
+
+	static bool failAt(NetError& error, NetStage stage, int code) {
+		error.stage = stage;
+		error.code = code;
+		return false;
+	}
+
+	bool netCreateUnixSocketFile(const std::string& win32_path, NetError& error) {
+		if (!netStartup()) return failAt(error, NetStage::Startup, ::WSAGetLastError());
+
+		sockaddr_un address{};
+		address.sun_family = AF_UNIX;
+		if (win32_path.size() >= sizeof(address.sun_path)) {
+			return failAt(error, NetStage::Bind, WSAENAMETOOLONG);
+		}
+
+		std::memcpy(address.sun_path, win32_path.data(), win32_path.size());
+		const SOCKET sock = ::socket(AF_UNIX, SOCK_STREAM, 0);
+		if (sock == INVALID_SOCKET) return failAt(error, NetStage::Socket, ::WSAGetLastError());
+
+		const auto* name = reinterpret_cast<const sockaddr*>(&address);
+		const bool bound = ::bind(sock, name, sizeof(address)) == 0;
+		if (!bound) failAt(error, NetStage::Bind, ::WSAGetLastError());
+		::closesocket(sock);
+		return bound;
 	}
 
 	NetSocket netConnect(const NetEndpoint& remote, const NetEndpoint& local, int timeout_ms,
