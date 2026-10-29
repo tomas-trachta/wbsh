@@ -1,7 +1,8 @@
 #!/bin/bash
 # exec of an external program: Windows has no execve, so the program runs
 # as a child the shell ends with. It does end with the program's own exit
-# code, and it runs in a job that dies with the shell.
+# code, and it runs in a job that dies with the shell. cmd's CRs are
+# dropped so the LF-pinned golden matches.
 
 if [ -x ../../x64/Release/wbsh.exe ]; then
 	W=../../x64/Release/wbsh.exe
@@ -19,11 +20,12 @@ echo "=== statuses as the shell sees them"
 $W -r -c 'exec cmd /c exit 7; echo not reached'; echo "status $?"
 $W -r -c 'exec cmd /c exit 1000'; echo "status $?"
 $W -r -c '( exec cmd /c exit 5 ); echo "subshell status $?"; exit 3'; echo "status $?"
-$W -r -c 'trap "echo EXIT trap ran" EXIT; exec cmd /c echo from-program'; echo "status $?"
+$W -r -c 'trap "echo EXIT trap ran" EXIT; exec cmd /c echo from-program' | tr -d '\r'
+echo "status ${PIPESTATUS[0]}"
 $W -r -c 'exec no-such-program-wbsh; echo not reached'; echo "status $?"
 $W -r -c 'f() { echo in-function; return 4; }; exec f; echo not reached'; echo "status $?"
 $W -r -c 'exec 3> /dev/null; echo redirection-only exec carries on'; echo "status $?"
-$W -r -c 'exec cmd /c echo to-file > '$T'/out.txt'; cat $T/out.txt
+$W -r -c 'exec cmd /c echo to-file > '$T'/out.txt'; tr -d '\r' < $T/out.txt
 
 echo "=== the exit code the parent sees"
 powershell.exe -NoProfile -Command "
