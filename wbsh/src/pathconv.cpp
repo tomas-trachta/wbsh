@@ -249,7 +249,15 @@ namespace wbsh {
 
 	// The reparse tag is only in the directory entry; the attributes say
 	// first, without a search, whether there can be one at all.
+	bool isDevicePath(const std::filesystem::path& native) {
+		const std::wstring& text = native.native();
+		return text.size() >= 4 && text[0] == L'\\' && text[1] == L'\\' && text[2] == L'.'
+			&& text[3] == L'\\';
+	}
+
 	bool isUnixSocketFile(const std::filesystem::path& native) {
+		if (isDevicePath(native)) return false;
+
 		const DWORD attributes = ::GetFileAttributesW(longPathSafe(native).c_str());
 		if (attributes == INVALID_FILE_ATTRIBUTES) return false;
 		if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return false;
@@ -270,6 +278,10 @@ namespace wbsh {
 		return true;
 	}
 #else
+	bool isDevicePath(const std::filesystem::path&) {
+		return false;
+	}
+
 	bool isUnixSocketFile(const std::filesystem::path&) {
 		return false;
 	}

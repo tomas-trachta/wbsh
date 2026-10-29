@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 
 #include "executor.h"
+#include "fifo.h"
 #include "numparse.h"
 #include "pathconv.h"
 #include "procfs.h"
@@ -108,6 +109,46 @@ namespace wbsh::testops_detail {
 		return lower.rfind("\\\\.\\pipe\\", 0) == 0;
 	}
 
+	static const int kLinkHopLimit = 40;
+
+	// Resolved one link at a time: canonical() would open the end of the
+	// chain, which a socket file refuses.
+	static fs::path linkChainEnd(const fs::path& start) {
+		fs::path current = start;
+		for (int hop = 0; hop < kLinkHopLimit; ++hop) {
+			std::error_code ec;
+			if (!fs::is_symlink(fs::symlink_status(current, ec)) || ec) return current;
+
+			const fs::path target = fs::read_symlink(current, ec);
+			if (ec) return current;
+			current = target.is_absolute() ? target : current.parent_path() / target;
+		}
+
+		return current;
+	}
+
+	static bool isSocketOperand(Executor& exec, const std::string& operand) {
+		return !operand.empty() && isUnixSocketFile(linkChainEnd(nativePath(exec, operand)));
+	}
+
+	static bool isFifoOperand(Executor& exec, const std::string& operand) {
+		return !operand.empty() && isFifoFile(linkChainEnd(nativePath(exec, operand)));
+	}
+
+	// stat calls a socket file or a FIFO's marker a regular file.
+	static bool isRegularFile(Executor& exec, const std::string& operand) {
+		struct stat info {};
+		if (!statOperand(exec, operand, info) || (info.st_mode & S_IFMT) != S_IFREG) return false;
+		return !isSocketOperand(exec, operand) && !isFifoOperand(exec, operand);
+	}
+
+	// A FIFO reads as empty until someone writes to it, as on Linux.
+	static bool hasContent(Executor& exec, const std::string& operand) {
+		struct stat info {};
+		if (!statOperand(exec, operand, info) || info.st_size <= 0) return false;
+		return !isFifoOperand(exec, operand);
+	}
+
 	static bool isPipe(Executor& exec, const std::string& operand) {
 		int fd = -1;
 		if (operand.rfind(kFdPrefix, 0) == 0 && parseInt(operand.substr(kFdPrefix.size()), fd)) {
@@ -117,7 +158,7 @@ namespace wbsh::testops_detail {
 		if (operand == "/dev/stdin") return fdIsPipe(0);
 
 		const std::string win32 = exec.pathConv().toWin32(operand);
-		if (!isNamedPipePath(win32)) return false;
+		if (!isNamedPipePath(win32)) return isFifoOperand(exec, operand);
 
 		return GetFileAttributesW(utf8ToPath(win32).c_str()) != INVALID_FILE_ATTRIBUTES;
 	}
@@ -177,34 +218,6 @@ namespace wbsh::testops_detail {
 		}
 	}
 
-	static const int kLinkHopLimit = 40;
-
-	// Resolved one link at a time: canonical() would open the end of the
-	// chain, which a socket file refuses.
-	static fs::path linkChainEnd(const fs::path& start) {
-		fs::path current = start;
-		for (int hop = 0; hop < kLinkHopLimit; ++hop) {
-			std::error_code ec;
-			if (!fs::is_symlink(fs::symlink_status(current, ec)) || ec) return current;
-
-			const fs::path target = fs::read_symlink(current, ec);
-			if (ec) return current;
-			current = target.is_absolute() ? target : current.parent_path() / target;
-		}
-
-		return current;
-	}
-
-	static bool isSocketOperand(Executor& exec, const std::string& operand) {
-		return !operand.empty() && isUnixSocketFile(linkChainEnd(nativePath(exec, operand)));
-	}
-
-	// stat calls a socket file a regular one.
-	static bool isRegularFile(Executor& exec, const std::string& operand) {
-		struct stat info {};
-		if (!statOperand(exec, operand, info) || (info.st_mode & S_IFMT) != S_IFREG) return false;
-		return !isSocketOperand(exec, operand);
-	}
 
 	static bool evalFileOperator(Executor& exec, char op, const std::string& operand);
 
@@ -246,6 +259,7 @@ namespace wbsh::testops_detail {
 			case 'c': return isCharDevice(operand);
 			case 'S': return isSocketOperand(exec, operand);
 			case 'f': return isRegularFile(exec, operand);
+			case 's': return hasContent(exec, operand);
 			case 'b':
 			case 'g':
 			case 'k':

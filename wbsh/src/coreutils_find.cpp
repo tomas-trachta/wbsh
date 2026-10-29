@@ -35,6 +35,7 @@
 #include "executor.h"
 #include "fnmatch.h"
 #include "numparse.h"
+#include "fifo.h"
 #include "pathconv.h"
 #include "posixregex.h"
 
@@ -305,15 +306,17 @@ namespace wbsh {
 			}
 		}
 
-		// std::filesystem takes a socket file for a regular one.
-		static char withSockets(char type, const fs::path& native) {
-			return type == 'f' && isUnixSocketFile(native) ? 's' : type;
+		// std::filesystem takes a socket file or a FIFO's marker for a regular file.
+		static char withSpecialFiles(char type, const fs::path& native) {
+			if (type != 'f') return type;
+			if (isUnixSocketFile(native)) return 's';
+			return isFifoFile(native) ? 'p' : 'f';
 		}
 
 		static char linkType(const Entry& entry) {
 			std::error_code ec;
 			const char type = typeLetter(fs::symlink_status(entry.native, ec).type());
-			return withSockets(type, entry.native);
+			return withSpecialFiles(type, entry.native);
 		}
 
 		static char targetType(const Entry& entry) {

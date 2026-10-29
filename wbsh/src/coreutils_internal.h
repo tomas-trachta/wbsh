@@ -133,6 +133,10 @@ namespace wbsh {
 	std::string currentUserName(Executor& exec);
 
 	/// True only for a real console: _isatty also says yes for NUL.
+	/// An octal or symbolic (u+rw,go=r) mode as install, mkfifo and mknod
+	/// take it; symbolic clauses start from 0.
+	bool parseFileMode(const std::string& text, unsigned& mode);
+
 	struct WindowsVersion {
 		unsigned long major = 0;
 		unsigned long minor = 0;
@@ -263,5 +267,6 @@ namespace wbsh {
 
 	void registerCronBuiltins(Executor& exec);
 	void registerScriptBuiltins(Executor& exec);
+	void registerFifoBuiltins(Executor& exec);
 
 }  // namespace wbsh

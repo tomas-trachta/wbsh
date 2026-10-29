@@ -320,6 +320,10 @@ namespace wbsh {
 		return evaluateSymbolicMode(text, mode);
 	}
 
+	bool parseFileMode(const std::string& text, unsigned& mode) {
+		return evaluateMode(text, mode);
+	}
+
 	static bool settleMode(InstallOptions& options) {
 		if (options.mode.empty()) return true;
 

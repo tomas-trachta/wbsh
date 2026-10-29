@@ -218,6 +218,7 @@
     <ClInclude Include="src\pseudoconsole.h" />
     <ClInclude Include="src\pty_relay.h" />
     <ClInclude Include="src\procfs.h" />
+    <ClInclude Include="src\fifo.h" />
     <ClInclude Include="src\procfs_internal.h" />
     <ClInclude Include="src\ftp_session.h" />
     <ClInclude Include="src\vi_internal.h" />
@@ -377,6 +378,8 @@
     <ClCompile Include="src\pty_relay.cpp" />
     <ClCompile Include="src\coreutils_script.cpp" />
     <ClCompile Include="src\procfs.cpp" />
+    <ClCompile Include="src\fifo.cpp" />
+    <ClCompile Include="src\coreutils_fifo.cpp" />
     <ClCompile Include="src\procfs_text.cpp" />
     <ClCompile Include="src\ftp_session.cpp" />
     <ClCompile Include="src\coreutils_cron.cpp" />
