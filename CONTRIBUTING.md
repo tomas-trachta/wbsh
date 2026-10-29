@@ -60,6 +60,7 @@ get the shape of the codebase:
 | file | `wbsh/src/coreutils_file.cpp`, `filemagic.h`, `filemagic.cpp`, `filemagic_exec.cpp`, `filemagic_media.cpp`, `filemagic_text.cpp` | `file`: the command line, then the detection order with archives, compressed data, documents and fonts; executables (PE, MS-DOS, ELF, Mach-O, Java class, wasm); images, audio and video; text encodings, scripts, markup, JSON and PEM. |
 | Ownership, manuals | `wbsh/src/fileowner.cpp/h`, `man_pages.cpp/h` | The NTFS owner / group SID read and write that `chown`, `chgrp` and `install` share; the whatis line and synopsis table behind `man`, `apropos` and `whatis`. |
 | Network | `wbsh/src/sockets.cpp/h`, `stream_relay.cpp/h`, `ftp_session.cpp/h` | Winsock plumbing for the network commands (startup, resolve, timed connect, listen / accept, buffered reads; every wait is Ctrl+C aware); `nc`'s bidirectional socket ↔ stdio relay with half-close and idle / quit timers; the FTP control and data protocol shared by `ftp`, `ftpget` and `ftpput`. |
+| Pseudoconsole | `wbsh/src/pseudoconsole.cpp/h`, `pty_relay.cpp/h`, `coreutils_script.cpp` | A ConPTY and its pipes (the `conpty.dll` beside `wbsh.exe` first, Windows' own otherwise), started on through `SpawnPlacement::pseudo_console`; the relay that copies its output to stdout and the logs (answering the pseudoconsole's own terminal queries), feeds it console keys in VT input mode or piped lines from a thread, passes Ctrl+C on and follows the console's size; `script` and `unbuffer` on top of it. |
 | cron | `wbsh/src/coreutils_cron.cpp`, `cron_schedule.cpp/h`, `cron_time.cpp`, `cron_zone.cpp`, `cron_internal.h`, `cron_store.cpp`, `crond_internal.h`, `cron_daemon.cpp`, `cron_jobs.cpp`, `cron_log.cpp` | `crontab` (and its `--next-runs` test hook); crontab parsing (fields, @keywords, NAME=value, `%`); the pure next-run search over a `CronZone` with cronie's daylight-saving rules; Windows time zones; the crontab directory and atomic replacement; `crond`'s options, PID-file lock, minute loop, @reboot and detached start; job processes (environment, hidden start, output capture); the log. |
 | Process substitution | `wbsh/src/procsubst.cpp/h` | The named pipe behind `<(...)` / `>(...)`: a relay thread joins it to the substituted process's anonymous pipe once a client opens it. |
 | CLI | `wbsh/src/main.cpp`, `wbsh/src/script.cpp` | Entry point: UTF-8 argv decoding, flag dispatch, the non-interactive run / dump driver. |
@@ -95,7 +96,7 @@ system utilities plus the shared helpers), `coreutils_text.cpp`, `coreutils_tr.c
 renice, su, sudo; owns the niceness ↔ priority-class mapping), `coreutils_top.cpp`,
 `coreutils_owner.cpp`, `coreutils_install.cpp`, `coreutils_man.cpp`, `coreutils_locale.cpp`,
 `coreutils_nc.cpp`, `coreutils_ftp.cpp`, `coreutils_whois.cpp`, `coreutils_httpd.cpp`,
-`coreutils_cron.cpp`, and the larger `make`, `vi`, `ed` and `file` families listed
+`coreutils_cron.cpp`, `coreutils_script.cpp` (script, unbuffer), and the larger `make`, `vi`, `ed` and `file` families listed
 in the architecture table. Follow the same pattern when
 adding a new group:
 

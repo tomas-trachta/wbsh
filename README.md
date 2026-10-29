@@ -209,7 +209,8 @@ append, delete, move; GNU long names, deterministic headers unless `U`).
 `lzop` keeps its input unless given `-U`, as lzop does.
 
 **Processes and system:** `ps`, `pgrep`, `pkill`, `pidof`, `kill`, `killall`,
-`top`, `nice`, `renice`, `nohup`, `setsid`, `timeout`, `watch`, `crontab`,
+`top`, `nice`, `renice`, `nohup`, `setsid`, `timeout`, `watch`, `script`,
+`unbuffer`, `crontab`,
 `crond`, `uptime`, `free`, `nproc`, `env` (`-i`, `-u`, `NAME=value command`),
 `printenv`, `whoami`, `logname`, `groups`, `id`, `su`, `sudo`, `hostname`,
 `uname`, `date`, `cal`, `sleep`, `usleep`, `stty`, `reset`, `tput`, `ttysize`,
@@ -278,6 +279,22 @@ command whose standard streams are still the console on it. Ctrl+C while
 users: `sudo` hands the command to the first `sudo` on PATH (Windows 11 24H2's
 own, or gsudo) and otherwise explains how to get one; `su` points to
 `runas /user:NAME wbsh`.
+
+`script` (util-linux's: `-c`, `-a`, `-e`, `-f`, `-q`, `-I` / `-O` / `-B` log
+files) and `unbuffer` (expect's, with `-p`) run a command on a pseudoconsole
+(ConPTY) of its own, so it sees a console on stdin, stdout and stderr however
+wbsh's own streams are redirected, and acts as it would interactively:
+`unbuffer cmd | less` and `script -qc cmd /dev/null > out` keep its colours and
+line-by-line output. The output comes back as the console draws it, with CR LF
+line ends as from a Unix pty; the session follows the console's size, and
+`stty` inside it changes the pseudoconsole that every program in it shares.
+Keys typed at a console go through untranslated (Ctrl+C included); piped input
+is sent as typed lines, ending with Ctrl+Z, Enter (a console's end of file)
+and Ctrl+D. `script` runs wbsh, not `$SHELL`, which on Windows usually names
+another environment's shell. Both use the `conpty.dll` beside `wbsh.exe` when
+there is one (Microsoft's current ConPTY, as wbshterm does) and Windows' own
+otherwise. Programs built on the Cygwin / MSYS runtime still see a Windows
+console, not their emulated pty.
 
 `crontab` (cronie's: `FILE` / `-`, `-l`, `-e` with `$VISUAL` / `$EDITOR` /
 `vi`, `-r [-i]`, `-T FILE`) and `crond` (busybox's: `-f`, `-b`, `-l N`,
@@ -432,7 +449,6 @@ integrate. If you need a real Linux environment, use WSL.
 
 ## Roadmap
 
-- True ConPTY for child processes.
 - Real job control: `Ctrl-Z` and stopped jobs.
 - CI running the golden suite on every push.
 - winget / scoop publication and code-signed releases.

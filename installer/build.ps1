@@ -169,6 +169,22 @@ function Copy-CrtDlls {
 
 Copy-CrtDlls -Destination $stage
 
+# Microsoft's current ConPTY (wbshterm\conpty\fetch.ps1 pins the version),
+# for the pseudoconsole `script` and `unbuffer` start their command on.
+# wbsh loads it from its own directory and falls back to the one built
+# into Windows when the files are missing.
+function Copy-BundledConpty {
+    param([string]$Destination)
+
+    foreach ($name in @('conpty.dll', 'OpenConsole.exe')) {
+        $src = Join-Path $RepoRoot "wbshterm\conpty\$name"
+        if (Test-Path $src) { Copy-Item $src $Destination }
+        else { Write-Warning "Bundled ConPTY file missing: $src (run wbshterm\conpty\fetch.ps1)" }
+    }
+}
+
+Copy-BundledConpty -Destination $stage
+
 # --- Portable ZIP ---------------------------------------------------------
 Write-Host "==> Producing portable ZIP" -ForegroundColor Cyan
 $outDir = Join-Path $ScriptDir 'output'
@@ -230,14 +246,8 @@ Copy-Item (Join-Path $ScriptDir 'wbshterm-here.cmd')       $termStage
 Copy-Item $sdkPath                                         $termStage
 Copy-CrtDlls -Destination $termStage
 
-# Microsoft's current ConPTY rides along (wbshterm\conpty\fetch.ps1 pins the
-# version). wbshterm loads it from its own directory and falls back to the
-# pseudoconsole built into Windows when the files are missing.
-foreach ($name in @('conpty.dll', 'OpenConsole.exe')) {
-    $src = Join-Path $RepoRoot "wbshterm\conpty\$name"
-    if (Test-Path $src) { Copy-Item $src $termStage }
-    else { Write-Warning "Bundled ConPTY file missing: $src (run wbshterm\conpty\fetch.ps1)" }
-}
+# wbshterm runs its panes on the same ConPTY, loaded the same way.
+Copy-BundledConpty -Destination $termStage
 
 $termZipPath = Join-Path $outDir "wbshterm-$Version-portable-$Platform.zip"
 if (Test-Path $termZipPath) { Remove-Item $termZipPath -Force }

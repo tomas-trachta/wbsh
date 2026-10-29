@@ -1,0 +1,62 @@
+=== unbuffer
+piped stdout is no tty
+all three are ttys
+0000000   h   i  \r  \n
+0000004
+status 7
+wbsh: unbuffer: no-such-command-xyz: command not found
+status 127
+Usage: unbuffer [-p] program [args]
+Run program on a pseudoconsole of its own, so it writes as it would to
+a terminal however its output is redirected, and copy that to stdout.
+
+ -p  pass stdin on to program, for use inside a pipeline
+status 1
+1
+2
+3
+1
+2
+statuses 141 0 0
+=== unbuffer -p
+
+got one
+
+got two
+
+end three
+
+[typed]
+isig icanon -echo
+=== Ctrl+C
+status 130
+=== script
+inside
+status 0
+Script started on DATE [COMMAND="echo inside; exit 3"]
+inside
+
+Script done on DATE [COMMAND_EXIT_CODE="3"]
+status 3
+2
+Script started, output log file is '_pty_relay_tmp/loud.log'.
+loud
+Script done.
+Script started on DATE [COMMAND="echo default"]
+default
+
+Script done on DATE [COMMAND_EXIT_CODE="0"]
+status 5
+2
+
+read abc
+Script started on DATE [COMMAND="stty -echo; read -r x; echo "read $x""]
+abc
+
+Script done on DATE [COMMAND_EXIT_CODE="0"]
+wbsh: script: unrecognized option '--bogus'
+status 1
+wbsh: script: unexpected number of arguments
+status 1
+wbsh: script: _pty_relay_tmp/no/such/dir.log: no such file or directory
+status 1

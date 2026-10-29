@@ -215,6 +215,8 @@
     <ClInclude Include="src\curl_internal.h" />
     <ClInclude Include="src\sockets.h" />
     <ClInclude Include="src\stream_relay.h" />
+    <ClInclude Include="src\pseudoconsole.h" />
+    <ClInclude Include="src\pty_relay.h" />
     <ClInclude Include="src\ftp_session.h" />
     <ClInclude Include="src\vi_internal.h" />
     <ClInclude Include="src\fileowner.h" />
@@ -369,6 +371,9 @@
     <ClCompile Include="src\coreutils_httpd.cpp" />
     <ClCompile Include="src\sockets.cpp" />
     <ClCompile Include="src\stream_relay.cpp" />
+    <ClCompile Include="src\pseudoconsole.cpp" />
+    <ClCompile Include="src\pty_relay.cpp" />
+    <ClCompile Include="src\coreutils_script.cpp" />
     <ClCompile Include="src\ftp_session.cpp" />
     <ClCompile Include="src\coreutils_cron.cpp" />
     <ClCompile Include="src\cron_schedule.cpp" />
