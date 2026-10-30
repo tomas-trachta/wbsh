@@ -1,0 +1,58 @@
+=== to itself
+trapped USR1
+after USR1
+HUP ignored
+untrapped USR2 status 140
+EXIT trap
+TERM status 143
+CHLD and WINCH ignored by default
+=== from another shell
+A: reloading
+A: reloading
+A: cleanup
+A status 7
+B: EXIT trap
+B status 143
+=== wait is cut short, sleep is not
+C: USR1
+C: wait returned 138
+C status 0
+D: USR1
+D: sleep returned 0
+D status 0
+=== the command a shell waits for
+E: TERM after ping
+E: done
+E status 0
+F status 143
+background command status 143
+shell busy in a builtin status 143
+=== pkill and timeout
+G: USR2
+G status 0
+child: TERM
+timeout status 124
+preserved status 3
+ignored TERM, then KILL: status 137
+=== other processes are terminated
+ping status 138
+=== kill arguments
+ 1) SIGHUP	 2) SIGINT	 3) SIGQUIT	 4) SIGILL	 5) SIGTRAP
+ 6) SIGABRT	 7) SIGBUS	 8) SIGFPE	 9) SIGKILL	10) SIGUSR1
+31) SIGSYS
+TERM
+TERM
+15
+10
+9
+wbsh: kill: USR9: invalid signal specification
+status 1
+wbsh: kill: NOPE: invalid signal specification
+status 1
+wbsh: kill: -s: option requires an argument
+status 2
+-n 0 probes
+-- ends the options
+wbsh: kill: usage: kill [-s SIGSPEC | -n SIGNUM | -SIGSPEC] PID | %JOB ...
+status 2
+31) SIGSYS

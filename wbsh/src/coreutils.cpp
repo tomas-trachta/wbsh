@@ -45,6 +45,8 @@
 #include "numparse.h"
 #include "optscan.h"
 #include "procfs.h"
+#include "signalbox.h"
+#include "signals.h"
 #include "stdinsync.h"
 #include "termreq.h"
 #include "timefmt.h"
@@ -1684,6 +1686,31 @@ namespace wbsh {
 		return exec.stopRemainingSleep(static_cast<unsigned long>(rest), text);
 	}
 
+	static const unsigned long kSignalCheckMs = 50;
+
+	// A posted signal with a trap has it run at once and the sleep goes on,
+	// as an external sleep would finish while the trap waited; one that ends
+	// the shell, or Ctrl+C, ends the sleep early.
+	static int sleepUnlessSignalled(Executor& exec, unsigned long milliseconds) {
+		const unsigned long long end = ::GetTickCount64() + milliseconds;
+		for (;;) {
+			const unsigned long long now = ::GetTickCount64();
+			if (now >= end) return 0;
+
+			const unsigned long long left = end - now;
+			const unsigned long long bounded = std::min<unsigned long long>(left, kSignalCheckMs);
+			const unsigned long slice = static_cast<unsigned long>(bounded);
+			if (!sleepUnlessCtrlC(slice)) return kStatusInterruptedSleep;
+
+			const int signum = exec.interruptingSignal();
+			if (signum == 0) continue;
+			if (!exec.hasTrap(signalName(signum))) return kSignalStatusBase + signum;
+
+			exec.handlePendingSignals();
+			if (exec.flowPending()) return kSignalStatusBase + signum;
+		}
+	}
+
 	static int builtin_sleep(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
 			perr("sleep", "missing operand");
@@ -1701,7 +1728,7 @@ namespace wbsh {
 			return sleepInForeground(exec, milliseconds, "sleep " + args[0]);
 		}
 
-		return sleepUnlessCtrlC(milliseconds) ? 0 : kStatusInterruptedSleep;
+		return sleepUnlessSignalled(exec, milliseconds);
 	}
 
 	static std::string stripTrailingSlashes(std::string path) {
@@ -3355,12 +3382,48 @@ namespace wbsh {
 		return 1;
 	}
 
+	static const int kSignalKill = 9;
+	static const int kSignalsPerListLine = 5;
+
 	static void killPrintSignalList() {
-		std::printf(" 1) HUP   2) INT   3) QUIT  4) ILL   "
-			"5) TRAP  6) ABRT  7) BUS   8) FPE\n"
-			" 9) KILL 10) USR1 11) SEGV 12) USR2 "
-			"13) PIPE 14) ALRM 15) TERM\n"
-			"18) CONT 19) STOP 20) TSTP\n");
+		for (int number = 1; number <= signalCount(); ++number) {
+			const bool line_end = number % kSignalsPerListLine == 0 || number == signalCount();
+			std::printf("%2d) SIG%s%c", number, signalName(number), line_end ? '\n' : '\t');
+		}
+	}
+
+	// `kill -l 143` names the signal a status of 128 + n stands for.
+	static bool killPrintSignalSpec(const std::string& spec) {
+		int number = 0;
+		std::size_t used = 0;
+		const bool numeric = parseInt(spec, number, 10, &used) && used == spec.size();
+		if (numeric && number > kSignalStatusBase) number -= kSignalStatusBase;
+		if (numeric && signalName(number) != nullptr) {
+			std::printf("%s\n", signalName(number));
+			return true;
+		}
+
+		if (!numeric && parseSignalSpec(spec, number) && number != 0) {
+			std::printf("%d\n", number);
+			return true;
+		}
+
+		perr("kill", spec + ": invalid signal specification");
+		return false;
+	}
+
+	static int killListSignals(const std::vector<std::string>& specs) {
+		if (specs.empty()) {
+			killPrintSignalList();
+			return 0;
+		}
+
+		int status = 0;
+		for (const std::string& spec : specs) {
+			if (!killPrintSignalSpec(spec)) status = 1;
+		}
+
+		return status;
 	}
 
 	static bool killProbeOneProcess(int pid) {
@@ -3374,6 +3437,13 @@ namespace wbsh {
 		return false;
 	}
 
+	// Stopping, continuing and probing work on any process; KILL cannot be
+	// caught. Any other signal goes to a wbsh's mailbox when it has one.
+	static bool postsToShell(int signum) {
+		return signum != 0 && signum != kSignalKill && signum != kSignalStop
+			&& signum != kSignalTerminalStop && signum != kSignalContinue;
+	}
+
 	static bool killOneProcess(int pid, int signum) {
 #ifdef _WIN32
 		if (signum == 0) return killProbeOneProcess(pid);
@@ -3382,6 +3452,9 @@ namespace wbsh {
 		}
 
 		if (signum == kSignalContinue) return resumeProcessById(static_cast<unsigned long>(pid));
+		if (postsToShell(signum) && postShellSignal(static_cast<unsigned long>(pid), signum)) {
+			return true;
+		}
 
 		const HANDLE process = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
 		if (process == nullptr) {
@@ -3400,23 +3473,23 @@ namespace wbsh {
 #endif
 	}
 
-	static bool killSignalByName(const std::string& arg, int& signum) {
-		if (arg == "-KILL") { signum = 9;  return true; }
-		if (arg == "-TERM") { signum = 15; return true; }
-		if (arg == "-INT")  { signum = 2;  return true; }
-		if (arg == "-HUP")  { signum = 1;  return true; }
-		if (arg == "-CONT") { signum = kSignalContinue;     return true; }
-		if (arg == "-STOP") { signum = kSignalStop;         return true; }
-		if (arg == "-TSTP") { signum = kSignalTerminalStop; return true; }
-		return false;
-	}
-
 	static Executor::Job* jobWithPid(Executor& exec, int pid) {
 		for (Executor::Job& job : exec.jobsTable()) {
 			if (job.pid == pid && job.running) return &job;
 		}
 
 		return nullptr;
+	}
+
+	// A job of one wbsh process (a background subshell) gets the signal in
+	// its mailbox and may trap it; any other job is signalled as a whole.
+	static bool signalJob(Executor& exec, Executor::Job& job, int signum) {
+#ifdef _WIN32
+		const bool single = job.stages.empty();
+		const unsigned long pid = static_cast<unsigned long>(job.pid);
+		if (single && postsToShell(signum) && postShellSignal(pid, signum)) return true;
+#endif
+		return exec.signalJob(job, signum);
 	}
 
 	// `%N`, `%%`, `%name`, ... name a job of this shell; a job is signalled
@@ -3431,7 +3504,7 @@ namespace wbsh {
 			}
 
 			Executor::Job* job = jobWithPid(exec, pid);
-			return job != nullptr ? exec.signalJob(*job, signum) : killOneProcess(pid, signum);
+			return job != nullptr ? signalJob(exec, *job, signum) : killOneProcess(pid, signum);
 		}
 
 		Executor::Job* job = exec.findJob(arg);
@@ -3440,43 +3513,76 @@ namespace wbsh {
 			return false;
 		}
 
-		return exec.signalJob(*job, signum);
+		return signalJob(exec, *job, signum);
+	}
+
+	struct KillRequest {
+		int signum = kSignalTerm;
+		bool list = false;
+		int failure = 1;
+		std::vector<std::string> operands;
+	};
+
+	static bool killSignalArgument(const std::string& option, const std::vector<std::string>& args,
+	                               std::size_t& i, KillRequest& request) {
+		if (i + 1 >= args.size()) {
+			perr("kill", option + ": option requires an argument");
+			request.failure = 2;
+			return false;
+		}
+
+		const std::string& spec = args[++i];
+		if (parseSignalSpec(spec, request.signum)) return true;
+
+		perr("kill", spec + ": invalid signal specification");
+		return false;
+	}
+
+	// Options end at the first operand or `--`; `-NAME` and `-NUM` name the
+	// signal, and an unknown one stops everything before anything is sent.
+	static bool parseKillArgs(const std::vector<std::string>& args, KillRequest& request) {
+		std::size_t i = 0;
+		for (; i < args.size(); ++i) {
+			const std::string& arg = args[i];
+			if (arg == "--") {
+				++i;
+				break;
+			}
+
+			if (arg.size() < 2 || arg[0] != '-') break;
+			if (arg == "-l" || arg == "-L") {
+				request.list = true;
+				continue;
+			}
+
+			if (arg == "-s" || arg == "-n") {
+				if (!killSignalArgument(arg, args, i, request)) return false;
+				continue;
+			}
+
+			if (!parseSignalSpec(arg.substr(1), request.signum)) {
+				perr("kill", arg.substr(1) + ": invalid signal specification");
+				return false;
+			}
+		}
+
+		request.operands.assign(args.begin() + static_cast<std::ptrdiff_t>(i), args.end());
+		return true;
 	}
 
 	static int builtin_kill(Executor& exec, const std::vector<std::string>& args) {
-		int signum = kSignalTerm;
-		std::vector<std::string> targets;
-		for (std::size_t i = 0; i < args.size(); ++i) {
-			const std::string& arg = args[i];
-			if (arg == "-l") {
-				killPrintSignalList();
-				return 0;
-			}
-
-			if (arg == "-s" && i + 1 < args.size()) {
-				parseInt(args[++i], signum);
-				continue;
-			}
-
-			if (arg.size() > 1 && arg[0] == '-' && isDigitChar(arg[1])) {
-				parseInt(arg.substr(1), signum);
-				continue;
-			}
-
-			if (killSignalByName(arg, signum)) continue;
-
-			targets.push_back(arg);
-		}
-
-		if (targets.empty()) {
-			perr("kill", "usage: kill [-SIG] PID | %JOB ...");
+		KillRequest request;
+		if (!parseKillArgs(args, request)) return request.failure;
+		if (request.list) return killListSignals(request.operands);
+		if (request.operands.empty()) {
+			perr("kill", "usage: kill [-s SIGSPEC | -n SIGNUM | -SIGSPEC] PID | %JOB ...");
 			return 2;
 		}
 
 		exec.reapJobs();
 		int status = 0;
-		for (const std::string& target : targets) {
-			if (!killTarget(exec, target, signum)) status = 1;
+		for (const std::string& target : request.operands) {
+			if (!killTarget(exec, target, request.signum)) status = 1;
 		}
 
 		return status;

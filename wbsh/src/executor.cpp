@@ -52,6 +52,8 @@
 #include "parser.h"
 #include "posixregex.h"
 #include "procfs.h"
+#include "signalbox.h"
+#include "signals.h"
 #include "stdinsync.h"
 #include "testops.h"
 
@@ -718,6 +720,7 @@ namespace wbsh {
 		registerCoreBuiltins(*this);
 		registerCoreutils(*this);
 		loadUtils(*this);
+		publishSignalDispositions();
 	}
 
 	int Executor::execute(const Node& root) {
@@ -949,6 +952,8 @@ namespace wbsh {
 #endif
 			if (flowPending()) return status;
 			setLastStatus(status);
+			handlePendingSignals();
+			if (flowPending()) return status;
 
 			if (!item.background && handleCommandFailure(status)) return status;
 		}
@@ -3008,6 +3013,59 @@ namespace wbsh {
 		std::fprintf(stderr, "%s\n", jobLine(job).c_str());
 	}
 
+	static HANDLE firstStillRunning(const std::vector<HANDLE>& processes) {
+		for (const HANDLE process : processes) {
+			if (::WaitForSingleObject(process, 0) == WAIT_TIMEOUT) return process;
+		}
+
+		return nullptr;
+	}
+
+	// A wbsh passes the signal on, so it ends its own foreground command in
+	// turn; anything else can only be terminated.
+	static void passSignalOn(const std::vector<HANDLE>& processes, int signum) {
+		for (const HANDLE process : processes) {
+			if (postShellSignal(::GetProcessId(process), signum)) continue;
+			::TerminateProcess(process, static_cast<UINT>(kSignalStatusBase + signum));
+		}
+	}
+
+	// The signal is held while the command ends, so the mailbox's watcher
+	// does not end the shell first, and posted again for the safe point.
+	static void endForegroundWith(const std::vector<HANDLE>& processes, int signum) {
+		takeShellSignal(signum);
+		passSignalOn(processes, signum);
+		if (!processes.empty() && processes.size() <= MAXIMUM_WAIT_OBJECTS) {
+			::WaitForMultipleObjects(static_cast<DWORD>(processes.size()), processes.data(), TRUE,
+				INFINITE);
+		}
+
+		postShellSignal(::GetCurrentProcessId(), signum);
+	}
+
+	// A signal that ends the shell reaches the command it waits for too, as
+	// it would the whole foreground process group on Unix; one with a trap
+	// waits for the command to finish, as in bash.
+	void Executor::endForegroundOnFatalSignal(const std::vector<HANDLE>& processes) {
+		const HANDLE signal_event = static_cast<HANDLE>(shellSignalEvent());
+		if (signal_event == nullptr) return;
+
+		for (;;) {
+			const HANDLE running = firstStillRunning(processes);
+			if (running == nullptr) return;
+
+			const HANDLE waits[2] = { running, signal_event };
+			if (::WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0 + 1) continue;
+
+			const int signum = interruptingSignal();
+			if (signum == 0) continue;
+			if (hasTrap(signalName(signum))) return;
+
+			endForegroundWith(processes, signum);
+			return;
+		}
+	}
+
 	int Executor::waitForegroundProcesses(std::vector<HANDLE>& processes, HANDLE group,
 	                                      const std::string& text, std::vector<int>& statuses) {
 		spawn_placement_.job = nullptr;
@@ -3018,6 +3076,7 @@ namespace wbsh {
 		}
 
 		const HANDLE console = group != nullptr ? consoleInput() : nullptr;
+		if (group == nullptr) endForegroundOnFatalSignal(processes);
 		if (waitForeground(processes, console) == ForegroundEnd::Stopped) {
 			statuses.assign(processes.size(), kStatusStopped);
 			return stopForegroundJob(processes, group, text);
@@ -3262,6 +3321,7 @@ namespace wbsh {
 		publishCallStack();
 		trap_handlers_ = std::move(snap.saved_traps);
 		lists_inherited_traps_ = snap.saved_lists_inherited_traps;
+		publishSignalDispositions();
 
 		std::error_code ec;
 		std::filesystem::current_path(snap.saved_cwd, ec);
@@ -3288,6 +3348,7 @@ namespace wbsh {
 		ShellScriptScope snap = snapshotShellScriptScope();
 		trap_handlers_.clear();
 		lists_inherited_traps_ = false;
+		publishSignalDispositions();
 		beginExecRedirJournal();
 
 		for (const auto& assignment : temp_env) env_.set(assignment.first, assignment.second);
@@ -3347,6 +3408,8 @@ namespace wbsh {
 			if (it->second.empty() || inheritsTrap(it->first)) ++it;
 			else it = trap_handlers_.erase(it);
 		}
+
+		publishSignalDispositions();
 	}
 
 	void Executor::leaveSubshell(SubshellScope& snap) {
@@ -3359,6 +3422,7 @@ namespace wbsh {
 		trap_handlers_ = std::move(snap.traps);
 		inherited_traps_ = std::move(snap.inherited_traps);
 		lists_inherited_traps_ = snap.lists_inherited_traps;
+		publishSignalDispositions();
 		dir_stack_ = std::move(snap.dir_stack);
 		scope_stack_ = std::move(snap.scope_stack);
 		getopts_subindex_ = snap.getopts_subindex;
@@ -4118,10 +4182,44 @@ namespace wbsh {
 #endif
 	}
 
-	int Executor::waitForJob(int id) {
+#ifdef _WIN32
+	// The signal event stays set while a signal is pending, so one that is
+	// to be ignored is dropped before the wait goes on.
+	static bool waitUnlessSignalled(Executor& exec, HANDLE handle) {
+		const HANDLE signal_event = static_cast<HANDLE>(shellSignalEvent());
+		if (signal_event == nullptr) {
+			return ::WaitForSingleObject(handle, INFINITE) == WAIT_OBJECT_0;
+		}
+
+		for (;;) {
+			const HANDLE waits[2] = { handle, signal_event };
+			const DWORD woke = ::WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+			if (woke != WAIT_OBJECT_0 + 1) return true;
+			if (exec.interruptingSignal() != 0) return false;
+		}
+	}
+
+	static bool awaitJobUnlessSignalled(Executor& exec, const Executor::Job& job) {
+		for (const HANDLE stage : job.stages) {
+			if (!waitUnlessSignalled(exec, stage)) return false;
+		}
+
+		return job.handle == nullptr || waitUnlessSignalled(exec, job.handle);
+	}
+#else
+	static bool awaitJobUnlessSignalled(Executor&, const Executor::Job&) {
+		return true;
+	}
+#endif
+
+	int Executor::waitForJob(int id, bool interruptible) {
 		for (auto& job : jobs_) {
 			if (job.id != id) continue;
 			if (job.stopped) return job.exit_code;
+			if (job.running && interruptible && !awaitJobUnlessSignalled(*this, job)) {
+				return kSignalStatusBase + interruptingSignal();
+			}
+
 			if (job.running) waitJobToFinish(job);
 
 			const int status = job.exit_code;
@@ -4132,13 +4230,19 @@ namespace wbsh {
 		return -1;
 	}
 
-	void Executor::waitForAllJobs() {
+	int Executor::waitForAllJobs(bool interruptible) {
 		std::vector<int> ids;
 		for (const Job& job : jobs_) {
 			if (!job.stopped) ids.push_back(job.id);
 		}
 
-		for (const int id : ids) waitForJob(id);
+		for (const int id : ids) {
+			const int status = waitForJob(id, interruptible);
+			const bool interrupted = interruptible && status > kSignalStatusBase;
+			if (interrupted && interruptingSignal() != 0) return status;
+		}
+
+		return 0;
 	}
 
 	int Executor::waitForAnyJob() {
@@ -4161,13 +4265,21 @@ namespace wbsh {
 			ids.push_back(job.id);
 		}
 
-		if (handles.empty() || handles.size() > MAXIMUM_WAIT_OBJECTS) return -1;
+		if (handles.empty() || handles.size() >= MAXIMUM_WAIT_OBJECTS) return -1;
 
 		const DWORD count = static_cast<DWORD>(handles.size());
-		const DWORD which = ::WaitForMultipleObjects(count, handles.data(), FALSE, INFINITE);
-		if (which >= WAIT_OBJECT_0 + count) return -1;
+		const HANDLE signal_event = static_cast<HANDLE>(shellSignalEvent());
+		if (signal_event != nullptr) handles.push_back(signal_event);
 
-		return waitForJob(ids[which - WAIT_OBJECT_0]);
+		for (;;) {
+			const DWORD which = ::WaitForMultipleObjects(static_cast<DWORD>(handles.size()),
+				handles.data(), FALSE, INFINITE);
+			if (which < WAIT_OBJECT_0 + count) return waitForJob(ids[which - WAIT_OBJECT_0]);
+			if (which != WAIT_OBJECT_0 + count) return -1;
+
+			const int signum = interruptingSignal();
+			if (signum != 0) return kSignalStatusBase + signum;
+		}
 #else
 		return -1;
 #endif

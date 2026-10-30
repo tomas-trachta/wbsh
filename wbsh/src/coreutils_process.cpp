@@ -36,6 +36,8 @@
 #include "optscan.h"
 #include "pathconv.h"
 #include "posixregex.h"
+#include "signalbox.h"
+#include "signals.h"
 #include "termreq.h"
 
 namespace wbsh {
@@ -43,18 +45,6 @@ namespace wbsh {
 #ifdef _WIN32
 
 	namespace process_detail {
-
-		struct SignalName {
-			const char* name;
-			int number;
-		};
-
-		static const SignalName kSignalNames[] = {
-			{ "HUP",  1  }, { "INT",  2  }, { "QUIT", 3  }, { "ILL",  4  },
-			{ "TRAP", 5  }, { "ABRT", 6  }, { "BUS",  7  }, { "FPE",  8  },
-			{ "KILL", 9  }, { "USR1", 10 }, { "SEGV", 11 }, { "USR2", 12 },
-			{ "PIPE", 13 }, { "ALRM", 14 }, { "TERM", 15 },
-		};
 
 		struct MatchOptions {
 			bool exact = false;
@@ -123,17 +113,7 @@ namespace wbsh {
 	}
 
 	bool parseSignalName(const std::string& text, int& signum) {
-		if (parseInt(text, signum)) return signum >= 0;
-
-		std::string name = upperAscii(text);
-		if (name.compare(0, 3, "SIG") == 0) name = name.substr(3);
-		for (const auto& entry : process_detail::kSignalNames) {
-			if (name != entry.name) continue;
-			signum = entry.number;
-			return true;
-		}
-
-		return false;
+		return parseSignalSpec(text, signum);
 	}
 
 	static std::string processNameStem(const std::string& name) {
@@ -159,8 +139,11 @@ namespace wbsh {
 		return alive ? ProcessProbe::Alive : ProcessProbe::Missing;
 	}
 
+	// A wbsh takes any catchable signal through its mailbox (signalbox.h);
+	// every other process can only be terminated.
 	bool terminateProcessId(unsigned long pid, int signum) {
 		if (signum == 0) return probeProcess(pid) == ProcessProbe::Alive;
+		if (signum != kSignalKill && postShellSignal(pid, signum)) return true;
 
 		const HANDLE process = ::OpenProcess(PROCESS_TERMINATE, FALSE, pid);
 		if (process == nullptr) return false;
@@ -535,22 +518,27 @@ namespace wbsh {
 		return shellStatusFromExitCode(exit_code);
 	}
 
-	static std::string signalName(int signum) {
-		for (const auto& entry : process_detail::kSignalNames) {
-			if (entry.number == signum) return entry.name;
-		}
-
-		return std::to_string(signum);
+	static std::string signalLabel(int signum) {
+		const char* name = signalName(signum);
+		return name != nullptr ? std::string(name) : std::to_string(signum);
 	}
 
 	static void announceSignal(const TimeoutOptions& options, int signum) {
 		if (!options.verbose) return;
 
 		std::fprintf(stderr, "timeout: sending signal %s to command '%s'\n",
-			signalName(signum).c_str(), options.command[0].c_str());
+			signalLabel(signum).c_str(), options.command[0].c_str());
 	}
 
+	// A wbsh command takes the signal in its mailbox and decides when to
+	// end, as a Unix command would; anything else is terminated.
 	static void terminateChild(HANDLE job, HANDLE process, int signum) {
+		const unsigned long pid = ::GetProcessId(process);
+		if (signum != kSignalKill && postShellSignal(pid, signum)) {
+			::WaitForSingleObject(process, INFINITE);
+			return;
+		}
+
 		const UINT code = static_cast<UINT>(128 + signum);
 		if (job == nullptr || ::TerminateJobObject(job, code) == 0) {
 			::TerminateProcess(process, code);
@@ -573,8 +561,14 @@ namespace wbsh {
 	// With -k the first signal has to be one the command can survive, and
 	// the only such thing Windows can aim at one console process group is
 	// Ctrl+Break; KILL follows if the command is still there afterwards.
+	static bool sendSurvivableSignal(HANDLE process, int signum) {
+		const unsigned long pid = ::GetProcessId(process);
+		if (postShellSignal(pid, signum)) return true;
+		return ::GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) != 0;
+	}
+
 	static int expireGracefully(HANDLE job, HANDLE process, const TimeoutOptions& options) {
-		if (::GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, ::GetProcessId(process)) == 0) {
+		if (!sendSurvivableSignal(process, options.signal)) {
 			return expireTimedOutChild(job, process, options);
 		}
 

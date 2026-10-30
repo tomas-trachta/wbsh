@@ -14,17 +14,10 @@
 
 #include "executor.h"
 #include "numparse.h"
+#include "signals.h"
 
 namespace wbsh::trap_detail {
 
-	// Linux numbering, which bash scripts and `kill -l` output assume.
-	static const char* const kSignals[] = {
-		"HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL", "USR1",
-		"SEGV", "USR2", "PIPE", "ALRM", "TERM", "STKFLT", "CHLD", "CONT", "STOP", "TSTP",
-		"TTIN", "TTOU", "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR",
-		"SYS",
-	};
-	static const int kSignalCount = static_cast<int>(sizeof(kSignals) / sizeof(kSignals[0]));
 	static const char* const kPseudoSignals[] = { "DEBUG", "ERR", "RETURN" };
 	static const int kSignalsPerListLine = 5;
 
@@ -33,20 +26,10 @@ namespace wbsh::trap_detail {
 		return text;
 	}
 
-	static std::string signalByNumber(int number) {
-		if (number == 0) return "EXIT";
-		if (number < 1 || number > kSignalCount) return {};
-		return kSignals[number - 1];
-	}
-
-	static bool isKnownName(const std::string& name) {
+	static bool isPseudoSignal(const std::string& name) {
 		if (name == "EXIT") return true;
 		for (const char* pseudo : kPseudoSignals) {
 			if (name == pseudo) return true;
-		}
-
-		for (const char* signal : kSignals) {
-			if (name == signal) return true;
 		}
 
 		return false;
@@ -55,12 +38,12 @@ namespace wbsh::trap_detail {
 	// `INT`, `SIGINT`, `sigint` and `2` all name the same trap; empty when
 	// @p spec names none.
 	static std::string conditionName(const std::string& spec) {
-		int number = 0;
-		if (parseInt(spec, number)) return signalByNumber(number);
+		const std::string name = upper(spec);
+		if (isPseudoSignal(name)) return name;
 
-		std::string name = upper(spec);
-		if (name.size() > 3 && name.compare(0, 3, "SIG") == 0) name = name.substr(3);
-		return isKnownName(name) ? name : std::string();
+		int number = 0;
+		if (!parseSignalSpec(spec, number)) return std::string();
+		return number == 0 ? std::string("EXIT") : std::string(signalName(number));
 	}
 
 	static std::string displayName(const std::string& name) {
@@ -92,7 +75,7 @@ namespace wbsh::trap_detail {
 
 	static std::vector<std::string> listingOrder() {
 		std::vector<std::string> names = { "EXIT" };
-		for (const char* signal : kSignals) names.push_back(signal);
+		for (int number = 1; number <= signalCount(); ++number) names.push_back(signalName(number));
 		for (const char* pseudo : kPseudoSignals) names.push_back(pseudo);
 		return names;
 	}
@@ -123,9 +106,10 @@ namespace wbsh::trap_detail {
 	}
 
 	static int listSignals() {
-		for (int number = 1; number <= kSignalCount; ++number) {
-			const bool line_end = number % kSignalsPerListLine == 0 || number == kSignalCount;
-			std::printf("%2d) SIG%s%s", number, kSignals[number - 1], line_end ? "\n" : "\t");
+		const int count = signalCount();
+		for (int number = 1; number <= count; ++number) {
+			const bool line_end = number % kSignalsPerListLine == 0 || number == count;
+			std::printf("%2d) SIG%s%s", number, signalName(number), line_end ? "\n" : "\t");
 		}
 
 		return 0;

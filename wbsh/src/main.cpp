@@ -26,6 +26,7 @@
 #include "pathconv.h"
 #include "repl.h"
 #include "script.h"
+#include "signalbox.h"
 #include "source.h"
 
 using namespace wbsh;
@@ -425,6 +426,7 @@ static int runShell(int argc, char** argv) {
 #ifdef _WIN32
 int wmain(int argc, wchar_t** wide_argv) {
 	prepareCrtForShellUse();
+	wbsh::openSignalMailbox();
 
 	std::vector<std::string> storage;
 	std::vector<char*> ptrs;

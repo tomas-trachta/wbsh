@@ -1767,13 +1767,19 @@ namespace wbsh {
 		return status < 0 ? 127 : status;
 	}
 
+	static int waitForAll(Executor& exec) {
+		const int interrupted = exec.waitForAllJobs(true);
+		if (interrupted != 0) return interrupted;
+
+		exec.waitForProcSubstChildren();
+		return 0;
+	}
+
+	// A signal with a trap, or one that ends the shell, cuts the wait short
+	// with 128 + its number, as in bash; the trap runs once `wait` returns.
 	static int builtin_wait(Executor& exec, const std::vector<std::string>& args) {
 		if (!args.empty() && args[0] == "-n") return builtinWaitAny(exec);
-		if (args.empty()) {
-			exec.waitForAllJobs();
-			exec.waitForProcSubstChildren();
-			return 0;
-		}
+		if (args.empty()) return waitForAll(exec);
 
 		int status = 0;
 		for (const std::string& spec : args) {
@@ -1783,8 +1789,9 @@ namespace wbsh {
 				continue;
 			}
 
-			const int job_status = exec.waitForJob(id);
+			const int job_status = exec.waitForJob(id, true);
 			if (job_status >= 0) status = job_status;
+			if (exec.interruptingSignal() != 0) return status;
 		}
 
 		return status;
