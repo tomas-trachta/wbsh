@@ -194,6 +194,22 @@ own carries on. Ctrl+C and Ctrl+Break are left to the program. Its PID is
 not `$$`, so a script that writes `$$` to a pid file and then `exec`s a
 daemon records the wrapper's PID; use `$!` of a background start or the
 program's own pid file instead.
+
+Windows delivers no POSIX signals, so every wbsh keeps a mailbox named after
+its PID, and `kill` (`-NAME`, `-SIGNAME` in any case, `-s`, `-n`, `-NUM`,
+`-l`), `pkill`, `killall` and `timeout` post catchable signals there. The
+shell takes them between commands, in `wait` (which returns 128 + n, as in
+bash) and in `sleep` (which runs the trap at once and sleeps on), and then
+runs the trap, ignores the signal (`trap ''`; CHLD, CONT, URG and WINCH by
+default, and INT, QUIT and TERM in an interactive shell), or ends with
+128 + n: the EXIT trap still runs, and the command the shell was waiting for
+ends with it. A shell busy in a long builtin (`tail -f`, `crond`, `httpd`)
+that gets a signal it neither traps nor ignores ends half a second later, as
+an uncaught signal would end it. A trapped signal that comes while an
+external command runs is handled once the command is done, as in bash. KILL,
+STOP / TSTP and CONT work on any process as before, and a process that is no
+wbsh, or a wbsh in another logon session, is terminated with 128 + n.
+
 **Files:** `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `mkfifo`, `mknod`, `rmdir`, `touch`, `ln`,
 `link`, `unlink`, `stat`, `chmod`, `chown`, `chgrp`, `chattr`, `lsattr`,
 `install`, `file`, `du`, `df`, `realpath`, `readlink`, `basename`, `dirname`,
