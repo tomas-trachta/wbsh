@@ -279,9 +279,12 @@ namespace wbsh {
 		bool reapJobs();
 		std::vector<Job>& jobsTable() { return jobs_; }
 		/// Wait for one job; returns its exit status, or -1 if id unknown.
-		/// A job that was waited for leaves the table, as in bash.
-		int  waitForJob(int id);
-		void waitForAllJobs();
+		/// A job that was waited for leaves the table, as in bash. When
+		/// @p interruptible (the `wait` builtin), a posted signal that is not
+		/// ignored ends the wait with 128 + its number, the job left running.
+		int  waitForJob(int id, bool interruptible = false);
+		/// 0, or 128 + the signal that ended an interruptible wait.
+		int  waitForAllJobs(bool interruptible = false);
 		/// `wait -n`: the status of the next job to finish, or -1 with none.
 		int  waitForAnyJob();
 		/// Ctrl+Z and stopped jobs exist only in an interactive shell on a console.
@@ -319,19 +322,41 @@ namespace wbsh {
 		/// `EXIT` fires when a script, `-c` string, subshell, command
 		/// substitution or the REPL ends, `ERR` after a failed command,
 		/// `DEBUG` before a command, `RETURN` when a function or `source`
-		/// ends; signal-driven traps need real signal plumbing on Windows
-		/// (deferred).
+		/// ends; a signal's trap when handlePendingSignals() takes it, and INT
+		/// on Ctrl+C in the REPL.
 		void setTrap(const std::string& sig, std::string cmd) {
 			trap_handlers_[sig] = std::move(cmd);
 			lists_inherited_traps_ = false;
+			publishSignalDispositions();
 		}
 		void clearTrap(const std::string& sig) {
 			trap_handlers_.erase(sig);
 			lists_inherited_traps_ = false;
+			publishSignalDispositions();
 		}
 		bool hasTrap(const std::string& sig) const {
 			return trap_handlers_.count(sig) != 0;
 		}
+
+		/// Acts on each signal another wbsh (or this one) posted, lowest
+		/// number first: runs its trap, ignores it, or raises the exit its
+		/// default action means. Called at the shell's safe points.
+		void handlePendingSignals();
+
+		/// Whether @p signum would be ignored now: `trap ''`, or no trap and
+		/// a signal this shell ignores by default (CHLD, CONT, URG, WINCH;
+		/// INT, QUIT and TERM too when interactive).
+		bool signalIgnored(int signum) const;
+
+		/// Drops the pending signals that would be ignored, so that they wake
+		/// no wait, and returns the lowest one left (0 for none).
+		int interruptingSignal();
+
+		/// Tells the mailbox which signals this shell traps or ignores, so
+		/// that one it does neither ends the process even while a long
+		/// builtin keeps the shell from its safe points. Called whenever the
+		/// trap table changes.
+		void publishSignalDispositions() const;
 		std::string trapAction(const std::string& sig) const {
 			auto it = trap_handlers_.find(sig);
 			return it == trap_handlers_.end() ? std::string() : it->second;
@@ -688,6 +713,11 @@ namespace wbsh {
 
 		bool trapActionFor(const char* name, std::string& action) const;
 		void runTrapKeepingStatus(const std::string& action);
+		void actOnSignal(int signum);
+#ifdef _WIN32
+		void endForegroundOnFatalSignal(const std::vector<HANDLE>& processes);
+#endif
+		bool handling_signals_ = false;
 		void fireDebugTrap();
 		// Sets BASH_COMMAND to @p text and runs the DEBUG trap before it.
 		void announceCommand(std::string text);

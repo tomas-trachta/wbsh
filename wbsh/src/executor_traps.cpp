@@ -1,7 +1,8 @@
 /**
  * @file executor_traps.cpp
- * @brief Running the traps that are not signals: ERR after a failed
- *        command, DEBUG before one, RETURN when a function or `source` ends.
+ * @brief Running traps: ERR after a failed command, DEBUG before one,
+ *        RETURN when a function or `source` ends, and the signals other
+ *        wbsh processes post (signalbox.h) at the shell's safe points.
  */
 
 #include "executor.h"
@@ -10,6 +11,10 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "exitstatus.h"
+#include "signalbox.h"
+#include "signals.h"
 
 namespace wbsh {
 
@@ -60,6 +65,75 @@ namespace wbsh {
 
 		setLastStatus(status);
 		env_.setIndexedArraySparse("PIPESTATUS", std::move(pipe_status));
+	}
+
+	static const int kSigInt = 2;
+	static const int kSigQuit = 3;
+	static const int kSigTerm = 15;
+	static const int kIgnoredByDefault[] = { 17, 18, 23, 28 };
+
+	static bool ignoredByDefault(int signum, bool interactive) {
+		for (const int ignored : kIgnoredByDefault) {
+			if (signum == ignored) return true;
+		}
+
+		return interactive && (signum == kSigInt || signum == kSigQuit || signum == kSigTerm);
+	}
+
+	bool Executor::signalIgnored(int signum) const {
+		const char* name = signalName(signum);
+		if (name == nullptr) return true;
+		if (hasTrap(name)) return trapAction(name).empty();
+		return ignoredByDefault(signum, env_.interactive());
+	}
+
+	void Executor::publishSignalDispositions() const {
+		unsigned long caught = 0;
+		for (int signum = 1; signum <= signalCount(); ++signum) {
+			const bool trapped = hasTrap(signalName(signum));
+			if (trapped || ignoredByDefault(signum, env_.interactive())) caught |= 1UL << signum;
+		}
+
+		setCaughtShellSignals(caught);
+	}
+
+	int Executor::interruptingSignal() {
+		const unsigned long pending = pendingShellSignals();
+		for (int signum = 1; signum <= signalCount(); ++signum) {
+			if ((pending & (1UL << signum)) == 0) continue;
+			if (!signalIgnored(signum)) return signum;
+
+			takeShellSignal(signum);
+		}
+
+		return 0;
+	}
+
+	// As in bash, a signal with no trap that is not ignored ends the shell
+	// with 128 + its number, and the EXIT trap still runs.
+	void Executor::actOnSignal(int signum) {
+		const char* name = signalName(signum);
+		if (name == nullptr) return;
+
+		if (hasTrap(name)) {
+			const std::string action = trapAction(name);
+			if (!action.empty()) runTrapKeepingStatus(action);
+			return;
+		}
+
+		if (!ignoredByDefault(signum, env_.interactive())) raiseExit(kSignalStatusBase + signum);
+	}
+
+	// A signal posted while its own trap runs waits for the next safe point.
+	void Executor::handlePendingSignals() {
+		if (handling_signals_ || pendingShellSignals() == 0) return;
+
+		handling_signals_ = true;
+		for (int signum = 1; signum <= signalCount() && !flowPending(); ++signum) {
+			if (takeShellSignal(signum)) actOnSignal(signum);
+		}
+
+		handling_signals_ = false;
 	}
 
 	bool Executor::trapActionFor(const char* name, std::string& action) const {
