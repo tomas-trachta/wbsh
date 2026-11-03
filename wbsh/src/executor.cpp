@@ -3393,6 +3393,7 @@ namespace wbsh {
 
 		resetSubshellTraps();
 		env_.reseedRandom();
+		env_.enterSubshellPid();
 		beginExecRedirJournal();
 		return snap;
 	}

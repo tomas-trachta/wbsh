@@ -1538,14 +1538,7 @@ namespace wbsh {
 		if (name == "BASH_COMMAND") { out = env_.currentCommand();             return true; }
 		if (name == "EPOCHSECONDS")  { out = std::to_string(epochSeconds()); return true; }
 		if (name == "EPOCHREALTIME") { out = epochRealtime();                return true; }
-		if (name == "BASHPID") {
-#ifdef _WIN32
-			out = std::to_string(static_cast<long long>(::GetCurrentProcessId()));
-#else
-			out = std::to_string(static_cast<long long>(::getpid()));
-#endif
-			return true;
-		}
+		if (name == "BASHPID") { out = std::to_string(env_.bashPid());        return true; }
 
 		return false;
 	}

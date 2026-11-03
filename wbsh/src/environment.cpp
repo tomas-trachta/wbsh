@@ -39,6 +39,7 @@ namespace wbsh {
 #else
 		shell_pid_ = static_cast<long long>(::getpid());
 #endif
+		bash_pid_ = shell_pid_;
 		vars_["IFS"] = kDefaultIfs;
 		const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
 		random_state_ = static_cast<unsigned int>(shell_pid_) ^ static_cast<unsigned int>(ticks);
@@ -602,6 +603,16 @@ namespace wbsh {
 		random_state_ = randomNext() ^ static_cast<unsigned int>(ticks);
 	}
 
+	void Environment::enterSubshellPid() {
+		static long long serial = 0;
+#ifdef _WIN32
+		const long long pid = static_cast<long long>(::GetCurrentProcessId());
+#else
+		const long long pid = static_cast<long long>(::getpid());
+#endif
+		bash_pid_ = ((++serial) << 32) | pid;
+	}
+
 	template <typename Map>
 	static void dropEntriesNotIn(Map& current, const Map& snapshot) {
 		for (auto it = current.begin(); it != current.end(); ) {
@@ -632,6 +643,7 @@ namespace wbsh {
 		namerefs_     = snapshot.namerefs_;
 		positional_   = snapshot.positional_;
 		last_bg_pid_  = snapshot.last_bg_pid_;
+		bash_pid_     = snapshot.bash_pid_;
 		shell_name_   = snapshot.shell_name_;
 		options_      = snapshot.options_;
 		interactive_  = snapshot.interactive_;

@@ -260,6 +260,18 @@ namespace wbsh {
 		/// A self-spawned pipeline stage reports its parent shell's `$$`.
 		void setShellPid(long long pid) { shell_pid_ = pid; }
 
+		/// `$BASHPID`: this process's PID, or the value an in-process
+		/// subshell was given.
+		long long bashPid() const { return bash_pid_; }
+		/**
+		 * @brief Give an in-process subshell a `$BASHPID` of its own.
+		 *
+		 * There is no fork, so the value is synthetic: a serial above
+		 * 32 bits joined with the real PID. It is unique within this
+		 * process and across wbsh processes, and no real PID can equal it.
+		 */
+		void enterSubshellPid();
+
 		/// `$-`: the single-letter options that are on, in bash's order.
 		std::string shellOptions() const;
 
@@ -385,6 +397,7 @@ namespace wbsh {
 		int last_status_ = 0;
 		long long last_bg_pid_ = 0;
 		long long shell_pid_ = 0;
+		long long bash_pid_ = 0;
 		std::string shell_name_ = "wbsh";
 		SetOptions options_;
 		bool interactive_ = false;
