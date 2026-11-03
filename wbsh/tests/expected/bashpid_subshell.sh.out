@@ -1,0 +1,19 @@
+=== the top level
+top: BASHPID is $$
+=== ( ) and $( )
+paren: own BASHPID
+cmdsub: own BASHPID
+nested: own BASHPID
+pipe: own BASHPID
+=== each subshell has a different value
+sequential substitutions differ
+outer and inner differ
+=== the value is an integer and $$ stays the same
+integer
+$$ unchanged in $( )
+=== it is restored when the subshell ends
+restored
+=== an EXIT trap in a subshell sees the subshell's value
+same value in the trap
+=== per-subshell temp names do not collide
+2
