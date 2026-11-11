@@ -30,8 +30,23 @@ $links = Get-Content (Join-Path $src 'screen_vt.cpp') -Raw
 	Text = 'hyperlinks are opened without a scheme allowlist'
 }
 
+# The vendored ConPTY binaries: signed by Microsoft, and the files that
+# conpty\fetch.ps1 recorded in VERSION.txt (a swapped binary shows here).
 $conpty = Join-Path $Context.Repo 'wbshterm\conpty'
-if (-not (Get-ChildItem $conpty -Filter '*.sha256' -ErrorAction SilentlyContinue) -and -not (Select-String -Path (Join-Path $conpty '*') -Pattern 'sha256|SHA256' -Quiet -ErrorAction SilentlyContinue)) {
-	[pscustomobject]@{ Ok = $false; Severity = 'review'; Artifact = ''
-		Text = 'the vendored conpty.dll / OpenConsole.exe have no recorded SHA-256; record the hash next to the version so a swapped binary is seen' }
+$recorded = Get-Content (Join-Path $conpty 'VERSION.txt') -ErrorAction SilentlyContinue
+foreach ($name in 'conpty.dll', 'OpenConsole.exe') {
+	$file = Join-Path $conpty $name
+	$signature = Get-AuthenticodeSignature $file
+	[pscustomobject]@{
+		Ok = $signature.Status -eq 'Valid' -and $signature.SignerCertificate.Subject -match 'CN=Microsoft Corporation'
+		Severity = 'high'; Artifact = $file
+		Text = "vendored $name has no valid Microsoft signature ($($signature.Status))"
+	}
+
+	$hash = (Get-FileHash $file -Algorithm SHA256).Hash
+	[pscustomobject]@{
+		Ok = [bool]($recorded -match "^SHA256 $hash  $([regex]::Escape($name))$")
+		Severity = 'high'; Artifact = $file
+		Text = "vendored $name does not match the SHA-256 in conpty\VERSION.txt (run conpty\fetch.ps1)"
+	}
 }
