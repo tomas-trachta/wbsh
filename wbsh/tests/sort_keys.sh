@@ -63,6 +63,15 @@ sort -m _sort_o.txt _sort_o.txt
 rm -f _sort_o.txt
 printf '5\n3\n' | sort -S 1M -T /tmp --parallel=2
 
+echo "=== first key found once per line"
+rows='b,2,-0.0\na,1,0\nc,3,-1.50\nd,4,10\ne,5,9.990\nf,6,.5\ng,7,-.5\nh,8,x\ni,9,007'
+printf "$rows\n" | sort -t, -k3,3n
+printf "$rows\n" | sort -t, -k3,3n -k1,1r
+printf "$rows\n" | sort -t, -k3,3nr
+printf "$rows\n" | sort -t, -k3,3n -u
+printf "$rows\n" | sort -t, -k3,3n -s
+printf "$rows\n" | sort -t, -k3,3
+
 echo "=== errors"
 printf 'x\n' | sort -k0; echo "status $?"
 printf 'x\n' | sort -k1.0; echo "status $?"
