@@ -79,6 +79,22 @@ echo "rc=$?"
 echo "=== proxy"
 curl -s -x "$BASE" http://example.invalid/echo | head -1 | show
 
+echo "=== NO_PROXY: names, addresses, CIDR ranges, IPv6 entries (#291)"
+via() {
+    local out
+    out=$(http_proxy=$BASE NO_PROXY=$1 curl -s --connect-timeout 1 "$2" | head -1 | show)
+    [ -n "$out" ] && echo "$1 -> $2: proxy ($out)" || echo "$1 -> $2: direct"
+}
+via '::1,10.0.0.0/8, 192.168.0.0/16' http://example.invalid/echo
+via '192.0.2.0/24' http://192.0.2.1/echo
+via '192.0.2.1' http://192.0.2.1/echo
+via '192.0.2.0/33' http://192.0.2.1/echo
+via '198.51.100.0/24' http://192.0.2.1/echo
+via '.invalid' http://example.invalid/echo
+via 'EXAMPLE.invalid.' http://example.invalid/echo
+via 'ample.invalid' http://example.invalid/echo
+via '*' http://example.invalid/echo
+
 echo "=== multipart forms"
 printf 'file content\n' > "$tmp/up.txt"
 curl -s -F 'name=value' -F "up=@$tmp/up.txt" -F "note=<$tmp/up.txt" "$BASE/echo" | show

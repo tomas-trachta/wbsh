@@ -97,6 +97,16 @@ recovered
 rc=0
 === proxy
 GET http://example.invalid/echo HTTP/1.1
+=== NO_PROXY: names, addresses, CIDR ranges, IPv6 entries (#291)
+::1,10.0.0.0/8, 192.168.0.0/16 -> http://example.invalid/echo: proxy (GET http://example.invalid/echo HTTP/1.1)
+192.0.2.0/24 -> http://192.0.2.1/echo: direct
+192.0.2.1 -> http://192.0.2.1/echo: direct
+192.0.2.0/33 -> http://192.0.2.1/echo: proxy (GET http://192.0.2.1/echo HTTP/1.1)
+198.51.100.0/24 -> http://192.0.2.1/echo: proxy (GET http://192.0.2.1/echo HTTP/1.1)
+.invalid -> http://example.invalid/echo: direct
+EXAMPLE.invalid. -> http://example.invalid/echo: direct
+ample.invalid -> http://example.invalid/echo: proxy (GET http://example.invalid/echo HTTP/1.1)
+* -> http://example.invalid/echo: direct
 === multipart forms
 POST /echo HTTP/1.1
 Connection: Keep-Alive
