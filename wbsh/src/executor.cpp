@@ -62,6 +62,7 @@ namespace wbsh {
 	using NameValueList = std::vector<std::pair<std::string, std::string>>;
 
 	static const int kStatusCommandNotFound = 127;
+	static const int kStatusCannotExecute = 126;
 	static const int kStatusInterrupted = 130;
 	static const int kStatusStopped = 148;
 	static const int kStatusHangup = 129;
@@ -99,6 +100,7 @@ namespace wbsh {
 			std::wstring exe;
 			std::wstring cmdline;
 			std::wstring envblock;
+			std::string  error;
 		};
 
 		struct SelfSpawnLine {
@@ -331,10 +333,65 @@ namespace wbsh {
 		return std::wstring(system_dir, length) + L"\\cmd.exe";
 	}
 
-	static std::wstring wrapWithCmdExe(const std::wstring& cmdline) {
-		std::wstring cmd = cmdExePath();
-		if (cmd.find(L' ') != std::wstring::npos) cmd = L"\"" + cmd + L"\"";
-		return cmd + L" /d /s /c \"" + cmdline + L"\"";
+	// cmd.exe parses the command line of a batch file itself and knows no
+	// backslash escapes, so a `"` inside an argument would end the quotes and
+	// let & | < > run commands (CVE-2024-24576). Every argument is quoted,
+	// `"` is doubled and `%` becomes `%%cd:~,%`, which cmd.exe expands to a
+	// lone `%`. Backslashes before a quote are doubled as for the C runtime,
+	// which parses the argument again when the script passes it on. A line
+	// break cannot be quoted for cmd.exe at all.
+	static bool appendBatchArg(std::wstring& out, const std::wstring& arg) {
+		out.push_back(L'"');
+		std::size_t backslashes = 0;
+		for (wchar_t c : arg) {
+			if (c == L'\r' || c == L'\n' || c == L'\0') return false;
+			if (c == L'\\') {
+				++backslashes;
+				continue;
+			}
+
+			out.append(c == L'"' ? backslashes * 2 : backslashes, L'\\');
+			backslashes = 0;
+			if (c == L'"') {
+				out += L"\"\"";
+			} else if (c == L'%') {
+				out += L"%%cd:~,%";
+			} else {
+				out.push_back(c);
+			}
+		}
+
+		out.append(backslashes * 2, L'\\');
+		out.push_back(L'"');
+		return true;
+	}
+
+	static std::wstring fullWindowsPath(const std::string& path) {
+		const std::wstring wide = utf8ToWide(path);
+		const DWORD needed = ::GetFullPathNameW(wide.c_str(), 0, nullptr, nullptr);
+		if (needed == 0) return wide;
+
+		std::wstring full(needed, L'\0');
+		const DWORD length = ::GetFullPathNameW(wide.c_str(), needed, full.data(), nullptr);
+		full.resize(length < needed ? length : 0);
+		return full.empty() ? wide : full;
+	}
+
+	// The script goes by its full Windows path: cmd.exe reads `./x.bat` as
+	// the command `.`.
+	static bool buildBatchCommandLine(const std::vector<std::string>& argv,
+	                                  const std::string& exec_path, std::wstring& out) {
+		std::wstring line = L"\"" + cmdExePath() + L"\" /e:on /v:off /d /s /c \"";
+		if (!appendBatchArg(line, fullWindowsPath(exec_path))) return false;
+
+		for (std::size_t i = 1; i < argv.size(); ++i) {
+			line.push_back(L' ');
+			if (!appendBatchArg(line, utf8ToWide(argv[i]))) return false;
+		}
+
+		line.push_back(L'"');
+		out = std::move(line);
+		return true;
 	}
 
 	static std::vector<EnvEntry> envEntries(const Environment& env, bool include_unexported) {
@@ -672,11 +729,20 @@ namespace wbsh {
 		command.cmdline  = buildCommandLine(argv);
 		command.envblock = std::move(envblock);
 		if (isBatchFile(exec_path)) {
-			command.cmdline = wrapWithCmdExe(command.cmdline);
-			command.exe     = cmdExePath();
+			command.exe = cmdExePath();
+			if (!buildBatchCommandLine(argv, exec_path, command.cmdline)) {
+				command.error = "an argument with a line break cannot be passed to a batch file";
+			}
 		}
 
 		return command;
+	}
+
+	static bool reportSpawnCommandError(const SpawnCommand& command, const std::string& name) {
+		if (command.error.empty()) return false;
+
+		std::fprintf(stderr, "wbsh: %s: %s\n", name.c_str(), command.error.c_str());
+		return true;
 	}
 #endif  // _WIN32
 
@@ -1696,6 +1762,8 @@ namespace wbsh {
 		SpawnCommand command = makeSpawnCommand(
 			prepareExternalArgv(argv, exec_path, no_assignments), exec_path,
 			buildEnvBlock(env_, prepareExternalEnvOverrides(no_assignments)));
+		if (reportSpawnCommandError(command, argv[0])) return INVALID_HANDLE_VALUE;
+
 		return spawnWithHandles(command, currentStdio(), placement);
 	}
 
@@ -1775,6 +1843,8 @@ namespace wbsh {
 
 		SpawnCommand command = makeSpawnCommand(child_argv, exec_path,
 			buildEnvBlock(env_, overrides));
+		if (reportSpawnCommandError(command, argv[0])) return INVALID_HANDLE_VALUE;
+
 		return spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err },
 			backgroundPlacement());
 	}
@@ -2897,6 +2967,7 @@ namespace wbsh {
 		const NameValueList child_env = prepareExternalEnvOverrides(temp_env);
 		SpawnCommand command = makeSpawnCommand(child_argv, exec_path,
 			buildEnvBlock(env_, child_env));
+		if (reportSpawnCommandError(command, argv[0])) return kStatusCannotExecute;
 
 		std::fflush(stdout);
 		std::fflush(stderr);
