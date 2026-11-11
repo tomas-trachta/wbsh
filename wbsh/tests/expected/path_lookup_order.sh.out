@@ -1,0 +1,10 @@
+=== by path: the named script
+./tool
+the POSIX script
+the POSIX script
+=== by path: a plain file does not win over .cmd
+notes.cmd
+notes.cmd
+=== on PATH: .exe, .cmd and .bat first
+tool.bat
+the batch file

@@ -1,0 +1,55 @@
+=== -c runs
+hi
+0=name 1=one 2=two
+status 3
+with -r
+=== a dump flag without -r only dumps
+--- AST ---
+List
+  Item
+    SimpleCommand
+      Word raw="echo" segs=[Lit("echo")]
+      Word raw="not" segs=[Lit("not")]
+      Word raw="run" segs=[Lit("run")]
+--- TOKENS ---
+1:1  Word text="echo" segs=[Lit("echo")]
+1:6  Word text="not" segs=[Lit("not")]
+1:10  Word text="run" segs=[Lit("run")]
+1:13  EndOfInput
+--- AST ---
+List
+  Item
+    SimpleCommand
+      Word raw="echo" segs=[Lit("echo")]
+      Word raw="not" segs=[Lit("not")]
+      Word raw="run" segs=[Lit("run")]
+--- AST ---
+List
+  Item
+    SimpleCommand
+      Word raw="echo" segs=[Lit("echo")]
+      Word raw="not" segs=[Lit("not")]
+      Word raw="run" segs=[Lit("run")]
+--- EXPANSIONS ---
+SimpleCommand @ 1:1
+  Word raw="echo" -> "echo"
+  Word raw="not" -> "not"
+  Word raw="run" -> "run"
+=== -r with a dump flag dumps and runs
+--- AST ---
+List
+  Item
+    SimpleCommand
+      Word raw="echo" segs=[Lit("echo")]
+      Word raw="ran" segs=[Lit("ran")]
+ran
+=== a file without -r is dumped, with -r it runs
+--- AST ---
+List
+  Item
+    SimpleCommand
+      Word raw="echo" segs=[Lit("echo")]
+      Word raw="from" segs=[Lit("from")]
+      Word raw="the" segs=[Lit("the")]
+      Word raw="file" segs=[Lit("file")]
+from the file

@@ -63,10 +63,10 @@ trach@DESKTOP /c/Users/trach (main)$ ls
 Documents  Downloads  Desktop  ...
 ```
 
-Run a command or a script with `-r`:
+Run a command with `-c`, and a script with `-r`:
 
 ```sh
-$ wbsh -r -c 'for i in {1..3}; do printf "%02d\n" "$((i * 7))"; done'
+$ wbsh -c 'for i in {1..3}; do printf "%02d\n" "$((i * 7))"; done'
 07
 14
 21
@@ -74,8 +74,9 @@ $ wbsh -r -c 'for i in {1..3}; do printf "%02d\n" "$((i * 7))"; done'
 $ wbsh -r script.sh
 ```
 
-> **`-r` is required, unlike in bash.** Without it, `wbsh -c` and `wbsh <file>`
-> only print a parse tree, as a debugging aid, and run nothing.
+> **A script file needs `-r`, unlike in bash.** Without it, `wbsh <file>` only
+> prints a parse tree, as a debugging aid, and runs nothing. `wbsh -c` runs the
+> command, as in bash, so wbsh works as `$SHELL -c`; `wbsh --ast -c` dumps it.
 
 Pipelines, redirection, control flow, functions, command substitution,
 arithmetic, brace, parameter, tilde and glob expansion, here-docs, here-strings
@@ -84,14 +85,15 @@ and traps all work.
 ```
 wbsh                                 interactive shell (TTY auto-detect)
 wbsh [opts] -c <command> [name [arg ...]]
-                                     run / dump the given string ($0 = name)
+                                     run the given string ($0 = name)
 wbsh [opts] <file> [arg ...]         run / dump the file ($1.. = args)
 wbsh [opts] - [arg ...]              run / dump stdin (also -s)
 
   -i, --interactive                  force interactive REPL
-  -r, --run                          execute the script
+  -r, --run                          execute the file or stdin
   -e, --expand                       dump expanded words
   -t, --tokens                       dump the token stream
+  --ast                              dump the AST (with -c and no -r: dump only)
   --no-ast                           suppress the AST dump
   -h, --help                         show help
   -v, --version                      print the version

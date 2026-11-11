@@ -1125,6 +1125,10 @@ namespace wbsh {
 	}
 
 	static int builtin_tar(Executor& exec, const std::vector<std::string>& args) {
+		if (std::find(args.begin(), args.end(), "--version") != args.end()) {
+			return showToolVersion("tar");
+		}
+
 		TarOptions options;
 		if (!parseTarArgs(args, options) || !loadListFiles(exec, options)) return 2;
 		if (options.mode == TarMode::Create) return createArchive(exec, options);

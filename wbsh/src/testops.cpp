@@ -248,9 +248,24 @@ namespace wbsh::testops_detail {
 		return procNodePasses(op, node);
 	}
 
-	static bool evalFileOperator(Executor& exec, char op, const std::string& operand) {
-		if (isProcPath(operand)) return evalProcOperator(exec, op, operand);
+	// As in Git Bash, a missing name with a `.exe` beside it is that file,
+	// so launchers such as mvn and gradlew pass `[ -x "$JAVA_HOME/bin/java" ]`.
+	// A device path is not probed: a `<(...)` pipe takes one stat only.
+	static std::string withImplicitExe(Executor& exec, const std::string& operand) {
+		struct stat info {};
+		if (operand.empty() || isDevicePath(nativePath(exec, operand))) return operand;
+		if (statOperand(exec, operand, info)) return operand;
 
+		const std::string exe = operand + ".exe";
+		const bool found = statOperand(exec, exe, info) && (info.st_mode & S_IFMT) == S_IFREG;
+		return found ? exe : operand;
+	}
+
+	static bool evalFileOperator(Executor& exec, char op, const std::string& name) {
+		if (isProcPath(name)) return evalProcOperator(exec, op, name);
+
+		const bool type_of_entry = op == 'h' || op == 'L' || op == 'p' || op == 'c' || op == 'S';
+		const std::string operand = type_of_entry ? name : withImplicitExe(exec, name);
 		switch (op) {
 			case 'x': return isRunnable(exec, operand);
 			case 'h':

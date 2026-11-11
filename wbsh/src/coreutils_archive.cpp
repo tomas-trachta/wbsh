@@ -263,6 +263,9 @@ namespace wbsh {
 	}
 
 	static int builtin_unzip(Executor& exec, const std::vector<std::string>& args) {
+		// Info-ZIP's `unzip -v` with no archive prints the version.
+		if (args.size() == 1 && args[0] == "-v") return showToolVersion("unzip");
+
 		const UnzipOptions options = parseUnzipArgs(args);
 		if (options.archive.empty()) {
 			perr("unzip", "missing archive name");

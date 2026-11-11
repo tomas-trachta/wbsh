@@ -91,13 +91,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	static int showVersion(const char* cmd) {
-		std::printf("%s (wbsh) %d.%d.%d\n", cmd, WBSH_VERSION_MAJOR, WBSH_VERSION_MINOR,
-			WBSH_VERSION_PATCH);
-		std::fflush(stdout);
-		return 0;
-	}
-
 	static std::string localTimestamp() {
 		const std::time_t now = std::time(nullptr);
 		std::tm local{};
@@ -278,7 +271,7 @@ namespace wbsh {
 		ScriptOptions options;
 		if (!parseScriptArgs(args, options)) return 1;
 		if (options.help) return showUsage(kScriptUsage);
-		if (options.version) return showVersion("script");
+		if (options.version) return showToolVersion("script");
 
 		ScriptLogs logs;
 		if (!openScriptLogs(exec, options, logs)) {

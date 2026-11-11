@@ -26,6 +26,38 @@ Tilde expansion covers `~`, `~+`, `~-` and `~name`.
 - A name that is no user account stays literal, as in bash.
 - Tab completes `~na` to user names.
 
+### Identity: uname, OSTYPE, UID
+
+`uname -s` prints `wbsh`, but `OSTYPE` is `msys` and `MACHTYPE` ends in
+`-pc-msys`, as in Git Bash. The two answers differ on purpose:
+
+- `$OSTYPE` tells a script that it runs on Windows.
+- `uname -s` does not start with `MSYS` or `MINGW`. Launchers such as
+  `gradlew` and the npm shims run `cygpath` on that branch. wbsh converts POSIX
+  paths for native programs itself, so the generic POSIX branch works, and
+  `cygpath` is not bundled.
+
+There is no uid model. `UID` and `EUID` are readonly and hold the id that
+`id -u` prints (1000), never 0, also in an elevated shell. `HOSTNAME` is the
+computer name, the same as `hostname`. `SHLVL` goes up by one in each new wbsh
+process; subshells and pipeline stages keep the level of their shell.
+
+### Command lookup
+
+A command found on PATH is looked up in the Windows order: `NAME.exe`,
+`NAME.cmd`, `NAME.bat`, and then `NAME`. Git Bash takes `NAME` first. So when a
+folder holds both a POSIX launcher and a batch file, such as Maven's `bin/mvn`
+and `bin/mvn.cmd`, wbsh runs the batch file. Many such launchers walk up with
+`cd ..` until `pwd` prints `/`. In wbsh, `/` is the root of the current drive
+and `pwd` prints `/c/` there, so these loops do not end.
+
+A command named by its path (`./gradlew`, `"$HOME/bin/tool"`) runs that file,
+as in bash, when it starts with `#!` or is a Windows program. Without such a
+file, the path gets the same extensions as a PATH lookup.
+
+A file test on a missing name also finds the name with `.exe` added, as in Git
+Bash: `[ -x "$JAVA_HOME/bin/java" ]` is true when `java.exe` exists.
+
 ### exec
 
 `exec PROGRAM` cannot replace the shell, since Windows has no `execve`. The

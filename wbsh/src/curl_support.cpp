@@ -1,5 +1,11 @@
 #include "curl_internal.h"
 
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  pragma comment(lib, "ws2_32.lib")
+#endif /* _WIN32 */
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -389,6 +395,94 @@ namespace wbsh {
 			}
 
 			return header;
+		}
+
+		struct IpAddress {
+			int family = 0;
+			unsigned char bytes[16] = {};
+			int bits = 0;
+		};
+
+		static bool parseIp(const std::string& text, IpAddress& out) {
+			if (::InetPtonA(AF_INET, text.c_str(), out.bytes) == 1) {
+				out.family = AF_INET;
+				out.bits = 32;
+				return true;
+			}
+
+			if (::InetPtonA(AF_INET6, text.c_str(), out.bytes) != 1) return false;
+			out.family = AF_INET6;
+			out.bits = 128;
+			return true;
+		}
+
+		static bool samePrefix(const IpAddress& a, const IpAddress& b, int bits) {
+			const int whole = bits / 8;
+			if (std::memcmp(a.bytes, b.bytes, static_cast<std::size_t>(whole)) != 0) return false;
+			if (bits % 8 == 0) return true;
+
+			const unsigned char mask = static_cast<unsigned char>(0xFF << (8 - bits % 8));
+			return (a.bytes[whole] & mask) == (b.bytes[whole] & mask);
+		}
+
+		// An address entry, with an optional `/bits` CIDR suffix.
+		static bool ipEntryMatches(const std::string& entry, const IpAddress& host) {
+			const std::size_t slash = entry.find('/');
+			IpAddress net;
+			if (!parseIp(entry.substr(0, slash), net) || net.family != host.family) return false;
+
+			int bits = net.bits;
+			if (slash != std::string::npos && !parseInt(entry.substr(slash + 1), bits)) return false;
+			if (bits < 0 || bits > net.bits) return false;
+			return samePrefix(host, net, bits);
+		}
+
+		// A name entry matches the host and its subdomains; a leading dot
+		// changes nothing, as in curl.
+		static bool nameEntryMatches(std::string entry, const std::string& host) {
+			if (!entry.empty() && entry.front() == '.') entry.erase(0, 1);
+			if (entry.empty()) return false;
+			if (host == entry) return true;
+			if (host.size() <= entry.size()) return false;
+
+			const std::size_t cut = host.size() - entry.size();
+			return host.compare(cut, entry.size(), entry) == 0 && host[cut - 1] == '.';
+		}
+
+		static std::string normalizedHost(std::string host) {
+			const bool bracketed = host.size() > 2 && host.front() == '[' && host.back() == ']';
+			if (bracketed) host = host.substr(1, host.size() - 2);
+			while (!host.empty() && host.back() == '.') host.pop_back();
+			return lowercase(host);
+		}
+
+		static std::vector<std::string> noProxyEntries(const std::string& list) {
+			std::vector<std::string> entries;
+			std::string entry;
+			for (char c : list + ",") {
+				const bool separator = c == ',' || std::isspace(static_cast<unsigned char>(c)) != 0;
+				if (!separator) {
+					entry.push_back(c);
+					continue;
+				}
+
+				if (!entry.empty()) entries.push_back(normalizedHost(entry));
+				entry.clear();
+			}
+
+			return entries;
+		}
+
+		bool noProxyMatches(const std::string& list, const std::string& host) {
+			const std::string name = normalizedHost(host);
+			IpAddress address;
+			const bool is_ip = parseIp(name, address);
+			for (const std::string& entry : noProxyEntries(list)) {
+				if (entry == "*") return true;
+				if (is_ip ? ipEntryMatches(entry, address) : nameEntryMatches(entry, name)) return true;
+			}
+
+			return false;
 		}
 
 	}  // namespace curl_detail

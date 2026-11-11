@@ -898,6 +898,8 @@ namespace wbsh {
 		int consumeSubshellFlow(int status);
 		int runExitTrapAction(const std::string& action, int status);
 		int runCommandSubstitutionBody(const std::string& body);
+		int executeSubstitutionText(const std::string& body, std::size_t first_line);
+		int writeFileToStdout(const Redirection& redir);
 		std::string captureSubstitution(const std::string& body, int& status);
 
 #ifdef _WIN32
@@ -936,6 +938,7 @@ namespace wbsh {
 		int runShellScript(const std::string& path,
 		                   const std::vector<std::string>& argv,
 		                   const std::vector<std::pair<std::string, std::string>>& temp_env);
+		std::string scriptName(const std::string& typed, const std::string& path) const;
 
 #ifdef _WIN32
 		// Multi-command branch of execPipeline (the n>=2 case). Sets up the

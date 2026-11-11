@@ -21,6 +21,19 @@ pipeline keeps PPID
 wbsh: PPID: readonly variable
 PPID is readonly
 0
+=== UID, EUID, HOSTNAME, SHLVL (#291)
+UID and EUID match id -u
+EUID is not 0
+declare -ir UID="1000"
+declare -ir EUID="1000"
+UID is readonly
+HOSTNAME matches hostname
+SHLVL is a level
+a new shell is one level deeper
+subshell keeps SHLVL
+pipeline keeps SHLVL
+1
+0
 === EPOCHSECONDS / EPOCHREALTIME
 EPOCHSECONDS ok
 EPOCHREALTIME ok

@@ -148,14 +148,24 @@ namespace wbsh {
 			return utf8ToWide(proxy);
 		}
 
-		static std::wstring bypassList(Transfer& transfer) {
-			std::string list = transfer.options.noproxy_set ? transfer.options.noproxy
+		// NO_PROXY is matched here, not given to WinHTTP: its bypass list
+		// takes no CIDR ranges or IPv6 addresses and fails every request
+		// with ERROR_INVALID_PARAMETER when it holds one.
+		static bool bypassesProxy(Transfer& transfer, const std::string& host) {
+			const std::string list = transfer.options.noproxy_set ? transfer.options.noproxy
 				: envFirst(transfer.exec, "no_proxy", "NO_PROXY");
-			std::replace(list.begin(), list.end(), ',', ';');
-			list.erase(std::remove(list.begin(), list.end(), ' '), list.end());
+			return noProxyMatches(list, host);
+		}
 
-			// WinHTTP never proxies loopback hosts unless told to; curl does.
-			return utf8ToWide(list.empty() ? "<-loopback>" : list + ";<-loopback>");
+		static bool usesProxy(Transfer& transfer, const UrlParts& parts) {
+			return !proxyFor(transfer, parts.scheme).empty()
+				&& !bypassesProxy(transfer, parts.host);
+		}
+
+		static bool skipProxy(HINTERNET request) {
+			WINHTTP_PROXY_INFO direct = {};
+			direct.dwAccessType = WINHTTP_ACCESS_TYPE_NO_PROXY;
+			return ::WinHttpSetOption(request, WINHTTP_OPTION_PROXY, &direct, sizeof(direct)) != 0;
 		}
 
 		static DWORD millis(double seconds) {
@@ -187,10 +197,10 @@ namespace wbsh {
 				handles.session = ::WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_NO_PROXY,
 					WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
 			} else {
+				// WinHTTP never proxies loopback hosts unless told to; curl does.
 				const std::wstring name = proxyName(proxy);
-				const std::wstring bypass = bypassList(transfer);
 				handles.session = ::WinHttpOpen(nullptr, WINHTTP_ACCESS_TYPE_NAMED_PROXY, name.c_str(),
-					bypass.c_str(), 0);
+					L"<-loopback>", 0);
 			}
 
 			if (handles.session == nullptr) return false;
@@ -207,7 +217,7 @@ namespace wbsh {
 			const std::string ms = std::to_string(static_cast<long long>(secondsSince(transfer.started) * 1000));
 			switch (error) {
 				case ERROR_WINHTTP_NAME_NOT_RESOLVED:
-					if (!proxyFor(transfer, hop.parts.scheme).empty()) {
+					if (usesProxy(transfer, hop.parts)) {
 						const std::string proxy = proxyFor(transfer, hop.parts.scheme);
 						return fail(transfer, kExitProxyResolve, "Could not resolve proxy: " + proxy);
 					}
@@ -281,8 +291,12 @@ namespace wbsh {
 				WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
 			if (request == nullptr) return false;
 
-			configureRequest(transfer, request);
 			handles.request = request;
+			const bool direct = !proxyFor(transfer, hop.parts.scheme).empty()
+				&& bypassesProxy(transfer, hop.parts.host);
+			if (direct && !skipProxy(request)) return false;
+
+			configureRequest(transfer, request);
 			return true;
 		}
 

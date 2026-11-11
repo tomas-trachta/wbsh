@@ -1,0 +1,10 @@
+tar (wbsh) X.Y.Z
+rc=0
+wget (wbsh) X.Y.Z
+wget (wbsh) X.Y.Z
+unzip (wbsh) X.Y.Z
+nohup (wbsh) X.Y.Z
+setsid (wbsh) X.Y.Z
+mkfifo (wbsh) X.Y.Z
+mknod (wbsh) X.Y.Z
+script (wbsh) X.Y.Z

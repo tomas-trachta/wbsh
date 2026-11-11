@@ -63,3 +63,10 @@ pipefail off
 [[ -eq ]] is arithmetic
 [[ -v ]] ok
 [ -v ] ok
+=== 6. a missing name with a .exe beside it is that file, as in Git Bash (#291)
+[ -x ] finds java.exe
+[ -f ] [ -e ] find java.exe
+[[ -x ]] finds java.exe
+[ -L ] does not
+no javac.exe: missing
+an existing name tests itself

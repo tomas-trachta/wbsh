@@ -140,6 +140,11 @@ namespace wbsh {
 		std::string base64Encode(const std::string& text);
 		std::string lastPathSegment(const std::string& url);
 
+		/// True when `host` is exempt from the proxy under a curl-style
+		/// NO_PROXY list: `*`, names with their subdomains, and IPv4 / IPv6
+		/// addresses with an optional CIDR suffix.
+		bool noProxyMatches(const std::string& list, const std::string& host);
+
 		/// Header value from raw "Name: value\r\n" lines; the last occurrence wins.
 		bool findHeader(const std::string& raw, const std::string& name, std::string& value);
 		std::vector<std::string> findAllHeaders(const std::string& raw, const std::string& name);

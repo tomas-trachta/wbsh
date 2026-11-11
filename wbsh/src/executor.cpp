@@ -2841,10 +2841,29 @@ namespace wbsh {
 		return found;
 	}
 
+	static bool startsLikeProgram(const std::filesystem::path& path) {
+		std::ifstream file(path, std::ios::binary);
+		char head[2] = {};
+		file.read(head, sizeof(head));
+		if (file.gcount() < 2) return false;
+
+		const bool shebang = head[0] == '#' && head[1] == '!';
+		return shebang || (head[0] == 'M' && head[1] == 'Z');
+	}
+
+	// A file named by its path runs as named when it is a script or a
+	// program, as in bash: `./gradlew` beside `gradlew.bat` is the script.
+	// A PATH lookup keeps the Windows order (.exe, .cmd, .bat first). A
+	// device path is not probed: a `<(...)` pipe takes one stat only.
+	static std::string explicitExecutable(const std::filesystem::path& path) {
+		const bool probe = !isDevicePath(path) && isExistingFile(path);
+		if (probe && startsLikeProgram(path)) return pathToUtf8(path);
+		return tryExecutableWithExtensions(path);
+	}
+
 	std::string Executor::findExecutable(const std::string& name) {
 		if (isAbsoluteOrRelativePath(name)) {
-			const std::filesystem::path candidate = utf8ToPath(path_conv_.toWin32(name));
-			return tryExecutableWithExtensions(candidate);
+			return explicitExecutable(utf8ToPath(path_conv_.toWin32(name)));
 		}
 
 		const std::string path = env_.get("PATH");
@@ -3335,6 +3354,13 @@ namespace wbsh {
 		return body;
 	}
 
+	// `$0` as bash sets it: the path as typed, or for a PATH hit the POSIX
+	// form of the file found, so `dirname "$0"` launchers see a POSIX path.
+	std::string Executor::scriptName(const std::string& typed, const std::string& path) const {
+		if (isAbsoluteOrRelativePath(typed)) return typed;
+		return path_conv_.toPosix(path);
+	}
+
 	int Executor::runShellScript(const std::string& path,
 	                             const std::vector<std::string>& argv,
 	                             const NameValueList& temp_env) {
@@ -3351,13 +3377,14 @@ namespace wbsh {
 		publishSignalDispositions();
 		beginExecRedirJournal();
 
+		const std::string name = scriptName(argv[0], path);
 		for (const auto& assignment : temp_env) env_.set(assignment.first, assignment.second);
-		env_.setShellName(path);
+		env_.setShellName(name);
 		env_.setPositional(std::vector<std::string>(argv.begin() + 1, argv.end()));
 		call_stack_.clear();
-		beginScriptFrame(path);
+		beginScriptFrame(name);
 
-		int status = executeInputText(body, path);
+		int status = executeInputText(body, name);
 		if (consumeFlow(FlowSignal::Kind::Exit, &status)) forgetExecExitCode();
 		if (!flowPending()) status = fireExitTrap(status);
 		endExecRedirJournal();
@@ -4849,9 +4876,63 @@ namespace wbsh {
 
 		const int lineno = env_.currentLineno();
 		const std::size_t line = static_cast<std::size_t>(lineno > 0 ? lineno : 1);
-		const int status = endSubshell(executeText(body, "<command-substitution>", line));
+		const int status = endSubshell(executeSubstitutionText(body, line));
 		leaveSubshell(snap);
 		return status;
+	}
+
+	// The lone `< file` of `$(< file)`, which bash reads instead of running.
+	static const Redirection* fileReadRedirection(const Node& root) {
+		if (root.kind != Node::Kind::List) return nullptr;
+
+		const List& list = static_cast<const List&>(root);
+		if (list.items.size() != 1 || list.items[0].background) return nullptr;
+		if (list.items[0].command->kind != Node::Kind::SimpleCommand) return nullptr;
+
+		const SimpleCommand& sc = static_cast<const SimpleCommand&>(*list.items[0].command);
+		if (!sc.words.empty() || !sc.assignments.empty() || sc.redirs.size() != 1) return nullptr;
+
+		const Redirection& redir = sc.redirs[0];
+		const bool reads_stdin = redir.fd == -1 || redir.fd == 0;
+		if (redir.op != RedirOp::Less || !reads_stdin || !redir.fd_variable.empty()) return nullptr;
+		return &redir;
+	}
+
+	static void copyFdToStdout(int fd) {
+		char buffer[65536];
+		int got = 0;
+		while ((got = _read(fd, buffer, sizeof buffer)) > 0) {
+			if (_write(1, buffer, static_cast<unsigned int>(got)) != got) return;
+		}
+	}
+
+	int Executor::writeFileToStdout(const Redirection& redir) {
+		std::string path;
+		if (!expandRedirTarget(redir.target, path)) return 1;
+
+		const int fd = openRedirSourceFd(path, _O_RDONLY);
+		if (fd < 0) {
+			reportPathError(path);
+			return 1;
+		}
+
+		std::fflush(stdout);
+		copyFdToStdout(fd);
+		_close(fd);
+		return 0;
+	}
+
+	int Executor::executeSubstitutionText(const std::string& body, std::size_t first_line) {
+		const ParsedText parsed = parseText(body, "<command-substitution>", first_line);
+		if (parsed.root == nullptr) return finishParsedText(parsed, 0);
+
+		const Redirection* file_read = parsed.diagnostics.empty()
+			? fileReadRedirection(*parsed.root)
+			: nullptr;
+		const int status = file_read != nullptr
+			? writeFileToStdout(*file_read)
+			: execute(*parsed.root);
+		return finishParsedText(parsed, status);
 	}
 
 	std::string Executor::runRaw(const std::string& body) {

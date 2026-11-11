@@ -69,13 +69,6 @@ namespace wbsh {
 		return 0;
 	}
 
-	static int showVersion(const char* cmd) {
-		std::printf("%s (wbsh) %d.%d.%d\n", cmd, WBSH_VERSION_MAJOR, WBSH_VERSION_MINOR,
-			WBSH_VERSION_PATCH);
-		std::fflush(stdout);
-		return 0;
-	}
-
 	static std::string quoted(const std::string& text) {
 		return "'" + text + "'";
 	}
@@ -140,7 +133,7 @@ namespace wbsh {
 		FifoOptions options;
 		if (!parseFifoArgs("mkfifo", args, options)) return 1;
 		if (options.help) return showText(kMkfifoUsage);
-		if (options.version) return showVersion("mkfifo");
+		if (options.version) return showToolVersion("mkfifo");
 		if (options.operands.empty()) {
 			perr("mkfifo", "missing operand");
 			return 1;
@@ -192,7 +185,7 @@ namespace wbsh {
 		FifoOptions options;
 		if (!parseFifoArgs("mknod", args, options)) return 1;
 		if (options.help) return showText(kMknodUsage);
-		if (options.version) return showVersion("mknod");
+		if (options.version) return showToolVersion("mknod");
 		if (!checkMknodOperands(options.operands)) return 1;
 
 		bool read_only = false;

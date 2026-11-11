@@ -86,6 +86,13 @@ namespace wbsh {
 		std::fprintf(stderr, "wbsh: %s: %s\n", cmd.c_str(), msg.c_str());
 	}
 
+	int showToolVersion(const char* cmd) {
+		std::printf("%s (wbsh) %d.%d.%d\n", cmd, WBSH_VERSION_MAJOR, WBSH_VERSION_MINOR,
+			WBSH_VERSION_PATCH);
+		std::fflush(stdout);
+		return 0;
+	}
+
 	fs::path toNative(Executor& exec, const std::string& p) {
 		return utf8ToPath(exec.pathConv().toWin32(p));
 	}
