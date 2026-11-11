@@ -54,13 +54,13 @@ Each run writes `results/<timestamp>/`:
 
 ## How it measures
 
-`lib/ProcessProbe.cs` starts each case suspended inside a Windows Job object,
+`tools/stress/ProcessProbe.cs` (shared with the wbshterm framework, with the report code in `tools/stress/Core.ps1`) starts each case suspended inside a Windows Job object,
 then resumes it. Thus the numbers include wbsh **and all its child
 processes**:
 
 - wall time, CPU time (user + kernel, whole tree), number of processes;
 - peak committed memory of the tree and of the root process;
-- peak handle count of the root process, sampled every 20 ms;
+- peak handle, GDI and USER object counts of the root process, sampled every 20 ms;
 - crash (NTSTATUS exit code such as `0xC0000005`), timeout (the whole tree is killed), and processes left alive after wbsh exits.
 
 ## Suites

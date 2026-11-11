@@ -1,0 +1,3 @@
+# writing over the right half of a wide character erases it
+# @stress size=4x1
+你\e[1;2Hx

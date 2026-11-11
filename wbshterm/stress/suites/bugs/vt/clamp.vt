@@ -1,0 +1,3 @@
+# cursor moves stop at the edges
+# @stress size=5x3
+\e[999C!\e[999B?

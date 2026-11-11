@@ -1,0 +1,3 @@
+# BS and CR overwrite in place
+# @stress size=6x1
+abc\b\bX\rY

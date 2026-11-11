@@ -56,7 +56,8 @@ if ($Seed -lt 0) { $Seed = Get-Random -Maximum 1000000 }
 
 # ---------------------------------------------------------------- setup
 
-function ConvertTo-Slash([string]$path) { return $path -replace '\\', '/' }
+$Product = 'wbsh'
+. (Join-Path $RepoRoot 'tools\stress\Core.ps1')
 
 function Resolve-Exe {
 	if ($Exe) { return (Resolve-Path $Exe).Path }
@@ -84,60 +85,16 @@ function Get-BashEnv {
 	return @{ PATH = "$(Split-Path $BashExe);$env:PATH"; STRESS_SHELL = 'bash'; LC_ALL = 'C.UTF-8' }
 }
 
-if (-not ('WbshStress.ProcessProbe' -as [type])) {
-	Add-Type -Path (Join-Path $StressRoot 'lib\ProcessProbe.cs')
-}
-
 $WbshExe = Resolve-Exe
 $BashExe = Resolve-RefShell
 $BashEnv = Get-BashEnv
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $OutDir = Join-Path $StressRoot "results\$Stamp"
-$BaselinePath = Join-Path $StressRoot "baselines\$($env:COMPUTERNAME.ToLower()).json"
-$Baseline = if (Test-Path $BaselinePath) { Get-Content $BaselinePath -Raw | ConvertFrom-Json -AsHashtable } else { $null }
-
-$Findings = [System.Collections.Generic.List[object]]::new()
-$Cases = [System.Collections.Generic.List[object]]::new()
+$BaselinePath = Get-MachineBaselinePath $StressRoot
+$Baseline = Read-Baseline $BaselinePath
+New-StressState
 
 # ---------------------------------------------------------------- helpers
-
-function Get-CaseFiles([string]$suite, [string]$sub = '', [string]$pattern = '*.sh') {
-	$dir = Join-Path $SuitesDir $suite
-	if ($sub) { $dir = Join-Path $dir $sub }
-	if (-not (Test-Path $dir)) { return @() }
-	return Get-ChildItem $dir -File -Filter $pattern |
-		Where-Object { $_.Name -notlike '*.setup.sh' -and $_.BaseName -like $Filter } |
-		Sort-Object Name
-}
-
-# Reads `# @stress key=value ...` lines from the head of a case file.
-function Get-CaseMeta([string]$path) {
-	$meta = @{}
-	foreach ($line in (Get-Content $path -TotalCount 40)) {
-		if ($line -match '^#\s*@stress\s+(.*)$') {
-			foreach ($m in [regex]::Matches($Matches[1], '(\w+)=(\S+)')) {
-				$meta[$m.Groups[1].Value] = $m.Groups[2].Value
-			}
-		}
-	}
-	return $meta
-}
-
-function Get-Meta($meta, [string]$key, $default) {
-	if ($meta.ContainsKey($key)) { return $meta[$key] }
-	return $default
-}
-
-function New-WorkDir([string]$name) {
-	$dir = Join-Path $OutDir "work\$name"
-	if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-	New-Item -ItemType Directory -Path $dir -Force | Out-Null
-	return $dir
-}
-
-function Remove-WorkDir([string]$dir) {
-	if (-not $KeepWork -and (Test-Path $dir)) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
-}
 
 function Get-CaseEnv([string]$workDir, [hashtable]$extra = @{}) {
 	$envs = @{
@@ -160,62 +117,10 @@ function Invoke-Shell {
 		[hashtable]$Env = @{}, [switch]$Samples, [string[]]$ShellArgs = @())
 
 	$argv = if ($Shell -eq 'bash') { @($BashExe) + $ShellArgs + @($Script) } else { @($WbshExe) + $ShellArgs + @('-r', $Script) }
-	$opts = [WbshStress.ProbeOptions]::new()
-	$opts.CommandLine = [WbshStress.ProcessProbe]::JoinArgs([string[]]$argv)
-	$opts.WorkDir = $WorkDir
-	$opts.StdoutPath = $Output
-	$opts.StderrPath = $Output
-	$opts.TimeoutMs = $TimeoutSec * 1000
-	$opts.KeepSamples = [bool]$Samples
-	$opts.MemoryLimitBytes = 4L * 1024 * 1024 * 1024
-	$opts.Environment = [System.Collections.Hashtable](Get-CaseEnv $WorkDir $Env)
-	$opts.Environment['STRESS_SHELL'] = 'wbsh'
-	if ($Shell -eq 'bash') { foreach ($k in $BashEnv.Keys) { $opts.Environment[$k] = $BashEnv[$k] } }
-	return [WbshStress.ProcessProbe]::Run($opts)
-}
-
-function Add-Finding([string]$suite, [string]$case, [string]$severity, [string]$kind, [string]$text, [string]$artifact = '') {
-	$rel = ''
-	if ($artifact) { $rel = ([IO.Path]::GetRelativePath($OutDir, $artifact)).Replace('\', '/') }
-	$Findings.Add([pscustomobject]@{
-		Suite = $suite; Case = $case; Severity = $severity; Kind = $kind; Text = $text; Artifact = $rel
-	})
-}
-
-# A crash or a hang is a finding whatever the case expected.
-function Test-ProbeHealth($r, [string]$suite, [string]$case, [string]$log) {
-	if ($r.Crashed) {
-		Add-Finding $suite $case 'critical' 'crash' "wbsh crashed: $($r.CrashName) (exit 0x$($r.ExitCode.ToString('X8')))" $log
-		return $false
-	}
-	if ($r.TimedOut) {
-		Add-Finding $suite $case 'high' 'hang' "timed out after $([int]($r.WallMs / 1000)) s; process tree killed" $log
-		return $false
-	}
-	if ($r.LeftoverProcesses -gt 0) {
-		Add-Finding $suite $case 'medium' 'orphan' "$($r.LeftoverProcesses) process(es) still alive after wbsh exited" $log
-	}
-	return $true
-}
-
-function Get-Median([double[]]$values) {
-	if ($values.Count -eq 0) { return 0 }
-	$s = $values | Sort-Object
-	$mid = [int][Math]::Floor($s.Count / 2)
-	if ($s.Count % 2) { return $s[$mid] }
-	return ($s[$mid - 1] + $s[$mid]) / 2
-}
-
-function MB([long]$bytes) { return [Math]::Round($bytes / 1MB, 1) }
-
-function Write-Status([string]$status, [string]$text) {
-	$color = switch ($status) { 'pass' { 'Green' } 'fail' { 'Red' } 'skip' { 'DarkGray' } default { 'Yellow' } }
-	Write-Host ('  {0,-5} ' -f $status) -ForegroundColor $color -NoNewline
-	Write-Host $text
-}
-
-function Add-Case([string]$suite, [string]$name, [string]$status, [hashtable]$metrics = @{}) {
-	$Cases.Add([pscustomobject]@{ Suite = $suite; Case = $name; Status = $status; Metrics = $metrics })
+	$envs = Get-CaseEnv $WorkDir $Env
+	$envs['STRESS_SHELL'] = 'wbsh'
+	if ($Shell -eq 'bash') { foreach ($k in $BashEnv.Keys) { $envs[$k] = $BashEnv[$k] } }
+	return Invoke-Probe -Argv $argv -WorkDir $WorkDir -Output $Output -TimeoutSec $TimeoutSec -Env $envs -Samples:$Samples
 }
 
 # ---------------------------------------------------------------- check runner (TAP)
@@ -230,20 +135,9 @@ function Invoke-CheckCase([string]$suite, [System.IO.FileInfo]$file) {
 		-TimeoutSec ([int](Get-Meta $meta 'timeout' 180))
 
 	$healthy = Test-ProbeHealth $r $suite $name $log
-	$passed = 0
-	$failed = 0
-	$text = if (Test-Path $log) { Get-Content $log } else { @() }
-	foreach ($line in $text) {
-		if ($line -match '^not ok - (?:\[(critical|high|medium|low)\] )?(.*)$') {
-			$sev = if ($Matches[1]) { $Matches[1] } else { 'medium' }
-			Add-Finding $suite $name $sev 'fail' $Matches[2] $log
-			$failed++
-		} elseif ($line -match '^ok - ') {
-			$passed++
-		} elseif ($line -match '^# review: (.*)$') {
-			Add-Finding $suite $name 'review' 'review' $Matches[1] $log
-		}
-	}
+	$tap = Read-TapLog $suite $name $log
+	$passed = $tap.Passed
+	$failed = $tap.Failed
 
 	if ($healthy -and $failed -eq 0 -and $r.ExitCode -ne 0) {
 		Add-Finding $suite $name 'medium' 'script-error' "case exited $($r.ExitCode) without a failed check (broken case or wbsh bug)" $log
@@ -403,7 +297,7 @@ function Invoke-MemorySuite {
 			Add-Finding 'memory' $name 'high' 'leak' ("private memory grows {0} MB from {1} to {2} iterations (~{3} bytes/iteration)" -f (MB $growth), $small, ($small * $factor), $perIter) $log
 			$status = 'fail'
 		}
-		if ($handleGrowth -gt [int](Get-Meta $meta 'handles' 64)) {
+		if ($a.PeakHandles -gt 0 -and $handleGrowth -gt [int](Get-Meta $meta 'handles' 64)) {
 			Add-Finding 'memory' $name 'high' 'handle-leak' "peak handle count grows from $($a.PeakHandles) to $($b.PeakHandles)" $log
 			$status = 'fail'
 		}
@@ -450,18 +344,6 @@ function Invoke-DiffCase([System.IO.FileInfo]$file) {
 	Write-TextDiff $bText $wText $diffPath "bash (exit $($b.ExitCode))" "wbsh (exit $($w.ExitCode))"
 	Add-Finding 'bugs' $name 'medium' 'mismatch' "output differs from bash (exit wbsh=$($w.ExitCode) bash=$($b.ExitCode)); see diff" $diffPath
 	Add-Case 'bugs' $name 'fail'; Write-Status 'fail' $name
-}
-
-function Write-TextDiff([string]$a, [string]$b, [string]$path, [string]$labelA, [string]$labelB) {
-	$la = $a -split "`n"; $lb = $b -split "`n"
-	$out = @("--- $labelA", "+++ $labelB")
-	$max = [Math]::Max($la.Count, $lb.Count)
-	for ($i = 0; $i -lt $max; $i++) {
-		$x = if ($i -lt $la.Count) { $la[$i] } else { '<missing>' }
-		$y = if ($i -lt $lb.Count) { $lb[$i] } else { '<missing>' }
-		if ($x -cne $y) { $out += "@@ line $($i + 1)"; $out += "-$x"; $out += "+$y" }
-	}
-	Set-Content -Path $path -Value $out
 }
 
 # Replays every corpus file through the parser only: no crash, no hang.
@@ -604,82 +486,41 @@ function Invoke-CheckSuite([string]$suite) {
 
 # ---------------------------------------------------------------- report
 
-$SeverityOrder = @{ critical = 0; high = 1; medium = 2; low = 3; review = 4 }
-
-function Write-Report([string]$version) {
-	$failed = @($Cases | Where-Object Status -eq 'fail').Count
-	$json = [ordered]@{
-		stamp = $Stamp; mode = $Mode; seed = $Seed; machine = $env:COMPUTERNAME; wbsh = $WbshExe; version = $version
-		reference = $BashExe; cases = $Cases; findings = $Findings
-	}
-	$json | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $OutDir 'report.json')
-
-	$md = [System.Collections.Generic.List[string]]::new()
-	$md.Add("# wbsh stress report $Stamp")
-	$md.Add('')
-	$md.Add("- wbsh: ``$version`` ($WbshExe)")
-	$md.Add("- mode: $Mode, seed $Seed, machine $env:COMPUTERNAME")
-	$md.Add("- reference shell: $(if ($BashExe) { $BashExe } else { 'none' })")
-	$md.Add('')
-	$md.Add('| suite | cases | pass | fail | skip |')
-	$md.Add('|---|---:|---:|---:|---:|')
-	foreach ($g in $Cases | Group-Object Suite) {
-		$c = $g.Group
-		$md.Add("| $($g.Name) | $($c.Count) | $(@($c | ? Status -eq 'pass').Count) | $(@($c | ? Status -eq 'fail').Count) | $(@($c | ? Status -eq 'skip').Count) |")
-	}
-
+function Get-PerfSection {
 	$perf = @($Cases | Where-Object { $_.Suite -eq 'perf' -and $_.Metrics.wbsh })
-	if ($perf) {
-		$md.Add(''); $md.Add('## Performance (median wall time)'); $md.Add('')
-		$md.Add('| case | wbsh ms | cpu ms | peak MB | processes | bash ms | wbsh/bash | baseline ms |')
-		$md.Add('|---|---:|---:|---:|---:|---:|---:|---:|')
-		foreach ($c in $perf) {
-			$m = $c.Metrics
-			$md.Add("| $($c.Case) | $($m.wbsh.MedianMs) | $($m.wbsh.CpuMs) | $($m.wbsh.PeakMB) | $($m.wbsh.Processes) | $($m.bash.MedianMs) | $($m.ratio) | $($m.baselineMs) |")
-		}
+	if (-not $perf) { return $null }
+	$lines = @('## Performance (median wall time)', '',
+		'| case | wbsh ms | cpu ms | peak MB | processes | bash ms | wbsh/bash | baseline ms |',
+		'|---|---:|---:|---:|---:|---:|---:|---:|')
+	foreach ($c in $perf) {
+		$m = $c.Metrics
+		$lines += "| $($c.Case) | $($m.wbsh.MedianMs) | $($m.wbsh.CpuMs) | $($m.wbsh.PeakMB) | $($m.wbsh.Processes) | $($m.bash.MedianMs) | $($m.ratio) | $($m.baselineMs) |"
 	}
-
-	$mem = @($Cases | Where-Object { $_.Suite -eq 'memory' -and $_.Metrics.largeMB })
-	if ($mem) {
-		$md.Add(''); $md.Add('## Memory (root process peak private bytes)'); $md.Add('')
-		$md.Add('| case | N | at N MB | at 10N MB | bytes/iter | tree peak MB | handles N -> 10N |')
-		$md.Add('|---|---:|---:|---:|---:|---:|---|')
-		foreach ($c in $mem) {
-			$m = $c.Metrics
-			$md.Add("| $($c.Case) | $($m.iters) | $($m.smallMB) | $($m.largeMB) | $($m.bytesPerIter) | $($m.jobPeakMB) | $($m.handlesSmall) -> $($m.handlesLarge) |")
-		}
-	}
-
-	$md.Add(''); $md.Add('## Findings'); $md.Add('')
-	$sorted = $Findings | Sort-Object { $SeverityOrder[$_.Severity] }, Suite, Case
-	if (-not $sorted) { $md.Add('None.') }
-	else {
-		$md.Add('| severity | suite | case | kind | finding | artifact |')
-		$md.Add('|---|---|---|---|---|---|')
-		foreach ($f in $sorted) {
-			$t = $f.Text -replace '\|', '\|'
-			$md.Add("| $($f.Severity) | $($f.Suite) | $($f.Case) | $($f.Kind) | $t | $($f.Artifact) |")
-		}
-	}
-	Set-Content -Path (Join-Path $OutDir 'report.md') -Value $md
-	return $failed
+	return ,$lines
 }
 
-function Save-Baseline([string]$version) {
-	$data = [ordered]@{ machine = $env:COMPUTERNAME; version = $version; stamp = $Stamp; mode = $Mode; perf = [ordered]@{}; memory = [ordered]@{} }
-	if ($Baseline) {
-		foreach ($k in $Baseline.perf.Keys) { $data.perf[$k] = $Baseline.perf[$k] }
-		foreach ($k in $Baseline.memory.Keys) { $data.memory[$k] = $Baseline.memory[$k] }
+function Get-MemorySection {
+	$mem = @($Cases | Where-Object { $_.Suite -eq 'memory' -and $_.Metrics.largeMB })
+	if (-not $mem) { return $null }
+	$lines = @('## Memory (root process peak private bytes)', '',
+		'| case | N | at N MB | at 10N MB | bytes/iter | tree peak MB | handles N -> 10N |',
+		'|---|---:|---:|---:|---:|---:|---|')
+	foreach ($c in $mem) {
+		$m = $c.Metrics
+		$lines += "| $($c.Case) | $($m.iters) | $($m.smallMB) | $($m.largeMB) | $($m.bytesPerIter) | $($m.jobPeakMB) | $($m.handlesSmall) -> $($m.handlesLarge) |"
 	}
+	return ,$lines
+}
+
+function Get-BaselineSections {
+	$perf = @{}; $memory = @{}
 	foreach ($c in $Cases | Where-Object { $_.Suite -eq 'perf' -and $_.Metrics.wbsh }) {
-		$data.perf[$c.Case] = @{ MedianMs = $c.Metrics.wbsh.MedianMs; PeakMB = $c.Metrics.wbsh.PeakMB }
+		$perf[$c.Case] = @{ MedianMs = $c.Metrics.wbsh.MedianMs; PeakMB = $c.Metrics.wbsh.PeakMB }
 	}
 	foreach ($c in $Cases | Where-Object { $_.Suite -eq 'memory' -and $_.Metrics.largeMB }) {
-		$data.memory[$c.Case] = @{ largeMB = $c.Metrics.largeMB }
+		$memory[$c.Case] = @{ largeMB = $c.Metrics.largeMB }
 	}
-	New-Item -ItemType Directory -Path (Split-Path $BaselinePath) -Force | Out-Null
-	$data | ConvertTo-Json -Depth 5 | Set-Content $BaselinePath
-	Write-Host "baseline written: $BaselinePath"
+	return @{ perf = $perf; memory = $memory }
 }
 
 # ---------------------------------------------------------------- main
@@ -700,43 +541,26 @@ Write-Host "             $version"
 Write-Host "             reference: $(if ($BashExe) { $BashExe } else { 'none' })"
 Write-Host "             results:   $OutDir"
 
-# An ASan build ends with exit code 1 on a report, which looks like a normal
-# failure. Every process of the run (children inherit this) writes its report
-# to a file instead, and each file becomes a finding at the end.
-$AsanDir = $null
-if (Get-ChildItem (Split-Path $WbshExe) -Filter 'clang_rt.asan*.dll' -ErrorAction SilentlyContinue) {
-	$AsanDir = Join-Path $OutDir 'asan'
-	New-Item -ItemType Directory -Path $AsanDir -Force | Out-Null
-	$env:ASAN_OPTIONS = "log_path='$(ConvertTo-Slash $AsanDir)/report':detect_leaks=0"
-	Write-Host "             ASan build: reports go to $AsanDir"
-}
+$AsanDir = Enable-AsanReports $WbshExe
 
 $clock = [Diagnostics.Stopwatch]::StartNew()
 foreach ($s in $Suite) {
 	switch ($s) {
-		'perf' { Invoke-PerfSuite }
-		'memory' { Invoke-MemorySuite }
-		'bugs' { Invoke-BugsSuite }
-		default { Invoke-CheckSuite $s }
+		'perf' { Invoke-Suite $s { Invoke-PerfSuite } }
+		'memory' { Invoke-Suite $s { Invoke-MemorySuite } }
+		'bugs' { Invoke-Suite $s { Invoke-BugsSuite } }
+		default { Invoke-Suite $s { Invoke-CheckSuite $s } }
 	}
 }
 
-if ($AsanDir) {
-	$reports = @(Get-ChildItem $AsanDir -File)
-	foreach ($r in $reports) {
-		$text = Get-Content $r.FullName
-		$what = ($text | Where-Object { $_ -match 'ERROR: AddressSanitizer|SUMMARY: AddressSanitizer' } | Select-Object -First 1) ?? 'AddressSanitizer report'
-		Add-Finding 'asan' $r.Name 'critical' 'asan' $what.Trim() $r.FullName
-	}
-	Add-Case 'asan' 'reports' ($reports ? 'fail' : 'pass') @{ reports = $reports.Count }
-	Write-Status ($reports ? 'fail' : 'pass') "AddressSanitizer: $($reports.Count) report(s)"
-}
+Add-AsanFindings $AsanDir
 
-$failed = Write-Report $version
-if ($UpdateBaseline) { Save-Baseline $version }
-
-$bySeverity = $Findings | Group-Object Severity | ForEach-Object { "$($_.Count) $($_.Name)" }
-Write-Host ''
-Write-Host ("{0} cases, {1} failed, findings: {2}  ({3:N0} s)" -f $Cases.Count, $failed, (($bySeverity -join ', ') -replace '^$', 'none'), $clock.Elapsed.TotalSeconds)
-Write-Host "report: $(Join-Path $OutDir 'report.md')"
+$header = @(
+	"wbsh: ``$version`` ($WbshExe)",
+	"mode: $Mode, seed $Seed, machine $env:COMPUTERNAME",
+	"reference shell: $(if ($BashExe) { $BashExe } else { 'none' })"
+)
+$failed = Write-Report "wbsh stress report $Stamp" $header @((Get-PerfSection), (Get-MemorySection)) @{ seed = $Seed; mode = $Mode }
+if ($UpdateBaseline) { Save-Baseline $BaselinePath $Baseline (Get-BaselineSections) $version $Stamp }
+Write-Summary $failed $clock
 exit ([int]($failed -gt 0))

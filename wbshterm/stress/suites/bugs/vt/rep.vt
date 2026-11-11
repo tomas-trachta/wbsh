@@ -1,0 +1,3 @@
+# REP repeats the last printed character
+# @stress size=6x1
+a\e[3b

@@ -1,0 +1,3 @@
+# EL 0 / EL 1 and ECH
+# @stress size=10x3
+0123456789\e[1;4H\e[K\r\nabcdefghij\e[2;5H\e[1K\e[3;1Hxyz\e[3;2H\e[X

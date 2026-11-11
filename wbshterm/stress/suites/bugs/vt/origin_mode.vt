@@ -1,0 +1,3 @@
+# DECOM makes CUP relative to the margins and clamps to them
+# @stress size=5x5
+\e[2;4r\e[?6h\e[1;1HX\e[9;1HY

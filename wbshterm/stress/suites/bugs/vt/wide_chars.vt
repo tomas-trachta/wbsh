@@ -1,0 +1,3 @@
+# wide characters take two cells and wrap as a whole
+# @stress size=6x3
+你好x\r\n12345你

@@ -5,7 +5,8 @@
 // a timeout kills the whole tree, not only the root process. The root starts
 // suspended so no child can escape the job before it is assigned.
 //
-// Compiled at run time by stress.ps1 through Add-Type.
+// Shared by wbsh/stress and wbshterm/stress; compiled at run time by
+// tools/stress/Core.ps1 through Add-Type.
 
 using System;
 using System.Collections;
@@ -24,6 +25,8 @@ namespace WbshStress
 		public long PrivateBytes;
 		public long WorkingSet;
 		public int Handles;
+		public int GdiObjects;
+		public int UserObjects;
 	}
 
 	public sealed class ProbeResult
@@ -39,6 +42,8 @@ namespace WbshStress
 		public long RootPeakWorkingSet;
 		public long RootPeakPrivate;
 		public int PeakHandles;
+		public int PeakGdiObjects;
+		public int PeakUserObjects;
 		public int TotalProcesses;
 		public int LeftoverProcesses;
 		public List<ProbeSample> Samples = new List<ProbeSample>();
@@ -195,6 +200,9 @@ namespace WbshStress
 
 		[DllImport("kernel32.dll")]
 		static extern IntPtr GetConsoleWindow();
+
+		[DllImport("user32.dll")]
+		static extern int GetGuiResources(IntPtr process, int flags);
 
 		static readonly Dictionary<uint, string> CrashNames = new Dictionary<uint, string> {
 			{ 0xC0000005, "ACCESS_VIOLATION" }, { 0xC00000FD, "STACK_OVERFLOW" },
@@ -399,13 +407,18 @@ namespace WbshStress
 		{
 			int count;
 			if (GetProcessHandleCount(process, out count) && count > r.PeakHandles) r.PeakHandles = count;
+			int gdi = GetGuiResources(process, 0);
+			int user = GetGuiResources(process, 1);
+			if (gdi > r.PeakGdiObjects) r.PeakGdiObjects = gdi;
+			if (user > r.PeakUserObjects) r.PeakUserObjects = user;
 			if (!keep) return;
 
 			PROCESS_MEMORY_COUNTERS_EX mem;
 			if (!GetProcessMemoryInfo(process, out mem, Marshal.SizeOf(typeof(PROCESS_MEMORY_COUNTERS_EX)))) return;
 			r.Samples.Add(new ProbeSample {
 				Ms = clock.Elapsed.TotalMilliseconds, PrivateBytes = (long)mem.PrivateUsage,
-				WorkingSet = (long)mem.WorkingSetSize, Handles = count });
+				WorkingSet = (long)mem.WorkingSetSize, Handles = count,
+				GdiObjects = gdi, UserObjects = user });
 		}
 
 		static IntPtr OpenStd(string path, bool write, List<IntPtr> handles)
@@ -420,9 +433,15 @@ namespace WbshStress
 
 		static IntPtr BuildEnvironment(IDictionary overrides)
 		{
+			// State a parent wbsh or wbshterm exports (WBSH_INIT_COMMAND,
+			// WBSH_FUNCTIONS, ...) would make results depend on the terminal
+			// the driver runs in, so only a case's own WBSH_* values pass.
 			var env = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-			foreach (DictionaryEntry e in System.Environment.GetEnvironmentVariables())
-				env[(string)e.Key] = (string)e.Value;
+			foreach (DictionaryEntry e in System.Environment.GetEnvironmentVariables()) {
+				var name = (string)e.Key;
+				if (name.StartsWith("WBSH_", StringComparison.OrdinalIgnoreCase)) continue;
+				env[name] = (string)e.Value;
+			}
 			if (overrides != null) {
 				foreach (DictionaryEntry e in overrides) {
 					if (e.Value == null) env.Remove((string)e.Key);

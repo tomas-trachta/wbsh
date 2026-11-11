@@ -1,0 +1,3 @@
+# IL and DL
+# @stress size=4x4
+a\r\nb\r\nc\r\nd\e[2;1H\e[L\e[4;1H\e[M

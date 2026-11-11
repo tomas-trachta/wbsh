@@ -1,0 +1,3 @@
+# the DEC special graphics set draws boxes
+# @stress size=3x1
+\e(0lqk\e(B

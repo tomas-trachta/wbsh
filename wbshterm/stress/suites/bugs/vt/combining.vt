@@ -1,0 +1,3 @@
+# a combining mark joins the cell before it
+# @stress size=6x1
+e\u{301}x

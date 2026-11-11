@@ -15,7 +15,9 @@ In scope:
 - The bundled commands (coreutils, awk, sed, grep, make, curl, tar, vi, …).
 - The installer and the portable ZIP (start-up, PATH, first run).
 
-Out of scope for 1.0: `wbshterm`, the SDK plug-in API (test it only for crashes), a Linux build.
+Out of scope for 1.0: the SDK plug-in API (test it only for crashes), a Linux build.
+`wbshterm` has its own plan, [`stress-testing-wbshterm.md`](stress-testing-wbshterm.md),
+built on the same probe and report code (`tools/stress/`).
 
 ## 2. Release criteria
 
@@ -266,6 +268,6 @@ round-trip all pass; `wbsh.exe` has ASLR and DEP but no CFG (`/guard:cf`).
 2. An ASan configuration in `wbsh.vcxproj`, so the ASan build is one command.
 3. A minimiser for fuzz findings (delta debugging on lines, then on characters).
 4. More generator grammar: `[[ ]]` regex, `printf` formats, `declare` attributes, traps, `getopts`, here-docs with expansions.
-5. Interactive tests through the pseudoconsole (`script`/ConPTY): Ctrl+C, resize, prompt rendering time.
+5. Interactive tests through the pseudoconsole: the wbshterm framework's sessions (`wbshterm --snapshot --feed`) already drive an interactive wbsh; add wbsh line-editor cases there (Ctrl+C once headless sessions deliver it, resize, prompt rendering time).
 6. A real-world script corpus in `stress/suites/bugs/realworld/` (with licences checked).
 7. A trend page: keep `report.json` of each nightly run and plot the perf and memory numbers.

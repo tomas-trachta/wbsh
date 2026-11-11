@@ -1,0 +1,3 @@
+# unknown CSI and DEL print nothing (C0 controls such as ENQ show as glyphs on purpose, the conhost way)
+# @stress size=6x1
+a\e[99zbc\x7fd
