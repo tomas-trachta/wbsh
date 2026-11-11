@@ -75,3 +75,15 @@ set +e
 [[ 1+1 -eq 2 ]] && echo "[[ -eq ]] is arithmetic"
 v=set; [[ -v v && ! -v nosuch_var ]] && echo "[[ -v ]] ok"
 [ -v v ] && echo "[ -v ] ok"
+
+echo "=== 6. a missing name with a .exe beside it is that file, as in Git Bash (#291)"
+mkdir -p jdk/bin
+printf 'MZ' > jdk/bin/java.exe
+[ -x jdk/bin/java ] && echo "[ -x ] finds java.exe"
+[ -f jdk/bin/java ] && [ -e jdk/bin/java ] && echo "[ -f ] [ -e ] find java.exe"
+[[ -x jdk/bin/java ]] && echo "[[ -x ]] finds java.exe"
+[ -L jdk/bin/java ] || echo "[ -L ] does not"
+[ -e jdk/bin/javac ] || echo "no javac.exe: missing"
+printf 'MZ' > jdk/bin/tool
+printf 'MZ' > jdk/bin/tool.exe
+[ -x jdk/bin/tool ] && echo "an existing name tests itself"
