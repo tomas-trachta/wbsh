@@ -1,6 +1,7 @@
 #!/bin/bash
-# BASH_VERSION, BASH_VERSINFO, BASH, PPID, OSTYPE, MACHTYPE, HOSTTYPE,
-# EPOCHSECONDS, EPOCHREALTIME, BASH_COMMAND and WBSH_VERSION.
+# BASH_VERSION, BASH_VERSINFO, BASH, PPID, OSTYPE, MACHTYPE, HOSTTYPE, UID,
+# EUID, HOSTNAME, SHLVL, EPOCHSECONDS, EPOCHREALTIME, BASH_COMMAND and
+# WBSH_VERSION.
 
 echo "=== version"
 echo "BASH_VERSION=$BASH_VERSION"
@@ -29,6 +30,20 @@ echo "$PPID" | { read -r p; [ "$p" = "$top" ] && echo "pipeline keeps PPID"; }
 PPID=3 2>/dev/null
 [ "$PPID" = "$top" ] && echo "PPID is readonly"
 env | grep -c '^PPID=\|^BASH_VERSION=\|^OSTYPE='
+
+echo "=== UID, EUID, HOSTNAME, SHLVL (#291)"
+[ "$UID" = "$(id -u)" ] && [ "$EUID" = "$UID" ] && echo "UID and EUID match id -u"
+[ "$EUID" -ne 0 ] && echo "EUID is not 0"
+declare -p UID EUID
+{ UID=3; } 2>/dev/null
+[ "$UID" = "$(id -u)" ] && echo "UID is readonly"
+[ "$HOSTNAME" = "$(hostname)" ] && echo "HOSTNAME matches hostname"
+[[ $SHLVL =~ ^[1-9][0-9]*$ ]] && echo "SHLVL is a level"
+[ "$("$BASH" -c 'echo "$SHLVL"')" = "$((SHLVL + 1))" ] && echo "a new shell is one level deeper"
+( [ "$SHLVL" = "$(echo "$SHLVL")" ] && echo "subshell keeps SHLVL" )
+echo "$SHLVL" | { read -r l; [ "$l" = "$SHLVL" ] && echo "pipeline keeps SHLVL"; }
+env | grep -c '^SHLVL='
+env | grep -c '^UID=\|^EUID='
 
 echo "=== EPOCHSECONDS / EPOCHREALTIME"
 [[ $EPOCHSECONDS =~ ^[0-9]{10,}$ ]] && echo "EPOCHSECONDS ok"

@@ -26,6 +26,22 @@ Tilde expansion covers `~`, `~+`, `~-` and `~name`.
 - A name that is no user account stays literal, as in bash.
 - Tab completes `~na` to user names.
 
+### Identity: uname, OSTYPE, UID
+
+`uname -s` prints `wbsh`, but `OSTYPE` is `msys` and `MACHTYPE` ends in
+`-pc-msys`, as in Git Bash. The two answers differ on purpose:
+
+- `$OSTYPE` tells a script that it runs on Windows.
+- `uname -s` does not start with `MSYS` or `MINGW`. Launchers such as
+  `gradlew` and the npm shims run `cygpath` on that branch. wbsh converts POSIX
+  paths for native programs itself, so the generic POSIX branch works, and
+  `cygpath` is not bundled.
+
+There is no uid model. `UID` and `EUID` are readonly and hold the id that
+`id -u` prints (1000), never 0, also in an elevated shell. `HOSTNAME` is the
+computer name, the same as `hostname`. `SHLVL` goes up by one in each new wbsh
+process; subshells and pipeline stages keep the level of their shell.
+
 ### exec
 
 `exec PROGRAM` cannot replace the shell, since Windows has no `execve`. The

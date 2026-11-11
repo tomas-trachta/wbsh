@@ -292,6 +292,34 @@ namespace wbsh {
 		env.markReadonly(name);
 	}
 
+	// There is no uid model: UID and EUID are the id `id -u` prints, never
+	// 0, as in Git Bash. Bash sets HOSTNAME only when it is unset.
+	static void seedIdentity(Environment& env) {
+		setReadonlyInteger(env, "UID", "1000");
+		setReadonlyInteger(env, "EUID", "1000");
+		if (!env.get("HOSTNAME").empty()) return;
+
+		std::string host = env.get("COMPUTERNAME");
+#ifdef _WIN32
+		wchar_t name[MAX_COMPUTERNAME_LENGTH + 1];
+		DWORD length = MAX_COMPUTERNAME_LENGTH + 1;
+		if (host.empty() && ::GetComputerNameW(name, &length) != 0) {
+			host = wideToUtf8(std::wstring(name, length));
+		}
+#endif /* _WIN32 */
+		env.set("HOSTNAME", host);
+	}
+
+	// A self-spawned subshell or pipeline stage is the same shell level.
+	static void seedShellLevel(Environment& env) {
+		if (isChildShell(env)) return;
+
+		long long level = 0;
+		if (!parseLL(env.get("SHLVL"), level) || level < 0) level = 0;
+		env.set("SHLVL", std::to_string(level + 1));
+		env.exportVar("SHLVL");
+	}
+
 	static void seedBashVariables(Environment& env, const PathConv& path_conv) {
 		const std::string machine = hostType() + "-pc-msys";
 		env.set("BASH_VERSION", "5.2.37(1)-release");
@@ -307,6 +335,8 @@ namespace wbsh {
 		env.markReadonly("BASH_VERSINFO");
 
 		setReadonlyInteger(env, "PPID", shellParentPid(env));
+		seedIdentity(env);
+		seedShellLevel(env);
 	}
 
 	void prepareEnv(Environment& env) {
