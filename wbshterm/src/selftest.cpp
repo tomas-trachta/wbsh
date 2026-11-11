@@ -2550,9 +2550,11 @@ namespace wbshterm {
 			std::this_thread::sleep_for(std::chrono::milliseconds(800));
 			session.drainOutput();
 
-			runCommand(session, "echo pager-done-marker");
+			// The echo of the typed line holds the marker too; only the shell
+			// expands the arithmetic, so the expanded form proves it ran.
+			runCommand(session, "echo pager-done-$((3+4))");
 
-			const bool prompt_back = waitForText(session, "pager-done-marker", 6000);
+			const bool prompt_back = waitForText(session, "pager-done-7", 6000);
 			const bool history_kept = session.screen().scrollbackRows() >= history_before;
 
 			report.check("quitting a pager leaves a working prompt", prompt_back,
