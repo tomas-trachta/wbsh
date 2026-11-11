@@ -4169,7 +4169,8 @@ namespace wbsh {
 	}
 
 	// A synopsis line that starts with blanks continues the form above it.
-	static void printSynopsisLines(const std::string& synopsis, const char* first, const char* rest) {
+	static void printSynopsisLines(const std::string& synopsis, const char* first,
+	                               const char* rest) {
 		const std::string padding(std::strlen(first), ' ');
 		std::size_t start = 0;
 		for (int line = 0; start <= synopsis.size(); ++line) {
@@ -4186,8 +4187,8 @@ namespace wbsh {
 	// otherwise `yes --help` printed "--help" for ever and `cat --help`
 	// looked for a file of that name. Utilities answer GNU style with status
 	// 0, shell builtins bash style with status 2.
-	static bool answeredHelpFromManPage(const std::string& name, const std::vector<std::string>& args,
-	                                    int& status) {
+	static bool answeredHelpFromManPage(const std::string& name,
+	                                    const std::vector<std::string>& args, int& status) {
 		if (args.size() != 1 || args[0] != "--help" || helpIsAnOperand(name)) return false;
 
 		const ManPage* page = findManPage(name);
@@ -4927,7 +4928,9 @@ namespace wbsh {
 	}
 
 	void Executor::keepArenaIfDefined(ParsedText& parsed, std::size_t definitions_before) {
-		if (function_definitions_ != definitions_before) owned_arenas_.push_back(std::move(parsed.arena));
+		if (function_definitions_ == definitions_before) return;
+
+		owned_arenas_.push_back(std::move(parsed.arena));
 	}
 
 	int Executor::finishParsedText(const ParsedText& parsed, int status) {

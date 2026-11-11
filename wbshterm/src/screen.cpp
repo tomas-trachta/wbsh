@@ -678,7 +678,8 @@ namespace wbshterm {
 
 		const std::uint16_t attributes = cell(row, column).attributes;
 		if ((attributes & kAttrWideTail) != 0 && column > 0) putCell(row, column - 1, Cell());
-		if ((attributes & kAttrWide) != 0 && column + 1 < columns_) putCell(row, column + 1, Cell());
+		const bool head = (attributes & kAttrWide) != 0;
+		if (head && column + 1 < columns_) putCell(row, column + 1, Cell());
 	}
 
 	Screen::GridPlace Screen::placeGlyph(char32_t code, int width) {

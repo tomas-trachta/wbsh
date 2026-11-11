@@ -1861,7 +1861,8 @@ namespace wbsh {
 				++i;
 			} else if (c == '\'' || c == '"' || c == '`') {
 				i = skipQuoted(body, i);
-			} else if (c == '$' && i + 1 < body.size() && (body[i + 1] == '{' || body[i + 1] == '(')) {
+			} else if (c == '$' && i + 1 < body.size()
+					&& (body[i + 1] == '{' || body[i + 1] == '(')) {
 				i = skipNested(body, i);
 			}
 		}

@@ -309,7 +309,8 @@ namespace wbsh::read_detail {
 		DWORD count = 0;
 		while (PeekConsoleInputW(handle, &record, 1, &count) && count == 1) {
 			const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
-			if (record.EventType == KEY_EVENT && key.bKeyDown && key.uChar.UnicodeChar != 0) return true;
+			const bool typed = key.bKeyDown && key.uChar.UnicodeChar != 0;
+			if (record.EventType == KEY_EVENT && typed) return true;
 			if (!ReadConsoleInputW(handle, &record, 1, &count)) return false;
 		}
 

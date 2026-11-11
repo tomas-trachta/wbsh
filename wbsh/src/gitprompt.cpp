@@ -37,7 +37,8 @@ namespace wbsh {
 
 		static const long long kDefaultWaitMs = 50;
 		static const char* const kStatusArgs =
-			"-c core.fsmonitor=false --no-optional-locks status --porcelain --ignore-submodules=dirty";
+			"-c core.fsmonitor=false --no-optional-locks status --porcelain"
+			" --ignore-submodules=dirty";
 		static const int kMaxModuleConfigs = 256;
 
 		struct GitCommand {
@@ -297,7 +298,8 @@ namespace wbsh {
 			int seen = 0;
 			for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
 				if (++seen > kMaxModuleConfigs) return true;
-				if (it->path().filename() == "config" && configDefinesCommands(it->path())) return true;
+				if (it->path().filename() != "config") continue;
+				if (configDefinesCommands(it->path())) return true;
 			}
 
 			return false;
