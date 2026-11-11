@@ -587,9 +587,11 @@ namespace wbsh {
 		if (!parser.errors().empty() || !lex.errors().empty()) {
 			exec.setLastStatus(kSyntaxErrorStatus);
 		} else if (root) {
-			exec.adoptArena(parser.takeArena());
+			Arena arena = parser.takeArena();
+			const std::size_t defined = exec.functionDefinitionCount();
 			exec.setSourceText(text);
 			exec.executeInput(*root, text);
+			if (exec.functionDefinitionCount() != defined) exec.adoptArena(std::move(arena));
 		}
 
 		state.buffer.clear();

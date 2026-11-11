@@ -1,0 +1,9 @@
+=== functions defined in parsed text still work later
+from subst
+from eval: 200
+from source: 200
+in_subst stayed in the subshell
+=== redefining a function from eval many times
+again-300
+=== memory stays flat over 3000 command substitutions and evals
+bounded

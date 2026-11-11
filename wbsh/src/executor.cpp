@@ -3912,6 +3912,7 @@ namespace wbsh {
 
 	int Executor::execFunctionDef(const FunctionDef& fd) {
 		functions_[fd.name] = &fd;
+		++function_definitions_;
 		function_files_[fd.name] = currentSourceFile();
 		return 0;
 	}
@@ -4816,8 +4817,12 @@ namespace wbsh {
 
 		truncateAtSyntaxError(*parsed.root, parser,
 			firstSyntaxErrorOffset(lexer.errors(), parser.errors()));
-		owned_arenas_.push_back(parser.takeArena());
+		parsed.arena = parser.takeArena();
 		return parsed;
+	}
+
+	void Executor::keepArenaIfDefined(ParsedText& parsed, std::size_t definitions_before) {
+		if (function_definitions_ != definitions_before) owned_arenas_.push_back(std::move(parsed.arena));
 	}
 
 	int Executor::finishParsedText(const ParsedText& parsed, int status) {
@@ -4829,15 +4834,19 @@ namespace wbsh {
 
 	int Executor::executeText(const std::string& source_text, const std::string& origin,
 			std::size_t first_line) {
-		const ParsedText parsed = parseText(source_text, origin, first_line);
+		ParsedText parsed = parseText(source_text, origin, first_line);
+		const std::size_t defined = function_definitions_;
 		const int status = parsed.root != nullptr ? execute(*parsed.root) : 0;
+		keepArenaIfDefined(parsed, defined);
 		return finishParsedText(parsed, status);
 	}
 
 	int Executor::executeInputText(const std::string& source_text, const std::string& origin,
 			std::size_t first_line) {
-		const ParsedText parsed = parseText(source_text, origin, first_line);
+		ParsedText parsed = parseText(source_text, origin, first_line);
+		const std::size_t defined = function_definitions_;
 		const int status = parsed.root != nullptr ? executeInput(*parsed.root, source_text) : 0;
+		keepArenaIfDefined(parsed, defined);
 		return finishParsedText(parsed, status);
 	}
 
@@ -4994,15 +5003,17 @@ namespace wbsh {
 	}
 
 	int Executor::executeSubstitutionText(const std::string& body, std::size_t first_line) {
-		const ParsedText parsed = parseText(body, "<command-substitution>", first_line);
+		ParsedText parsed = parseText(body, "<command-substitution>", first_line);
 		if (parsed.root == nullptr) return finishParsedText(parsed, 0);
 
+		const std::size_t defined = function_definitions_;
 		const Redirection* file_read = parsed.diagnostics.empty()
 			? fileReadRedirection(*parsed.root)
 			: nullptr;
 		const int status = file_read != nullptr
 			? writeFileToStdout(*file_read)
 			: execute(*parsed.root);
+		keepArenaIfDefined(parsed, defined);
 		return finishParsedText(parsed, status);
 	}
 

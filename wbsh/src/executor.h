@@ -456,6 +456,11 @@ namespace wbsh {
 			owned_arenas_.push_back(std::move(arena));
 		}
 
+		// How many function definitions have run so far. A caller that
+		// parsed text itself keeps its arena (adoptArena) only when this
+		// count changed while the text ran.
+		std::size_t functionDefinitionCount() const { return function_definitions_; }
+
 		// The original source the AST was parsed from. Used by the pipeline
 		// executor to spawn child wbsh processes for non-external elements.
 		void setSourceText(std::string s) { source_text_ = std::move(s); }
@@ -667,9 +672,12 @@ namespace wbsh {
 			std::size_t        cursor = 0;
 		};
 
+		// The arena owns the tree; it moves to owned_arenas_ only when the
+		// text defined a function, whose body must outlive the run.
 		struct ParsedText {
 			Node* root = nullptr;
 			std::string diagnostics;
+			Arena arena;
 		};
 
 		/// One FUNCNAME / BASH_SOURCE / BASH_LINENO entry: a function, a
@@ -685,6 +693,7 @@ namespace wbsh {
 		std::string currentSourceFile() const;
 		std::string functionFile(const std::string& name) const;
 		int  runFunctionBody(const FunctionDef& def);
+		bool functionNestingAllowed(const std::string& name);
 
 		const ParsedText& parsedTrapAction(const std::string& action);
 		int  runTrapAction(const std::string& action);
@@ -728,6 +737,7 @@ namespace wbsh {
 		ParsedText parseText(const std::string& source_text, const std::string& origin,
 		                     std::size_t first_line = 1);
 		int finishParsedText(const ParsedText& parsed, int status);
+		void keepArenaIfDefined(ParsedText& parsed, std::size_t definitions_before);
 		void  echoInputBefore(const List& list, std::size_t index);
 		void  echoInputUpTo(std::size_t end);
 
@@ -1056,11 +1066,12 @@ namespace wbsh {
 		SpawnPlacement spawn_placement_;
 #endif
 		int getopts_subindex_ = 1;
-		// Arenas backing every AST the executor must keep alive (e.g.
-		// those parsed via `source` / `eval` / inherited `WBSH_FUNCTIONS`
-		// evaluations) so the raw FunctionDef* pointers in `functions_`
-		// stay valid. One arena per executed parse, never freed early.
+		// Arenas of parsed text that defined functions (`source`, `eval`,
+		// inherited `WBSH_FUNCTIONS`, ...), so the raw FunctionDef* pointers
+		// in `functions_` stay valid. Text that defined none is freed once
+		// it has run; keeping every arena grew by one per `$(...)`.
 		std::vector<Arena> owned_arenas_;
+		std::size_t function_definitions_ = 0;
 		std::vector<std::vector<ScopeEntry>> scope_stack_;
 		int  last_status_ = 0;
 		// The status of the last `$(...)` since the current simple command
