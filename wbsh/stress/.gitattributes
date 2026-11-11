@@ -1,0 +1,7 @@
+# Stress cases run in wbsh and in Git Bash; bash rejects CRLF scripts, so
+# pin them to LF whatever core.autocrlf says. Corpus files are hostile parser
+# inputs (CRLF, NUL, invalid UTF-8) and must reach the parser byte for byte.
+*.sh                    text eol=lf
+*.accept                text eol=lf
+*.cs                    text eol=lf
+suites/bugs/corpus/**   -text
