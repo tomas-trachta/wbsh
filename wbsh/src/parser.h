@@ -101,6 +101,7 @@ namespace wbsh {
 		void stampSpan(Node& node, std::size_t start_offset);
 
 		NodePtr parseList(bool top_level);
+		NodePtr parseCompoundList();
 		void recordLineEnd(std::size_t complete_items);
 		std::string tokenSpelling(const Token& token) const;
 		bool matchListSeparator(ListItem& item);

@@ -299,6 +299,17 @@ namespace wbsh {
 		return list;
 	}
 
+	// A compound command needs a command in each of its lists: bash rejects
+	// `if then fi`, `while do done` and `{ }` instead of running nothing.
+	NodePtr Parser::parseCompoundList() {
+		NodePtr list = parseList(false);
+		if (static_cast<const List*>(list)->items.empty() && !atEnd()) {
+			error(peek(), "syntax error near unexpected token `" + tokenSpelling(peek()) + "'");
+		}
+
+		return list;
+	}
+
 	void Parser::recordLineEnd(std::size_t complete_items) {
 		if (pos_ == 0) return;
 
@@ -520,7 +531,7 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 
-		auto body = parseList(false);
+		auto body = parseCompoundList();
 		expectReserved("}", "expected `}`");
 
 		auto group = arena_.make<BraceGroup>();
@@ -536,7 +547,7 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 
-		auto body = parseList(false);
+		auto body = parseCompoundList();
 		expect(TokKind::RParen, "expected `)`");
 
 		auto subshell = arena_.make<Subshell>();
@@ -564,22 +575,22 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 
-		auto cond = parseList(false);
+		auto cond = parseCompoundList();
 		expectReserved("then", "expected `then`");
-		auto then_body = parseList(false);
+		auto then_body = parseCompoundList();
 
 		auto node = arena_.make<IfClause>();
 		node->loc = loc;
 		node->branches.push_back({ cond, then_body });
 
 		while (matchReserved("elif")) {
-			auto elif_cond = parseList(false);
+			auto elif_cond = parseCompoundList();
 			expectReserved("then", "expected `then` after elif condition");
-			auto elif_body = parseList(false);
+			auto elif_body = parseCompoundList();
 			node->branches.push_back({ elif_cond, elif_body });
 		}
 
-		if (matchReserved("else")) node->else_body = parseList(false);
+		if (matchReserved("else")) node->else_body = parseCompoundList();
 
 		expectReserved("fi", "expected `fi`");
 		parseTrailingRedirections(node->redirs);
@@ -593,7 +604,7 @@ namespace wbsh {
 			return nullptr;
 		}
 
-		auto body = parseList(false);
+		auto body = parseCompoundList();
 		expectReserved("done", "expected `done`");
 		return body;
 	}
@@ -603,7 +614,7 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 
-		auto cond = parseList(false);
+		auto cond = parseCompoundList();
 		auto body = parseDoGroup();
 
 		auto node = arena_.make<WhileClause>();
