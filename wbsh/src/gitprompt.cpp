@@ -10,6 +10,7 @@
 #  include <windows.h>
 #endif /* _WIN32 */
 
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cwctype>
@@ -36,7 +37,8 @@ namespace wbsh {
 
 		static const long long kDefaultWaitMs = 50;
 		static const char* const kStatusArgs =
-			"--no-optional-locks status --porcelain --ignore-submodules=dirty";
+			"-c core.fsmonitor=false --no-optional-locks status --porcelain --ignore-submodules=dirty";
+		static const int kMaxModuleConfigs = 256;
 
 		struct GitCommand {
 			std::wstring exe;
@@ -266,6 +268,62 @@ namespace wbsh {
 			return !off.empty() && off != "0";
 		}
 
+		static bool sectionStarts(const std::string& line, std::size_t at, const char* name) {
+			for (std::size_t i = 0; name[i] != '\0'; ++i) {
+				if (at + i >= line.size()) return false;
+				const auto c = static_cast<unsigned char>(line[at + i]);
+				if (std::tolower(c) != name[i]) return false;
+			}
+
+			return true;
+		}
+
+		static bool configDefinesCommands(const fs::path& config) {
+			std::ifstream file(config);
+			std::string line;
+			while (std::getline(file, line)) {
+				const std::size_t start = line.find_first_not_of(" \t");
+				if (start == std::string::npos || line[start] != '[') continue;
+				if (sectionStarts(line, start + 1, "filter")) return true;
+				if (sectionStarts(line, start + 1, "include")) return true;
+			}
+
+			return false;
+		}
+
+		static bool moduleConfigsDefineCommands(const fs::path& modules) {
+			std::error_code ec;
+			fs::recursive_directory_iterator it(modules, ec);
+			int seen = 0;
+			for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+				if (++seen > kMaxModuleConfigs) return true;
+				if (it->path().filename() == "config" && configDefinesCommands(it->path())) return true;
+			}
+
+			return false;
+		}
+
+		// git status runs the clean filter of every changed file, and the
+		// .git/config of an unpacked archive or a submodule can name any
+		// command as a filter (or include a file that does), so such a
+		// repository shows its branch only. core.fsmonitor, the other
+		// command status runs, is turned off in kStatusArgs.
+		static bool repoConfigRunsCommands(const fs::path& git_dir) {
+			if (configDefinesCommands(git_dir / "config")) return true;
+			if (configDefinesCommands(git_dir / "config.worktree")) return true;
+
+			fs::path common = git_dir;
+			std::ifstream common_file(git_dir / "commondir");
+			std::string relative;
+			if (std::getline(common_file, relative)) {
+				stripLineEnding(relative);
+				common = git_dir / utf8ToPath(relative);
+				if (configDefinesCommands(common / "config")) return true;
+			}
+
+			return moduleConfigsDefineCommands(common / "modules");
+		}
+
 		struct DirtyFlags {
 			bool unstaged = false;
 			bool staged = false;
@@ -421,7 +479,8 @@ namespace wbsh {
 
 		info.state = gitprompt_detail::operationState(git_dir);
 		const bool check_dirty = info.state.empty() && !git.empty()
-			&& !gitprompt_detail::dirtyCheckDisabled(env);
+			&& !gitprompt_detail::dirtyCheckDisabled(env)
+			&& !gitprompt_detail::repoConfigRunsCommands(git_dir);
 		if (check_dirty) info.state = gitprompt_detail::dirtyState(env, git, git_dir, can_redraw);
 
 		return info;

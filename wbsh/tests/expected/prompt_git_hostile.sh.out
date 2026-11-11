@@ -1,0 +1,10 @@
+=== core.fsmonitor in .git/config does not run
+[ (main | untracked)]
+fsmonitor did not run
+=== a clean filter in .git/config does not run
+[ (main)]
+filter did not run
+=== an include in .git/config also turns the state off
+[ (main)]
+=== an ordinary repository keeps its state
+[ (main | untracked)]
