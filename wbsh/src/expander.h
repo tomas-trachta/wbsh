@@ -275,6 +275,9 @@ namespace wbsh {
 		PathConv path_conv_;
 		std::string pending_error_;
 		bool fatal_error_ = false;
+		// Whether the ${...} being expanded is inside double quotes, which
+		// decides what a backslash in its word argument escapes.
+		bool param_quoted_ = true;
 
 		Tagged renderWord(const Word& w);
 		// renderSegment, renderArrayFields and renderParamExpSegment
@@ -428,6 +431,7 @@ namespace wbsh {
 		std::vector<std::string> keyValueWords(const std::string& name) const;
 		void failBadSubstitution(const std::string& body);
 		std::string expandParamWordArg(const std::string& body);
+		std::string expandReplacementArg(const std::string& raw);
 		std::string expandPatternArg(const std::string& body);
 		void appendPatternExpansion(const std::string& body, std::size_t& i, bool in_dq,
 		                            std::string& out);

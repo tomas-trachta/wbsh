@@ -1114,9 +1114,17 @@ namespace wbsh {
 	// body does). Used for the argument/pattern words embedded in
 	// `${name:-word}`, `${name/pat/rep}`, `${name#pat}`, and friends,
 	// which — unlike a heredoc body — are ordinary shell words.
+	// Unquoted, a backslash escapes any character, as in bash (`${u:-\z}` is
+	// `z`) -- except the glob characters: the result carries no quoting, so
+	// they keep their backslash rather than be globbed.
+	static bool unquotedWordEscapes(char c) {
+		return c != '*' && c != '?' && c != '[' && c != ']';
+	}
+
 	std::string Expander::expandParamWordArg(const std::string& body) {
 		std::string out;
 		const std::size_t end = body.size();
+		bool in_dq = false;
 		std::size_t i = 0;
 		while (i < end && !aborting()) {
 			const char c = body[i];
@@ -1126,12 +1134,14 @@ namespace wbsh {
 			}
 
 			if (c == '"') {
+				in_dq = !in_dq;
 				++i;
 				continue;
 			}
 
 			if (c == '\\' && i + 1 < end) {
-				expandBackslash(body, i, doubleQuoteEscapes, out);
+				const bool quoted = param_quoted_ || in_dq;
+				expandBackslash(body, i, quoted ? doubleQuoteEscapes : unquotedWordEscapes, out);
 				continue;
 			}
 
@@ -1870,6 +1880,52 @@ namespace wbsh {
 		return std::string::npos;
 	}
 
+	// bash 5.2, patsub_replacement: in the replacement, an `&` stands for the
+	// matched text. In its literal text a backslash quotes the character
+	// after it (`\&` is a plain `&`, `\z` is `z`, `\\` is `\`), and an `&`
+	// inside quotes is plain too. What an expansion puts there keeps its
+	// backslashes, and its `&` is the match unless the expansion is quoted.
+	// A plain `&` leaves here as kLiteralAmpersand.
+	static const char kLiteralAmpersand = '\x01';
+
+	static void appendQuotedReplacement(const std::string& text, std::string& out) {
+		for (char c : text) out.push_back(c == '&' ? kLiteralAmpersand : c);
+	}
+
+	std::string Expander::expandReplacementArg(const std::string& raw) {
+		std::string out;
+		bool in_dq = false;
+		std::size_t i = 0;
+		while (i < raw.size() && !aborting()) {
+			const char c = raw[i];
+			if (c == '\'' && !in_dq) {
+				std::string quoted;
+				copySingleQuotedRun(raw, i, quoted);
+				appendQuotedReplacement(quoted, out);
+			} else if (c == '"') {
+				in_dq = !in_dq;
+				++i;
+			} else if (c == '$' || c == '`') {
+				std::string value;
+				if (c == '$') expandHeredocDollar(raw, i, value);
+				else expandHeredocBackquote(raw, i, value);
+				if (in_dq) appendQuotedReplacement(value, out);
+				else out += value;
+			} else if (in_dq && c == '\\' && i + 1 < raw.size()) {
+				expandBackslash(raw, i, doubleQuoteEscapes, out);
+			} else if (c == '\\' && i + 1 < raw.size()) {
+				const char next = raw[i + 1];
+				if (next != '\n') out.push_back(next == '&' ? kLiteralAmpersand : next);
+				i += 2;
+			} else {
+				out.push_back(in_dq && c == '&' ? kLiteralAmpersand : c);
+				++i;
+			}
+		}
+
+		return out;
+	}
+
 	Expander::ReplaceArgs Expander::parseReplaceArgs(const std::string& args) {
 		ReplaceArgs out;
 		std::string body = args;
@@ -1882,7 +1938,8 @@ namespace wbsh {
 		const std::string rep = (slash == std::string::npos) ? std::string()
 			: body.substr(slash + 1);
 		out.pat = expandPatternArg(pat);
-		out.rep = expandParamWordArg(rep);
+		out.rep = env_.shopts().patsub_replacement ? expandReplacementArg(rep)
+			: expandParamWordArg(rep);
 		return out;
 	}
 
@@ -2442,12 +2499,18 @@ namespace wbsh {
 		return expandDirectParam(resolved, label);
 	}
 
-	std::string Expander::expandParam(const std::string& body, bool /*quoted_ctx*/) {
+	std::string Expander::expandParam(const std::string& body, bool quoted_ctx) {
 		if (body.empty()) return {};
 
-		if (body[0] == '#' && body.size() > 1) return expandParamLengthForm(body);
-		if (body[0] == '!' && body.size() > 1) return expandBangParam(body);
-		return expandDirectParam(body, {});
+		const bool saved = param_quoted_;
+		param_quoted_ = quoted_ctx;
+		std::string value;
+		if (body[0] == '#' && body.size() > 1) value = expandParamLengthForm(body);
+		else if (body[0] == '!' && body.size() > 1) value = expandBangParam(body);
+		else value = expandDirectParam(body, {});
+
+		param_quoted_ = saved;
+		return value;
 	}
 
 	std::string Expander::expandDirectParam(const std::string& body, const std::string& label) {
@@ -2652,30 +2715,48 @@ namespace wbsh {
 		return val.substr(0, bounds[from]);
 	}
 
+	struct Replacement {
+		const std::string& text;
+		bool ampersands = false;
+	};
+
+	static std::string replacementFor(const Replacement& rep, const std::string& match) {
+		if (!rep.ampersands) return rep.text;
+
+		std::string out;
+		for (char c : rep.text) {
+			if (c == '&') out += match;
+			else out.push_back(c == kLiteralAmpersand ? '&' : c);
+		}
+
+		return out;
+	}
+
 	static std::string replaceAnchoredPrefix(const std::string& val, const PatternRef& pat,
-			const std::string& rep) {
+			const Replacement& rep) {
 		if (pat.shape.literal) {
 			if (!startsWith(val, pat.shape.text)) return val;
-			return rep + val.substr(pat.shape.text.size());
+			return replacementFor(rep, pat.shape.text) + val.substr(pat.shape.text.size());
 		}
 
 		const CharBounds bounds = charBounds(val);
 		const std::size_t to = longestMatchAt(val, bounds, 0, pat);
 		if (to == std::string::npos) return val;
-		return rep + val.substr(bounds[to]);
+		return replacementFor(rep, val.substr(0, bounds[to])) + val.substr(bounds[to]);
 	}
 
 	static std::string replaceAnchoredSuffix(const std::string& val, const PatternRef& pat,
-			const std::string& rep) {
+			const Replacement& rep) {
 		if (pat.shape.literal) {
 			if (!endsWith(val, pat.shape.text)) return val;
-			return val.substr(0, val.size() - pat.shape.text.size()) + rep;
+			const std::size_t at = val.size() - pat.shape.text.size();
+			return val.substr(0, at) + replacementFor(rep, pat.shape.text);
 		}
 
 		const CharBounds bounds = charBounds(val);
 		const std::size_t from = longestSuffixMatch(val, bounds, pat);
 		if (from == std::string::npos) return val;
-		return val.substr(0, bounds[from]) + rep;
+		return val.substr(0, bounds[from]) + replacementFor(rep, val.substr(bounds[from]));
 	}
 
 	static void appendCharAt(std::string& out, const std::string& val, const CharBounds& bounds,
@@ -2687,12 +2768,13 @@ namespace wbsh {
 
 	// A literal pattern is found with a plain substring search.
 	static std::string replaceLiteral(const std::string& val, const std::string& text,
-			const std::string& rep, bool all) {
+			const Replacement& rep, bool all) {
+		const std::string inserted = replacementFor(rep, text);
 		std::string out;
 		std::size_t from = 0;
 		for (std::size_t at = val.find(text); at != std::string::npos; at = val.find(text, from)) {
 			out.append(val, from, at - from);
-			out += rep;
+			out += inserted;
 			from = at + text.size();
 			if (!all) break;
 		}
@@ -2704,7 +2786,7 @@ namespace wbsh {
 	// A zero-width match copies the next character, so a pattern that
 	// always matches `""` still makes progress.
 	static std::string replaceUnanchored(const std::string& val, const PatternRef& pat,
-			const std::string& rep, bool all) {
+			const Replacement& rep, bool all) {
 		if (pat.shape.literal) return replaceLiteral(val, pat.shape.text, rep, all);
 
 		const CharBounds bounds = charBounds(val);
@@ -2718,7 +2800,7 @@ namespace wbsh {
 				continue;
 			}
 
-			out += rep;
+			out += replacementFor(rep, val.substr(bounds[i], bounds[to] - bounds[i]));
 			if (to == i) appendCharAt(out, val, bounds, i++);
 			else i = to;
 
@@ -2736,9 +2818,10 @@ namespace wbsh {
 		if (pat.empty())  return val;
 
 		const PatternRef ref = makePatternRef(pat, env_.extglob());
-		if (anchor_start) return replaceAnchoredPrefix(val, ref, rep);
-		if (anchor_end)   return replaceAnchoredSuffix(val, ref, rep);
-		return replaceUnanchored(val, ref, rep, all);
+		const Replacement replacement{ rep, env_.shopts().patsub_replacement };
+		if (anchor_start) return replaceAnchoredPrefix(val, ref, replacement);
+		if (anchor_end)   return replaceAnchoredSuffix(val, ref, replacement);
+		return replaceUnanchored(val, ref, replacement, all);
 	}
 
 	static void pushText(Expander::Tagged& out, const std::string& text, std::uint8_t mark) {
