@@ -2841,10 +2841,29 @@ namespace wbsh {
 		return found;
 	}
 
+	static bool startsLikeProgram(const std::filesystem::path& path) {
+		std::ifstream file(path, std::ios::binary);
+		char head[2] = {};
+		file.read(head, sizeof(head));
+		if (file.gcount() < 2) return false;
+
+		const bool shebang = head[0] == '#' && head[1] == '!';
+		return shebang || (head[0] == 'M' && head[1] == 'Z');
+	}
+
+	// A file named by its path runs as named when it is a script or a
+	// program, as in bash: `./gradlew` beside `gradlew.bat` is the script.
+	// A PATH lookup keeps the Windows order (.exe, .cmd, .bat first). A
+	// device path is not probed: a `<(...)` pipe takes one stat only.
+	static std::string explicitExecutable(const std::filesystem::path& path) {
+		const bool probe = !isDevicePath(path) && isExistingFile(path);
+		if (probe && startsLikeProgram(path)) return pathToUtf8(path);
+		return tryExecutableWithExtensions(path);
+	}
+
 	std::string Executor::findExecutable(const std::string& name) {
 		if (isAbsoluteOrRelativePath(name)) {
-			const std::filesystem::path candidate = utf8ToPath(path_conv_.toWin32(name));
-			return tryExecutableWithExtensions(candidate);
+			return explicitExecutable(utf8ToPath(path_conv_.toWin32(name)));
 		}
 
 		const std::string path = env_.get("PATH");

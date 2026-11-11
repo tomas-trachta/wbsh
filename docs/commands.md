@@ -42,6 +42,22 @@ There is no uid model. `UID` and `EUID` are readonly and hold the id that
 computer name, the same as `hostname`. `SHLVL` goes up by one in each new wbsh
 process; subshells and pipeline stages keep the level of their shell.
 
+### Command lookup
+
+A command found on PATH is looked up in the Windows order: `NAME.exe`,
+`NAME.cmd`, `NAME.bat`, and then `NAME`. Git Bash takes `NAME` first. So when a
+folder holds both a POSIX launcher and a batch file, such as Maven's `bin/mvn`
+and `bin/mvn.cmd`, wbsh runs the batch file. Many such launchers walk up with
+`cd ..` until `pwd` prints `/`. In wbsh, `/` is the root of the current drive
+and `pwd` prints `/c/` there, so these loops do not end.
+
+A command named by its path (`./gradlew`, `"$HOME/bin/tool"`) runs that file,
+as in bash, when it starts with `#!` or is a Windows program. Without such a
+file, the path gets the same extensions as a PATH lookup.
+
+A file test on a missing name also finds the name with `.exe` added, as in Git
+Bash: `[ -x "$JAVA_HOME/bin/java" ]` is true when `java.exe` exists.
+
 ### exec
 
 `exec PROGRAM` cannot replace the shell, since Windows has no `execve`. The
