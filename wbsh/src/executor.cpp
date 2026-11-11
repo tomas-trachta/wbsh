@@ -4849,9 +4849,63 @@ namespace wbsh {
 
 		const int lineno = env_.currentLineno();
 		const std::size_t line = static_cast<std::size_t>(lineno > 0 ? lineno : 1);
-		const int status = endSubshell(executeText(body, "<command-substitution>", line));
+		const int status = endSubshell(executeSubstitutionText(body, line));
 		leaveSubshell(snap);
 		return status;
+	}
+
+	// The lone `< file` of `$(< file)`, which bash reads instead of running.
+	static const Redirection* fileReadRedirection(const Node& root) {
+		if (root.kind != Node::Kind::List) return nullptr;
+
+		const List& list = static_cast<const List&>(root);
+		if (list.items.size() != 1 || list.items[0].background) return nullptr;
+		if (list.items[0].command->kind != Node::Kind::SimpleCommand) return nullptr;
+
+		const SimpleCommand& sc = static_cast<const SimpleCommand&>(*list.items[0].command);
+		if (!sc.words.empty() || !sc.assignments.empty() || sc.redirs.size() != 1) return nullptr;
+
+		const Redirection& redir = sc.redirs[0];
+		const bool reads_stdin = redir.fd == -1 || redir.fd == 0;
+		if (redir.op != RedirOp::Less || !reads_stdin || !redir.fd_variable.empty()) return nullptr;
+		return &redir;
+	}
+
+	static void copyFdToStdout(int fd) {
+		char buffer[65536];
+		int got = 0;
+		while ((got = _read(fd, buffer, sizeof buffer)) > 0) {
+			if (_write(1, buffer, static_cast<unsigned int>(got)) != got) return;
+		}
+	}
+
+	int Executor::writeFileToStdout(const Redirection& redir) {
+		std::string path;
+		if (!expandRedirTarget(redir.target, path)) return 1;
+
+		const int fd = openRedirSourceFd(path, _O_RDONLY);
+		if (fd < 0) {
+			reportPathError(path);
+			return 1;
+		}
+
+		std::fflush(stdout);
+		copyFdToStdout(fd);
+		_close(fd);
+		return 0;
+	}
+
+	int Executor::executeSubstitutionText(const std::string& body, std::size_t first_line) {
+		const ParsedText parsed = parseText(body, "<command-substitution>", first_line);
+		if (parsed.root == nullptr) return finishParsedText(parsed, 0);
+
+		const Redirection* file_read = parsed.diagnostics.empty()
+			? fileReadRedirection(*parsed.root)
+			: nullptr;
+		const int status = file_read != nullptr
+			? writeFileToStdout(*file_read)
+			: execute(*parsed.root);
+		return finishParsedText(parsed, status);
 	}
 
 	std::string Executor::runRaw(const std::string& body) {

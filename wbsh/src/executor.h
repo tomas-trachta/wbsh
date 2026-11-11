@@ -898,6 +898,8 @@ namespace wbsh {
 		int consumeSubshellFlow(int status);
 		int runExitTrapAction(const std::string& action, int status);
 		int runCommandSubstitutionBody(const std::string& body);
+		int executeSubstitutionText(const std::string& body, std::size_t first_line);
+		int writeFileToStdout(const Redirection& redir);
 		std::string captureSubstitution(const std::string& body, int& status);
 
 #ifdef _WIN32
