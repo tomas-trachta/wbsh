@@ -2,12 +2,13 @@
 # The Windows environment variables that Git Bash scripts use by their
 # upper-case names. Windows stores them as SystemRoot, windir, ComSpec,
 # ProgramFiles; Git Bash (MSYS) gives them to scripts upper-case, so scripts
-# written for it say $SYSTEMROOT, $WINDIR, $COMSPEC, $PROGRAMFILES.
+# written for it say $SYSTEMROOT, $WINDIR, $COMSPEC, $PROGRAMFILES (but
+# ProgramData and ProgramFiles(x86) keep their case there too).
 # The driver starts wbsh from PowerShell, so it sees the native names.
 . "$STRESS_ROOT/lib/check.sh"
 
 severity medium
-for name in SYSTEMROOT WINDIR COMSPEC PROGRAMFILES PROGRAMDATA APPDATA LOCALAPPDATA USERPROFILE TEMP TMP; do
+for name in SYSTEMROOT WINDIR COMSPEC PROGRAMFILES APPDATA LOCALAPPDATA USERPROFILE TEMP TMP; do
     value=$("$STRESS_WBSH" -r -c "printf '%s' \"\$$name\"" < /dev/null)
     check "\$$name is set, as in Git Bash" [ -n "$value" ]
 done

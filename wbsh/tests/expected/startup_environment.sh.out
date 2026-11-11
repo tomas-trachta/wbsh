@@ -1,0 +1,10 @@
+=== upper-case names
+SYSTEMROOT is set
+WINDIR is set
+COMSPEC is set
+PROGRAMFILES is set
+TEMP is set
+exported once: 1
+=== IFS from the environment
+words: 1
+ \t \n
