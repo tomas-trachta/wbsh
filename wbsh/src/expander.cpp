@@ -1822,6 +1822,53 @@ namespace wbsh {
 		length_text.clear();
 	}
 
+	static std::size_t skipQuoted(const std::string& text, std::size_t i) {
+		const char quote = text[i];
+		for (++i; i < text.size() && text[i] != quote; ++i) {
+			if (quote != '\'' && text[i] == '\\') ++i;
+		}
+
+		return i;
+	}
+
+	static std::size_t skipNested(const std::string& text, std::size_t i) {
+		const char open = text[i + 1];
+		const char close = open == '{' ? '}' : ')';
+		int depth = 0;
+		for (++i; i < text.size(); ++i) {
+			if (text[i] == '\\') {
+				++i;
+			} else if (text[i] == '\'' || text[i] == '"' || text[i] == '`') {
+				i = skipQuoted(text, i);
+			} else if (text[i] == open) {
+				++depth;
+			} else if (text[i] == close && --depth == 0) {
+				return i;
+			}
+		}
+
+		return i;
+	}
+
+	// The `/` between pattern and replacement is the first one that is not
+	// escaped, quoted or inside a nested expansion: `${s/\/usr/U}` replaces
+	// "/usr", as in bash.
+	static std::size_t findReplaceSlash(const std::string& body) {
+		for (std::size_t i = 0; i < body.size(); ++i) {
+			const char c = body[i];
+			if (c == '/') return i;
+			if (c == '\\') {
+				++i;
+			} else if (c == '\'' || c == '"' || c == '`') {
+				i = skipQuoted(body, i);
+			} else if (c == '$' && i + 1 < body.size() && (body[i + 1] == '{' || body[i + 1] == '(')) {
+				i = skipNested(body, i);
+			}
+		}
+
+		return std::string::npos;
+	}
+
 	Expander::ReplaceArgs Expander::parseReplaceArgs(const std::string& args) {
 		ReplaceArgs out;
 		std::string body = args;
@@ -1829,7 +1876,7 @@ namespace wbsh {
 		out.anchor_end   = !out.anchor_start && !body.empty() && body[0] == '%';
 		if (out.anchor_start || out.anchor_end) body.erase(0, 1);
 
-		const std::size_t slash = body.find('/');
+		const std::size_t slash = findReplaceSlash(body);
 		const std::string pat = (slash == std::string::npos) ? body : body.substr(0, slash);
 		const std::string rep = (slash == std::string::npos) ? std::string()
 			: body.substr(slash + 1);
