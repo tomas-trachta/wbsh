@@ -72,6 +72,9 @@ namespace wbsh::read_detail {
 		bool echo = false;
 		bool has_deadline = false;
 		ULONGLONG deadline = 0;
+		// In line mode the console hands over a whole line once Enter is
+		// pressed, so after the first key the rest is no longer waited for.
+		bool typing = false;
 		std::string ahead;
 		std::size_t ahead_pos = 0;
 	};
@@ -297,13 +300,41 @@ namespace wbsh::read_detail {
 		}
 	}
 
+	// A console handle is signalled by any input record: the key-up of the
+	// Enter that started the command, focus and mouse events. Only a key
+	// press with a character means someone is typing; the other records
+	// are dropped and the wait goes on to the deadline.
+	static bool consoleHasTyping(HANDLE handle) {
+		INPUT_RECORD record;
+		DWORD count = 0;
+		while (PeekConsoleInputW(handle, &record, 1, &count) && count == 1) {
+			const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
+			if (record.EventType == KEY_EVENT && key.bKeyDown && key.uChar.UnicodeChar != 0) return true;
+			if (!ReadConsoleInputW(handle, &record, 1, &count)) return false;
+		}
+
+		return false;
+	}
+
+	static bool consoleReadyBy(Source& source) {
+		if (source.line_mode && source.typing) return true;
+
+		for (;;) {
+			const DWORD left = static_cast<DWORD>(millisLeft(source));
+			if (WaitForSingleObject(source.handle, left) != WAIT_OBJECT_0) return false;
+			if (consoleHasTyping(source.handle)) {
+				source.typing = true;
+				return true;
+			}
+
+			if (millisLeft(source) == 0) return false;
+		}
+	}
+
 	static bool inputReadyBy(Source& source) {
 		if (!source.has_deadline) return true;
 
-		if (source.console) {
-			return WaitForSingleObject(source.handle, static_cast<DWORD>(millisLeft(source)))
-				== WAIT_OBJECT_0;
-		}
+		if (source.console) return consoleReadyBy(source);
 
 		if (GetFileType(source.handle) == FILE_TYPE_PIPE) return pipeReadyBy(source);
 		return true;
