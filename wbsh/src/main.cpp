@@ -52,16 +52,17 @@ static void printHelp() {
 		"usage:\n"
 		"  wbsh                          interactive shell (TTY auto-detect)\n"
 		"  wbsh [opts] -c <command> [name [arg ...]]\n"
-		"                                run / dump the given string ($0 = name)\n"
+		"                                run the given string ($0 = name)\n"
 		"  wbsh [opts] <file> [arg ...]  run / dump the file ($1.. = args)\n"
 		"  wbsh [opts] - [arg ...]       run / dump stdin (also -s)\n"
 		"  options end at the first operand or at --; later words are arguments\n"
 		"\n"
-		"modes (default for files = dump AST, NOT execute -- see -r):\n"
+		"modes (-c runs; a file or stdin is only dumped as an AST -- see -r):\n"
 		"  -i, --interactive             force interactive REPL\n"
-		"  -r, --run                     actually execute the script\n"
+		"  -r, --run                     actually execute the file or stdin\n"
 		"  -e, --expand                  walk the AST and dump expanded words\n"
 		"  -t, --tokens                  dump the token stream\n"
+		"  --ast                         dump the AST (with -c and no -r: dump only)\n"
 		"  --no-ast                      suppress the AST dump\n"
 		"  -h, --help                    show this help\n"
 		"  -v, --version                 print version and exit\n"
@@ -81,15 +82,14 @@ static void printAgentInfo() {
 		"  are auto-discovered on PATH and invoked as native Windows processes.\n"
 		"\n"
 		"HOW TO RUN A COMMAND (READ THIS FIRST)\n"
-		"  By default, giving wbsh a command or script does NOT execute it --\n"
-		"  it parses and dumps the AST instead. You must pass -r/--run to\n"
-		"  actually execute:\n"
-		"    wbsh -r -c \"echo hello && ls -la\"     run one command line\n"
+		"  wbsh -c runs the command, as in bash. A script file or stdin is\n"
+		"  NOT executed by default -- wbsh parses and dumps the AST instead.\n"
+		"  Pass -r/--run to execute it:\n"
+		"    wbsh -c \"echo hello && ls -la\"        run one command line\n"
 		"    wbsh -r ./script.sh                   run a script file\n"
 		"    wbsh -r -                             run a script from stdin\n"
-		"  Without -r, wbsh -c \"...\" only prints a parse tree and exits 0 --\n"
-		"  it will NOT run the command and will NOT produce the command's\n"
-		"  output. This is the opposite of bash's -c default; do not omit -r.\n"
+		"  Without -r, wbsh ./script.sh only prints a parse tree and exits\n"
+		"  0 -- it will NOT run the script. -r is accepted with -c as well.\n"
 		"\n"
 		"PATH TRANSLATION\n"
 		"  POSIX-style paths are converted for native Windows executables:\n"
@@ -106,7 +106,7 @@ static void printAgentInfo() {
 		"  arrays, and common bash builtins are supported. This is an early\n"
 		"  but released project (see README) -- some bash edge cases may not\n"
 		"  yet match exactly. When in doubt, test the exact command with\n"
-		"  `wbsh -r -c \"...\"` first rather than assuming bash parity.\n"
+		"  `wbsh -c \"...\"` first rather than assuming bash parity.\n"
 		"\n"
 		"MORE\n"
 		"  wbsh --help          short flag reference\n"
@@ -265,12 +265,23 @@ static bool readScriptFile(const std::string& path, std::string& out_text) {
 	return true;
 }
 
-// Without -r a script is only dumped, so the AST is shown unless said
-// otherwise; with -r it is hidden unless asked for with --ast.
+// `-c` runs, as `$SHELL -c` callers expect, unless a dump is asked for
+// without -r. A file or stdin is only dumped unless -r is given.
+static bool executes(const Options& options) {
+	if (options.execute) return true;
+	if (options.source != SourceKind::CommandString) return false;
+
+	const bool dump_asked = options.show_tokens || options.show_expansions
+		|| options.ast == AstDump::Shown;
+	return !dump_asked;
+}
+
+// A run hides the AST unless asked for with --ast; a dump shows it unless
+// told otherwise with --no-ast.
 static bool astShown(const Options& options) {
 	if (options.ast == AstDump::Shown)  return true;
 	if (options.ast == AstDump::Hidden) return false;
-	return !options.execute;
+	return !executes(options);
 }
 
 // A self-spawned pipeline stage is a slice of its parent's script and
@@ -297,7 +308,7 @@ static bool loadScriptRun(const Options& options, ScriptRun& run) {
 	run.show_tokens     = options.show_tokens;
 	run.show_ast        = astShown(options);
 	run.show_expansions = options.show_expansions;
-	run.execute         = options.execute;
+	run.execute         = executes(options);
 	run.positional      = options.operands;
 
 	switch (options.source) {
