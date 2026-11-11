@@ -355,7 +355,9 @@ function Invoke-SelfTest {
 	$work = New-WorkDir 'selftest'
 	$report = Join-Path $work 'selftest.txt'
 	$log = Join-Path $OutDir 'logs\bugs-selftest.log'
-	$r = Invoke-Probe -Argv @($TermExe, '--selftest', $report) -WorkDir $work -Output $log -TimeoutSec 180 -Env @{ HOME = $work }
+	# Some live checks cd into the source tree (cd wbshterm), so the
+	# self-test starts in the repository root, as tests/smoke.ps1 does.
+	$r = Invoke-Probe -Argv @($TermExe, '--selftest', $report) -WorkDir $RepoRoot -Output $log -TimeoutSec 180 -Env @{ HOME = $work }
 	$healthy = Test-ProbeHealth $r 'bugs' 'selftest' $log
 	$lines = if (Test-Path $report) { Get-Content $report } else { @() }
 	Copy-Item $report (Join-Path $OutDir 'logs\bugs-selftest.report.txt') -ErrorAction SilentlyContinue

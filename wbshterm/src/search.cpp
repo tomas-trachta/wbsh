@@ -43,6 +43,10 @@ namespace wbshterm {
 
 			foldRange(table, 1, 0xD800);
 			foldRange(table, 0xE000, kBmpSize);
+
+			// The invariant locale has no upper case for final sigma, so the
+			// round trip leaves it; Unicode case folding makes it sigma.
+			table[0x03C2] = 0x03C3;
 			return table;
 		}
 
