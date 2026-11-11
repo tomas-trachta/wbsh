@@ -844,9 +844,65 @@ namespace wbsh {
 		return 0;
 	}
 
+#ifdef _WIN32
+	// A directory read hands over each name with its attributes, size and
+	// time, so a plain file or directory needs no further call. Links,
+	// junctions and sockets (reparse points) and FIFO markers (system
+	// attribute) still go through collectEntry for the exact answer.
+	static bool lsEntryFromFindData(const fs::path& parent, const WIN32_FIND_DATAW& data,
+	                                LsEntry& entry) {
+		const DWORD slow = FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_SYSTEM;
+		if ((data.dwFileAttributes & slow) != 0) return false;
+
+		const bool dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		entry.name = wideToUtf8(data.cFileName);
+		entry.full = parent / data.cFileName;
+		entry.status = fs::file_status(dir ? fs::file_type::directory : fs::file_type::regular);
+		entry.is_dir = dir;
+		if (!dir) entry.size = (std::uintmax_t(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+
+		const auto ticks = (std::uint64_t(data.ftLastWriteTime.dwHighDateTime) << 32)
+			| data.ftLastWriteTime.dwLowDateTime;
+		entry.mtime = fs::file_time_type(fs::file_time_type::duration(ticks));
+		const bool hidden_attribute = (data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0;
+		entry.is_hidden = data.cFileName[0] == L'.' || hidden_attribute;
+		entry.is_executable = hasExecutableExtension(entry.full);
+		entry.valid = true;
+		return true;
+	}
+
+	static bool findLsEntries(const fs::path& target, const LsOpts& opts,
+	                          std::vector<LsEntry>& items) {
+		WIN32_FIND_DATAW data{};
+		const std::wstring pattern = longPathSafe(target / L"*").wstring();
+		const HANDLE find = ::FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data,
+			FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+		if (find == INVALID_HANDLE_VALUE) return false;
+
+		do {
+			const std::wstring name = data.cFileName;
+			if (name == L"." || name == L"..") continue;
+
+			LsEntry entry;
+			if (!lsEntryFromFindData(target, data, entry)) {
+				entry = collectEntry(target, wideToUtf8(name));
+			}
+
+			if (!opts.all && entry.is_hidden) continue;
+			items.push_back(std::move(entry));
+		} while (::FindNextFileW(find, &data) != 0);
+
+		::FindClose(find);
+		return true;
+	}
+#endif
+
 	static bool collectLsDirectoryEntries(const fs::path& target, const LsOpts& opts,
 	                                      const std::string& source_path,
 	                                      std::vector<LsEntry>& items) {
+#ifdef _WIN32
+		if (findLsEntries(target, opts, items)) return true;
+#endif
 		std::error_code ec;
 		fs::directory_iterator it(target, ec);
 		if (ec) {
