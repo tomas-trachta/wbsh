@@ -167,6 +167,23 @@ defaults; ASLR and DEP on all three binaries (CFG only on the two Microsoft ones
 true colour fastest); a session reaches its first finished command in
 ~180 ms; 200 000 lines through the pseudoconsole in 4.5–5.8 s.
 
+### 6.1 Status after the first fix round (branch `fix/stress-findings`)
+
+Fixed: W1 (paste drops control characters; two self-test checks), W2 and
+W3 (checked numbers with limits, errors to stderr instead of a dialog),
+W4 (final sigma folds to sigma; the stress driver also starts the
+self-test in the repository root, which the picker checks need), W5
+(`read -t` in wbsh), DEC special graphics, DECALN, wide-character halves,
+the pending wrap after the alternate screen, and `--record` starting a
+fresh file. The self-test now has 496 checks and all pass; all 25 golden
+grids pass.
+
+Still open: W6 (input after `less`), Ctrl+C in snapshot sessions, CFG
+(`/guard:cf`) for wbshterm.exe, a recorded SHA-256 for the vendored
+ConPTY binaries. The self-test check "quitting a pager leaves a working
+prompt" passes even when the command does not run: it finds its marker
+in the echo of the typed line.
+
 ## 7. Next steps for the framework
 
 1. A `--feed` notation for key events that the snapshot session delivers like the window does (Ctrl+C, resize), so the Ctrl+C case can become blocking.

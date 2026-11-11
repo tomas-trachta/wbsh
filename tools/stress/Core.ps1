@@ -183,9 +183,13 @@ function Add-AsanFindings([string]$dir) {
 	foreach ($r in $reports) {
 		$text = Get-Content $r.FullName
 		$what = ($text | Where-Object { $_ -match 'ERROR: AddressSanitizer|SUMMARY: AddressSanitizer' } | Select-Object -First 1) ?? 'AddressSanitizer report'
-		Add-Finding 'asan' $r.Name 'critical' 'asan' $what.Trim() $r.FullName
+		# A case that asks for gigabytes on purpose runs ASan's own allocator
+		# out of memory; that is no memory-safety error.
+		$oom = $what -match 'out of memory|allocation-size-too-big'
+		Add-Finding 'asan' $r.Name ($oom ? 'review' : 'critical') ($oom ? 'asan-oom' : 'asan') $what.Trim() $r.FullName
 	}
-	$status = if ($reports) { 'fail' } else { 'pass' }
+	$unsafe = @($Findings | Where-Object { $_.Suite -eq 'asan' -and $_.Kind -eq 'asan' })
+	$status = if ($unsafe) { 'fail' } else { 'pass' }
 	Add-Case 'asan' 'reports' $status @{ reports = $reports.Count }
 	Write-Status $status "AddressSanitizer: $($reports.Count) report(s)"
 }

@@ -262,6 +262,37 @@ no handle leaks; 0 parser crashes in 300 mutants and the corpus; current-folder
 hijack, Shellshock-style variables, data-as-code, temporary files and argv
 round-trip all pass; `wbsh.exe` has ASLR and DEP but no CFG (`/guard:cf`).
 
+### 7.1 Status after the first fix round (branch `fix/stress-findings`)
+
+Fixed, each with a test in `wbsh/tests/` and the stress case passing:
+
+| Finding | Fix |
+|---|---|
+| F1 batch-file argument injection | Arguments quoted for cmd.exe (`"` doubled, `%` escaped, line breaks refused); `./x.bat` runs. |
+| F2 git prompt runs repository code | `-c core.fsmonitor=false`; repositories whose config defines a filter or include show the branch only. |
+| F3 parser arena kept per parse | Parsed text is freed after it runs unless it defined a function: `cmdsubst` 11 → 103 MB became 1.5 → 1.6 MB. |
+| F4 silent crash on deep recursion | FUNCNEST and a stack guard stop with bash's message and status 1. |
+| F5 `if then fi` accepted | Empty compound lists are syntax errors (status 2). |
+| F6 `${s/\/usr/U}` | The separator is the first unescaped `/`. |
+| F7 `yes --help` and others hang | `--help` falls back to the manual table; all 212 commands answer. |
+| parallel `>>` loses lines | `>>` opens with append access only; 1 600 of 1 600 lines arrive. |
+| `read -t` never times out (found through wbshterm) | Non-character console records no longer count as input. |
+
+ASan run of the memory and bugs suites with the arena, parser and
+recursion changes: no memory-safety report. The only two reports are
+ASan's own allocator running out of memory in the cases that ask for
+gigabytes on purpose; the driver now files those as `review`.
+
+Still open: input lost after quitting `less` (check in the real window
+first: snapshot sessions do not read output while they type);
+`./script.cmd` exit code and `chcp` (`.COM` on PATHEXT); upper-case
+Windows variables (`$SYSTEMROOT`); a `PATH=` prefix not used for the
+command lookup; `IFS` from the environment; running a directory (127,
+not 126); a failed readonly assignment and `echo` to a closed stdout
+return 0; `awk length()` counts bytes; the replacement part of
+`${var/pat/rep}` (backslashes, `&`); script syntax errors without the
+script name; the slow paths (pipes, globbing, `find`, gzip).
+
 ## 8. Next steps for the framework
 
 1. CI: build Release, run `run-all.sh` and `stress.ps1 -Suite bugs,security,ux` on every push; nightly `-Mode full`.
