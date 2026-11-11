@@ -1745,27 +1745,68 @@ namespace wbsh {
 			return parent + "/" + name;
 		}
 
-		static std::vector<fs::path> listDirectory(Run& run, const Entry& entry) {
-			std::vector<fs::path> names;
+		// A child's name with its type when the directory read already tells
+		// it: 'd' or 'f' for a plain directory or file, 0 for anything that
+		// needs a closer look (links, sockets, FIFO markers).
+		struct Listed {
+			fs::path name;
+			char type = 0;
+		};
+
+#ifdef _WIN32
+		static char plainType(DWORD attributes) {
+			const DWORD special = FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_SYSTEM;
+			if ((attributes & special) != 0) return 0;
+			return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ? 'd' : 'f';
+		}
+
+		// One directory read hands over every name with its attributes, so a
+		// plain entry needs no further call to learn its type.
+		static bool findDirectory(const Entry& entry, std::vector<Listed>& listed) {
+			WIN32_FIND_DATAW data{};
+			const std::wstring pattern = longPathSafe(entry.native / L"*").wstring();
+			const HANDLE find = ::FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data,
+				FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+			if (find == INVALID_HANDLE_VALUE) return false;
+
+			do {
+				const std::wstring name = data.cFileName;
+				if (name == L"." || name == L"..") continue;
+				listed.push_back({ fs::path(name), plainType(data.dwFileAttributes) });
+			} while (::FindNextFileW(find, &data) != 0);
+
+			::FindClose(find);
+			return true;
+		}
+#endif
+
+		static std::vector<Listed> listDirectory(Run& run, const Entry& entry) {
+			std::vector<Listed> listed;
+#ifdef _WIN32
+			if (findDirectory(entry, listed)) return listed;
+#endif
 			std::error_code ec;
 			fs::directory_iterator it(entry.native, ec);
 			const fs::directory_iterator end;
 			for (; !ec && it != end; it.increment(ec)) {
-				names.push_back(it->path().filename());
+				listed.push_back({ it->path().filename(), 0 });
 			}
 
 			if (ec) reportFindError(run, entry.path, posixErrorText(ec));
-			return names;
+			return listed;
 		}
 
 		static void visit(Run& run, Entry& entry);
 
 		static void visitChildren(Run& run, const Entry& parent) {
-			for (const fs::path& name : listDirectory(run, parent)) {
+			for (const Listed& item : listDirectory(run, parent)) {
 				if (run.quit) return;
 
+				const fs::path& name = item.name;
 				Entry child;
 				child.name = pathToUtf8(name);
+				child.have_type = item.type != 0;
+				child.type = item.type != 0 ? item.type : 'U';
 				child.path = childPath(parent.path, child.name);
 				child.root = parent.root;
 				child.native = longPathSafe(parent.native / name);
