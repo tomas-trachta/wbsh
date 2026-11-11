@@ -1,0 +1,16 @@
+=== a directory is not a command
+wbsh: ./adir: Is a directory
+status 126
+=== readonly assignments
+wbsh: y: readonly variable
+bare assignment: 1
+prefix assignment still runs the command
+y is 1
+=== echo to a closed stdout
+wbsh: echo: write error: Bad file descriptor
+status 1
+=== a PATH= prefix finds its command
+found through the prefix
+without the prefix: 127
+=== .COM programs are found
+chcp found

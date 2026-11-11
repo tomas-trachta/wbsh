@@ -1151,7 +1151,7 @@ namespace wbsh {
 	static bool findExecutableInDir(Executor& exec, const std::string& dir,
 	                                const std::string& name, std::string& found) {
 #ifdef _WIN32
-		static const char* const kExtensions[] = { "", ".exe", ".cmd", ".bat", nullptr };
+		static const char* const kExtensions[] = { "", ".exe", ".cmd", ".bat", ".com", nullptr };
 #else
 		static const char* const kExtensions[] = { "", nullptr };
 #endif

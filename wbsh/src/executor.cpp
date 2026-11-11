@@ -88,7 +88,7 @@ namespace wbsh {
 		"\\cygwin64\\",
 	};
 
-	static const char* const kExecutableExtensions[] = { ".exe", ".cmd", ".bat", "" };
+	static const char* const kExecutableExtensions[] = { ".exe", ".cmd", ".bat", ".com", "" };
 
 	namespace executor_detail {
 #ifdef _WIN32
@@ -1349,7 +1349,7 @@ namespace wbsh {
 
 		const std::string exec_path = findExecutable(argv[0]);
 		if (exec_path.empty()) {
-			reportCommandNotFound(argv[0]);
+			if (!reportDirectoryCommand(argv[0])) reportCommandNotFound(argv[0]);
 			*tried = true;
 			return INVALID_HANDLE_VALUE;
 		}
@@ -1764,7 +1764,7 @@ namespace wbsh {
 
 		const std::string exec_path = findExecutable(argv[0]);
 		if (exec_path.empty()) {
-			reportCommandNotFound(argv[0]);
+			if (!reportDirectoryCommand(argv[0])) reportCommandNotFound(argv[0]);
 			return INVALID_HANDLE_VALUE;
 		}
 
@@ -2648,6 +2648,25 @@ namespace wbsh {
 		out.scalar.push_back(expandScalarAssign(expander, assignment));
 	}
 
+	// A bare assignment to a readonly variable fails the statement with
+	// status 1, and the script goes on, as in bash.
+	static bool assignsReadonly(const Environment& env,
+	                            const Executor::SimpleCmdAssigns& assigns) {
+		for (const auto& scalar : assigns.scalar) {
+			if (env.isReadonly(scalar.name)) return true;
+		}
+
+		for (const auto& elem : assigns.elem) {
+			if (env.isReadonly(elem.name)) return true;
+		}
+
+		for (const auto& array : assigns.array) {
+			if (env.isReadonly(array.name)) return true;
+		}
+
+		return false;
+	}
+
 	bool Executor::expandOneAssign(const Assignment& assignment, SimpleCmdAssigns& out, bool bare,
 			SavedVars& prior) {
 		SimpleCmdAssigns one;
@@ -2655,8 +2674,9 @@ namespace wbsh {
 		if (expander_.failed() || flowPending()) return false;
 
 		if (bare) {
+			const bool readonly = assignsReadonly(env_, one);
 			applyAssignNow(env_, expander_, one);
-			return true;
+			return !readonly;
 		}
 
 		if (!one.scalar.empty()) setTemporarily(env_, one.scalar.back(), prior);
@@ -2721,6 +2741,13 @@ namespace wbsh {
 				prior.reserve(assigns.size());
 				for (const auto& assign : assigns) {
 					const std::string& name = assign.first;
+					// The set reports the readonly error once; restoring it
+					// would report it again.
+					if (env.isReadonly(name)) {
+						env.set(name, assign.second);
+						continue;
+					}
+
 					prior.push_back({ name, env.has(name), env.get(name), env.isExported(name) });
 					env.set(name, assign.second);
 					env.exportVar(name);
@@ -2982,12 +3009,41 @@ namespace wbsh {
 		return lookupInPathDirs(name, path);
 	}
 
+	// As in bash: a name with a slash that is a directory cannot run (126).
+	bool Executor::reportDirectoryCommand(const std::string& name) const {
+		if (name.find_first_of("/\\") == std::string::npos) return false;
+
+		std::error_code ec;
+		if (!std::filesystem::is_directory(utf8ToPath(path_conv_.toWin32(name)), ec)) return false;
+
+		std::fprintf(stderr, "wbsh: %s: Is a directory\n", name.c_str());
+		return true;
+	}
+
+	// bash looks the command up with its own PATH= prefix: `PATH=dir cmd`.
+	std::string Executor::findExecutableWith(const std::string& name,
+	                                         const NameValueList& temp_env) {
+		const auto is_path = [](const std::pair<std::string, std::string>& assign) {
+			return assign.first == "PATH";
+		};
+		const auto path = std::find_if(temp_env.begin(), temp_env.end(), is_path);
+		if (path == temp_env.end() || env_.isReadonly("PATH")) return findExecutable(name);
+
+		Environment::VarState saved = env_.saveVar("PATH");
+		env_.set("PATH", path->second);
+		const std::string found = findExecutable(name);
+		env_.restoreVar("PATH", std::move(saved));
+		return found;
+	}
+
 	int Executor::runExternal(const std::vector<std::string>& argv,
 	                          const NameValueList& temp_env) {
 		if (argv.empty()) return 0;
 
-		const std::string exec_path = findExecutable(argv[0]);
+		const std::string exec_path = findExecutableWith(argv[0], temp_env);
 		if (exec_path.empty()) {
+			if (reportDirectoryCommand(argv[0])) return kStatusCannotExecute;
+
 			reportCommandNotFound(argv[0]);
 			return kStatusCommandNotFound;
 		}

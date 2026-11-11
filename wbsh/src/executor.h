@@ -694,6 +694,9 @@ namespace wbsh {
 		std::string functionFile(const std::string& name) const;
 		int  runFunctionBody(const FunctionDef& def);
 		bool functionNestingAllowed(const std::string& name);
+		bool reportDirectoryCommand(const std::string& name) const;
+		std::string findExecutableWith(const std::string& name,
+		                               const std::vector<std::pair<std::string, std::string>>& temp_env);
 
 		const ParsedText& parsedTrapAction(const std::string& action);
 		int  runTrapAction(const std::string& action);
