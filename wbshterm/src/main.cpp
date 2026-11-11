@@ -134,6 +134,47 @@ namespace wbshterm {
 		return std::wstring();
 	}
 
+	static const long long kMaxGridSide = 2000;
+	static const long long kMaxWaitMs = 10 * 60 * 1000;
+	static const long long kMaxScrollLines = 1000000;
+
+	// Whole decimal numbers inside [low, high] only: std::stoi throws on
+	// text, and std::stoul turns "-5" into four billion.
+	static bool parseNumber(const std::wstring& text, long long low, long long high, long long& out) {
+		if (text.empty() || text.size() > 18) return false;
+
+		long long value = 0;
+		for (wchar_t c : text) {
+			if (c < L'0' || c > L'9') return false;
+			value = value * 10 + (c - L'0');
+		}
+
+		if (value < low || value > high) return false;
+		out = value;
+		return true;
+	}
+
+	static bool parseWait(const std::wstring& text, unsigned int& out) {
+		long long value = 0;
+		if (!parseNumber(text, 0, kMaxWaitMs, value)) return false;
+		out = static_cast<unsigned int>(value);
+		return true;
+	}
+
+	static bool parseSize(const std::wstring& value, Options& options) {
+		const std::size_t cross = value.find(L'x');
+		if (cross == std::wstring::npos) return false;
+
+		long long columns = 0;
+		long long rows = 0;
+		if (!parseNumber(value.substr(0, cross), 1, kMaxGridSide, columns)) return false;
+		if (!parseNumber(value.substr(cross + 1), 1, kMaxGridSide, rows)) return false;
+
+		options.columns = static_cast<int>(columns);
+		options.rows    = static_cast<int>(rows);
+		return true;
+	}
+
 	static bool parseArgs(int argc, wchar_t** argv, Options& options) {
 		for (int i = 1; i < argc; ++i) {
 			const std::wstring arg = argv[i];
@@ -153,7 +194,13 @@ namespace wbshterm {
 
 			if (arg == L"--record")   { options.record_path = argv[++i]; continue; }
 			if (arg == L"--dump")     { options.dump_path = argv[++i]; continue; }
-			if (arg == L"--scroll")   { options.scroll_lines = std::stoi(argv[++i]); continue; }
+			if (arg == L"--scroll") {
+				long long lines = 0;
+				if (!parseNumber(argv[++i], 0, kMaxScrollLines, lines)) return false;
+				options.scroll_lines = static_cast<int>(lines);
+				continue;
+			}
+
 			if (arg == L"--select")   { options.selection = argv[++i]; continue; }
 			if (arg == L"--config")   { options.config_path = argv[++i]; continue; }
 			if (arg == L"--fetch")    { options.mode = Mode::Fetch; continue; }
@@ -163,9 +210,9 @@ namespace wbshterm {
 				continue;
 			}
 
-			if (arg == L"--delay")    { options.delay_ms = std::stoul(argv[++i]); continue; }
-			if (arg == L"--gap")      { options.gap_ms = std::stoul(argv[++i]); continue; }
-			if (arg == L"--settle")   { options.settle_ms = std::stoul(argv[++i]); continue; }
+			if (arg == L"--delay")    { if (!parseWait(argv[++i], options.delay_ms)) return false; continue; }
+			if (arg == L"--gap")      { if (!parseWait(argv[++i], options.gap_ms)) return false; continue; }
+			if (arg == L"--settle")   { if (!parseWait(argv[++i], options.settle_ms)) return false; continue; }
 			if (arg == L"--snapshot") {
 				options.mode = Mode::Snapshot;
 				options.output_path = argv[++i];
@@ -179,11 +226,7 @@ namespace wbshterm {
 			}
 
 			if (arg == L"--size") {
-				const std::wstring value = argv[++i];
-				const std::size_t cross = value.find(L'x');
-				if (cross == std::wstring::npos) return false;
-				options.columns = std::stoi(value.substr(0, cross));
-				options.rows    = std::stoi(value.substr(cross + 1));
+				if (!parseSize(argv[++i], options)) return false;
 				continue;
 			}
 
@@ -193,7 +236,26 @@ namespace wbshterm {
 		return true;
 	}
 
+	static bool writeToStderr(const std::string& message) {
+		HANDLE err = ::GetStdHandle(STD_ERROR_HANDLE);
+		if (err == nullptr || err == INVALID_HANDLE_VALUE) {
+			if (!::AttachConsole(ATTACH_PARENT_PROCESS)) return false;
+			err = ::GetStdHandle(STD_ERROR_HANDLE);
+		}
+
+		if (err == nullptr || err == INVALID_HANDLE_VALUE) return false;
+
+		const std::string line = "wbshterm: " + message + "\n";
+		DWORD written = 0;
+		return ::WriteFile(err, line.data(), static_cast<DWORD>(line.size()), &written, nullptr) != 0;
+	}
+
+	// A script, a test run or CI waits forever on a message box nobody sees,
+	// so the error goes to stderr whenever there is one: redirected, or the
+	// console of the parent. Only a terminal started from Explorer shows a box.
 	static void reportFailure(const std::string& message) {
+		if (writeToStderr(message)) return;
+
 		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, message.c_str(),
 			static_cast<int>(message.size()), nullptr, 0);
 		std::wstring wide(static_cast<std::size_t>(needed), L'\0');
@@ -216,10 +278,15 @@ namespace wbshterm {
 
 		int values[4] = { 0, 0, 0, 0 };
 		std::size_t at = 0;
-		for (int index = 0; index < 4 && at < text.size(); ++index) {
-			std::size_t used = 0;
-			values[index] = std::stoi(text.substr(at), &used);
-			at += used + 1;
+		for (int index = 0; index < 4; ++index) {
+			const std::size_t end = text.find_first_of(L":-", at);
+			const std::wstring part = text.substr(at, end == std::wstring::npos ? end : end - at);
+			long long value = 0;
+			if (!parseNumber(part, 0, kMaxScrollLines, value)) return;
+
+			values[index] = static_cast<int>(value);
+			if (end == std::wstring::npos && index < 3) return;
+			at = end + 1;
 		}
 
 		request.select        = true;

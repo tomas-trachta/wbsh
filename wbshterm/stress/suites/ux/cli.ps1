@@ -31,7 +31,8 @@ Test-Run 'an unknown option is an error' @('--no-such-option') { param($r) $r.Ex
 Test-Run 'a missing option value is an error' @('--replay', $raw, '--size') { param($r) $r.ExitCode -ne 0 }
 Test-Run 'a bad --size is an error' @('--replay', $raw, '--size', 'abc') { param($r) $r.ExitCode -ne 0 }
 Test-Run 'a zero --size is an error or clamps' @('--replay', $raw, '--size', '0x0') { param($r) $true }
-Test-Run 'a huge --size is an error or clamps' @('--replay', $raw, '--size', '100000x100000') { param($r) $true } 'high'
+Test-Run 'a huge --size is an error' @('--replay', $raw, '--size', '100000x100000') { param($r) $r.ExitCode -ne 0 } 'high'
+Test-Run 'a bad --select is an error or ignored' @('--snapshot', (Join-Path $work 's3.png'), '--select', 'abc', '--settle', '100', '--delay', '0') { param($r) $true } 'high'
 Test-Run 'a bad --scroll is an error' @('--replay', $raw, '--scroll', 'many') { param($r) $r.ExitCode -ne 0 }
 Test-Run 'a bad --delay is an error' @('--snapshot', (Join-Path $work 's.png'), '--delay', '-5') { param($r) $r.ExitCode -ne 0 }
 Test-Run 'a missing recording is an error' @('--replay', (Join-Path $work 'nope.raw'), '--dump', (Join-Path $work 'g2.txt')) { param($r) $r.ExitCode -ne 0 }
