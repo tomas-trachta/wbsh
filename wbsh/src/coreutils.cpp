@@ -1364,26 +1364,44 @@ namespace wbsh {
 		}
 	}
 
-	static WcCounts wcCountStream(std::FILE* stream) {
-		WcCounts counts;
+	static const std::size_t kWcBlockSize = 64 * 1024;
+
+	struct WcScan {
 		bool in_word = false;
 		std::uintmax_t position = 0;
-		int ch = EOF;
-		while ((ch = std::fgetc(stream)) != EOF) {
-			++counts.bytes;
-			if (isUtf8LeadByte(ch)) ++counts.chars;
-			if (ch == '\n') ++counts.lines;
-			advanceWcLinePosition(ch, position, counts);
+	};
 
-			if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
-				in_word = false;
-			} else if (!in_word) {
-				in_word = true;
-				++counts.words;
-			}
+	static void countWcByte(int ch, WcScan& scan, WcCounts& counts) {
+		if (isUtf8LeadByte(ch)) ++counts.chars;
+		if (ch == '\n') ++counts.lines;
+		advanceWcLinePosition(ch, scan.position, counts);
+
+		if (std::isspace(ch) != 0) {
+			scan.in_word = false;
+		} else if (!scan.in_word) {
+			scan.in_word = true;
+			++counts.words;
+		}
+	}
+
+	// Read a block at a time: fgetc takes the stream lock for every byte,
+	// which made `wc -c` of 100 MB take seconds. A byte count alone needs
+	// no look at the bytes.
+	static WcCounts wcCountStream(std::FILE* stream, bool bytes_only) {
+		WcCounts counts;
+		WcScan scan;
+		std::vector<unsigned char> block(kWcBlockSize);
+		for (;;) {
+			const std::size_t got = std::fread(block.data(), 1, block.size(), stream);
+			if (got == 0) break;
+
+			counts.bytes += got;
+			if (bytes_only) continue;
+
+			for (std::size_t i = 0; i < got; ++i) countWcByte(block[i], scan, counts);
 		}
 
-		counts.max_line = (std::max)(counts.max_line, position);
+		counts.max_line = (std::max)(counts.max_line, scan.position);
 		return counts;
 	}
 
@@ -1426,7 +1444,9 @@ namespace wbsh {
 				continue;
 			}
 
-			const WcCounts counts = wcCountStream(stream);
+			const bool bytes_only = opts.want_bytes && !opts.want_lines && !opts.want_words
+				&& !opts.want_chars && !opts.want_max_line;
+			const WcCounts counts = wcCountStream(stream, bytes_only);
 			closeUnlessStdin(stream);
 			std::fputs(formatWcLine(opts, counts, file == "-" ? "" : file).c_str(), stdout);
 			addWcCounts(totals, counts);
