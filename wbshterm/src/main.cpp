@@ -14,6 +14,7 @@
 #include <shellapi.h>
 
 #include <cctype>
+#include <cstdio>
 #include <objbase.h>
 #include <string>
 #include <vector>
@@ -265,6 +266,14 @@ namespace wbshterm {
 		::MessageBoxW(nullptr, wide.c_str(), L"wbshterm", MB_ICONERROR | MB_OK);
 	}
 
+	// Every chunk of output is appended to the recording as it arrives (the
+	// panes of a window share it), so the file starts empty once, here;
+	// before, a second run added its bytes to the first one's.
+	static void startRecording(const std::wstring& path) {
+		FILE* file = nullptr;
+		if (_wfopen_s(&file, path.c_str(), L"wb") == 0 && file != nullptr) std::fclose(file);
+	}
+
 	static std::wstring shellCommandLine(const Options& options) {
 		std::wstring command_line = L"\"" + options.shell_path + L"\"";
 		if (!options.shell_args.empty()) command_line += L" " + options.shell_args;
@@ -436,6 +445,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 		return 2;
 	}
 
+	if (!options.record_path.empty()) wbshterm::startRecording(options.record_path);
 	if (options.shell_path.empty()) options.shell_path = wbshterm::locateShell();
 	if (options.shell_path.empty()) {
 		wbshterm::reportFailure("cannot find wbsh.exe (pass --shell <path>)");
