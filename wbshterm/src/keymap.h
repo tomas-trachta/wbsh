@@ -38,6 +38,8 @@ namespace wbshterm {
 	 *
 	 * Newlines become CR (what Enter sends), and when bracketed paste is
 	 * off the brackets are omitted rather than pasted as literal text.
+	 * Control characters other than tab and line breaks are dropped, so
+	 * the text cannot end the bracket itself or act as editing keys.
 	 */
 	std::string encodePaste(const std::string& text, const KeyModes& modes);
 

@@ -2301,6 +2301,14 @@ namespace wbshterm {
 			const std::string bracketed = encodePaste("hi", modes);
 			report.check("bracketed paste wraps the text",
 				bracketed == "\x1b[200~hi\x1b[201~", bracketed);
+
+			const std::string escape = encodePaste("echo safe\x1b[201~rm -rf x\n", modes);
+			report.check("pasted text cannot end bracketed paste itself",
+				escape == "\x1b[200~echo safe[201~rm -rf x\r\x1b[201~", escape);
+
+			const std::string controls = encodePaste("a\tb\x03\x7f\xc2\x9b" "c\xc3\xa9", modes);
+			report.check("a paste keeps tabs and text and drops C0, DEL and C1 controls",
+				controls == "\x1b[200~a\tbc\xc3\xa9\x1b[201~", controls);
 		}
 
 		static void checkDroppedPathJoining(Report& report) {

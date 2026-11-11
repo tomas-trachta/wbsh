@@ -15,15 +15,13 @@ Invoke-StaticScan -Sources $src -Binaries @($Context.Terminal, (Join-Path (Split
 	-OutFile $out -ExtraRules $rules | ForEach-Object { $_ }
 
 # Bracketed paste must not let the pasted text end the bracket itself: text
-# copied from a web page can hold ESC[201~ followed by a command.
-$keymap = Get-Content (Join-Path $src 'keymap.cpp') -Raw
-if ($keymap -match '(?s)std::string encodePaste\(.*?\n\t\}') {
-	$body = $Matches[0]
-	$filters = $body -match "\x1b|\033|0x1[bB]|'\e'|27\)|201~.*(erase|replace|find)"
-	[pscustomobject]@{
-		Ok = $filters; Severity = 'high'; Artifact = ''
-		Text = 'encodePaste does not remove ESC (or ESC[201~) from pasted text: a paste can close bracketed paste early and run the rest as typed commands'
-	}
+# copied from a web page can hold ESC[201~ followed by a command. The
+# behaviour is checked by the built-in self-test (bugs suite); this only
+# makes sure that check still exists.
+$selftest = Get-Content (Join-Path $src 'selftest.cpp') -Raw
+[pscustomobject]@{
+	Ok = ($selftest -match 'pasted text cannot end bracketed paste'); Severity = 'high'; Artifact = ''
+	Text = 'no self-test check that pasted text cannot end bracketed paste (ESC[201~ inside a paste)'
 }
 
 $links = Get-Content (Join-Path $src 'screen_vt.cpp') -Raw
