@@ -27,7 +27,8 @@ for c in $(compgen -b | sort -u); do
         continue
     fi
     [ "$ms" -gt 2000 ] && slow="$slow $c(${ms}ms)"
-    if [ "$rc" -ne 0 ] || [ ! -s h.out ]; then
+    # bash's builtins answer --help with status 2, utilities with 0.
+    if { [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; } || [ ! -s h.out ]; then
         nohelp="$nohelp $c(rc=$rc)"
     fi
     if ! "$STRESS_WBSH" -r -c "whatis $c" > /dev/null 2>&1 < /dev/null; then
@@ -39,7 +40,7 @@ note "$count commands checked"
 severity high
 expect_eq "no command hangs on --help" "${hung# }" ""
 severity medium
-expect_eq "every command prints help and exits 0 for --help" "${nohelp# }" ""
+expect_eq "every command prints help for --help (status 0, or 2 for builtins as in bash)" "${nohelp# }" ""
 expect_eq "every command answers --help within 2 s" "${slow# }" ""
 severity low
 expect_eq "every command has a whatis / man entry" "${noman# }" ""

@@ -48,6 +48,7 @@
 #include "jobcontrol.h"
 #include "keymap.h"
 #include "lexer.h"
+#include "man_pages.h"
 #include "numparse.h"
 #include "parser.h"
 #include "posixregex.h"
@@ -4161,10 +4162,59 @@ namespace wbsh {
 		return command.fn(command.user, static_cast<int>(argv.size()) - 1, argv.data());
 	}
 
+	// Builtins for which bash takes `--help` as an operand like any other.
+	static bool helpIsAnOperand(const std::string& name) {
+		return name == "echo" || name == "test" || name == "[" || name == "true"
+			|| name == "false" || name == ":";
+	}
+
+	// A synopsis line that starts with blanks continues the form above it.
+	static void printSynopsisLines(const std::string& synopsis, const char* first, const char* rest) {
+		const std::string padding(std::strlen(first), ' ');
+		std::size_t start = 0;
+		for (int line = 0; start <= synopsis.size(); ++line) {
+			const std::size_t end = (std::min)(synopsis.find('\n', start), synopsis.size());
+			const std::string text = synopsis.substr(start, end - start);
+			const bool continues = !text.empty() && text[0] == ' ';
+			const char* prefix = line == 0 ? first : continues ? padding.c_str() : rest;
+			std::printf("%s%s\n", prefix, text.c_str());
+			start = end + 1;
+		}
+	}
+
+	// `cmd --help` of a command without help of its own prints its synopsis:
+	// otherwise `yes --help` printed "--help" for ever and `cat --help`
+	// looked for a file of that name. Utilities answer GNU style with status
+	// 0, shell builtins bash style with status 2.
+	static bool answeredHelpFromManPage(const std::string& name, const std::vector<std::string>& args,
+	                                    int& status) {
+		if (args.size() != 1 || args[0] != "--help" || helpIsAnOperand(name)) return false;
+
+		const ManPage* page = findManPage(name);
+		if (page == nullptr || page->self_help || page->kind == ManKind::Program) return false;
+
+		if (page->kind == ManKind::Shell) {
+			const std::string first = name + ": ";
+			printSynopsisLines(page->synopsis, first.c_str(), first.c_str());
+			std::printf("    %s\n", page->summary);
+			status = 2;
+			return true;
+		}
+
+		printSynopsisLines(page->synopsis, "Usage: ", "  or:  ");
+		std::printf("%s\n\nSee `man %s` for more.\n", page->summary, name.c_str());
+		status = 0;
+		return true;
+	}
+
 	int Executor::callBuiltin(const std::string& name, const std::vector<std::string>& args) {
 		const auto builtin = builtins_.find(name);
 		std::clearerr(stdout);
-		if (builtin != builtins_.end()) return builtin->second(*this, args);
+		if (builtin != builtins_.end()) {
+			int help_status = 0;
+			if (answeredHelpFromManPage(name, args, help_status)) return help_status;
+			return builtin->second(*this, args);
+		}
 
 		const auto plugin = plugin_commands_.find(name);
 		if (plugin == plugin_commands_.end()) return kStatusCommandNotFound;
