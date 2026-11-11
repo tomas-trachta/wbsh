@@ -160,8 +160,10 @@
       <AdditionalIncludeDirectories>$(ProjectDir)..\sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ControlFlowGuard Condition="'$(EnableASAN)'!='true'">Guard</ControlFlowGuard>
     </ClCompile>
     <Link>
+      <AdditionalOptions Condition="'$(EnableASAN)'!='true'">/guard:cf %(AdditionalOptions)</AdditionalOptions>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
       <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
