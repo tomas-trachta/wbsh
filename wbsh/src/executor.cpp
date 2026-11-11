@@ -63,6 +63,7 @@ namespace wbsh {
 
 	static const int kStatusCommandNotFound = 127;
 	static const int kStatusCannotExecute = 126;
+	static const std::size_t kStackReserveMargin = 1024 * 1024;
 	static const int kStatusInterrupted = 130;
 	static const int kStatusStopped = 148;
 	static const int kStatusHangup = 129;
@@ -4151,10 +4152,43 @@ namespace wbsh {
 		return callPluginCommand(plugin->second, name, args);
 	}
 
+	// Each level of shell recursion takes several kB of stack, so a deep
+	// enough recursion used to crash the process without a word. Calls stop
+	// with bash's FUNCNEST error well before the end of the stack instead;
+	// a script exits as bash does, an interactive shell gets its prompt back.
+	static bool stackNearlyFull() {
+#ifdef _WIN32
+		ULONG_PTR low = 0;
+		ULONG_PTR high = 0;
+		::GetCurrentThreadStackLimits(&low, &high);
+		const auto here = reinterpret_cast<ULONG_PTR>(&low);
+		return here - low < kStackReserveMargin;
+#else
+		return false;
+#endif
+	}
+
+	bool Executor::functionNestingAllowed(const std::string& name) {
+		if (nesting_exceeded_) return false;
+
+		long long limit = 0;
+		const bool has_limit = parseLL(env_.get("FUNCNEST"), limit) && limit > 0;
+		const bool funcnest = has_limit && func_depth_ >= limit;
+		if (!funcnest && !stackNearlyFull()) return true;
+
+		const std::string shown = funcnest ? std::to_string(limit) : "out of stack space";
+		std::fprintf(stderr, "wbsh: %s: maximum function nesting level exceeded (%s)\n",
+			name.c_str(), shown.c_str());
+		nesting_exceeded_ = true;
+		if (!env_.interactive()) raiseExit(1);
+		return false;
+	}
+
 	int Executor::callFunction(const std::string& name, const std::vector<std::string>& args) {
 		const auto it = functions_.find(name);
 		if (it == functions_.end()) return kStatusCommandNotFound;
 		const FunctionDef* def = it->second;
+		if (!functionNestingAllowed(name)) return 1;
 
 		pushCallFrame({ name, functionFile(name), env_.currentLineno() });
 		const std::vector<std::string> saved_positional = env_.positional();
@@ -4181,6 +4215,7 @@ namespace wbsh {
 
 		popLocalScope();
 		--func_depth_;
+		if (func_depth_ == 0) nesting_exceeded_ = false;
 		return status;
 	}
 

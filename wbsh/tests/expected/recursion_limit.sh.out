@@ -1,0 +1,11 @@
+=== FUNCNEST
+wbsh: f: maximum function nesting level exceeded (50)
+status 1
+wbsh: g: maximum function nesting level exceeded (20)
+status 1
+=== endless recursion stops cleanly
+wbsh: h: maximum function nesting level exceeded (out of stack space)
+status 1
+=== a bounded recursion within the limit still works
+bottom at 0
+status 0

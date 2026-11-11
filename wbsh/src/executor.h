@@ -1084,6 +1084,9 @@ namespace wbsh {
 		int  cmdsubst_status_ = 0;
 		int  loop_depth_ = 0;
 		int  func_depth_ = 0;
+		// Set when a call went past FUNCNEST or the end of the stack; calls
+		// fail at once until the outermost function returns.
+		bool nesting_exceeded_ = false;
 		int  source_depth_ = 0;
 		std::vector<bool> compound_args_;
 		int  errexit_suppress_ = 0;
