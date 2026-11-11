@@ -938,6 +938,7 @@ namespace wbsh {
 		int runShellScript(const std::string& path,
 		                   const std::vector<std::string>& argv,
 		                   const std::vector<std::pair<std::string, std::string>>& temp_env);
+		std::string scriptName(const std::string& typed, const std::string& path) const;
 
 #ifdef _WIN32
 		// Multi-command branch of execPipeline (the n>=2 case). Sets up the

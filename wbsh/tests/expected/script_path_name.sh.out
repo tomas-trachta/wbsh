@@ -1,0 +1,11 @@
+=== relative path
+./bin/show0: as typed: ./bin/show0
+bin/show0: as typed: bin/show0
+=== absolute path
+absolute: POSIX absolute, same file
+=== found on PATH
+PATH lookup: POSIX absolute, same file
+=== dirname $0 finds the install directory
+home found
+=== wbsh -r takes a POSIX absolute path and keeps it as $0
+same spelling

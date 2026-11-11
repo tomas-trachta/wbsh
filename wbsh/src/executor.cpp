@@ -3335,6 +3335,13 @@ namespace wbsh {
 		return body;
 	}
 
+	// `$0` as bash sets it: the path as typed, or for a PATH hit the POSIX
+	// form of the file found, so `dirname "$0"` launchers see a POSIX path.
+	std::string Executor::scriptName(const std::string& typed, const std::string& path) const {
+		if (isAbsoluteOrRelativePath(typed)) return typed;
+		return path_conv_.toPosix(path);
+	}
+
 	int Executor::runShellScript(const std::string& path,
 	                             const std::vector<std::string>& argv,
 	                             const NameValueList& temp_env) {
@@ -3351,13 +3358,14 @@ namespace wbsh {
 		publishSignalDispositions();
 		beginExecRedirJournal();
 
+		const std::string name = scriptName(argv[0], path);
 		for (const auto& assignment : temp_env) env_.set(assignment.first, assignment.second);
-		env_.setShellName(path);
+		env_.setShellName(name);
 		env_.setPositional(std::vector<std::string>(argv.begin() + 1, argv.end()));
 		call_stack_.clear();
-		beginScriptFrame(path);
+		beginScriptFrame(name);
 
-		int status = executeInputText(body, path);
+		int status = executeInputText(body, name);
 		if (consumeFlow(FlowSignal::Kind::Exit, &status)) forgetExecExitCode();
 		if (!flowPending()) status = fireExitTrap(status);
 		endExecRedirJournal();

@@ -254,8 +254,10 @@ static bool stdinIsTerminal() {
 #endif /* _WIN32 */
 }
 
+// The path may be POSIX (`/d/work/x.sh`), as tools on PATH pass it; `$0`
+// keeps the spelling given.
 static bool readScriptFile(const std::string& path, std::string& out_text) {
-	std::ifstream file(utf8ToPath(path), std::ios::binary);
+	std::ifstream file(utf8ToPath(PathConv().toWin32(path)), std::ios::binary);
 	if (file.fail()) {
 		std::cerr << "wbsh: cannot open file: " << path << "\n";
 		return false;
