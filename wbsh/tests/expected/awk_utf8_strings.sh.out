@@ -1,0 +1,13 @@
+=== length
+13 13
+3 0
+3
+=== substr
+luť|ký|žl||
+=== index
+3 7 0
+=== match
+3 3 3
+0 0 -1
+=== ASCII is unchanged
+11 world 5 7 3
