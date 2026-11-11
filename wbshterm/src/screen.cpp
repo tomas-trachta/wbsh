@@ -636,7 +636,16 @@ namespace wbshterm {
 		return text;
 	}
 
+	// VT100 special graphics for 0x5F..0x7E, in xterm's choice of glyphs.
+	static const char32_t kDecSpecialGraphics[] = {
+		0x00A0, 0x25C6, 0x2592, 0x2409, 0x240C, 0x240D, 0x240A, 0x00B0,
+		0x00B1, 0x2424, 0x240B, 0x2518, 0x2510, 0x250C, 0x2514, 0x253C,
+		0x23BA, 0x23BB, 0x2500, 0x23BC, 0x23BD, 0x251C, 0x2524, 0x2534,
+		0x252C, 0x2502, 0x2264, 0x2265, 0x03C0, 0x2260, 0x00A3, 0x00B7,
+	};
+
 	void Screen::vtPrint(char32_t code) {
+		if (line_drawing_ && code >= 0x5F && code <= 0x7E) code = kDecSpecialGraphics[code - 0x5F];
 		if (writeChar(code)) last_printed_ = code;
 	}
 
@@ -662,9 +671,22 @@ namespace wbshterm {
 		lineFeed();
 	}
 
+	// Writing over one half of a wide character leaves no half behind: the
+	// other cell turns blank, as in xterm and the console.
+	void Screen::splitWideAt(int row, int column) {
+		if (column < 0 || column >= columns_) return;
+
+		const std::uint16_t attributes = cell(row, column).attributes;
+		if ((attributes & kAttrWideTail) != 0 && column > 0) putCell(row, column - 1, Cell());
+		if ((attributes & kAttrWide) != 0 && column + 1 < columns_) putCell(row, column + 1, Cell());
+	}
+
 	Screen::GridPlace Screen::placeGlyph(char32_t code, int width) {
 		if (wrap_pending_) wrapToNextRow();
 		if (width == 2) makeRoomForWide();
+
+		splitWideAt(cursor_.row, cursor_.column);
+		if (width == 2) splitWideAt(cursor_.row, cursor_.column + 1);
 
 		const GridPlace place = { cursor_.row, cursor_.column };
 		Cell glyph = pen_;
@@ -922,6 +944,7 @@ namespace wbshterm {
 		scroll_bottom_      = rows_ - 1;
 		application_cursor_ = false;
 		cursor_.visible     = true;
+		line_drawing_       = false;
 	}
 
 	// DECSTR: the modes go back to their power-on values; the text and
@@ -957,8 +980,34 @@ namespace wbshterm {
 		moveCursor(0, 0);
 	}
 
+	// DECALN: the screen fills with E, the margins go, the cursor goes home.
+	void Screen::alignmentPattern() {
+		scroll_top_    = 0;
+		scroll_bottom_ = rows_ - 1;
+		origin_mode_   = false;
+
+		Cell letter;
+		letter.code = U'E';
+		for (int row = 0; row < rows_; ++row) {
+			for (int column = 0; column < columns_; ++column) putCell(row, column, letter);
+			markDirty(row);
+		}
+
+		moveCursor(0, 0);
+	}
+
 	void Screen::vtEsc(const VtSequence& sequence) {
 		closeCluster();
+
+		if (sequence.intermediates == "(") {
+			line_drawing_ = sequence.final_byte == '0';
+			return;
+		}
+
+		if (sequence.intermediates == "#" && sequence.final_byte == '8') {
+			alignmentPattern();
+			return;
+		}
 
 		if (!sequence.intermediates.empty()) return;
 
@@ -1330,8 +1379,10 @@ namespace wbshterm {
 		linearize();
 		primary_cells_  = cells_;
 		primary_cursor_ = cursor_;
+		primary_wrap_pending_ = wrap_pending_;
 		primary_breaks_ = row_breaks_;
 		alt_screen_     = true;
+		wrap_pending_   = false;
 
 		cells_.assign(cells_.size(), Cell());
 		row_breaks_.assign(row_breaks_.size(), LineBreak::kUnknown);
@@ -1349,7 +1400,10 @@ namespace wbshterm {
 			ring_top_   = 0;
 		}
 
+		// As DECRC: a line the main screen filled still wraps on the next
+		// character, and one the alt screen filled does not leak over.
 		cursor_ = primary_cursor_;
+		wrap_pending_ = primary_wrap_pending_;
 		synchronized_output_ = false;
 		markAllDirty();
 	}

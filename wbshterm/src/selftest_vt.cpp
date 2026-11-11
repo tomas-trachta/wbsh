@@ -110,8 +110,29 @@ namespace wbshterm {
 
 			Screen esc(10, 3);
 			feedToScreen(esc, "ab\x1b" "7\x1b[3;3H\x1b#8X");
-			report.check("ESC # 8 is not taken for DECRC", esc.cell(2, 2).code == U'X',
+			report.check("ESC # 8 is not taken for DECRC", esc.cell(0, 2).code != U'X',
 				esc.toText());
+			report.check("ESC # 8 fills the screen with E and homes the cursor",
+				esc.cell(0, 0).code == U'X' && esc.cell(2, 9).code == U'E', esc.toText());
+		}
+
+		static void checkCharsetAndOverwrites(Report& report) {
+			Screen lines(6, 1);
+			feedToScreen(lines, "\x1b(0lqk\x1b(Bq");
+			report.check("ESC ( 0 draws DEC lines and ESC ( B ends it",
+				lines.cell(0, 0).code == U'\x250C' && lines.cell(0, 1).code == U'\x2500'
+					&& lines.cell(0, 2).code == U'\x2510' && lines.cell(0, 3).code == U'q',
+				lines.toText());
+
+			Screen wide(4, 1);
+			feedToScreen(wide, "\xE4\xBD\xA0\x1b[1;2Hx");
+			report.check("writing over the right half of a wide character blanks its left half",
+				wide.toText() == " x\n", wide.toText());
+
+			Screen alt(8, 2);
+			feedToScreen(alt, "main\x1b[?1049halt text\x1b[?1049l!");
+			report.check("leaving the alt screen brings back the main screen's pending wrap too",
+				alt.toText() == "main!\n\n", alt.toText());
 		}
 
 		static void runSaveRestoreAndResetChecks(Report& report) {
@@ -122,6 +143,7 @@ namespace wbshterm {
 			checkHardResetClearsModes(report);
 			checkSoftReset(report);
 			checkUnknownIntermediatesAreIgnored(report);
+			checkCharsetAndOverwrites(report);
 		}
 
 		static const char* const kFiveRows = "1\r\n2\r\n3\r\n4\r\n5";

@@ -305,6 +305,8 @@ namespace wbshterm {
 
 		bool writeChar(char32_t code);
 		GridPlace placeGlyph(char32_t code, int width);
+		void splitWideAt(int row, int column);
+		void alignmentPattern();
 		bool joinsOpenCluster(int properties);
 		bool startCluster(char32_t code, int properties);
 		void extendCluster(char32_t code, int properties);
@@ -434,6 +436,7 @@ namespace wbshterm {
 		std::uint64_t     forgotten_rows_ = 0;
 		std::vector<Cell> primary_cells_;
 		CursorState       primary_cursor_;
+		bool              primary_wrap_pending_ = false;
 		std::vector<LineBreak> row_breaks_;
 		std::vector<LineBreak> primary_breaks_;
 		bool              alt_screen_ = false;
@@ -466,6 +469,9 @@ namespace wbshterm {
 
 		std::vector<bool> tab_stops_;
 		bool              autowrap_     = true;
+		// G0 is the DEC special graphics set (ESC ( 0): box-drawing programs
+		// print q, x, l, k ... and mean lines and corners.
+		bool              line_drawing_ = false;
 		char32_t          last_printed_ = 0;
 		CursorShape       cursor_shape_ = CursorShape::kDefault;
 		OpenCluster       cluster_;
