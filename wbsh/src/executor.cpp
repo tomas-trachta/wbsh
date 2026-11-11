@@ -1998,6 +1998,25 @@ namespace wbsh {
 		return (flags & (_O_WRONLY | _O_RDWR)) != 0;
 	}
 
+	// The C runtime's _O_APPEND seeks to the end before each write, so two
+	// writers can seek to the same end and overwrite each other. A handle
+	// with append access only (FILE_APPEND_DATA without FILE_WRITE_DATA)
+	// makes Windows put every write at the end, as O_APPEND does on POSIX,
+	// also in the programs that inherit it.
+	static int openAppendOnly(const std::wstring& path) {
+		const HANDLE file = ::CreateFileW(path.c_str(), FILE_APPEND_DATA | SYNCHRONIZE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE) {
+			errno = ::GetLastError() == ERROR_ACCESS_DENIED ? EACCES : ENOENT;
+			return -1;
+		}
+
+		const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(file), _O_WRONLY | _O_BINARY);
+		if (fd < 0) ::CloseHandle(file);
+		return fd;
+	}
+
 	int Executor::openProcRedirSource(const std::string& path, int flags) const {
 		const ProcNode node = lookupProcPath(path_conv_, path, true);
 		if (node.type == ProcType::Outside) return openRedirSourceFd(node.target, flags);
@@ -2019,6 +2038,7 @@ namespace wbsh {
 		if (isFifoFile(utf8ToPath(win32))) return openFifo(utf8ToPath(win32), flags);
 
 		const std::wstring win_path = utf8ToFileWide(win32);
+		if ((flags & _O_APPEND) != 0) return openAppendOnly(win_path);
 		return _wopen(win_path.c_str(), flags | _O_BINARY, _S_IREAD | _S_IWRITE);
 	}
 
