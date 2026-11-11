@@ -1,0 +1,11 @@
+=== the [ command
+x = y: rc=1
+1 -eq 1: rc=0
+-d .: rc=0
+=== words with an unmatched [ stay literal
+[ [a a] (end)
+quoted ]: [a]
+=== bracket expressions still glob
+[ab]: a b
+[ab]*: a ab b
+[z]: (end)

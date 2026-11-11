@@ -2961,19 +2961,27 @@ namespace wbsh {
 		return out;
 	}
 
-	static bool isGlobMeta(char c) {
-		return c == '*' || c == '?' || c == '[';
+	static bool hasUnquotedCloseBracket(const std::string& text,
+			const std::vector<std::uint8_t>& flags, std::size_t from) {
+		for (std::size_t k = from; k < text.size(); ++k) {
+			if (text[k] == ']' && (flags[k] & Expander::F_QUOTED) == 0) return true;
+		}
+
+		return false;
 	}
 
 	// An unquoted wildcard, or with extglob an unquoted `X(` group
-	// opener; `flags` marks quoted characters with F_QUOTED.
+	// opener; `flags` marks quoted characters with F_QUOTED. As in bash,
+	// a `[` with no unquoted `]` after it is literal, so a bare `[`
+	// command survives nullglob.
 	static bool isUnquotedMetaAt(const std::string& text, const std::vector<std::uint8_t>& flags,
 			std::size_t i, bool extglob) {
 		const auto quoted = [&flags](std::size_t k) {
 			return (flags[k] & Expander::F_QUOTED) != 0;
 		};
 		if (quoted(i)) return false;
-		if (isGlobMeta(text[i])) return true;
+		if (text[i] == '*' || text[i] == '?') return true;
+		if (text[i] == '[') return hasUnquotedCloseBracket(text, flags, i + 1);
 		return extglob && isExtglobOperator(text[i]) && i + 1 < text.size()
 			&& text[i + 1] == '(' && !quoted(i + 1);
 	}
