@@ -337,12 +337,22 @@ namespace wbsh {
 
 	// cmd.exe parses the command line of a batch file itself and knows no
 	// backslash escapes, so a `"` inside an argument would end the quotes and
-	// let & | < > run commands (CVE-2024-24576). Every argument is quoted,
-	// `"` is doubled and `%` becomes `%%cd:~,%`, which cmd.exe expands to a
-	// lone `%`. Backslashes before a quote are doubled as for the C runtime,
-	// which parses the argument again when the script passes it on. A line
-	// break cannot be quoted for cmd.exe at all.
+	// let & | < > run commands (CVE-2024-24576). An argument with any
+	// character cmd.exe reads as syntax is quoted, `"` is doubled and `%`
+	// becomes `%%cd:~,%`, which cmd.exe expands to a lone `%`. Backslashes
+	// before a quote are doubled as for the C runtime, which parses the
+	// argument again when the script passes it on. A line break cannot be
+	// quoted for cmd.exe at all.
 	static bool appendBatchArg(std::wstring& out, const std::wstring& arg) {
+		// A plain word goes as it is, so `if "%1"=="install"` in the script
+		// still works; anything cmd.exe could read as syntax is quoted.
+		static const wchar_t kNeedsQuotes[] = L" \t\"&()[]{}^=;!'+,`~%|<>";
+		if (!arg.empty() && arg.find_first_of(kNeedsQuotes) == std::wstring::npos) {
+			if (arg.find_first_of(L"\r\n") != std::wstring::npos) return false;
+			out += arg;
+			return true;
+		}
+
 		out.push_back(L'"');
 		std::size_t backslashes = 0;
 		for (wchar_t c : arg) {

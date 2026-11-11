@@ -34,6 +34,11 @@ echo "=== ./x.cmd and a PATH lookup both run"
 ./show.cmd one | tr -d '\r'
 ( PATH="$PWD:$PATH"; show.bat two | tr -d '\r' )
 
+echo "=== a plain word passes as it is, as batch idioms expect"
+printf '@echo off\r\nif "%%1"=="install" (echo installing) else (echo other)\r\n' > idiom.cmd
+./idiom.cmd install | tr -d '\r'
+./idiom.cmd remove | tr -d '\r'
+
 echo "=== a line break is refused"
 ./show.bat "$(printf 'a\nb')" 2>&1 | tr -d '\r'
 ./show.bat "$(printf 'a\nb')" > /dev/null 2>&1

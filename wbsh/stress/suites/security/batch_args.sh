@@ -21,7 +21,7 @@ for arg in 'a&echo INJECTED' 'a"&echo INJECTED' 'a|echo INJECTED' 'a"|echo INJEC
     wbsh_run "./show.bat $(printf '%q' "$arg") second"
     if has_line 'INJECTED'; then
         fail "batch argument '$arg' runs a second command"
-    elif has_line 'RAW2=["second"]'; then
+    elif has_line 'RAW2=[second]'; then
         ok "batch argument '$arg' stays one argument"
     else
         fail "batch argument '$arg' shifts the other arguments: $(printf '%s' "$RUN_OUT" | tr '\n' ' ')"
@@ -42,6 +42,8 @@ expect_match "an argument with a line break is an error (126)" "$RUN_OUT" "*rc=1
 severity medium
 wbsh_run './show.bat "a b" c'
 check "quoted argument with a space reaches the batch file" has_line 'RAW1=["a b"]'
+wbsh_run './show.bat install'
+check "a plain word reaches the batch file without quotes" has_line 'RAW1=[install]'
 wbsh_run 'PATH="$PWD:$PATH"; show.bat x'
-check "a batch file found on PATH runs" has_line 'RAW1=["x"]'
+check "a batch file found on PATH runs" has_line 'RAW1=[x]'
 finish
