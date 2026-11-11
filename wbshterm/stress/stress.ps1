@@ -266,6 +266,7 @@ function Measure-MemoryOnce([System.IO.FileInfo]$file, [string]$work, [string]$l
 # Replay keeps its whole input in one growing buffer, so a replay case may
 # grow by a few times the extra input; anything beyond that is the grid's.
 function Invoke-MemorySuite {
+	if ($AsanDir) { Write-Host "`n   ASan build: growth and handle checks are off (ASan keeps freed memory in quarantine); the run is for ASan reports" -ForegroundColor DarkGray }
 	Write-Host "`n== memory (growth between scale N and 10xN)" -ForegroundColor Cyan
 	foreach ($file in Get-CaseFiles 'memory' '' '*.ps1') {
 		if ($file.Name -like '*.window.ps1') { continue }
@@ -293,11 +294,11 @@ function Invoke-MemorySuite {
 			growthMB = MB $growth; inputGrowthMB = MB $inputGrowth; handlesSmall = $a.Probe.PeakHandles; handlesLarge = $b.Probe.PeakHandles
 			gdiLarge = $b.Probe.PeakGdiObjects }
 		$status = 'pass'
-		if ($growth -gt $allowed) {
+		if (-not $AsanDir -and $growth -gt $allowed) {
 			Add-Finding 'memory' $name 'high' 'leak' ("memory grows {0} MB from scale {1} to {2} (input grows {3} MB, {4} MB allowed)" -f (MB $growth), $small, ($small * $factor), (MB $inputGrowth), (MB ([long]$allowed))) $log
 			$status = 'fail'
 		}
-		if ($a.Probe.PeakHandles -gt 0 -and $b.Probe.PeakHandles - $a.Probe.PeakHandles -gt [int](Get-Meta $meta 'handles' 64)) {
+		if (-not $AsanDir -and $a.Probe.PeakHandles -gt 0 -and $b.Probe.PeakHandles - $a.Probe.PeakHandles -gt [int](Get-Meta $meta 'handles' 64)) {
 			Add-Finding 'memory' $name 'high' 'handle-leak' "peak handle count grows from $($a.Probe.PeakHandles) to $($b.Probe.PeakHandles)" $log
 			$status = 'fail'
 		}

@@ -260,6 +260,7 @@ function Save-Timeline($r, [string]$path) {
 }
 
 function Invoke-MemorySuite {
+	if ($AsanDir) { Write-Host "`n   ASan build: growth and handle checks are off (ASan keeps freed memory in quarantine); the run is for ASan reports" -ForegroundColor DarkGray }
 	Write-Host "`n== memory (leak = growth between N and $(10)xN iterations)" -ForegroundColor Cyan
 	foreach ($file in Get-CaseFiles 'memory') {
 		$meta = Get-CaseMeta $file.FullName
@@ -293,11 +294,11 @@ function Invoke-MemorySuite {
 			handlesSmall = $a.PeakHandles; handlesLarge = $b.PeakHandles; wallMs = [int]$b.WallMs
 		}
 		$status = 'pass'
-		if ($growth -gt $limit) {
+		if (-not $AsanDir -and $growth -gt $limit) {
 			Add-Finding 'memory' $name 'high' 'leak' ("private memory grows {0} MB from {1} to {2} iterations (~{3} bytes/iteration)" -f (MB $growth), $small, ($small * $factor), $perIter) $log
 			$status = 'fail'
 		}
-		if ($a.PeakHandles -gt 0 -and $handleGrowth -gt [int](Get-Meta $meta 'handles' 64)) {
+		if (-not $AsanDir -and $a.PeakHandles -gt 0 -and $handleGrowth -gt [int](Get-Meta $meta 'handles' 64)) {
 			Add-Finding 'memory' $name 'high' 'handle-leak' "peak handle count grows from $($a.PeakHandles) to $($b.PeakHandles)" $log
 			$status = 'fail'
 		}
