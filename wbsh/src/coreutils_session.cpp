@@ -445,16 +445,9 @@ namespace wbsh {
 		return 0;
 	}
 
-	static int showVersion(const char* cmd) {
-		std::printf("%s (wbsh) %d.%d.%d\n", cmd, WBSH_VERSION_MAJOR, WBSH_VERSION_MINOR,
-			WBSH_VERSION_PATCH);
-		std::fflush(stdout);
-		return 0;
-	}
-
 	static int builtin_nohup(Executor& exec, const std::vector<std::string>& args) {
 		if (!args.empty() && args[0] == "--help") return showUsage(kNohupUsage);
-		if (!args.empty() && args[0] == "--version") return showVersion("nohup");
+		if (!args.empty() && args[0] == "--version") return showToolVersion("nohup");
 
 		const int failure = exec.env().get("POSIXLY_CORRECT").empty() ? kStatusCanceled
 			: kStatusNotFound;
@@ -525,7 +518,7 @@ namespace wbsh {
 		SetsidOptions options;
 		if (!parseSetsidArgs(args, options)) return 1;
 		if (options.help) return showUsage(kSetsidUsage);
-		if (options.version) return showVersion("setsid");
+		if (options.version) return showToolVersion("setsid");
 		if (!commandExists(exec, options.command[0])) {
 			return reportMissingCommand("setsid", "failed to execute " + options.command[0]);
 		}

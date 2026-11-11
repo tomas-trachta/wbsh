@@ -27,6 +27,10 @@ namespace wbsh {
 	          const std::error_code& ec);
 	void perr(const std::string& cmd, const std::string& msg);
 
+	/// `CMD (wbsh) X.Y.Z` on stdout, the `--version` answer of a bundled
+	/// tool. Returns 0.
+	int showToolVersion(const char* cmd);
+
 	/// strerror-style text ("No such file or directory") for errors that map
 	/// to an errno value; Windows' own message for the rest.
 	std::string posixErrorText(const std::error_code& ec);

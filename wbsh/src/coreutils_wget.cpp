@@ -17,6 +17,7 @@
 #  pragma comment(lib, "winhttp.lib")
 #endif /* _WIN32 */
 
+#include <algorithm>
 #include <chrono>
 #include <cerrno>
 #include <cstdio>
@@ -603,6 +604,10 @@ namespace wbsh {
 	}
 
 	static int builtin_wget(Executor& exec, const std::vector<std::string>& args) {
+		const bool version = std::find(args.begin(), args.end(), "--version") != args.end()
+			|| (args.size() == 1 && args[0] == "-V");
+		if (version) return showToolVersion("wget");
+
 		WgetOptions options;
 		if (!parseWgetArgs(exec, expandShortClusters(args), options)) return kExitUsage;
 
