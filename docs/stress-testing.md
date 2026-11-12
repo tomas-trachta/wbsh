@@ -337,16 +337,33 @@ N and 10 × N) is not a leak: in longer runs the working set stays flat
 (7.8 MB from 2 000 to 8 000 subshells and pipelines; 10–13 MB over
 1 000 captures of 1 MB). It is heap warm-up and fragmentation.
 
+Also fixed in the last round, each with a golden test:
+
+- A pipeline element that is not found stopped the elements after it
+  (`echo a | nosuchcmd | wc -l` printed nothing; `PIPESTATUS` was 1 for
+  all). Now each element has its own status and the others run.
+- An arithmetic error in an array subscript or a slice offset was
+  swallowed; it now fails the command and drops the line, as in bash.
+- `${a[@]:-word}` and `${@:-word}` keep the quoting of their word
+  (`${@:-"x y"}` is one word).
+- `<(...)` alone as a command gives Git Bash's "No such file or
+  directory" (127), not "All pipe instances are busy". A found file
+  that does not start gives 126, not 127.
+
 Still open:
 
-- An arithmetic error in an array subscript or a substring offset
-  (`${a[n]}` with `n='p 2'`) is swallowed; bash drops the line.
-- `${a[@]:-\*}` keeps its backslash, and `${u:-"" a}` gives one field
-  (bash: two).
-- When a pipeline element fails to start, the later elements do not
-  start either, so `PIPESTATUS` has 1 for them (bash: their own status).
-- `<(...)` alone as a command reports "All pipe instances are busy"
-  (bash: permission denied).
+- `${u:-"" a}` gives one field (bash: two). A quoted empty part next to
+  an unquoted blank has no place in the per-byte quoting flags.
+- bash parses the text of `$(...)` with the script, so a syntax error
+  in it (`$([[ -x > a ]])`) is a script syntax error. wbsh parses it
+  when it runs, and only that substitution fails. A parse-time check
+  must not recurse without limit on deeply nested substitutions
+  (`corpus/deep_cmdsubst.sh`).
+- `gzip -6` is about 1.2 × slower than Git Bash's gzip; zlib's search
+  limits (`max_lazy`, `good_length`) would close most of the gap but
+  change the compressed bytes.
+- Some messages differ in wording from bash (no `line N:` in most
+  runtime errors, no variable name before an error in `${n:n}`).
 
 ## 8. Next steps for the framework
 
