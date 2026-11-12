@@ -15,7 +15,9 @@ wbsh_run 'x=$(printf "a\0b" 2>/dev/null); echo ${#x}'
 expect_eq "NUL is dropped from command substitution (bash: 2)" "$RUN_OUT" 2
 wbsh_run 'yes | head -n 3 | wc -l'
 expect_eq "yes | head ends when the reader goes away" "$RUN_OUT" 3
-wbsh_run 'echo $( (sleep 30 &) ; echo quick)'
+# The job lives on after the substitution, as in bash; stop it after the
+# check, or the probe counts it as a process wbsh left behind.
+wbsh_run 'echo $( (sleep 30 & echo $! > bg.pid) ; echo quick); kill $(cat bg.pid)'
 expect_eq "background job in a substitution does not hold the pipe" "$RUN_OUT" quick
 
 : > shared.txt
