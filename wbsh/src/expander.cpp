@@ -1662,11 +1662,14 @@ namespace wbsh {
 		return expandHeredoc(subscript, false);
 	}
 
-	// A negative subscript counts back from the highest index in use.
+	// A negative subscript counts back from the highest index in use. An
+	// error in the subscript stays pending: as in bash, it fails the
+	// expansion (and drops the rest of the line).
 	static std::string indexedArrayElement(Expander& expander,
 			const Environment::IndexedArray& items, const std::string& subscript,
 			Expander::ElementSlot& slot) {
-		if (!expander.tryEvalArith(subscript, slot.index)) return {};
+		slot.index = expander.evalArith(subscript);
+		if (expander.failed()) return {};
 		if (slot.index < 0 && !items.empty()) slot.index += items.rbegin()->first + 1;
 		slot.resolved = true;
 
@@ -1700,7 +1703,8 @@ namespace wbsh {
 			return assocArrayElement(*assoc, subscript, slot);
 		}
 
-		if (!tryEvalArith(subscript, slot.index)) return {};
+		slot.index = evalArith(subscript);
+		if (failed()) return {};
 		slot.resolved = true;
 		slot.is_set = slot.index == 0 && env_.has(name);
 		return slot.is_set ? lookupParam(name) : std::string();
@@ -2284,13 +2288,14 @@ namespace wbsh {
 		std::string length_text;
 		splitSliceArgs(args, offset_text, length_text);
 
-		long long offset = 0;
-		if (!tryEvalArith(offset_text, offset)) offset = 0;
+		long long offset = evalArith(offset_text);
+		if (failed()) return {};
 		if (offset < 0 && !items.empty()) offset += items.back().first + 1;
 		if (offset < 0) return {};
 
 		long long take = static_cast<long long>(items.size());
-		if (!length_text.empty() && !tryEvalArith(length_text, take)) take = 0;
+		if (!length_text.empty()) take = evalArith(length_text);
+		if (failed()) return {};
 		if (take < 0) {
 			fail(std::to_string(take) + ": substring expression < 0");
 			return {};

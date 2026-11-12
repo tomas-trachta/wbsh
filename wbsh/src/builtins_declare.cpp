@@ -473,11 +473,23 @@ namespace wbsh::declare_detail {
 		return index == 0 ? env.get(name) : std::string();
 	}
 
+	// An error in a subscript stops this operand; as in bash, the error
+	// drops the rest of the line once the command has ended.
+	static bool evalSubscript(Executor& exec, const std::string& subscript, long long& index) {
+		Expander& expander = exec.expander();
+		index = expander.evalArith(subscript);
+		if (!expander.failed()) return true;
+
+		std::fprintf(stderr, "wbsh: %s\n", expander.takeError().c_str());
+		expander.dropRestOfLine();
+		return false;
+	}
+
 	static void assignElement(Executor& exec, const Operand& op) {
 		Environment& env = exec.env();
 		long long index = 0;
 		const bool assoc = env.isAssocArray(op.name);
-		if (!assoc && !exec.expander().tryEvalArith(op.subscript, index)) index = 0;
+		if (!assoc && !evalSubscript(exec, op.subscript, index)) return;
 
 		std::string value = op.value;
 		if (op.append) value = currentElement(env, op.name, index, op.subscript) + value;
@@ -651,7 +663,7 @@ namespace wbsh::declare_detail {
 		if (!isArray(exec.env(), name)) return false;
 
 		long long index = 0;
-		if (!exec.env().isAssocArray(name)) exec.expander().tryEvalArith(subscript, index);
+		if (!exec.env().isAssocArray(name) && !evalSubscript(exec, subscript, index)) return true;
 		exec.env().unsetElement(name, index, subscript);
 		return true;
 	}

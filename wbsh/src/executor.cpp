@@ -2578,12 +2578,23 @@ namespace wbsh {
 		return (it == indexed->end()) ? std::string() : it->second;
 	}
 
+	// An error in a subscript stops the assignment; as in bash, the error
+	// drops the rest of the line.
+	static bool evalSubscriptOrReport(Expander& expander, const std::string& subscript,
+	                                  long long& index) {
+		index = expander.evalArith(subscript);
+		if (!expander.failed()) return true;
+
+		reportExpanderError(expander);
+		return false;
+	}
+
 	static void appendToIndexedArray(Environment& env, Expander& expander,
 	                                 const Executor::ArrayAssign& array) {
 		long long next_index = nextIndexedAppendSlot(env, array.name);
 		for (const auto& item : array.items) {
 			long long index = next_index;
-			if (item.has_key && !expander.tryEvalArith(item.key, index)) index = next_index;
+			if (item.has_key && !evalSubscriptOrReport(expander, item.key, index)) return;
 			env.setIndexedElement(array.name, index, item.value);
 			next_index = index + 1;
 		}
@@ -2595,7 +2606,7 @@ namespace wbsh {
 		long long next_index = 0;
 		for (const auto& item : array.items) {
 			long long index = next_index;
-			if (item.has_key && !expander.tryEvalArith(item.key, index)) index = next_index;
+			if (item.has_key && !evalSubscriptOrReport(expander, item.key, index)) return;
 			sparse[index] = item.value;
 			next_index = index + 1;
 		}
@@ -2658,7 +2669,7 @@ namespace wbsh {
 
 		const bool is_assoc = env.isAssocArray(elem.name);
 		long long index = 0;
-		if (!is_assoc && !expander.tryEvalArith(subscript, index)) index = 0;
+		if (!is_assoc && !evalSubscriptOrReport(expander, subscript, index)) return;
 
 		std::string value = elem.value;
 		if (elem.append) {
