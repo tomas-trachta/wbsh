@@ -7,8 +7,8 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="Version">
     <WbshVersionMajor>1</WbshVersionMajor>
-    <WbshVersionMinor>0</WbshVersionMinor>
-    <WbshVersionPatch>32</WbshVersionPatch>
+    <WbshVersionMinor>1</WbshVersionMinor>
+    <WbshVersionPatch>0</WbshVersionPatch>
     <WbshVersion>$(WbshVersionMajor).$(WbshVersionMinor).$(WbshVersionPatch)</WbshVersion>
   </PropertyGroup>
 </Project>
