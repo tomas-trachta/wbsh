@@ -779,6 +779,11 @@ namespace wbsh {
 		node->subject = std::move(subject);
 
 		while (!atEnd() && !checkReserved("esac")) {
+			// After a syntax error the next token can be one that no item
+			// starts with (`||` after the pattern `a`); the loop then added
+			// empty items until memory ran out.
+			if (!check(TokKind::Word) && !check(TokKind::LParen)) break;
+
 			CaseClause::Item item;
 			parseCaseItem(item);
 			node->items.push_back(std::move(item));
