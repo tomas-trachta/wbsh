@@ -1441,7 +1441,9 @@ namespace wbsh {
 			return INVALID_HANDLE_VALUE;
 		}
 
-		if (looksLikeShellScript(exec_path)) return INVALID_HANDLE_VALUE;
+		if (startsWithShebang(exec_path) || looksLikeShellScript(exec_path)) {
+			return INVALID_HANDLE_VALUE;
+		}
 
 		*tried = true;
 		const HANDLE process = launchExternalDirect(command, argv, exec_path, h_in, h_out, h_err);
@@ -1860,7 +1862,9 @@ namespace wbsh {
 			return INVALID_HANDLE_VALUE;
 		}
 
-		if (looksLikeShellScript(exec_path)) return spawnShellCommand(argv, placement);
+		if (startsWithShebang(exec_path) || looksLikeShellScript(exec_path)) {
+			return spawnShellCommand(argv, placement);
+		}
 
 		const NameValueList no_assignments;
 		SpawnCommand command = makeSpawnCommand(
@@ -3190,6 +3194,7 @@ namespace wbsh {
 		}
 
 		if (looksLikeShellScript(exec_path)) return runShellScript(exec_path, argv, temp_env);
+		if (startsWithShebang(exec_path)) return runShebangInterpreter(exec_path, argv, temp_env);
 
 #ifdef _WIN32
 		const std::vector<std::string> child_argv = prepareExternalArgv(argv, exec_path, temp_env);
@@ -3528,7 +3533,29 @@ namespace wbsh {
 		std::string line(probe, static_cast<std::size_t>(got));
 		const std::size_t newline = line.find('\n');
 		if (newline != std::string::npos) line.resize(newline);
+		if (!line.empty() && line.back() == '\r') line.pop_back();
 		return line;
+	}
+
+	// The words after `#!`. Linux gives the interpreter the rest of the
+	// line as one argument; wbsh splits it at blanks, as macOS does, so
+	// `#!/usr/bin/env python3 -u` runs `python3 -u`.
+	static std::vector<std::string> shebangWords(const std::string& shebang_line) {
+		std::vector<std::string> words;
+		std::string word;
+		for (std::size_t i = 2; i < shebang_line.size(); ++i) {
+			const char c = shebang_line[i];
+			if (c != ' ' && c != '\t') {
+				word.push_back(c);
+				continue;
+			}
+
+			if (!word.empty()) words.push_back(std::move(word));
+			word.clear();
+		}
+
+		if (!word.empty()) words.push_back(std::move(word));
+		return words;
 	}
 
 	// `#!/usr/bin/env [-flags] interp`: the interpreter is the first word
@@ -3588,6 +3615,51 @@ namespace wbsh {
 		const std::string shebang = readShebangLine(path);
 		if (shebang.empty()) return false;
 		return isKnownShellInterpreter(interpBasenameFromShebang(shebang));
+	}
+
+	bool Executor::startsWithShebang(const std::string& path) const {
+		if (classifyByExtension(path) == ExtensionClass::Native) return false;
+		return !readShebangLine(path).empty();
+	}
+
+	int Executor::runShebangInterpreter(const std::string& path,
+	                                    const std::vector<std::string>& argv,
+	                                    const NameValueList& temp_env) {
+		static const int kMaxInterpreterDepth = 4;
+
+		std::vector<std::string> interp_argv = shebangWords(readShebangLine(path));
+		if (interp_argv.empty()) return runShellScript(path, argv, temp_env);
+
+		const std::string& interp = interp_argv[0];
+		const std::string name = systemBinCommand(interp);
+		if (!isBuiltin(name) && findExecutable(name).empty()) {
+			std::fprintf(stderr, "wbsh: %s: %s: bad interpreter: No such file or directory\n",
+				argv[0].c_str(), interp.c_str());
+			return kStatusCannotExecute;
+		}
+
+		if (shebang_depth_ >= kMaxInterpreterDepth) {
+			std::fprintf(stderr, "wbsh: %s: too many levels of interpreter scripts\n",
+				argv[0].c_str());
+			return kStatusCannotExecute;
+		}
+
+		// The kernel passes the script as it was named; a PATH hit as its path.
+		const bool named_by_path = argv[0].find_first_of("/\\") != std::string::npos;
+		interp_argv.push_back(named_by_path ? argv[0] : path_conv_.toPosix(path));
+		interp_argv.insert(interp_argv.end(), argv.begin() + 1, argv.end());
+
+		++shebang_depth_;
+		int status = 0;
+		if (isBuiltin(name)) {
+			interp_argv[0] = name;
+			const std::vector<std::string> args(interp_argv.begin() + 1, interp_argv.end());
+			status = callBuiltinWithAssigns(*this, name, args, temp_env);
+		} else {
+			status = runExternal(interp_argv, temp_env);
+		}
+		--shebang_depth_;
+		return status;
 	}
 
 	static void unsetVarsNotIn(Environment& env,

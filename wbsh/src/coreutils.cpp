@@ -1613,17 +1613,112 @@ namespace wbsh {
 		return false;
 	}
 
-	static bool parseEnvArgs(const std::vector<std::string>& args, EnvOptions& options) {
+	// GNU env -S: blanks separate words; quotes and backslashes keep them.
+	static bool splitEnvString(const std::string& text, std::vector<std::string>& words) {
+		std::string word;
+		bool in_word = false;
+		char quote = 0;
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			const char c = text[i];
+			if (quote == '\'') {
+				if (c == '\'') quote = 0;
+				else           word.push_back(c);
+				continue;
+			}
+
+			if (c == '\\' && i + 1 < text.size()) {
+				const char next = text[++i];
+				if (next == 'n')      word.push_back('\n');
+				else if (next == 't') word.push_back('\t');
+				else if (next == '_') word.push_back(' ');
+				else                  word.push_back(next);
+				in_word = true;
+				continue;
+			}
+
+			if (c == '"') {
+				quote = (quote == '"') ? 0 : '"';
+				in_word = true;
+				continue;
+			}
+
+			if (c == '\'' && quote == 0) {
+				quote = '\'';
+				in_word = true;
+				continue;
+			}
+
+			if ((c == ' ' || c == '\t' || c == '\n') && quote == 0) {
+				if (in_word) words.push_back(std::move(word));
+				word.clear();
+				in_word = false;
+				continue;
+			}
+
+			word.push_back(c);
+			in_word = true;
+		}
+
+		if (quote != 0) {
+			perr("env", std::string("no terminating quote in -S string"));
+			return false;
+		}
+
+		if (in_word) words.push_back(std::move(word));
+		return true;
+	}
+
+	// `-S STRING`, `-SSTRING` and `--split-string=STRING` put the words of
+	// STRING in place of the option, as a `#!/usr/bin/env -S cmd -x` line needs.
+	static bool spliceSplitString(std::vector<std::string>& args, std::size_t i) {
+		const std::string& arg = args[i];
+		std::string text;
+		std::size_t used = 1;
+		if (arg == "-S" || arg == "--split-string") {
+			if (i + 1 >= args.size()) {
+				perr("env", "option requires an argument -- 'S'");
+				return false;
+			}
+			text = args[i + 1];
+			used = 2;
+		} else if (arg.compare(0, 15, "--split-string=") == 0) {
+			text = arg.substr(15);
+		} else {
+			text = arg.substr(2);
+		}
+
+		std::vector<std::string> words;
+		if (!splitEnvString(text, words)) return false;
+		args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+			args.begin() + static_cast<std::ptrdiff_t>(i + used));
+		args.insert(args.begin() + static_cast<std::ptrdiff_t>(i), words.begin(), words.end());
+		return true;
+	}
+
+	static bool isSplitStringOption(const std::string& arg) {
+		return (arg.size() >= 2 && arg.compare(0, 2, "-S") == 0)
+			|| arg == "--split-string" || arg.compare(0, 15, "--split-string=") == 0;
+	}
+
+	static bool parseEnvArgs(const std::vector<std::string>& given, EnvOptions& options) {
+		std::vector<std::string> args = given;
 		std::size_t i = 0;
-		for (; i < args.size() && startsWithDash(args[i]); ++i) {
+		while (i < args.size() && startsWithDash(args[i])) {
 			if (args[i] == "--") {
 				++i;
 				break;
 			}
 
-			if (parseEnvOption(args, i, options)) continue;
-			perr("env", "unknown option: " + args[i]);
-			return false;
+			if (isSplitStringOption(args[i])) {
+				if (!spliceSplitString(args, i)) return false;
+				continue;
+			}
+
+			if (!parseEnvOption(args, i, options)) {
+				perr("env", "unknown option: " + args[i]);
+				return false;
+			}
+			++i;
 		}
 
 		for (; i < args.size() && isEnvAssignment(args[i]); ++i) {
