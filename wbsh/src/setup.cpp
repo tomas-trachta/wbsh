@@ -14,6 +14,7 @@
 #endif /* _WIN32 */
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <iterator>
 #include <filesystem>
@@ -339,8 +340,57 @@ namespace wbsh {
 		seedShellLevel(env);
 	}
 
+	// The Windows variables Git Bash scripts use by their upper-case names:
+	// Windows stores SystemRoot, windir, ComSpec, ProgramFiles, and Git
+	// Bash (Cygwin) upper-cases exactly these.
+	static const char* const kUpperCasedNames[] = {
+		"SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PROGRAMFILES", "COMMONPROGRAMFILES",
+		"TMP", "TEMP", "HOMEDRIVE", "HOMEPATH", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+		"ALLUSERSPROFILE", "PUBLIC", "USERNAME", "USERDOMAIN", "COMPUTERNAME", "PATHEXT",
+	};
+
+	static bool sameIgnoringCase(const std::string& a, const std::string& b) {
+		if (a.size() != b.size()) return false;
+
+		for (std::size_t i = 0; i < a.size(); ++i) {
+			const auto x = static_cast<unsigned char>(a[i]);
+			const auto y = static_cast<unsigned char>(b[i]);
+			if (std::toupper(x) != std::toupper(y)) return false;
+		}
+
+		return true;
+	}
+
+	// The copy is not exported: Windows names are case-insensitive, and a
+	// child given both SystemRoot and SYSTEMROOT could pick either.
+	static void seedUpperCaseNames(Environment& env) {
+		for (const char* name : kUpperCasedNames) {
+			if (env.has(name)) continue;
+
+			for (const auto& var : env.vars()) {
+				if (!sameIgnoringCase(var.first, name)) continue;
+
+				const std::string value = var.second;
+				env.set(name, value);
+				break;
+			}
+		}
+	}
+
+	// bash does not take IFS from the environment: a caller could change
+	// how every script it starts splits words. A child wbsh running a
+	// pipeline stage keeps its parent's IFS.
+	static void resetInheritedIfs(Environment& env) {
+		if (isChildShell(env) || !env.has("IFS")) return;
+
+		env.set("IFS", " \t\n");
+		env.unexportVar("IFS");
+	}
+
 	void prepareEnv(Environment& env) {
 		env.loadFromProcessEnv();
+		seedUpperCaseNames(env);
+		resetInheritedIfs(env);
 
 		const PathConv path_conv;
 		const std::string path = env.get("PATH");

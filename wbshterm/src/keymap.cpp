@@ -201,10 +201,29 @@ namespace wbshterm {
 		return encodeModifiedTextKey(key);
 	}
 
+	// Pasted text is text, not keys: an ESC in it could end bracketed paste
+	// (ESC[201~) and send the rest as typed commands, and other controls act
+	// as editing keys. Tab and line breaks stay; C1 controls go too, which
+	// arrive as the UTF-8 pairs C2 80 .. C2 9F.
+	static bool isPastedControl(const std::string& text, std::size_t i) {
+		const auto byte = static_cast<unsigned char>(text[i]);
+		if (byte == '\t' || byte == '\n' || byte == '\r') return false;
+		if (byte < 0x20 || byte == 0x7F) return true;
+		if (byte != 0xC2 || i + 1 >= text.size()) return false;
+
+		const auto next = static_cast<unsigned char>(text[i + 1]);
+		return next >= 0x80 && next <= 0x9F;
+	}
+
 	std::string encodePaste(const std::string& text, const KeyModes& modes) {
 		std::string body;
 		for (std::size_t i = 0; i < text.size(); ++i) {
 			if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+			if (isPastedControl(text, i)) {
+				if (static_cast<unsigned char>(text[i]) == 0xC2) ++i;
+				continue;
+			}
+
 			body.push_back(text[i] == '\n' ? '\r' : text[i]);
 		}
 

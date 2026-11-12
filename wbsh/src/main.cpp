@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "coreutils_internal.h"
 #include "executor.h"
 #include "numparse.h"
 #include "pathconv.h"
@@ -242,6 +243,7 @@ static std::string readAll(std::istream& in) {
 	buffer << in.rdbuf();
 
 	std::string text = buffer.str();
+	stripUtf8Bom(text);
 	normalizeCrlf(text);
 	return text;
 }
@@ -369,6 +371,7 @@ static void prepareCrtForShellUse() {
 	// and files, which corrupts `$(...)` captures and `read` values.
 	_setmode(_fileno(stdout), _O_BINARY);
 	_setmode(_fileno(stderr), _O_BINARY);
+	bufferStdoutForNul();
 
 	// Text-mode input drops every `\r` before a `\n` and stops at the first
 	// 0x1A byte, so piped archives and binary data arrive corrupted. The

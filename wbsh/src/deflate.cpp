@@ -10,6 +10,11 @@
 #include "bytestream.h"
 
 #include <algorithm>
+#include <cstring>
+
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 #include "huffman.h"
 
@@ -66,12 +71,19 @@ namespace wbsh {
 			std::size_t code_length_count = 0;
 		};
 
+		// The lazy check searches position + 1, and when it wins the next
+		// step searches the same position again with the same tables; the
+		// result is kept for that step. It is valid only while data and
+		// size stay the same (lazy_position is cleared when they change).
 		struct MatchFinder {
 			const std::uint8_t* data = nullptr;
 			std::size_t size = 0;
 			std::vector<int> head;
 			std::vector<int> previous;
 			LevelTuning tuning = { 0, 0, false };
+			std::size_t lazy_position = SIZE_MAX;
+			int lazy_length = 0;
+			int lazy_distance = 0;
 		};
 
 	}  // namespace deflate_detail
@@ -168,29 +180,54 @@ namespace wbsh {
 		finder.head[hash] = static_cast<int>(position);
 	}
 
-	static int matchLength(const MatchFinder& finder, std::size_t candidate, std::size_t position) {
-		const std::size_t limit = (std::min)(static_cast<std::size_t>(kMaxMatch),
-			finder.size - position);
+	static int firstDifferentByte(std::uint64_t diff) {
+#ifdef _MSC_VER
+		unsigned long index = 0;
+		_BitScanForward64(&index, diff);
+		return static_cast<int>(index / 8);
+#else
+		return __builtin_ctzll(diff) / 8;
+#endif
+	}
+
+	// Eight bytes at a time; the first different byte ends the match.
+	static std::size_t equalPrefix(const std::uint8_t* earlier, const std::uint8_t* here,
+	                               std::size_t limit) {
 		std::size_t length = 0;
-		const std::uint8_t* earlier = finder.data + candidate;
-		const std::uint8_t* here = finder.data + position;
-		while (length < limit && earlier[length] == here[length]) {
-			++length;
+		while (length + 8 <= limit) {
+			std::uint64_t a = 0;
+			std::uint64_t b = 0;
+			std::memcpy(&a, earlier + length, 8);
+			std::memcpy(&b, here + length, 8);
+			if (a != b) return length + static_cast<std::size_t>(firstDifferentByte(a ^ b));
+			length += 8;
 		}
 
-		return static_cast<int>(length);
+		while (length < limit && earlier[length] == here[length]) ++length;
+		return length;
+	}
+
+	static std::size_t matchLimit(const MatchFinder& finder, std::size_t position) {
+		return (std::min)(static_cast<std::size_t>(kMaxMatch), finder.size - position);
 	}
 
 	static int longestMatch(const MatchFinder& finder, std::size_t position, int& distance) {
 		if (position + kMinMatch > finder.size) return 0;
 
+		const std::size_t limit = matchLimit(finder, position);
+		const std::uint8_t* here = finder.data + position;
 		int best = 0;
-		int candidate = finder.head[hashAt(finder.data + position)];
+		int candidate = finder.head[hashAt(here)];
 		for (int chain = 0; chain < finder.tuning.max_chain && candidate >= 0; ++chain) {
 			const std::size_t from = static_cast<std::size_t>(candidate);
 			if (from >= position || position - from > static_cast<std::size_t>(kWindowSize)) break;
 
-			const int length = matchLength(finder, from, position);
+			// A candidate that differs at the byte after the best match so
+			// far cannot be longer, so the full compare is skipped.
+			const std::uint8_t* earlier = finder.data + from;
+			const std::size_t at = static_cast<std::size_t>(best);
+			const bool can_beat = at < limit && earlier[at] == here[at];
+			const int length = can_beat ? static_cast<int>(equalPrefix(earlier, here, limit)) : 0;
 			if (length > best) {
 				best = length;
 				distance = static_cast<int>(position - from);
@@ -222,10 +259,20 @@ namespace wbsh {
 		for (std::size_t k = from; k < to; ++k) insertPosition(finder, k);
 	}
 
+	static int searchOrReuse(MatchFinder& finder, std::size_t position, int& distance) {
+		if (finder.lazy_position == position) {
+			finder.lazy_position = SIZE_MAX;
+			distance = finder.lazy_distance;
+			return finder.lazy_length;
+		}
+
+		return longestMatch(finder, position, distance);
+	}
+
 	static std::size_t tokenizeStep(MatchFinder& finder, std::size_t position,
 	                                std::vector<Token>& tokens) {
 		int distance = 0;
-		const int length = longestMatch(finder, position, distance);
+		const int length = searchOrReuse(finder, position, distance);
 		insertPosition(finder, position);
 		if (length == 0) {
 			tokens.push_back(literalToken(finder.data[position]));
@@ -236,6 +283,9 @@ namespace wbsh {
 			int next_distance = 0;
 			const int next_length = longestMatch(finder, position + 1, next_distance);
 			if (next_length > length) {
+				finder.lazy_position = position + 1;
+				finder.lazy_length = next_length;
+				finder.lazy_distance = next_distance;
 				tokens.push_back(literalToken(finder.data[position]));
 				return position + 1;
 			}
@@ -577,6 +627,7 @@ namespace wbsh {
 		State& state = *state_;
 		state.finder.data = state.data.data();
 		state.finder.size = state.data.size();
+		state.finder.lazy_position = SIZE_MAX;
 
 		while (state.position < tokenizeLimit(state, final_block)) {
 			state.position = tokenizeStep(state.finder, state.position, state.tokens);
@@ -587,6 +638,7 @@ namespace wbsh {
 
 			state.finder.data = state.data.data();
 			state.finder.size = state.data.size();
+			state.finder.lazy_position = SIZE_MAX;
 		}
 
 		return true;

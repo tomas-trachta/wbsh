@@ -136,7 +136,6 @@ namespace wbsh {
 	/// $USER, then $USERNAME, then "user".
 	std::string currentUserName(Executor& exec);
 
-	/// True only for a real console: _isatty also says yes for NUL.
 	/// An octal or symbolic (u+rw,go=r) mode as install, mkfifo and mknod
 	/// take it; symbolic clauses start from 0.
 	bool parseFileMode(const std::string& text, unsigned& mode);
@@ -149,7 +148,14 @@ namespace wbsh {
 
 	WindowsVersion windowsVersion();
 
+	/// True only for a real console: _isatty also says yes for NUL.
 	bool isConsoleStream(std::FILE* stream);
+
+	/// Give stdout a full buffer when fd 1 points at NUL. The CRT counts NUL
+	/// as a character device, like a console, and writes each printf call
+	/// through at once, so line-by-line output to /dev/null was 2-4 times
+	/// slower than to a file. Callers flush stdout before fd 1 changes.
+	void bufferStdoutForNul();
 
 	/// A regular file, where a read never waits for a writer.
 	bool isDiskStream(std::FILE* stream);

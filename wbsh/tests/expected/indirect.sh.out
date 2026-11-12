@@ -56,8 +56,7 @@ rc=1
 wbsh: y:-q: bad substitution
 rc=1
 wbsh: !x: invalid indirect expansion
-x=[]
-rc=0
+rc=1
 wbsh: !x: parameter null or not set
 rc=1
 wbsh: !x: unbound variable

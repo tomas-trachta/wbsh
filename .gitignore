@@ -457,3 +457,9 @@ compile_commands.json
 sdk/samples/*/build/
 sdk/template/build/
 sdk/template/bin/
+
+# wbsh stress-test run output (wbsh/stress/stress.ps1).
+wbsh/stress/results/
+
+# wbshterm stress-test run output (wbshterm/stress/stress.ps1).
+wbshterm/stress/results/

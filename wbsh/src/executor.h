@@ -59,6 +59,7 @@ namespace wbsh {
 			Continue,   ///< `continue N` — next iteration of the Nth loop.
 			Return,     ///< `return [N]` — unwind to the function call.
 			Exit,       ///< `exit [N]` — unwind to the shell driver.
+			Discard,    ///< Expansion error — drop the rest of the input line.
 		};
 		Kind kind = Kind::None;
 		int  status = 0;    ///< Return / Exit payload.
@@ -456,6 +457,11 @@ namespace wbsh {
 			owned_arenas_.push_back(std::move(arena));
 		}
 
+		// How many function definitions have run so far. A caller that
+		// parsed text itself keeps its arena (adoptArena) only when this
+		// count changed while the text ran.
+		std::size_t functionDefinitionCount() const { return function_definitions_; }
+
 		// The original source the AST was parsed from. Used by the pipeline
 		// executor to spawn child wbsh processes for non-external elements.
 		void setSourceText(std::string s) { source_text_ = std::move(s); }
@@ -513,6 +519,11 @@ namespace wbsh {
 		void raiseExit(int status) {
 			flow_.kind = FlowSignal::Kind::Exit;
 			flow_.status = status;
+			flow_.count = 1;
+		}
+		void raiseDiscard() {
+			flow_.kind = FlowSignal::Kind::Discard;
+			flow_.status = 1;
 			flow_.count = 1;
 		}
 		/**
@@ -667,9 +678,12 @@ namespace wbsh {
 			std::size_t        cursor = 0;
 		};
 
+		// The arena owns the tree; it moves to owned_arenas_ only when the
+		// text defined a function, whose body must outlive the run.
 		struct ParsedText {
 			Node* root = nullptr;
 			std::string diagnostics;
+			Arena arena;
 		};
 
 		/// One FUNCNAME / BASH_SOURCE / BASH_LINENO entry: a function, a
@@ -685,6 +699,10 @@ namespace wbsh {
 		std::string currentSourceFile() const;
 		std::string functionFile(const std::string& name) const;
 		int  runFunctionBody(const FunctionDef& def);
+		bool functionNestingAllowed(const std::string& name);
+		bool reportDirectoryCommand(const std::string& name) const;
+		std::string findExecutableWith(const std::string& name,
+		                               const std::vector<std::pair<std::string, std::string>>& temp_env);
 
 		const ParsedText& parsedTrapAction(const std::string& action);
 		int  runTrapAction(const std::string& action);
@@ -728,6 +746,7 @@ namespace wbsh {
 		ParsedText parseText(const std::string& source_text, const std::string& origin,
 		                     std::size_t first_line = 1);
 		int finishParsedText(const ParsedText& parsed, int status);
+		void keepArenaIfDefined(ParsedText& parsed, std::size_t definitions_before);
 		void  echoInputBefore(const List& list, std::size_t index);
 		void  echoInputUpTo(std::size_t end);
 
@@ -735,6 +754,8 @@ namespace wbsh {
 		bool nodeTracksLineno(const Node& node) const;
 		int dispatchNode(const Node& n);
 		void exitOnFatalExpansionError();
+		void discardAfterExpansionError();
+		bool dropRestOfInputLine(const List& list, std::size_t& index);
 		int execList(const List& l);
 		int execAndOr(const AndOr& a);
 		int execPipeline(const Pipeline& p);
@@ -953,9 +974,11 @@ namespace wbsh {
 		int launchBackgroundCommand(const Node& cmd);
 
 		// Pipeline element launch. Returns a process HANDLE the parent waits
-		// on, or INVALID_HANDLE_VALUE on failure.
+		// on, or INVALID_HANDLE_VALUE on failure; then launch_status_ has
+		// the element's status (127 not found, 126 cannot run, 1 otherwise).
 		HANDLE launchPipelineElement(const Node& elem,
 		                             HANDLE h_in, HANDLE h_out, HANDLE h_err);
+		int launch_status_ = 1;
 		// Fast-path branch of launchPipelineElement: try to launch `elem` as
 		// a direct external (skipping the intermediate `wbsh.exe -r -c ...`
 		// shell). Returns the spawned HANDLE on success, INVALID_HANDLE_VALUE
@@ -1056,11 +1079,12 @@ namespace wbsh {
 		SpawnPlacement spawn_placement_;
 #endif
 		int getopts_subindex_ = 1;
-		// Arenas backing every AST the executor must keep alive (e.g.
-		// those parsed via `source` / `eval` / inherited `WBSH_FUNCTIONS`
-		// evaluations) so the raw FunctionDef* pointers in `functions_`
-		// stay valid. One arena per executed parse, never freed early.
+		// Arenas of parsed text that defined functions (`source`, `eval`,
+		// inherited `WBSH_FUNCTIONS`, ...), so the raw FunctionDef* pointers
+		// in `functions_` stay valid. Text that defined none is freed once
+		// it has run; keeping every arena grew by one per `$(...)`.
 		std::vector<Arena> owned_arenas_;
+		std::size_t function_definitions_ = 0;
 		std::vector<std::vector<ScopeEntry>> scope_stack_;
 		int  last_status_ = 0;
 		// The status of the last `$(...)` since the current simple command
@@ -1073,6 +1097,9 @@ namespace wbsh {
 		int  cmdsubst_status_ = 0;
 		int  loop_depth_ = 0;
 		int  func_depth_ = 0;
+		// Set when a call went past FUNCNEST or the end of the stack; calls
+		// fail at once until the outermost function returns.
+		bool nesting_exceeded_ = false;
 		int  source_depth_ = 0;
 		std::vector<bool> compound_args_;
 		int  errexit_suppress_ = 0;

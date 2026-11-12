@@ -29,6 +29,7 @@
 #include <sys/stat.h>
 #include <vector>
 
+#include "coreutils_internal.h"
 #include "executor.h"
 #include "exitstatus.h"
 #include "interrupt.h"
@@ -257,8 +258,16 @@ namespace wbsh {
 		const std::size_t first = parseEchoFlags(args, newline, interpret);
 
 		writeStdout(echoText(args, first, newline, interpret));
-		std::fflush(stdout);
-		return 0;
+		if (std::fflush(stdout) == 0 && !std::ferror(stdout)) return 0;
+
+		// A reader that went away is SIGPIPE, which bash reports with no
+		// message; any other failure (a closed stdout) is bash's write error.
+		const int error = errno;
+		const int status = stdoutFailureStatus();
+		if (status != 1) return status;
+
+		std::fprintf(stderr, "wbsh: echo: write error: %s\n", std::strerror(error));
+		return 1;
 	}
 
 	namespace printf_detail {
@@ -1053,6 +1062,7 @@ namespace wbsh {
 		std::stringstream buffer;
 		buffer << file.rdbuf();
 		out_body = buffer.str();
+		stripUtf8Bom(out_body);
 		normalizeCrlf(out_body);
 		return true;
 	}

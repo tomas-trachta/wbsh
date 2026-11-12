@@ -72,6 +72,7 @@ namespace wbsh {
 		bool autocd         = false;
 		bool checkwinsize   = true;
 		bool promptvars     = true;
+		bool patsub_replacement = true;
 	};
 
 	struct ShoptSpec {

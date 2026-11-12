@@ -1,0 +1,3 @@
+# autowrap on, then DECAWM off overwrites the last column
+# @stress size=5x3
+abcdefgh\e[3;1H\e[?7l12345678

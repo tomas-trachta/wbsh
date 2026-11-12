@@ -50,4 +50,14 @@ namespace wbsh {
 		s.resize(write);
 	}
 
+	/**
+	 * @brief Drop a UTF-8 byte order mark at the start of script source.
+	 *
+	 * Windows editors (Notepad, PowerShell's UTF8 encoding) can write one;
+	 * bash then fails on the first command. Line numbers do not change.
+	 */
+	inline void stripUtf8Bom(std::string& s) {
+		if (s.size() >= 3 && s.compare(0, 3, "\xEF\xBB\xBF") == 0) s.erase(0, 3);
+	}
+
 }  // namespace wbsh

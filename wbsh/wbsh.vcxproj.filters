@@ -22,6 +22,7 @@
     <ClInclude Include="src\parser.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\printer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\jobcontrol.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\pipesecurity.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\procsubst.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\environment.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\expander.h"><Filter>Header Files</Filter></ClInclude>
@@ -89,6 +90,7 @@
     <ClCompile Include="src\parser.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\printer.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\jobcontrol.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\pipesecurity.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\procsubst.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\environment.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\expander.cpp"><Filter>Source Files</Filter></ClCompile>

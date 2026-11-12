@@ -1,0 +1,3 @@
+# CUP puts text at row;column, 1-based
+# @stress size=10x4
+ABC\e[3;5HX\e[1;10HZ

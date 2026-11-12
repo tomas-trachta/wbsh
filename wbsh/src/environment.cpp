@@ -111,6 +111,7 @@ namespace wbsh {
 			{ "autocd",         &ShoptFlags::autocd },
 			{ "checkwinsize",   &ShoptFlags::checkwinsize },
 			{ "promptvars",     &ShoptFlags::promptvars },
+			{ "patsub_replacement", &ShoptFlags::patsub_replacement },
 		};
 
 		return table;

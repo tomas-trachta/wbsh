@@ -1,0 +1,44 @@
+wbsh: p 2: syntax error in expression (error token is "2")
+2 next line
+3 1
+wbsh: p 2: syntax error in expression (error token is "2")
+4
+wbsh: p 2: syntax error in expression (error token is "2")
+5 (( )) status 1
+wbsh: let: p 2: syntax error in expression (error token is "2")
+6 let status 1
+7 [[ ]] status 1
+8 in f
+wbsh: p 2: syntax error in expression (error token is "2")
+9
+wbsh: p 2: syntax error in expression (error token is "2")
+10 next eval line
+10 after eval 0
+wbsh: p 2: syntax error in expression (error token is "2")
+11 subshell 1
+wbsh: p 2: syntax error in expression (error token is "2")
+12 substitution [] 1
+wbsh: p 2: syntax error in expression (error token is "2")
+13 after pipe
+wbsh: p 2: syntax error in expression (error token is "2")
+14 next sourced line
+14 after source 0
+wbsh: p 2: syntax error in expression (error token is "2")
+wbsh: p 2: syntax error in expression (error token is "2")
+16 next
+wbsh: ${x!}: bad substitution
+17 next
+wbsh: p 2: syntax error in expression (error token is "2")
+18 next
+wbsh: p 2: syntax error in expression (error token is "2")
+19 next
+wbsh: p 2: syntax error in expression (error token is "2")
+20 utility here-string: line goes on
+wbsh: p 2: syntax error in expression (error token is "2")
+21 utility redirection: line goes on
+wbsh: p 2: syntax error in expression (error token is "2")
+22 next
+wbsh: p 2: syntax error in expression (error token is "2")
+end
+wbsh: p 2: syntax error in expression (error token is "2")
+24 status 1

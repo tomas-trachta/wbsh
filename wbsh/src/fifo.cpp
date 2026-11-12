@@ -20,6 +20,7 @@
 
 #include "interrupt.h"
 #include "pathconv.h"
+#include "pipesecurity.h"
 
 namespace wbsh {
 
@@ -122,7 +123,8 @@ namespace wbsh {
 		const DWORD mode = PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT
 			| PIPE_REJECT_REMOTE_CLIENTS;
 		return ::CreateNamedPipeW(name.c_str(), PIPE_ACCESS_INBOUND, mode,
-			PIPE_UNLIMITED_INSTANCES, kPipeBufferBytes, kPipeBufferBytes, 0, nullptr);
+			PIPE_UNLIMITED_INSTANCES, kPipeBufferBytes, kPipeBufferBytes, 0,
+			currentUserPipeSecurity());
 	}
 
 	// ConnectNamedPipe would block past Ctrl+C or a keeper's closing, so

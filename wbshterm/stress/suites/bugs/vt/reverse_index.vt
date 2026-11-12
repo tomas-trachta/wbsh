@@ -1,0 +1,3 @@
+# RI at the top row scrolls down
+# @stress size=3x3
+a\r\nb\r\nc\e[1;1H\eM

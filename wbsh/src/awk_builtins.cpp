@@ -112,6 +112,38 @@ namespace wbsh {
 			return 1;
 		}
 
+		// Strings are UTF-8, and length, substr, index and match count
+		// characters, as gawk does in a UTF-8 locale and as wc -m does here.
+		// A byte that starts no valid sequence is one character.
+		static std::size_t nextCharStart(const std::string& text, std::size_t at) {
+			const auto lead = static_cast<unsigned char>(text[at]);
+			std::size_t size = 1;
+			if (lead >= 0xC2 && lead <= 0xDF) size = 2;
+			else if (lead >= 0xE0 && lead <= 0xEF) size = 3;
+			else if (lead >= 0xF0 && lead <= 0xF4) size = 4;
+			if (at + size > text.size()) return at + 1;
+
+			for (std::size_t i = 1; i < size; ++i) {
+				const auto next = static_cast<unsigned char>(text[at + i]);
+				if ((next & 0xC0) != 0x80) return at + 1;
+			}
+
+			return at + size;
+		}
+
+		static std::size_t charCount(const std::string& text, std::size_t from, std::size_t to) {
+			std::size_t count = 0;
+			for (std::size_t at = from; at < to; at = nextCharStart(text, at)) ++count;
+			return count;
+		}
+
+		// The byte offset of character @p index (0-based), or text.size().
+		static std::size_t byteOfChar(const std::string& text, long long index) {
+			std::size_t at = 0;
+			for (long long i = 0; i < index && at < text.size(); ++i) at = nextCharStart(text, at);
+			return at;
+		}
+
 		std::string Interpreter::argText(Expr& call, std::size_t index) {
 			if (index >= call.args.size()) return std::string();
 			return text(eval(*call.args[index]));
@@ -128,7 +160,9 @@ namespace wbsh {
 		}
 
 		AwkValue Interpreter::callLength(Expr& call) {
-			if (call.args.empty()) return AwkValue::num(static_cast<double>(record.size()));
+			if (call.args.empty()) {
+				return AwkValue::num(static_cast<double>(charCount(record, 0, record.size())));
+			}
 
 			Expr& arg = *call.args[0];
 			if (arg.kind == ExprKind::Var) {
@@ -138,12 +172,13 @@ namespace wbsh {
 				}
 			}
 
-			return AwkValue::num(static_cast<double>(argText(call, 0).size()));
+			const std::string value = argText(call, 0);
+			return AwkValue::num(static_cast<double>(charCount(value, 0, value.size())));
 		}
 
 		AwkValue Interpreter::callSubstr(Expr& call) {
 			const std::string source = argText(call, 0);
-			const auto source_size = static_cast<long long>(source.size());
+			const auto source_size = static_cast<long long>(charCount(source, 0, source.size()));
 
 			long long start = static_cast<long long>(argNumber(call, 1));
 			long long length = (call.args.size() >= 3)
@@ -153,9 +188,10 @@ namespace wbsh {
 
 			if (start > source_size || length <= 0) return AwkValue::str("");
 
-			const long long available = source_size - start + 1;
-			return AwkValue::str(source.substr(static_cast<std::size_t>(start - 1),
-				static_cast<std::size_t>(std::min<long long>(length, available))));
+			const long long taken = std::min<long long>(length, source_size - start + 1);
+			const std::size_t first = byteOfChar(source, start - 1);
+			const std::size_t last = byteOfChar(source, start - 1 + taken);
+			return AwkValue::str(source.substr(first, last - first));
 		}
 
 		AwkValue Interpreter::callIndex(Expr& call) {
@@ -163,7 +199,7 @@ namespace wbsh {
 			const std::string needle = argText(call, 1);
 			const std::size_t found = haystack.find(needle);
 			if (found == std::string::npos) return AwkValue::num(0);
-			return AwkValue::num(static_cast<double>(found + 1));
+			return AwkValue::num(static_cast<double>(charCount(haystack, 0, found) + 1));
 		}
 
 		AwkValue Interpreter::callCaseConvert(Expr& call) {
@@ -243,9 +279,10 @@ namespace wbsh {
 				return AwkValue::num(0);
 			}
 
-			const auto start = static_cast<double>(found + 1);
+			const auto start = static_cast<double>(charCount(subject, 0, found) + 1);
+			const auto chars = static_cast<double>(charCount(subject, found, found + length));
 			setGlobal(kRSTART, AwkValue::num(start));
-			setGlobal(kRLENGTH, AwkValue::num(static_cast<double>(length)));
+			setGlobal(kRLENGTH, AwkValue::num(chars));
 			return AwkValue::num(start);
 		}
 

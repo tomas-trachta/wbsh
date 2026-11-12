@@ -1,0 +1,3 @@
+# ICH and DCH
+# @stress size=8x2
+abcdef\e[1;3H\e[2@\e[2;1Hxyz123\e[2;2H\e[2P

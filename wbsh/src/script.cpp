@@ -359,6 +359,19 @@ namespace wbsh {
 		for (const auto& e : parser.errors()) printDiagnostic(colors, "parse error", e.loc, e.message);
 	}
 
+	// A script that runs reports its syntax errors as bash does, by script
+	// name and line; the dump modes keep line:column for whoever reads them.
+	static void printRunSyntaxErrors(const Lexer& lex, const Parser& parser,
+	                                 const ScriptRun& run) {
+		const std::string where = run.from_file ? run.script_name + ": " : std::string();
+		const auto report = [&where](const SourceLoc& loc, const std::string& message) {
+			std::cerr << "wbsh: " << where << "line " << loc.line << ": " << message << "\n";
+		};
+
+		for (const auto& e : lex.errors()) report(e.loc, e.message);
+		for (const auto& e : parser.errors()) report(e.loc, e.message);
+	}
+
 	static bool hasSyntaxErrors(const Lexer& lex, const Parser& parser) {
 		return !lex.errors().empty() || !parser.errors().empty();
 	}
@@ -381,7 +394,7 @@ namespace wbsh {
 		truncateAtSyntaxError(*root, parser, error_offset);
 		int status = exec.executeInput(*root, run.source);
 		if (!exec.consumeFlow(FlowSignal::Kind::Exit, &status) && hasSyntaxErrors(lex, parser)) {
-			printSyntaxErrors(lex, parser);
+			printRunSyntaxErrors(lex, parser, run);
 			status = kSyntaxErrorStatus;
 		}
 

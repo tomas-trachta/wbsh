@@ -1,0 +1,3 @@
+# 1049 saves the cursor, and leaving it restores the main screen
+# @stress size=8x2
+main\e[?1049halt text\e[?1049l!

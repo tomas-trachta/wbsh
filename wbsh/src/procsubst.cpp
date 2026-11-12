@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "pathconv.h"
+#include "pipesecurity.h"
 
 namespace wbsh::procsubst_detail {
 
@@ -76,7 +77,7 @@ namespace wbsh::procsubst_detail {
 
 		auto instance = std::make_unique<Instance>();
 		instance->pipe = ::CreateNamedPipeW(relay.name.c_str(), access, mode,
-			PIPE_UNLIMITED_INSTANCES, 0, 0, 0, nullptr);
+			PIPE_UNLIMITED_INSTANCES, 0, 0, 0, currentUserPipeSecurity());
 		if (instance->pipe == INVALID_HANDLE_VALUE) return nullptr;
 
 		instance->event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);

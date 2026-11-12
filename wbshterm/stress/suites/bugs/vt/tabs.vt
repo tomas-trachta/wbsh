@@ -1,0 +1,3 @@
+# default tab stops every 8 columns; TBC 3 clears them all
+# @stress size=20x2
+a\tb\tc\r\n\e[3gx\ty

@@ -506,12 +506,18 @@ namespace wbsh {
 		return (a.begin < a.end) - (b.begin < b.end);
 	}
 
+	// The digits stay where they are in the line: a numeric key sort parses
+	// two numbers per comparison, and copying them cost an allocation each.
 	struct SortNumber {
 		bool negative = false;
-		std::string whole;
-		std::string fraction;
+		Span whole{ nullptr, nullptr };
+		Span fraction{ nullptr, nullptr };
 		const char* end = nullptr;
 	};
+
+	static std::size_t spanSize(Span span) {
+		return static_cast<std::size_t>(span.end - span.begin);
+	}
 
 	static SortNumber parseSortNumber(Span span) {
 		SortNumber number;
@@ -522,27 +528,40 @@ namespace wbsh {
 		}
 
 		while (p < span.end && *p == '0') ++p;
-		while (p < span.end && isSortDigit(*p)) number.whole.push_back(*p++);
+		number.whole.begin = p;
+		while (p < span.end && isSortDigit(*p)) ++p;
+		number.whole.end = p;
+		number.fraction = { p, p };
 		if (p < span.end && *p == '.') {
-			++p;
-			while (p < span.end && isSortDigit(*p)) number.fraction.push_back(*p++);
+			number.fraction.begin = ++p;
+			while (p < span.end && isSortDigit(*p)) ++p;
+			number.fraction.end = p;
 		}
 
-		std::string& fraction = number.fraction;
-		while (!fraction.empty() && fraction.back() == '0') fraction.pop_back();
-		if (number.whole.empty() && number.fraction.empty()) number.negative = false;
+		Span& fraction = number.fraction;
+		while (fraction.end > fraction.begin && fraction.end[-1] == '0') --fraction.end;
+		if (spanSize(number.whole) == 0 && spanSize(fraction) == 0) number.negative = false;
 		number.end = p;
 		return number;
 	}
 
+	// As std::string::compare: byte by byte, then the shorter first.
+	static int compareDigits(Span a, Span b) {
+		const std::size_t common = (std::min)(spanSize(a), spanSize(b));
+		const int diff = common == 0 ? 0 : std::memcmp(a.begin, b.begin, common);
+		if (diff != 0) return diff < 0 ? -1 : 1;
+		if (spanSize(a) == spanSize(b)) return 0;
+		return spanSize(a) < spanSize(b) ? -1 : 1;
+	}
+
 	static int compareMagnitude(const SortNumber& a, const SortNumber& b) {
-		if (a.whole.size() != b.whole.size()) return a.whole.size() < b.whole.size() ? -1 : 1;
+		const std::size_t wa = spanSize(a.whole);
+		const std::size_t wb = spanSize(b.whole);
+		if (wa != wb) return wa < wb ? -1 : 1;
 
-		const int whole = a.whole.compare(b.whole);
-		if (whole != 0) return whole < 0 ? -1 : 1;
-
-		const int fraction = a.fraction.compare(b.fraction);
-		return fraction < 0 ? -1 : fraction > 0 ? 1 : 0;
+		const int whole = compareDigits(a.whole, b.whole);
+		if (whole != 0) return whole;
+		return compareDigits(a.fraction, b.fraction);
 	}
 
 	static int compareSortNumbers(const SortNumber& a, const SortNumber& b) {
@@ -553,7 +572,7 @@ namespace wbsh {
 	}
 
 	static int humanUnitOrder(const SortNumber& number, Span span) {
-		if (number.whole.empty() && number.fraction.empty()) return 0;
+		if (spanSize(number.whole) == 0 && spanSize(number.fraction) == 0) return 0;
 		if (number.end >= span.end) return 0;
 
 		const char unit = *number.end == 'k' ? 'K' : *number.end;
@@ -742,8 +761,10 @@ namespace wbsh {
 		return compareBytes(a, b);
 	}
 
-	static int compareKeys(const std::string& a, const std::string& b, const SortOptions& options) {
-		for (const Key& key : options.keys) {
+	static int compareKeysFrom(const std::string& a, const std::string& b,
+			const SortOptions& options, std::size_t first) {
+		for (std::size_t k = first; k < options.keys.size(); ++k) {
+			const Key& key = options.keys[k];
 			const Span sa = keySpan(a, key, options.tab);
 			const Span sb = keySpan(b, key, options.tab);
 			const int diff = compareKeySpans(sa, sb, key);
@@ -753,17 +774,46 @@ namespace wbsh {
 		return 0;
 	}
 
-	static int compareLines(const std::string& a, const std::string& b,
+	// The last-resort comparison of the whole lines.
+	static int compareWhole(const std::string& a, const std::string& b,
 			const SortOptions& options) {
-		if (!options.keys.empty()) {
-			const int diff = compareKeys(a, b, options);
-			if (diff != 0 || options.unique || options.stable) return diff;
-		}
-
 		const Span sa{ a.data(), a.data() + a.size() };
 		const Span sb{ b.data(), b.data() + b.size() };
 		const int diff = compareBytes(sa, sb);
 		return options.global.reverse ? -diff : diff;
+	}
+
+	static int compareLines(const std::string& a, const std::string& b,
+			const SortOptions& options) {
+		if (!options.keys.empty()) {
+			const int diff = compareKeysFrom(a, b, options, 0);
+			if (diff != 0 || options.unique || options.stable) return diff;
+		}
+
+		return compareWhole(a, b, options);
+	}
+
+	// A line with its first key found (and for -n parsed) once: the sort
+	// compares each line many times, and finding a key far into the line
+	// each time was most of the cost of a keyed sort.
+	struct SortRecord {
+		std::string* line;
+		Span first_key;
+		SortNumber first_number;
+	};
+
+	static int compareRecords(const SortRecord& a, const SortRecord& b,
+			const SortOptions& options) {
+		if (options.keys.empty()) return compareWhole(*a.line, *b.line, options);
+
+		const Key& key = options.keys[0];
+		int diff = key.numeric ? compareSortNumbers(a.first_number, b.first_number)
+			: compareKeySpans(a.first_key, b.first_key, key);
+		if (diff != 0) return key.reverse ? -diff : diff;
+
+		diff = compareKeysFrom(*a.line, *b.line, options, 1);
+		if (diff != 0 || options.unique || options.stable) return diff;
+		return compareWhole(*a.line, *b.line, options);
 	}
 
 	static void readSortRecords(FILE* stream, char terminator, std::vector<std::string>& lines) {
@@ -814,17 +864,33 @@ namespace wbsh {
 		return 0;
 	}
 
+	// Sorts small records, not the lines: a record moves for the price of
+	// two pointers, and it keeps the first key found.
 	static void sortAndUnique(std::vector<std::string>& lines, const SortOptions& options) {
-		auto before = [&](const std::string& a, const std::string& b) {
-			return compareLines(a, b, options) < 0;
-		};
-		std::stable_sort(lines.begin(), lines.end(), before);
-		if (!options.unique) return;
+		std::vector<SortRecord> records;
+		records.reserve(lines.size());
+		const bool numeric = !options.keys.empty() && options.keys[0].numeric;
+		for (std::string& line : lines) {
+			const Span first = options.keys.empty() ? Span{ nullptr, nullptr }
+				: keySpan(line, options.keys[0], options.tab);
+			records.push_back({ &line, first, numeric ? parseSortNumber(first) : SortNumber{} });
+		}
 
-		auto same = [&](const std::string& a, const std::string& b) {
-			return compareLines(a, b, options) == 0;
+		auto before = [&](const SortRecord& a, const SortRecord& b) {
+			return compareRecords(a, b, options) < 0;
 		};
-		lines.erase(std::unique(lines.begin(), lines.end(), same), lines.end());
+		std::stable_sort(records.begin(), records.end(), before);
+		if (options.unique) {
+			auto same = [&](const SortRecord& a, const SortRecord& b) {
+				return compareRecords(a, b, options) == 0;
+			};
+			records.erase(std::unique(records.begin(), records.end(), same), records.end());
+		}
+
+		std::vector<std::string> sorted;
+		sorted.reserve(records.size());
+		for (const SortRecord& record : records) sorted.push_back(std::move(*record.line));
+		lines.swap(sorted);
 	}
 
 	static bool writeSortOutput(Executor& exec, const std::vector<std::string>& lines,
@@ -834,10 +900,23 @@ namespace wbsh {
 			return sortFail("open failed: " + options.output + ": " + std::strerror(errno));
 		}
 
+		// Whole blocks, not one write per line: the CRT does not buffer a
+		// stream that points at NUL (it counts as a character device).
+		constexpr std::size_t kBlock = 64 * 1024;
+		std::string block;
+		block.reserve(kBlock + 256);
 		for (const std::string& line : lines) {
-			std::fwrite(line.data(), 1, line.size(), out);
-			std::fputc(options.terminator, out);
+			block.append(line);
+			block.push_back(options.terminator);
+			if (block.size() < kBlock) continue;
+
+			std::fwrite(block.data(), 1, block.size(), out);
+			block.clear();
 			if (std::ferror(out) != 0) break;
+		}
+
+		if (!block.empty() && std::ferror(out) == 0) {
+			std::fwrite(block.data(), 1, block.size(), out);
 		}
 
 		if (out != stdout) std::fclose(out);

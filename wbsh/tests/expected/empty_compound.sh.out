@@ -1,0 +1,16 @@
+=== empty lists are syntax errors
+[if then fi] status 2
+[if true; then fi] status 2
+[if true; then :; elif then :; fi] status 2
+[if true; then :; else fi] status 2
+[while do done] status 2
+[until false; do done] status 2
+[for x in a; do done] status 2
+[{ }] status 2
+[( )] status 2
+[f() { }] status 2
+=== non-empty lists and empty case items still work
+[if true; then :; fi] status 0
+[while false; do :; done] status 0
+[case x in x) ;; esac] status 0
+[{ :; }] status 0

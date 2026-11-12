@@ -1,0 +1,34 @@
+=== metacharacters stay inside the argument
+1=["a&echo INJECTED"]
+2=[second]
+1=["a|echo INJECTED"]
+2=[second]
+1=["x>made.txt"]
+2=[second]
+no file made
+=== a quote cannot end the quoting
+1=["""&echo INJECTED&"""]
+2=[second]
+1=["a\\""&echo INJECTED"]
+2=[second]
+1=[""""]
+2=[second]
+=== percent signs are not expanded
+1=["%OS%"]
+2=["100%"]
+=== backslashes, empty and spaced arguments
+1=[a\]
+2=[C:\dir\]
+1=[""]
+2=["a b"]
+=== ./x.cmd and a PATH lookup both run
+1=[one]
+2=[]
+1=[two]
+2=[]
+=== a plain word passes as it is, as batch idioms expect
+installing
+other
+=== a line break is refused
+wbsh: ./show.bat: an argument with a line break cannot be passed to a batch file
+status 126

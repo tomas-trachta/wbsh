@@ -41,6 +41,7 @@
 #include <utility>
 #include <vector>
 
+#include "coreutils_internal.h"
 #include "devices.h"
 #include "exitstatus.h"
 #include "fifo.h"
@@ -48,6 +49,7 @@
 #include "jobcontrol.h"
 #include "keymap.h"
 #include "lexer.h"
+#include "man_pages.h"
 #include "numparse.h"
 #include "parser.h"
 #include "posixregex.h"
@@ -62,6 +64,8 @@ namespace wbsh {
 	using NameValueList = std::vector<std::pair<std::string, std::string>>;
 
 	static const int kStatusCommandNotFound = 127;
+	static const int kStatusCannotExecute = 126;
+	static const std::size_t kStackReserveMargin = 1024 * 1024;
 	static const int kStatusInterrupted = 130;
 	static const int kStatusStopped = 148;
 	static const int kStatusHangup = 129;
@@ -85,7 +89,7 @@ namespace wbsh {
 		"\\cygwin64\\",
 	};
 
-	static const char* const kExecutableExtensions[] = { ".exe", ".cmd", ".bat", "" };
+	static const char* const kExecutableExtensions[] = { ".exe", ".cmd", ".bat", ".com", "" };
 
 	namespace executor_detail {
 #ifdef _WIN32
@@ -99,6 +103,7 @@ namespace wbsh {
 			std::wstring exe;
 			std::wstring cmdline;
 			std::wstring envblock;
+			std::string  error;
 		};
 
 		struct SelfSpawnLine {
@@ -131,8 +136,12 @@ namespace wbsh {
 	using executor_detail::StdioHandles;
 #endif
 
-	static void reportExpanderError(Expander& expander) {
+	// As in bash, an expansion error drops the rest of the input line (see
+	// execNode); arithmetic that a command evaluates itself, as (( )) does,
+	// only fails that command.
+	static void reportExpanderError(Expander& expander, bool drops_line = true) {
 		std::fprintf(stderr, "wbsh: %s\n", expander.takeError().c_str());
+		if (drops_line) expander.dropRestOfLine();
 	}
 
 	static void reportPathError(const std::string& path) {
@@ -331,10 +340,75 @@ namespace wbsh {
 		return std::wstring(system_dir, length) + L"\\cmd.exe";
 	}
 
-	static std::wstring wrapWithCmdExe(const std::wstring& cmdline) {
-		std::wstring cmd = cmdExePath();
-		if (cmd.find(L' ') != std::wstring::npos) cmd = L"\"" + cmd + L"\"";
-		return cmd + L" /d /s /c \"" + cmdline + L"\"";
+	// cmd.exe parses the command line of a batch file itself and knows no
+	// backslash escapes, so a `"` inside an argument would end the quotes and
+	// let & | < > run commands (CVE-2024-24576). An argument with any
+	// character cmd.exe reads as syntax is quoted, `"` is doubled and `%`
+	// becomes `%%cd:~,%`, which cmd.exe expands to a lone `%`. Backslashes
+	// before a quote are doubled as for the C runtime, which parses the
+	// argument again when the script passes it on. A line break cannot be
+	// quoted for cmd.exe at all.
+	static bool appendBatchArg(std::wstring& out, const std::wstring& arg) {
+		// A plain word goes as it is, so `if "%1"=="install"` in the script
+		// still works; anything cmd.exe could read as syntax is quoted.
+		static const wchar_t kNeedsQuotes[] = L" \t\"&()[]{}^=;!'+,`~%|<>";
+		if (!arg.empty() && arg.find_first_of(kNeedsQuotes) == std::wstring::npos) {
+			if (arg.find_first_of(L"\r\n") != std::wstring::npos) return false;
+			out += arg;
+			return true;
+		}
+
+		out.push_back(L'"');
+		std::size_t backslashes = 0;
+		for (wchar_t c : arg) {
+			if (c == L'\r' || c == L'\n' || c == L'\0') return false;
+			if (c == L'\\') {
+				++backslashes;
+				continue;
+			}
+
+			out.append(c == L'"' ? backslashes * 2 : backslashes, L'\\');
+			backslashes = 0;
+			if (c == L'"') {
+				out += L"\"\"";
+			} else if (c == L'%') {
+				out += L"%%cd:~,%";
+			} else {
+				out.push_back(c);
+			}
+		}
+
+		out.append(backslashes * 2, L'\\');
+		out.push_back(L'"');
+		return true;
+	}
+
+	static std::wstring fullWindowsPath(const std::string& path) {
+		const std::wstring wide = utf8ToWide(path);
+		const DWORD needed = ::GetFullPathNameW(wide.c_str(), 0, nullptr, nullptr);
+		if (needed == 0) return wide;
+
+		std::wstring full(needed, L'\0');
+		const DWORD length = ::GetFullPathNameW(wide.c_str(), needed, full.data(), nullptr);
+		full.resize(length < needed ? length : 0);
+		return full.empty() ? wide : full;
+	}
+
+	// The script goes by its full Windows path: cmd.exe reads `./x.bat` as
+	// the command `.`.
+	static bool buildBatchCommandLine(const std::vector<std::string>& argv,
+	                                  const std::string& exec_path, std::wstring& out) {
+		std::wstring line = L"\"" + cmdExePath() + L"\" /e:on /v:off /d /s /c \"";
+		if (!appendBatchArg(line, fullWindowsPath(exec_path))) return false;
+
+		for (std::size_t i = 1; i < argv.size(); ++i) {
+			line.push_back(L' ');
+			if (!appendBatchArg(line, utf8ToWide(argv[i]))) return false;
+		}
+
+		line.push_back(L'"');
+		out = std::move(line);
+		return true;
 	}
 
 	static std::vector<EnvEntry> envEntries(const Environment& env, bool include_unexported) {
@@ -672,11 +746,20 @@ namespace wbsh {
 		command.cmdline  = buildCommandLine(argv);
 		command.envblock = std::move(envblock);
 		if (isBatchFile(exec_path)) {
-			command.cmdline = wrapWithCmdExe(command.cmdline);
-			command.exe     = cmdExePath();
+			command.exe = cmdExePath();
+			if (!buildBatchCommandLine(argv, exec_path, command.cmdline)) {
+				command.error = "an argument with a line break cannot be passed to a batch file";
+			}
 		}
 
 		return command;
+	}
+
+	static bool reportSpawnCommandError(const SpawnCommand& command, const std::string& name) {
+		if (command.error.empty()) return false;
+
+		std::fprintf(stderr, "wbsh: %s: %s\n", name.c_str(), command.error.c_str());
+		return true;
 	}
 #endif  // _WIN32
 
@@ -740,6 +823,7 @@ namespace wbsh {
 		releaseProcessSubstitutionsSince(proc_substs);
 		if (tracks_line) env_.setCurrentLineno(static_cast<int>(node.loc.line));
 		exitOnFatalExpansionError();
+		discardAfterExpansionError();
 		return status;
 	}
 
@@ -756,6 +840,15 @@ namespace wbsh {
 		if (env_.interactive() || flowPending()) return;
 
 		raiseExit(1);
+	}
+
+	// bash stops the whole command after an expansion error: the rest of
+	// the input line, out of loops and functions. The input list drops the
+	// line; a subshell, `$(...)` or trap action ends with status 1.
+	void Executor::discardAfterExpansionError() {
+		if (!expander_.takeDropLine() || flowPending()) return;
+
+		raiseDiscard();
 	}
 
 	int Executor::dispatchNode(const Node& node) {
@@ -950,15 +1043,36 @@ namespace wbsh {
 #else
 			status = execNode(*item.command);
 #endif
+			// As in bash, a line dropped after an expansion error neither
+			// fires the ERR trap nor ends the shell under set -e.
+			const bool dropped = dropRestOfInputLine(list, index);
+			if (dropped) status = 1;
 			if (flowPending()) return status;
 			setLastStatus(status);
 			handlePendingSignals();
 			if (flowPending()) return status;
 
-			if (!item.background && handleCommandFailure(status)) return status;
+			if (!dropped && !item.background && handleCommandFailure(status)) return status;
 		}
 
 		return status;
+	}
+
+	static std::size_t inputReadThrough(const List& list, std::size_t index,
+			const std::string& text);
+
+	// The input list takes a Discard: it skips the other items that start
+	// before the end of the line, as bash had read them with this one.
+	bool Executor::dropRestOfInputLine(const List& list, std::size_t& index) {
+		if (&list != input_echo_.list || !consumeFlow(FlowSignal::Kind::Discard)) return false;
+
+		const std::size_t line_end = inputReadThrough(list, index, *input_echo_.text);
+		while (index + 1 < list.items.size()
+				&& list.items[index + 1].command->loc.offset < line_end) {
+			++index;
+		}
+
+		return true;
 	}
 
 	// True when the shell must stop: the ERR trap left a flow signal, or
@@ -991,23 +1105,41 @@ namespace wbsh {
 		env_.setIndexedArrayFromList("PIPESTATUS", std::move(values));
 	}
 
+	// `a && b || c` parses as a tree that leans left: ((a && b) || c). A
+	// loop over its links, not a call per level, keeps a chain of many
+	// thousand stages off the stack. As before, set -e ignores every stage
+	// but the last.
 	int Executor::execAndOr(const AndOr& and_or) {
-		pushErrexitSuppress();
-		const int left = execNode(*and_or.left);
-		popErrexitSuppress();
-		if (flowPending()) return left;
-		setLastStatus(left);
-
-		const bool short_circuit = (and_or.op == AndOr::Op::AndIf) ? (left != 0) : (left == 0);
-		if (short_circuit) {
-			status_judged_ = true;
-			return left;
+		std::vector<const AndOr*> links;
+		const Node* first = &and_or;
+		while (first->kind == Node::Kind::AndOr) {
+			links.push_back(static_cast<const AndOr*>(first));
+			first = links.back()->left;
 		}
 
-		const int right = execNode(*and_or.right);
-		if (flowPending()) return right;
-		setLastStatus(right);
-		return right;
+		pushErrexitSuppress();
+		int status = execNode(*first);
+		popErrexitSuppress();
+		if (flowPending()) return status;
+		setLastStatus(status);
+
+		for (std::size_t k = links.size(); k-- > 0;) {
+			const AndOr& link = *links[k];
+			const bool skip = (link.op == AndOr::Op::AndIf) ? (status != 0) : (status == 0);
+			if (skip) {
+				status_judged_ = true;
+				continue;
+			}
+
+			const bool last = k == 0;
+			if (!last) pushErrexitSuppress();
+			status = execNode(*link.right);
+			if (!last) popErrexitSuppress();
+			if (flowPending()) return status;
+			setLastStatus(status);
+		}
+
+		return status;
 	}
 
 	namespace executor_detail {
@@ -1123,18 +1255,28 @@ namespace wbsh {
 		std::fflush(stderr);
 		const StdioHandles outer = currentStdio();
 
+		// As in bash, an element that cannot start (not found, a failed
+		// expansion) gets its own status and the others still run, so
+		// `nosuchcmd | cat` gives PIPESTATUS 127 0.
 		const HANDLE group = startForegroundGroup();
 		std::vector<HANDLE> processes;
+		std::vector<std::size_t> process_stage;
+		std::vector<int> stage_status(count, 1);
 		processes.reserve(count);
 		for (std::size_t i = 0; i < count; ++i) {
 			const Node& stage = *pipeline.commands[i];
 			if (stage.kind == Node::Kind::SimpleCommand) announceNode(stage);
 			const StdioHandles stdio = pipelineStageStdio(pipeline, i, pipe_r, pipe_w, outer);
+			launch_status_ = 1;
 			const HANDLE process = launchPipelineElement(*pipeline.commands[i],
 				stdio.in, stdio.out, stdio.err);
-			if (process == INVALID_HANDLE_VALUE) break;
+			if (process == INVALID_HANDLE_VALUE) {
+				stage_status[i] = launch_status_;
+			} else {
+				processes.push_back(process);
+				process_stage.push_back(i);
+			}
 
-			processes.push_back(process);
 			if (flowPending()) break;
 		}
 
@@ -1146,12 +1288,13 @@ namespace wbsh {
 			nodeSourceSlice(pipeline, source_text_), statuses);
 		if (foreground == kStatusStopped) return foreground;
 
-		const int status = pipelineStatus(statuses, env_.pipefail());
-		statuses.resize(count, 1);
-		setPipeStatus(statuses);
+		for (std::size_t k = 0; k < statuses.size(); ++k) {
+			stage_status[process_stage[k]] = statuses[k];
+		}
+
+		setPipeStatus(stage_status);
 		status_judged_ = false;
-		if (processes.size() < count) return 1;
-		return status;
+		return pipelineStatus(stage_status, env_.pipefail());
 	}
 #endif  // _WIN32
 
@@ -1184,7 +1327,8 @@ namespace wbsh {
 		for (const auto& word : words) {
 			std::vector<std::string> fields = expander.expandWord(word);
 			if (expander.failed()) {
-				reportExpanderError(expander);
+				// In bash the element's own process expands its words.
+				reportExpanderError(expander, /*drops_line=*/false);
 				return false;
 			}
 
@@ -1246,6 +1390,15 @@ namespace wbsh {
 		return true;
 	}
 
+	// A <(...) path names a pipe, not a program. Opening it to look for a
+	// script line would take the reader's place, so it is refused first,
+	// with Git Bash's message and status for /dev/fd/63.
+	static bool refusePipeCommand(const std::string& name) {
+		const bool pipe = name.rfind("\\\\.\\pipe\\", 0) == 0 || name.rfind("//./pipe/", 0) == 0;
+		if (pipe) std::fprintf(stderr, "wbsh: %s: No such file or directory\n", name.c_str());
+		return pipe;
+	}
+
 	HANDLE Executor::tryDirectExternalLaunch(const Node& elem,
 	                                         HANDLE h_in, HANDLE h_out, HANDLE h_err,
 	                                         bool* tried) {
@@ -1261,6 +1414,7 @@ namespace wbsh {
 		std::vector<std::string> argv;
 		if (!expandWordsForDirectLaunch(expander_, command.words, argv)) {
 			*tried = true;
+			launch_status_ = 1;
 			return INVALID_HANDLE_VALUE;
 		}
 
@@ -1269,9 +1423,17 @@ namespace wbsh {
 			return INVALID_HANDLE_VALUE;
 		}
 
+		if (refusePipeCommand(argv[0])) {
+			launch_status_ = kStatusCommandNotFound;
+			*tried = true;
+			return INVALID_HANDLE_VALUE;
+		}
+
 		const std::string exec_path = findExecutable(argv[0]);
 		if (exec_path.empty()) {
-			reportCommandNotFound(argv[0]);
+			const bool directory = reportDirectoryCommand(argv[0]);
+			if (!directory) reportCommandNotFound(argv[0]);
+			launch_status_ = directory ? kStatusCannotExecute : kStatusCommandNotFound;
 			*tried = true;
 			return INVALID_HANDLE_VALUE;
 		}
@@ -1279,7 +1441,9 @@ namespace wbsh {
 		if (looksLikeShellScript(exec_path)) return INVALID_HANDLE_VALUE;
 
 		*tried = true;
-		return launchExternalDirect(command, argv, exec_path, h_in, h_out, h_err);
+		const HANDLE process = launchExternalDirect(command, argv, exec_path, h_in, h_out, h_err);
+		if (process == INVALID_HANDLE_VALUE) launch_status_ = kStatusCannotExecute;
+		return process;
 	}
 
 	static std::vector<std::string> unexportedNames(const Environment& env) {
@@ -1686,7 +1850,7 @@ namespace wbsh {
 
 		const std::string exec_path = findExecutable(argv[0]);
 		if (exec_path.empty()) {
-			reportCommandNotFound(argv[0]);
+			if (!reportDirectoryCommand(argv[0])) reportCommandNotFound(argv[0]);
 			return INVALID_HANDLE_VALUE;
 		}
 
@@ -1696,6 +1860,8 @@ namespace wbsh {
 		SpawnCommand command = makeSpawnCommand(
 			prepareExternalArgv(argv, exec_path, no_assignments), exec_path,
 			buildEnvBlock(env_, prepareExternalEnvOverrides(no_assignments)));
+		if (reportSpawnCommandError(command, argv[0])) return INVALID_HANDLE_VALUE;
+
 		return spawnWithHandles(command, currentStdio(), placement);
 	}
 
@@ -1755,7 +1921,7 @@ namespace wbsh {
 		for (const auto& assignment : assignments) {
 			std::string value = expander.expandAssignmentValue(assignment.value);
 			if (expander.failed()) {
-				reportExpanderError(expander);
+				reportExpanderError(expander, /*drops_line=*/false);
 				continue;
 			}
 
@@ -1775,6 +1941,8 @@ namespace wbsh {
 
 		SpawnCommand command = makeSpawnCommand(child_argv, exec_path,
 			buildEnvBlock(env_, overrides));
+		if (reportSpawnCommandError(command, argv[0])) return INVALID_HANDLE_VALUE;
+
 		return spawnWithHandles(command, StdioHandles{ h_in, h_out, h_err },
 			backgroundPlacement());
 	}
@@ -1816,6 +1984,10 @@ namespace wbsh {
 		if (target == 1) std::clearerr(stdout);
 	}
 
+	static void afterRepointing(int target) {
+		if (target == 1) bufferStdoutForNul();
+	}
+
 	// The opened fd can already be `target` when target was closed.
 	static void moveFdTo(int fd, int target) {
 		if (fd == target) return;
@@ -1823,6 +1995,7 @@ namespace wbsh {
 		beforeRepointing(target);
 		_dup2(fd, target);
 		_close(fd);
+		afterRepointing(target);
 	}
 
 	// A backup of -1 records that @p fd was closed, so undoing closes it.
@@ -1927,6 +2100,25 @@ namespace wbsh {
 		return (flags & (_O_WRONLY | _O_RDWR)) != 0;
 	}
 
+	// The C runtime's _O_APPEND seeks to the end before each write, so two
+	// writers can seek to the same end and overwrite each other. A handle
+	// with append access only (FILE_APPEND_DATA without FILE_WRITE_DATA)
+	// makes Windows put every write at the end, as O_APPEND does on POSIX,
+	// also in the programs that inherit it.
+	static int openAppendOnly(const std::wstring& path) {
+		const HANDLE file = ::CreateFileW(path.c_str(), FILE_APPEND_DATA | SYNCHRONIZE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE) {
+			errno = ::GetLastError() == ERROR_ACCESS_DENIED ? EACCES : ENOENT;
+			return -1;
+		}
+
+		const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(file), _O_WRONLY | _O_BINARY);
+		if (fd < 0) ::CloseHandle(file);
+		return fd;
+	}
+
 	int Executor::openProcRedirSource(const std::string& path, int flags) const {
 		const ProcNode node = lookupProcPath(path_conv_, path, true);
 		if (node.type == ProcType::Outside) return openRedirSourceFd(node.target, flags);
@@ -1948,6 +2140,7 @@ namespace wbsh {
 		if (isFifoFile(utf8ToPath(win32))) return openFifo(utf8ToPath(win32), flags);
 
 		const std::wstring win_path = utf8ToFileWide(win32);
+		if ((flags & _O_APPEND) != 0) return openAppendOnly(win_path);
 		return _wopen(win_path.c_str(), flags | _O_BINARY, _S_IREAD | _S_IWRITE);
 	}
 
@@ -2050,7 +2243,10 @@ namespace wbsh {
 
 		saveFd(state, target);
 		beforeRepointing(target);
-		if (_dup2(from_fd, target) == 0) return true;
+		if (_dup2(from_fd, target) == 0) {
+			afterRepointing(target);
+			return true;
+		}
 
 		std::fprintf(stderr, "wbsh: %d: Bad file descriptor\n", from_fd);
 		return false;
@@ -2201,6 +2397,7 @@ namespace wbsh {
 
 		_dup2(backup, fd);
 		_close(backup);
+		afterRepointing(fd);
 	}
 
 	void Executor::undoRedirections(RedirState& state) {
@@ -2396,12 +2593,23 @@ namespace wbsh {
 		return (it == indexed->end()) ? std::string() : it->second;
 	}
 
+	// An error in a subscript stops the assignment; as in bash, the error
+	// drops the rest of the line.
+	static bool evalSubscriptOrReport(Expander& expander, const std::string& subscript,
+	                                  long long& index) {
+		index = expander.evalArith(subscript);
+		if (!expander.failed()) return true;
+
+		reportExpanderError(expander);
+		return false;
+	}
+
 	static void appendToIndexedArray(Environment& env, Expander& expander,
 	                                 const Executor::ArrayAssign& array) {
 		long long next_index = nextIndexedAppendSlot(env, array.name);
 		for (const auto& item : array.items) {
 			long long index = next_index;
-			if (item.has_key && !expander.tryEvalArith(item.key, index)) index = next_index;
+			if (item.has_key && !evalSubscriptOrReport(expander, item.key, index)) return;
 			env.setIndexedElement(array.name, index, item.value);
 			next_index = index + 1;
 		}
@@ -2413,7 +2621,7 @@ namespace wbsh {
 		long long next_index = 0;
 		for (const auto& item : array.items) {
 			long long index = next_index;
-			if (item.has_key && !expander.tryEvalArith(item.key, index)) index = next_index;
+			if (item.has_key && !evalSubscriptOrReport(expander, item.key, index)) return;
 			sparse[index] = item.value;
 			next_index = index + 1;
 		}
@@ -2476,7 +2684,7 @@ namespace wbsh {
 
 		const bool is_assoc = env.isAssocArray(elem.name);
 		long long index = 0;
-		if (!is_assoc && !expander.tryEvalArith(subscript, index)) index = 0;
+		if (!is_assoc && !evalSubscriptOrReport(expander, subscript, index)) return;
 
 		std::string value = elem.value;
 		if (elem.append) {
@@ -2546,6 +2754,25 @@ namespace wbsh {
 		out.scalar.push_back(expandScalarAssign(expander, assignment));
 	}
 
+	// A bare assignment to a readonly variable fails the statement with
+	// status 1, and the script goes on, as in bash.
+	static bool assignsReadonly(const Environment& env,
+	                            const Executor::SimpleCmdAssigns& assigns) {
+		for (const auto& scalar : assigns.scalar) {
+			if (env.isReadonly(scalar.name)) return true;
+		}
+
+		for (const auto& elem : assigns.elem) {
+			if (env.isReadonly(elem.name)) return true;
+		}
+
+		for (const auto& array : assigns.array) {
+			if (env.isReadonly(array.name)) return true;
+		}
+
+		return false;
+	}
+
 	bool Executor::expandOneAssign(const Assignment& assignment, SimpleCmdAssigns& out, bool bare,
 			SavedVars& prior) {
 		SimpleCmdAssigns one;
@@ -2553,8 +2780,9 @@ namespace wbsh {
 		if (expander_.failed() || flowPending()) return false;
 
 		if (bare) {
+			const bool readonly = assignsReadonly(env_, one);
 			applyAssignNow(env_, expander_, one);
-			return true;
+			return !readonly;
 		}
 
 		if (!one.scalar.empty()) setTemporarily(env_, one.scalar.back(), prior);
@@ -2619,6 +2847,13 @@ namespace wbsh {
 				prior.reserve(assigns.size());
 				for (const auto& assign : assigns) {
 					const std::string& name = assign.first;
+					// The set reports the readonly error once; restoring it
+					// would report it again.
+					if (env.isReadonly(name)) {
+						env.set(name, assign.second);
+						continue;
+					}
+
 					prior.push_back({ name, env.has(name), env.get(name), env.isExported(name) });
 					env.set(name, assign.second);
 					env.exportVar(name);
@@ -2704,7 +2939,17 @@ namespace wbsh {
 		}
 
 		RedirState state;
-		if (!applyRedirectionsOrUndo(sc.redirs, state)) return 1;
+		if (!applyRedirectionsOrUndo(sc.redirs, state)) {
+			// bash expands the redirections of a command it forks in the
+			// child, so an expansion error there fails only that command.
+			// Besides external programs, wbsh's built-in utilities (cat,
+			// sort, ...) are programs in bash.
+			const ManPage* page = findManPage(argv[0]);
+			const bool shell_builtin = isBuiltin(argv[0]) && page != nullptr
+				&& page->kind == ManKind::Shell;
+			if (!isFunction(argv[0]) && !shell_builtin) expander_.takeDropLine();
+			return 1;
+		}
 
 		traceXtrace(argv);
 		compound_args_ = std::move(compound);
@@ -2880,12 +3125,42 @@ namespace wbsh {
 		return lookupInPathDirs(name, path);
 	}
 
+	// As in bash: a name with a slash that is a directory cannot run (126).
+	bool Executor::reportDirectoryCommand(const std::string& name) const {
+		if (name.find_first_of("/\\") == std::string::npos) return false;
+
+		std::error_code ec;
+		if (!std::filesystem::is_directory(utf8ToPath(path_conv_.toWin32(name)), ec)) return false;
+
+		std::fprintf(stderr, "wbsh: %s: Is a directory\n", name.c_str());
+		return true;
+	}
+
+	// bash looks the command up with its own PATH= prefix: `PATH=dir cmd`.
+	std::string Executor::findExecutableWith(const std::string& name,
+	                                         const NameValueList& temp_env) {
+		const auto is_path = [](const std::pair<std::string, std::string>& assign) {
+			return assign.first == "PATH";
+		};
+		const auto path = std::find_if(temp_env.begin(), temp_env.end(), is_path);
+		if (path == temp_env.end() || env_.isReadonly("PATH")) return findExecutable(name);
+
+		Environment::VarState saved = env_.saveVar("PATH");
+		env_.set("PATH", path->second);
+		const std::string found = findExecutable(name);
+		env_.restoreVar("PATH", std::move(saved));
+		return found;
+	}
+
 	int Executor::runExternal(const std::vector<std::string>& argv,
 	                          const NameValueList& temp_env) {
 		if (argv.empty()) return 0;
+		if (refusePipeCommand(argv[0])) return kStatusCommandNotFound;
 
-		const std::string exec_path = findExecutable(argv[0]);
+		const std::string exec_path = findExecutableWith(argv[0], temp_env);
 		if (exec_path.empty()) {
+			if (reportDirectoryCommand(argv[0])) return kStatusCannotExecute;
+
 			reportCommandNotFound(argv[0]);
 			return kStatusCommandNotFound;
 		}
@@ -2897,6 +3172,7 @@ namespace wbsh {
 		const NameValueList child_env = prepareExternalEnvOverrides(temp_env);
 		SpawnCommand command = makeSpawnCommand(child_argv, exec_path,
 			buildEnvBlock(env_, child_env));
+		if (reportSpawnCommandError(command, argv[0])) return kStatusCannotExecute;
 
 		std::fflush(stdout);
 		std::fflush(stderr);
@@ -2910,8 +3186,9 @@ namespace wbsh {
 			return runShellScript(exec_path, argv, temp_env);
 		}
 
+		// The file is there but does not start: bash's status for that.
 		std::fprintf(stderr, "wbsh: %s: %s\n", argv[0].c_str(), lastErrorString().c_str());
-		return kStatusCommandNotFound;
+		return kStatusCannotExecute;
 #else
 		return kStatusCommandNotFound;
 #endif
@@ -3350,6 +3627,7 @@ namespace wbsh {
 		std::stringstream buffer;
 		buffer << file.rdbuf();
 		std::string body = buffer.str();
+		stripUtf8Bom(body);
 		normalizeCrlf(body);
 		return body;
 	}
@@ -3528,6 +3806,7 @@ namespace wbsh {
 			return LoopFlowAction::ExitLoop;
 		case FlowSignal::Kind::Return:
 		case FlowSignal::Kind::Exit:
+		case FlowSignal::Kind::Discard:
 			return LoopFlowAction::Propagate;
 		case FlowSignal::Kind::None:
 		default:
@@ -3573,7 +3852,7 @@ namespace wbsh {
 		value = expander.evalArith(expr);
 		if (!expander.failed()) return true;
 
-		reportExpanderError(expander);
+		reportExpanderError(expander, /*drops_line=*/false);
 		return false;
 	}
 
@@ -3841,6 +4120,7 @@ namespace wbsh {
 
 	int Executor::execFunctionDef(const FunctionDef& fd) {
 		functions_[fd.name] = &fd;
+		++function_definitions_;
 		function_files_[fd.name] = currentSourceFile();
 		return 0;
 	}
@@ -4068,10 +4348,60 @@ namespace wbsh {
 		return command.fn(command.user, static_cast<int>(argv.size()) - 1, argv.data());
 	}
 
+	// Builtins for which bash takes `--help` as an operand like any other.
+	static bool helpIsAnOperand(const std::string& name) {
+		return name == "echo" || name == "test" || name == "[" || name == "true"
+			|| name == "false" || name == ":";
+	}
+
+	// A synopsis line that starts with blanks continues the form above it.
+	static void printSynopsisLines(const std::string& synopsis, const char* first,
+	                               const char* rest) {
+		const std::string padding(std::strlen(first), ' ');
+		std::size_t start = 0;
+		for (int line = 0; start <= synopsis.size(); ++line) {
+			const std::size_t end = (std::min)(synopsis.find('\n', start), synopsis.size());
+			const std::string text = synopsis.substr(start, end - start);
+			const bool continues = !text.empty() && text[0] == ' ';
+			const char* prefix = line == 0 ? first : continues ? padding.c_str() : rest;
+			std::printf("%s%s\n", prefix, text.c_str());
+			start = end + 1;
+		}
+	}
+
+	// `cmd --help` of a command without help of its own prints its synopsis:
+	// otherwise `yes --help` printed "--help" for ever and `cat --help`
+	// looked for a file of that name. Utilities answer GNU style with status
+	// 0, shell builtins bash style with status 2.
+	static bool answeredHelpFromManPage(const std::string& name,
+	                                    const std::vector<std::string>& args, int& status) {
+		if (args.size() != 1 || args[0] != "--help" || helpIsAnOperand(name)) return false;
+
+		const ManPage* page = findManPage(name);
+		if (page == nullptr || page->self_help || page->kind == ManKind::Program) return false;
+
+		if (page->kind == ManKind::Shell) {
+			const std::string first = name + ": ";
+			printSynopsisLines(page->synopsis, first.c_str(), first.c_str());
+			std::printf("    %s\n", page->summary);
+			status = 2;
+			return true;
+		}
+
+		printSynopsisLines(page->synopsis, "Usage: ", "  or:  ");
+		std::printf("%s\n\nSee `man %s` for more.\n", page->summary, name.c_str());
+		status = 0;
+		return true;
+	}
+
 	int Executor::callBuiltin(const std::string& name, const std::vector<std::string>& args) {
 		const auto builtin = builtins_.find(name);
 		std::clearerr(stdout);
-		if (builtin != builtins_.end()) return builtin->second(*this, args);
+		if (builtin != builtins_.end()) {
+			int help_status = 0;
+			if (answeredHelpFromManPage(name, args, help_status)) return help_status;
+			return builtin->second(*this, args);
+		}
 
 		const auto plugin = plugin_commands_.find(name);
 		if (plugin == plugin_commands_.end()) return kStatusCommandNotFound;
@@ -4079,10 +4409,43 @@ namespace wbsh {
 		return callPluginCommand(plugin->second, name, args);
 	}
 
+	// Each level of shell recursion takes several kB of stack, so a deep
+	// enough recursion used to crash the process without a word. Calls stop
+	// with bash's FUNCNEST error well before the end of the stack instead;
+	// a script exits as bash does, an interactive shell gets its prompt back.
+	static bool stackNearlyFull() {
+#ifdef _WIN32
+		ULONG_PTR low = 0;
+		ULONG_PTR high = 0;
+		::GetCurrentThreadStackLimits(&low, &high);
+		const auto here = reinterpret_cast<ULONG_PTR>(&low);
+		return here - low < kStackReserveMargin;
+#else
+		return false;
+#endif
+	}
+
+	bool Executor::functionNestingAllowed(const std::string& name) {
+		if (nesting_exceeded_) return false;
+
+		long long limit = 0;
+		const bool has_limit = parseLL(env_.get("FUNCNEST"), limit) && limit > 0;
+		const bool funcnest = has_limit && func_depth_ >= limit;
+		if (!funcnest && !stackNearlyFull()) return true;
+
+		const std::string shown = funcnest ? std::to_string(limit) : "out of stack space";
+		std::fprintf(stderr, "wbsh: %s: maximum function nesting level exceeded (%s)\n",
+			name.c_str(), shown.c_str());
+		nesting_exceeded_ = true;
+		if (!env_.interactive()) raiseExit(1);
+		return false;
+	}
+
 	int Executor::callFunction(const std::string& name, const std::vector<std::string>& args) {
 		const auto it = functions_.find(name);
 		if (it == functions_.end()) return kStatusCommandNotFound;
 		const FunctionDef* def = it->second;
+		if (!functionNestingAllowed(name)) return 1;
 
 		pushCallFrame({ name, functionFile(name), env_.currentLineno() });
 		const std::vector<std::string> saved_positional = env_.positional();
@@ -4109,6 +4472,7 @@ namespace wbsh {
 
 		popLocalScope();
 		--func_depth_;
+		if (func_depth_ == 0) nesting_exceeded_ = false;
 		return status;
 	}
 
@@ -4745,11 +5109,19 @@ namespace wbsh {
 
 		truncateAtSyntaxError(*parsed.root, parser,
 			firstSyntaxErrorOffset(lexer.errors(), parser.errors()));
-		owned_arenas_.push_back(parser.takeArena());
+		parsed.arena = parser.takeArena();
 		return parsed;
 	}
 
+	void Executor::keepArenaIfDefined(ParsedText& parsed, std::size_t definitions_before) {
+		if (function_definitions_ == definitions_before) return;
+
+		owned_arenas_.push_back(std::move(parsed.arena));
+	}
+
+	// A Discard ends the text it came from (a trap action, `$(...)`).
 	int Executor::finishParsedText(const ParsedText& parsed, int status) {
+		if (consumeFlow(FlowSignal::Kind::Discard)) status = 1;
 		if (parsed.diagnostics.empty() || flowPending()) return status;
 
 		std::fputs(parsed.diagnostics.c_str(), stderr);
@@ -4758,15 +5130,19 @@ namespace wbsh {
 
 	int Executor::executeText(const std::string& source_text, const std::string& origin,
 			std::size_t first_line) {
-		const ParsedText parsed = parseText(source_text, origin, first_line);
+		ParsedText parsed = parseText(source_text, origin, first_line);
+		const std::size_t defined = function_definitions_;
 		const int status = parsed.root != nullptr ? execute(*parsed.root) : 0;
+		keepArenaIfDefined(parsed, defined);
 		return finishParsedText(parsed, status);
 	}
 
 	int Executor::executeInputText(const std::string& source_text, const std::string& origin,
 			std::size_t first_line) {
-		const ParsedText parsed = parseText(source_text, origin, first_line);
+		ParsedText parsed = parseText(source_text, origin, first_line);
+		const std::size_t defined = function_definitions_;
 		const int status = parsed.root != nullptr ? executeInput(*parsed.root, source_text) : 0;
+		keepArenaIfDefined(parsed, defined);
 		return finishParsedText(parsed, status);
 	}
 
@@ -4776,7 +5152,8 @@ namespace wbsh {
 		input_echo_ = { is_list ? static_cast<const List*>(&root) : nullptr, &source_text, 0 };
 		if (!is_list) echoInputUpTo(source_text.size());
 
-		const int status = execute(root);
+		int status = execute(root);
+		if (consumeFlow(FlowSignal::Kind::Discard)) status = 1;
 		if (!flowPending()) echoInputUpTo(source_text.size());
 
 		input_echo_ = saved;
@@ -4923,15 +5300,17 @@ namespace wbsh {
 	}
 
 	int Executor::executeSubstitutionText(const std::string& body, std::size_t first_line) {
-		const ParsedText parsed = parseText(body, "<command-substitution>", first_line);
+		ParsedText parsed = parseText(body, "<command-substitution>", first_line);
 		if (parsed.root == nullptr) return finishParsedText(parsed, 0);
 
+		const std::size_t defined = function_definitions_;
 		const Redirection* file_read = parsed.diagnostics.empty()
 			? fileReadRedirection(*parsed.root)
 			: nullptr;
 		const int status = file_read != nullptr
 			? writeFileToStdout(*file_read)
 			: execute(*parsed.root);
+		keepArenaIfDefined(parsed, defined);
 		return finishParsedText(parsed, status);
 	}
 

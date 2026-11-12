@@ -56,7 +56,7 @@ function Invoke-LuaBuild {
 function Invoke-ClBuild {
     param([string]$SourceDir, [string]$OutputDir, [string]$Configuration)
 
-    $optimization = if ($Configuration -eq 'Release') { '/O2', '/MD' } else { '/Od', '/Zi', '/MDd' }
+    $optimization = if ($Configuration -eq 'Release') { '/O2', '/MD', '/guard:cf' } else { '/Od', '/Zi', '/MDd' }
     $sources = Get-ChildItem -Path $SourceDir -Filter *.cpp | ForEach-Object { $_.FullName }
     $luaDir = Join-Path (Split-Path -Parent $SourceDir) 'lua'
     $luaObjects = Invoke-LuaBuild -LuaDir $luaDir -OutputDir $OutputDir -Optimization $optimization
@@ -68,7 +68,7 @@ function Invoke-ClBuild {
     ) + $optimization + $sources + $luaObjects + @(
         "/Fe:$(Join-Path $OutputDir 'wbshterm.exe')",
         "/Fo:$OutputDir\",
-        '/link', '/SUBSYSTEM:WINDOWS', '/ENTRY:wWinMainCRTStartup',
+        '/link', '/SUBSYSTEM:WINDOWS', '/ENTRY:wWinMainCRTStartup', '/guard:cf',
         'kernel32.lib', 'user32.lib', 'gdi32.lib'
     )
 

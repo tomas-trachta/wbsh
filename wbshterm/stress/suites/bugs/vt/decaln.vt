@@ -1,0 +1,3 @@
+# DECALN fills the screen with E
+# @stress size=4x2
+\e#8

@@ -1,0 +1,5 @@
+# Golden grids are byte-compared with the replay dump, which is LF. Corpus
+# files are hostile terminal input and must reach the parser byte for byte.
+*.vt                    text eol=lf
+*.expect                text eol=lf
+suites/bugs/corpus/**   -text

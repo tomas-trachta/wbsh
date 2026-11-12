@@ -303,6 +303,16 @@ namespace wbsh {
 #endif
 	}
 
+	void bufferStdoutForNul() {
+#ifdef _WIN32
+		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stdout)));
+		if (handle == INVALID_HANDLE_VALUE || ::GetFileType(handle) != FILE_TYPE_CHAR) return;
+		if (isConsoleStream(stdout)) return;
+
+		std::setvbuf(stdout, nullptr, _IOFBF, 64 * 1024);
+#endif
+	}
+
 	bool isDiskStream(std::FILE* stream) {
 		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stream)));
 		return handle != INVALID_HANDLE_VALUE && ::GetFileType(handle) == FILE_TYPE_DISK;
@@ -844,9 +854,65 @@ namespace wbsh {
 		return 0;
 	}
 
+#ifdef _WIN32
+	// A directory read hands over each name with its attributes, size and
+	// time, so a plain file or directory needs no further call. Links,
+	// junctions and sockets (reparse points) and FIFO markers (system
+	// attribute) still go through collectEntry for the exact answer.
+	static bool lsEntryFromFindData(const fs::path& parent, const WIN32_FIND_DATAW& data,
+	                                LsEntry& entry) {
+		const DWORD slow = FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_SYSTEM;
+		if ((data.dwFileAttributes & slow) != 0) return false;
+
+		const bool dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		entry.name = wideToUtf8(data.cFileName);
+		entry.full = parent / data.cFileName;
+		entry.status = fs::file_status(dir ? fs::file_type::directory : fs::file_type::regular);
+		entry.is_dir = dir;
+		if (!dir) entry.size = (std::uintmax_t(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+
+		const auto ticks = (std::uint64_t(data.ftLastWriteTime.dwHighDateTime) << 32)
+			| data.ftLastWriteTime.dwLowDateTime;
+		entry.mtime = fs::file_time_type(fs::file_time_type::duration(ticks));
+		const bool hidden_attribute = (data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0;
+		entry.is_hidden = data.cFileName[0] == L'.' || hidden_attribute;
+		entry.is_executable = hasExecutableExtension(entry.full);
+		entry.valid = true;
+		return true;
+	}
+
+	static bool findLsEntries(const fs::path& target, const LsOpts& opts,
+	                          std::vector<LsEntry>& items) {
+		WIN32_FIND_DATAW data{};
+		const std::wstring pattern = longPathSafe(target / L"*").wstring();
+		const HANDLE find = ::FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data,
+			FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+		if (find == INVALID_HANDLE_VALUE) return false;
+
+		do {
+			const std::wstring name = data.cFileName;
+			if (name == L"." || name == L"..") continue;
+
+			LsEntry entry;
+			if (!lsEntryFromFindData(target, data, entry)) {
+				entry = collectEntry(target, wideToUtf8(name));
+			}
+
+			if (!opts.all && entry.is_hidden) continue;
+			items.push_back(std::move(entry));
+		} while (::FindNextFileW(find, &data) != 0);
+
+		::FindClose(find);
+		return true;
+	}
+#endif
+
 	static bool collectLsDirectoryEntries(const fs::path& target, const LsOpts& opts,
 	                                      const std::string& source_path,
 	                                      std::vector<LsEntry>& items) {
+#ifdef _WIN32
+		if (findLsEntries(target, opts, items)) return true;
+#endif
 		std::error_code ec;
 		fs::directory_iterator it(target, ec);
 		if (ec) {
@@ -1151,7 +1217,7 @@ namespace wbsh {
 	static bool findExecutableInDir(Executor& exec, const std::string& dir,
 	                                const std::string& name, std::string& found) {
 #ifdef _WIN32
-		static const char* const kExtensions[] = { "", ".exe", ".cmd", ".bat", nullptr };
+		static const char* const kExtensions[] = { "", ".exe", ".cmd", ".bat", ".com", nullptr };
 #else
 		static const char* const kExtensions[] = { "", nullptr };
 #endif
@@ -1364,26 +1430,44 @@ namespace wbsh {
 		}
 	}
 
-	static WcCounts wcCountStream(std::FILE* stream) {
-		WcCounts counts;
+	static const std::size_t kWcBlockSize = 64 * 1024;
+
+	struct WcScan {
 		bool in_word = false;
 		std::uintmax_t position = 0;
-		int ch = EOF;
-		while ((ch = std::fgetc(stream)) != EOF) {
-			++counts.bytes;
-			if (isUtf8LeadByte(ch)) ++counts.chars;
-			if (ch == '\n') ++counts.lines;
-			advanceWcLinePosition(ch, position, counts);
+	};
 
-			if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
-				in_word = false;
-			} else if (!in_word) {
-				in_word = true;
-				++counts.words;
-			}
+	static void countWcByte(int ch, WcScan& scan, WcCounts& counts) {
+		if (isUtf8LeadByte(ch)) ++counts.chars;
+		if (ch == '\n') ++counts.lines;
+		advanceWcLinePosition(ch, scan.position, counts);
+
+		if (std::isspace(ch) != 0) {
+			scan.in_word = false;
+		} else if (!scan.in_word) {
+			scan.in_word = true;
+			++counts.words;
+		}
+	}
+
+	// Read a block at a time: fgetc takes the stream lock for every byte,
+	// which made `wc -c` of 100 MB take seconds. A byte count alone needs
+	// no look at the bytes.
+	static WcCounts wcCountStream(std::FILE* stream, bool bytes_only) {
+		WcCounts counts;
+		WcScan scan;
+		std::vector<unsigned char> block(kWcBlockSize);
+		for (;;) {
+			const std::size_t got = std::fread(block.data(), 1, block.size(), stream);
+			if (got == 0) break;
+
+			counts.bytes += got;
+			if (bytes_only) continue;
+
+			for (std::size_t i = 0; i < got; ++i) countWcByte(block[i], scan, counts);
 		}
 
-		counts.max_line = (std::max)(counts.max_line, position);
+		counts.max_line = (std::max)(counts.max_line, scan.position);
 		return counts;
 	}
 
@@ -1426,7 +1510,9 @@ namespace wbsh {
 				continue;
 			}
 
-			const WcCounts counts = wcCountStream(stream);
+			const bool bytes_only = opts.want_bytes && !opts.want_lines && !opts.want_words
+				&& !opts.want_chars && !opts.want_max_line;
+			const WcCounts counts = wcCountStream(stream, bytes_only);
 			closeUnlessStdin(stream);
 			std::fputs(formatWcLine(opts, counts, file == "-" ? "" : file).c_str(), stdout);
 			addWcCounts(totals, counts);

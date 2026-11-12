@@ -1,0 +1,3 @@
+# each invalid UTF-8 sequence shows one U+FFFD
+# @stress size=6x1
+a\xffb\xc3(c

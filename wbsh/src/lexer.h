@@ -134,7 +134,8 @@ namespace wbsh {
 		void error(const SourceLoc& at, std::string msg);
 
 		void scanToken();
-		void scanProcessSubstitution();
+		bool atProcessSubstitution() const;
+		void readProcessSubstitution(std::vector<WordSegment>& out);
 		void scanOperator();
 		void scanArithCommand(SourceLoc start);
 		void emitOperator(SourceLoc start, TokKind kind, const char* text);

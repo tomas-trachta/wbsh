@@ -49,10 +49,14 @@ try {
     Remove-Item $archive -Force
 }
 
-Set-Content -Path (Join-Path $here 'VERSION.txt') -Value @(
+# The hashes let a review (wbshterm/stress static scan) see a swapped binary.
+$hashes = foreach ($name in 'conpty.dll', 'OpenConsole.exe') {
+    "SHA256 $((Get-FileHash (Join-Path $here $name) -Algorithm SHA256).Hash)  $name"
+}
+Set-Content -Path (Join-Path $here 'VERSION.txt') -Value (@(
     "Microsoft.Windows.Console.ConPTY $Version",
     "https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/$Version",
     "https://github.com/microsoft/terminal",
     "License: MIT (LICENSE.txt)"
-)
+) + $hashes)
 Write-Host "==> done"

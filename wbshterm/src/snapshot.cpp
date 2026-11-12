@@ -78,11 +78,22 @@ namespace wbshterm {
 		Picker picker;
 	};
 
+	// The output is read while waiting, as the window does: the grid answers
+	// the pseudoconsole's queries only when it parses them, and a full
+	// output pipe stalls the console host, input and Ctrl+C included.
+	static void waitDraining(Session& session, unsigned int ms) {
+		const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+		while (std::chrono::steady_clock::now() < until) {
+			session.drainOutput();
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	}
+
 	static void typeFeeds(Session& session, const SnapshotRequest& request) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(request.delay_ms));
+		waitDraining(session, request.delay_ms);
 
 		for (std::size_t i = 0; i < request.feeds.size(); ++i) {
-			if (i > 0) std::this_thread::sleep_for(std::chrono::milliseconds(request.gap_ms));
+			if (i > 0) waitDraining(session, request.gap_ms);
 			session.writeInput(request.feeds[i].data(), request.feeds[i].size());
 		}
 	}

@@ -1,0 +1,15 @@
+long-chain-ok
+long-or-chain-ok
+mixed-chain-ok
+1 after 1
+2 yes
+3 yes
+4 f status 1
+5 x=2
+6 or
+7 status 1
+8 status 0
+9 in brace
+10 loop done
+11 status 3
+12 after a failed first stage

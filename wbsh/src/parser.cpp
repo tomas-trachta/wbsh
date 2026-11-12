@@ -299,6 +299,17 @@ namespace wbsh {
 		return list;
 	}
 
+	// A compound command needs a command in each of its lists: bash rejects
+	// `if then fi`, `while do done` and `{ }` instead of running nothing.
+	NodePtr Parser::parseCompoundList() {
+		NodePtr list = parseList(false);
+		if (static_cast<const List*>(list)->items.empty() && !atEnd()) {
+			error(peek(), "syntax error near unexpected token `" + tokenSpelling(peek()) + "'");
+		}
+
+		return list;
+	}
+
 	void Parser::recordLineEnd(std::size_t complete_items) {
 		if (pos_ == 0) return;
 
@@ -520,7 +531,7 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 
-		auto body = parseList(false);
+		auto body = parseCompoundList();
 		expectReserved("}", "expected `}`");
 
 		auto group = arena_.make<BraceGroup>();
@@ -536,7 +547,7 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 
-		auto body = parseList(false);
+		auto body = parseCompoundList();
 		expect(TokKind::RParen, "expected `)`");
 
 		auto subshell = arena_.make<Subshell>();
@@ -564,22 +575,22 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 
-		auto cond = parseList(false);
+		auto cond = parseCompoundList();
 		expectReserved("then", "expected `then`");
-		auto then_body = parseList(false);
+		auto then_body = parseCompoundList();
 
 		auto node = arena_.make<IfClause>();
 		node->loc = loc;
 		node->branches.push_back({ cond, then_body });
 
 		while (matchReserved("elif")) {
-			auto elif_cond = parseList(false);
+			auto elif_cond = parseCompoundList();
 			expectReserved("then", "expected `then` after elif condition");
-			auto elif_body = parseList(false);
+			auto elif_body = parseCompoundList();
 			node->branches.push_back({ elif_cond, elif_body });
 		}
 
-		if (matchReserved("else")) node->else_body = parseList(false);
+		if (matchReserved("else")) node->else_body = parseCompoundList();
 
 		expectReserved("fi", "expected `fi`");
 		parseTrailingRedirections(node->redirs);
@@ -593,7 +604,7 @@ namespace wbsh {
 			return nullptr;
 		}
 
-		auto body = parseList(false);
+		auto body = parseCompoundList();
 		expectReserved("done", "expected `done`");
 		return body;
 	}
@@ -603,7 +614,7 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 
-		auto cond = parseList(false);
+		auto cond = parseCompoundList();
 		auto body = parseDoGroup();
 
 		auto node = arena_.make<WhileClause>();
@@ -768,6 +779,11 @@ namespace wbsh {
 		node->subject = std::move(subject);
 
 		while (!atEnd() && !checkReserved("esac")) {
+			// After a syntax error the next token can be one that no item
+			// starts with (`||` after the pattern `a`); the loop then added
+			// empty items until memory ran out.
+			if (!check(TokKind::Word) && !check(TokKind::LParen)) break;
+
 			CaseClause::Item item;
 			parseCaseItem(item);
 			node->items.push_back(std::move(item));
@@ -877,23 +893,22 @@ namespace wbsh {
 	}
 
 	bool Parser::atDBracketUnaryTest() const {
-		if (!isLiteralOnlyWord(peek())) return false;
-		if (!isDBracketUnaryOp(peek().segments[0].text)) return false;
-		if (peek(1).kind != TokKind::Word) return false;
-		return !isReserved(peek(1), "]]");
+		return isLiteralOnlyWord(peek()) && isDBracketUnaryOp(peek().segments[0].text);
 	}
 
+	// As in bash, an unquoted unary operator always takes the next word:
+	// `[[ -x == y ]]` tests a file named `==` and then fails on `y`, and
+	// `[[ -n ]]` is an error, not a test of the string "-n".
 	bool Parser::tryParseDBracketUnary(DBracketCond::Expr& e) {
 		if (!atDBracketUnaryTest()) return false;
 
-		// `-f && X` — only treat as unary if the operand is followed by a
-		// connective / closer; otherwise fall back to single-operand truthiness.
-		const Token& after = peek(2);
-		const bool operand_closed = isReserved(after, "]]")
-		    || after.kind == TokKind::AndIf
-		    || after.kind == TokKind::OrIf
-		    || after.kind == TokKind::RParen;
-		if (!operand_closed) return false;
+		const Token& operand = peek(1);
+		if (operand.kind != TokKind::Word || isReserved(operand, "]]")) {
+			error(operand, "unexpected argument `" + operand.text
+				+ "' to conditional unary operator");
+			e.lhs = tokenToWord(advance());
+			return true;
+		}
 
 		e.op = peek().segments[0].text;
 		advance();

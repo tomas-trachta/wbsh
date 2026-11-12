@@ -160,8 +160,10 @@
       <AdditionalIncludeDirectories>$(ProjectDir)..\sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ControlFlowGuard Condition="'$(EnableASAN)'!='true'">Guard</ControlFlowGuard>
     </ClCompile>
     <Link>
+      <AdditionalOptions Condition="'$(EnableASAN)'!='true'">/guard:cf %(AdditionalOptions)</AdditionalOptions>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
       <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
@@ -192,6 +194,7 @@
     <ClInclude Include="src\parser.h" />
     <ClInclude Include="src\printer.h" />
     <ClInclude Include="src\jobcontrol.h" />
+    <ClInclude Include="src\pipesecurity.h" />
     <ClInclude Include="src\procsubst.h" />
     <ClInclude Include="src\environment.h" />
     <ClInclude Include="src\expander.h" />
@@ -264,6 +267,7 @@
     <ClCompile Include="src\parser.cpp" />
     <ClCompile Include="src\printer.cpp" />
     <ClCompile Include="src\jobcontrol.cpp" />
+    <ClCompile Include="src\pipesecurity.cpp" />
     <ClCompile Include="src\procsubst.cpp" />
     <ClCompile Include="src\environment.cpp" />
     <ClCompile Include="src\expander.cpp" />
