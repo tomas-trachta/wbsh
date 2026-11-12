@@ -1255,18 +1255,28 @@ namespace wbsh {
 		std::fflush(stderr);
 		const StdioHandles outer = currentStdio();
 
+		// As in bash, an element that cannot start (not found, a failed
+		// expansion) gets its own status and the others still run, so
+		// `nosuchcmd | cat` gives PIPESTATUS 127 0.
 		const HANDLE group = startForegroundGroup();
 		std::vector<HANDLE> processes;
+		std::vector<std::size_t> process_stage;
+		std::vector<int> stage_status(count, 1);
 		processes.reserve(count);
 		for (std::size_t i = 0; i < count; ++i) {
 			const Node& stage = *pipeline.commands[i];
 			if (stage.kind == Node::Kind::SimpleCommand) announceNode(stage);
 			const StdioHandles stdio = pipelineStageStdio(pipeline, i, pipe_r, pipe_w, outer);
+			launch_status_ = 1;
 			const HANDLE process = launchPipelineElement(*pipeline.commands[i],
 				stdio.in, stdio.out, stdio.err);
-			if (process == INVALID_HANDLE_VALUE) break;
+			if (process == INVALID_HANDLE_VALUE) {
+				stage_status[i] = launch_status_;
+			} else {
+				processes.push_back(process);
+				process_stage.push_back(i);
+			}
 
-			processes.push_back(process);
 			if (flowPending()) break;
 		}
 
@@ -1278,12 +1288,13 @@ namespace wbsh {
 			nodeSourceSlice(pipeline, source_text_), statuses);
 		if (foreground == kStatusStopped) return foreground;
 
-		const int status = pipelineStatus(statuses, env_.pipefail());
-		statuses.resize(count, 1);
-		setPipeStatus(statuses);
+		for (std::size_t k = 0; k < statuses.size(); ++k) {
+			stage_status[process_stage[k]] = statuses[k];
+		}
+
+		setPipeStatus(stage_status);
 		status_judged_ = false;
-		if (processes.size() < count) return 1;
-		return status;
+		return pipelineStatus(stage_status, env_.pipefail());
 	}
 #endif  // _WIN32
 
@@ -1394,6 +1405,7 @@ namespace wbsh {
 		std::vector<std::string> argv;
 		if (!expandWordsForDirectLaunch(expander_, command.words, argv)) {
 			*tried = true;
+			launch_status_ = 1;
 			return INVALID_HANDLE_VALUE;
 		}
 
@@ -1404,7 +1416,9 @@ namespace wbsh {
 
 		const std::string exec_path = findExecutable(argv[0]);
 		if (exec_path.empty()) {
-			if (!reportDirectoryCommand(argv[0])) reportCommandNotFound(argv[0]);
+			const bool directory = reportDirectoryCommand(argv[0]);
+			if (!directory) reportCommandNotFound(argv[0]);
+			launch_status_ = directory ? kStatusCannotExecute : kStatusCommandNotFound;
 			*tried = true;
 			return INVALID_HANDLE_VALUE;
 		}
@@ -1412,7 +1426,9 @@ namespace wbsh {
 		if (looksLikeShellScript(exec_path)) return INVALID_HANDLE_VALUE;
 
 		*tried = true;
-		return launchExternalDirect(command, argv, exec_path, h_in, h_out, h_err);
+		const HANDLE process = launchExternalDirect(command, argv, exec_path, h_in, h_out, h_err);
+		if (process == INVALID_HANDLE_VALUE) launch_status_ = kStatusCannotExecute;
+		return process;
 	}
 
 	static std::vector<std::string> unexportedNames(const Environment& env) {

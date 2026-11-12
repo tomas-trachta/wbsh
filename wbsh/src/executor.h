@@ -974,9 +974,11 @@ namespace wbsh {
 		int launchBackgroundCommand(const Node& cmd);
 
 		// Pipeline element launch. Returns a process HANDLE the parent waits
-		// on, or INVALID_HANDLE_VALUE on failure.
+		// on, or INVALID_HANDLE_VALUE on failure; then launch_status_ has
+		// the element's status (127 not found, 126 cannot run, 1 otherwise).
 		HANDLE launchPipelineElement(const Node& elem,
 		                             HANDLE h_in, HANDLE h_out, HANDLE h_err);
+		int launch_status_ = 1;
 		// Fast-path branch of launchPipelineElement: try to launch `elem` as
 		// a direct external (skipping the intermediate `wbsh.exe -r -c ...`
 		// shell). Returns the spawned HANDLE on success, INVALID_HANDLE_VALUE
