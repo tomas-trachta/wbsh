@@ -242,6 +242,7 @@ static std::string readAll(std::istream& in) {
 	buffer << in.rdbuf();
 
 	std::string text = buffer.str();
+	stripUtf8Bom(text);
 	normalizeCrlf(text);
 	return text;
 }

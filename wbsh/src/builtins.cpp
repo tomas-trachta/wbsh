@@ -1062,6 +1062,7 @@ namespace wbsh {
 		std::stringstream buffer;
 		buffer << file.rdbuf();
 		out_body = buffer.str();
+		stripUtf8Bom(out_body);
 		normalizeCrlf(out_body);
 		return true;
 	}
