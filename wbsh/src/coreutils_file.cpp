@@ -347,7 +347,7 @@ namespace wbsh {
 		if (in == nullptr) return false;
 
 		std::error_code ec;
-		const std::uint64_t size = fs::file_size(toNative(exec, name), ec);
+		const std::uint64_t size = fs::file_size(withImplicitExe(toNative(exec, name)), ec);
 		result = describeStream(options, in, !ec, ec ? 0 : size);
 		std::fclose(in);
 		return true;
@@ -360,7 +360,7 @@ namespace wbsh {
 			return true;
 		}
 
-		const fs::path native = toNative(exec, name);
+		const fs::path native = withImplicitExe(toNative(exec, name));
 		std::error_code ec;
 		const fs::file_status status = options.follow ? fs::status(native, ec)
 			: fs::symlink_status(native, ec);

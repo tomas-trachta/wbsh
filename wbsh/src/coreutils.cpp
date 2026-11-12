@@ -97,6 +97,17 @@ namespace wbsh {
 		return utf8ToPath(exec.pathConv().toWin32(p));
 	}
 
+	fs::path withImplicitExe(const fs::path& native) {
+		if (native.empty() || !native.has_filename() || isDevicePath(native)) return native;
+
+		std::error_code ec;
+		if (fs::symlink_status(native, ec).type() != fs::file_type::not_found) return native;
+
+		fs::path exe = native;
+		exe += ".exe";
+		return fs::is_regular_file(exe, ec) ? exe : native;
+	}
+
 	static std::FILE* fopenFifo(const fs::path& native, const char* mode) {
 		const bool update = std::strchr(mode, '+') != nullptr;
 		const bool reading = mode[0] == 'r' && !update;
@@ -125,9 +136,12 @@ namespace wbsh {
 
 		if (isProcPath(p)) return fopenProc(exec, p, mode);
 
-		const std::string win32 = exec.pathConv().toWin32(p);
-		if (isFifoFile(utf8ToPath(win32))) return fopenFifo(utf8ToPath(win32), mode);
-		return openUtf8(win32, mode);
+		// Only a reader takes NAME.exe for a missing NAME; a writer makes NAME.
+		const bool reading = mode[0] == 'r' && std::strchr(mode, '+') == nullptr;
+		fs::path native = toNative(exec, p);
+		if (reading) native = withImplicitExe(native);
+		if (isFifoFile(native)) return fopenFifo(native, mode);
+		return openUtf8(pathToUtf8(native), mode);
 	}
 
 	fs::path shellTempDirectory(Executor& exec) {
@@ -1000,7 +1014,7 @@ namespace wbsh {
 	                       LsHeader header) {
 		if (isProcPath(path)) return listProcPath(exec, opts, path, header);
 
-		const fs::path target = toNative(exec, path);
+		const fs::path target = withImplicitExe(toNative(exec, path));
 		std::error_code ec;
 		const fs::file_status status = fs::symlink_status(target, ec);
 		if (ec) {
@@ -1014,7 +1028,7 @@ namespace wbsh {
 			printLsHeader(path, header);
 			if (!collectLsDirectoryEntries(target, opts, path, items)) return 1;
 		} else {
-			LsEntry entry = collectEntry(fs::path(), path);
+			LsEntry entry = collectEntry(target.parent_path(), pathToUtf8(target.filename()));
 			entry.name = path;
 			items.push_back(std::move(entry));
 		}
@@ -3002,10 +3016,11 @@ namespace wbsh {
 	}
 
 	static int duOnePath(Executor& exec, const std::string& path, const DuOptions& opts) {
-		const fs::path native = toNative(exec, path);
+		const fs::path native = withImplicitExe(toNative(exec, path));
 		std::error_code ec;
 		if (!fs::exists(native, ec)) {
-			perr("du", path, ec);
+			if (ec) perr("du", path, ec);
+			else    perr("du", "cannot access '" + path + "': No such file or directory");
 			return 1;
 		}
 

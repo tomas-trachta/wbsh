@@ -321,7 +321,7 @@ namespace wbsh::stat_detail {
 	}
 
 	static bool collectInfo(Executor& exec, const std::string& path, bool follow, Info& info) {
-		const fs::path native = toNative(exec, path);
+		const fs::path native = withImplicitExe(toNative(exec, path));
 		std::error_code ec;
 		const fs::file_status status = follow
 			? fs::status(native, ec)
