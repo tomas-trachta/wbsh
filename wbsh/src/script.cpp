@@ -388,6 +388,12 @@ namespace wbsh {
 		Executor exec(env);
 		exec.setSourceText(run.source);
 		absorbInheritedState(env, exec);
+		if (run.login) {
+			startLoginShell(exec);
+			int status = 0;
+			if (exec.consumeFlow(FlowSignal::Kind::Exit, &status)) return exec.fireExitTrap(status);
+		}
+
 		if (run.from_file) exec.beginScriptFrame(run.script_name);
 
 		const std::size_t error_offset = firstSyntaxErrorOffset(lex.errors(), parser.errors());

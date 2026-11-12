@@ -11,6 +11,7 @@
 
 namespace wbsh {
 
-	int runInteractive();
+	/// @p login: started as `wbsh -l`; read `~/.wbsh_profile` first.
+	int runInteractive(bool login);
 
 }  // namespace wbsh

@@ -67,6 +67,7 @@ namespace wbsh {
 		bool nocasematch    = false;
 		bool globstar       = true;
 		bool lastpipe       = false;
+		bool login_shell    = false;
 		bool huponexit      = false;
 		bool expand_aliases = true;
 		bool autocd         = false;

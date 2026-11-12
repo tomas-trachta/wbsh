@@ -57,9 +57,11 @@ static void printHelp() {
 		"  wbsh [opts] <file> [arg ...]  run / dump the file ($1.. = args)\n"
 		"  wbsh [opts] - [arg ...]       run / dump stdin (also -s)\n"
 		"  options end at the first operand or at --; later words are arguments\n"
+		"  short options combine: -lc <command> is -l -c <command>\n"
 		"\n"
 		"modes (-c runs; a file or stdin is only dumped as an AST -- see -r):\n"
 		"  -i, --interactive             force interactive REPL\n"
+		"  -l, --login                   login shell: read ~/.wbsh_profile first\n"
 		"  -r, --run                     actually execute the file or stdin\n"
 		"  -e, --expand                  walk the AST and dump expanded words\n"
 		"  -t, --tokens                  dump the token stream\n"
@@ -148,6 +150,7 @@ struct Options {
 	bool        show_tokens     = false;
 	bool        show_expansions = false;
 	bool        execute         = false;
+	bool        login           = false;
 	AstDump     ast             = AstDump::Default;
 };
 
@@ -170,6 +173,7 @@ static bool parseModeFlag(const std::string& arg, Options& options) {
 	if (arg == "-t" || arg == "--tokens") { options.show_tokens     = true; return true; }
 	if (arg == "-e" || arg == "--expand") { options.show_expansions = true; return true; }
 	if (arg == "-r" || arg == "--run")    { options.execute         = true; return true; }
+	if (arg == "-l" || arg == "--login")  { options.login           = true; return true; }
 	if (arg == "--ast")                   { options.ast = AstDump::Shown;   return true; }
 	if (arg == "--no-ast")                { options.ast = AstDump::Hidden;  return true; }
 	return false;
@@ -209,10 +213,45 @@ static bool isOptionWord(const std::string& arg) {
 	return arg.size() > 1 && arg[0] == '-';
 }
 
+// `-lc` and the like: two or more letters after a single dash.
+static bool isShortGroup(const std::string& arg) {
+	return arg.size() > 2 && arg[0] == '-' && arg[1] != '-';
+}
+
+// `-lc cmd` is `-l -c cmd`, as in bash. -c takes the next word wherever
+// it stands in the group, so `-cl cmd` works too; -c wins over -s.
+static bool parseShortGroup(int argc, char** argv, int i, Options& options,
+		bool& out_done, std::string& out_error) {
+	const std::string arg = argv[i];
+	bool command_string = false;
+	bool stdin_script   = false;
+	for (std::size_t k = 1; k < arg.size(); ++k) {
+		const std::string flag = { '-', arg[k] };
+		if (flag == "-c") { command_string = true; continue; }
+		if (flag == "-s") { stdin_script   = true; continue; }
+		if (parseInfoFlag(flag, options) || parseModeFlag(flag, options)) continue;
+
+		out_error = flag + ": invalid option (see wbsh --help)";
+		return false;
+	}
+
+	out_done = command_string || stdin_script;
+	if (command_string) return takeCommandString(argc, argv, i, options, out_error);
+	if (stdin_script) takeStdin(argc, argv, i, options);
+	return true;
+}
+
 static bool parseArgs(int argc, char** argv, Options& options, std::string& out_error) {
 	for (int i = 1; i < argc; ++i) {
 		const std::string arg = argv[i];
 		if (parseInfoFlag(arg, options) || parseModeFlag(arg, options)) continue;
+
+		if (isShortGroup(arg)) {
+			bool done = false;
+			if (!parseShortGroup(argc, argv, i, options, done, out_error)) return false;
+			if (done) return true;
+			continue;
+		}
 
 		if (arg == "-c") return takeCommandString(argc, argv, i, options, out_error);
 
@@ -313,6 +352,7 @@ static bool loadScriptRun(const Options& options, ScriptRun& run) {
 	run.show_ast        = astShown(options);
 	run.show_expansions = options.show_expansions;
 	run.execute         = executes(options);
+	run.login           = options.login;
 	run.positional      = options.operands;
 
 	switch (options.source) {
@@ -430,7 +470,7 @@ static int runShell(int argc, char** argv) {
 		std::cout << "wbsh " WBSH_VERSION_STR "\n";
 		return 0;
 	case Action::RunInteractive:
-		return runInteractive();
+		return runInteractive(options.login);
 	case Action::RunScript:
 	default:
 		return runScriptAction(options);

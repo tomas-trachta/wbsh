@@ -106,6 +106,7 @@ namespace wbsh {
 			{ "nocasematch",    &ShoptFlags::nocasematch },
 			{ "globstar",       &ShoptFlags::globstar },
 			{ "lastpipe",       &ShoptFlags::lastpipe },
+			{ "login_shell",    &ShoptFlags::login_shell },
 			{ "huponexit",      &ShoptFlags::huponexit },
 			{ "expand_aliases", &ShoptFlags::expand_aliases },
 			{ "autocd",         &ShoptFlags::autocd },

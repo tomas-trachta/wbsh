@@ -94,8 +94,10 @@ wbsh [opts] -c <command> [name [arg ...]]
 wbsh [opts] <file> [arg ...]         run / dump the file ($1.. = args)
 wbsh [opts] - [arg ...]              run / dump stdin (also -s)
 options end at the first operand or at --; later words are arguments
+short options combine: -lc <command> is -l -c <command>
 
   -i, --interactive                  force interactive REPL
+  -l, --login                        login shell: read ~/.wbsh_profile first
   -r, --run                          execute the file or stdin
   -e, --expand                       dump expanded words
   -t, --tokens                       dump the token stream
@@ -197,7 +199,14 @@ set bell-style none
 
 ## Configuration
 
-`~/.wbshrc` is sourced at the start of every interactive session:
+`~/.wbshrc` is sourced at the start of every interactive session.
+A login shell (`wbsh -l`, `wbsh -lc <command>`) first sources
+`~/.wbsh_profile` and sets `shopt login_shell`. wbsh does not read
+`~/.bash_profile` or `~/.profile`, because those files are written for
+Git Bash or Linux. Unlike bash, an interactive login shell also reads
+`~/.wbshrc` after the profile.
+
+An example `~/.wbshrc`:
 
 ```sh
 export EDITOR=code

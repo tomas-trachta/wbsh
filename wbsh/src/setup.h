@@ -10,6 +10,8 @@
  * child of another wbsh.
  */
 
+#include <string>
+
 #include "environment.h"
 #include "executor.h"
 
@@ -40,5 +42,17 @@ namespace wbsh {
 	 * sees the same shell state.
 	 */
 	void absorbInheritedState(Environment& env, Executor& exec);
+
+	/// Run `$HOME/NAME` in @p exec when that file exists (a startup file
+	/// such as `.wbshrc`).
+	void sourceHomeFile(Executor& exec, const std::string& name);
+
+	/**
+	 * @brief Start a login shell (`wbsh -l`).
+	 *
+	 * Sets `shopt login_shell` and runs `~/.wbsh_profile`. wbsh does not
+	 * read bash's profile files: they are written for Git Bash or Linux.
+	 */
+	void startLoginShell(Executor& exec);
 
 }  // namespace wbsh
