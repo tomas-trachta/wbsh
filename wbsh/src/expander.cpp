@@ -2322,10 +2322,10 @@ namespace wbsh {
 
 		switch (op) {
 		case '-':
-			if (missing) return { expandParamWordArg(arg) };
+			if (missing) return { expandParamWordArg(arg, param_quoting_) };
 			return elems;
 		case '+':
-			if (!missing) return { expandParamWordArg(arg) };
+			if (!missing) return { expandParamWordArg(arg, param_quoting_) };
 			if (unset) return {};
 			return { std::string() };
 		case '?':
@@ -2970,6 +2970,20 @@ namespace wbsh {
 		return renderParamBody(s.text, {}, inside_dq, out);
 	}
 
+	// Like expandParam for a list: an unquoted `${a[@]:-word}` records the
+	// quoting of its word, as the scalar form does.
+	std::vector<std::string> Expander::expandListParamQuoted(const ListParam& list,
+			const std::string& body, bool inside_dq, WordQuoting& quoting) {
+		const bool saved = param_quoted_;
+		WordQuoting* const saved_quoting = param_quoting_;
+		param_quoted_ = inside_dq;
+		param_quoting_ = inside_dq ? nullptr : &quoting;
+		std::vector<std::string> elems = expandListParam(list, body);
+		param_quoted_ = saved;
+		param_quoting_ = saved_quoting;
+		return elems;
+	}
+
 	// A body reached through `${!ref}` has a label and is never read as
 	// another `!` or `#` form.
 	bool Expander::renderParamBody(const std::string& body, const std::string& label,
@@ -2981,7 +2995,15 @@ namespace wbsh {
 		ListParam list;
 		if (parseListParam(body, list)) {
 			list.label = label;
-			return renderArrayFields(expandListParam(list, body), list.star, inside_dq, out);
+			WordQuoting quoting;
+			const std::vector<std::string> elems
+				= expandListParamQuoted(list, body, inside_dq, quoting);
+			if (!inside_dq && quoting.set && elems.size() == 1) {
+				pushParamValue(out, elems[0], quoting, 0);
+				return false;
+			}
+
+			return renderArrayFields(elems, list.star, inside_dq, out);
 		}
 
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;

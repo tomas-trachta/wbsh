@@ -458,6 +458,9 @@ namespace wbsh {
 		std::vector<std::string> keyValueWords(const std::string& name) const;
 		void failBadSubstitution(const std::string& body);
 		std::string expandParamWordArg(const std::string& body, WordQuoting* quoting = nullptr);
+		std::vector<std::string> expandListParamQuoted(const ListParam& list,
+		                                               const std::string& body, bool inside_dq,
+		                                               WordQuoting& quoting);
 		bool expandParamWordStep(const std::string& body, std::size_t& i, bool& in_dq,
 		                         WordQuoting* quoting, std::string& out);
 		void expandNestedParamQuoted(const std::string& body, std::size_t& i, std::string& out,

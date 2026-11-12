@@ -51,4 +51,19 @@ echo 28 ${u:-"$w"*}
 r=u
 echo 29 ${!r:-\*}
 
+# The list forms keep the quoting of their word too.
+e=()
+set -- ${e[@]:-\*}; echo "30 $# [$*]"
+set -- ${e[@]:-"x y"}; echo "31 $# [$*]"
+set -- ${e[@]:-x y}; echo "32 $# [$*]"
+set -- ${e[@]:-""}; echo "33 $#"
+f=(1)
+set -- ${f[@]:+"x y"}; echo "34 $# [$*]"
+set --
+set -- ${@:-"x y"}; echo "35 $# [$*]"
+set -- ${e[*]:-a*}; echo "36 $# [$*]"
+g=(p "q r")
+set -- ${g[@]:-d}; echo "37 $#"
+set -- "${g[@]:-d}"; echo "38 $#"
+
 cd / && rm -rf "$D"
