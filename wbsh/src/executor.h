@@ -618,6 +618,10 @@ namespace wbsh {
 		// path (UTF-8) or empty if not found. Honours Windows PATHEXT-style
 		// .exe/.cmd/.bat resolution. Used by `type`, `command -v`, etc.
 		std::string findExecutable(const std::string& name);
+		/// `/usr/bin/env`, `/bin/sh`: a Linux path that names no file here is
+		/// the bare NAME (a builtin, or found on PATH). Other words as given.
+		/// Covers /bin, /sbin, /usr/bin, /usr/sbin and /usr/local/bin.
+		std::string systemBinCommand(const std::string& word);
 		/// Every PATH match for `name`, in PATH order (`type -a`).
 		std::vector<std::string> findAllExecutables(const std::string& name);
 

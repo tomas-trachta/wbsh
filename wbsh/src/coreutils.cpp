@@ -1251,13 +1251,14 @@ namespace wbsh {
 				continue;
 			}
 
-			if (exec.isBuiltin(name)) {
+			const std::string command = exec.systemBinCommand(name);
+			if (exec.isBuiltin(command)) {
 				std::printf("%s: shell builtin\n", name.c_str());
 				continue;
 			}
 
 			std::string found;
-			if (findOnSearchPath(exec, name, found)) {
+			if (findOnSearchPath(exec, command, found)) {
 				std::printf("%s\n", found.c_str());
 				continue;
 			}

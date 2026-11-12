@@ -1429,7 +1429,10 @@ namespace wbsh {
 			return INVALID_HANDLE_VALUE;
 		}
 
-		const std::string exec_path = findExecutable(argv[0]);
+		const std::string name = systemBinCommand(argv[0]);
+		if (isBuiltin(name)) return INVALID_HANDLE_VALUE;
+
+		const std::string exec_path = findExecutable(name);
 		if (exec_path.empty()) {
 			const bool directory = reportDirectoryCommand(argv[0]);
 			if (!directory) reportCommandNotFound(argv[0]);
@@ -1848,7 +1851,10 @@ namespace wbsh {
 		std::fflush(stderr);
 		if (runsInsideShell(argv[0])) return spawnShellCommand(argv, placement);
 
-		const std::string exec_path = findExecutable(argv[0]);
+		const std::string name = systemBinCommand(argv[0]);
+		if (isBuiltin(name)) return spawnShellCommand(argv, placement);
+
+		const std::string exec_path = findExecutable(name);
 		if (exec_path.empty()) {
 			if (!reportDirectoryCommand(argv[0])) reportCommandNotFound(argv[0]);
 			return INVALID_HANDLE_VALUE;
@@ -2907,9 +2913,10 @@ namespace wbsh {
 			return callFunctionWithAssigns(*this, cmd, args, assigns);
 		}
 
-		if (isBuiltin(cmd)) {
+		const std::string name = systemBinCommand(cmd);
+		if (isBuiltin(name)) {
 			const std::vector<std::string> args(argv.begin() + 1, argv.end());
-			return callBuiltinWithAssigns(*this, cmd, args, assigns);
+			return callBuiltinWithAssigns(*this, name, args, assigns);
 		}
 
 		return runExternal(argv, assigns);
@@ -3125,6 +3132,23 @@ namespace wbsh {
 		return lookupInPathDirs(name, path);
 	}
 
+	std::string Executor::systemBinCommand(const std::string& word) {
+		static const char* const kSystemDirs[] = {
+			"/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/local/bin/",
+		};
+
+		for (const char* dir : kSystemDirs) {
+			const std::size_t length = std::strlen(dir);
+			if (word.size() <= length || word.compare(0, length, dir) != 0) continue;
+
+			const std::string name = word.substr(length);
+			if (name.find('/') != std::string::npos) return word;
+			return findExecutable(word).empty() ? name : word;
+		}
+
+		return word;
+	}
+
 	// As in bash: a name with a slash that is a directory cannot run (126).
 	bool Executor::reportDirectoryCommand(const std::string& name) const {
 		if (name.find_first_of("/\\") == std::string::npos) return false;
@@ -3157,7 +3181,7 @@ namespace wbsh {
 		if (argv.empty()) return 0;
 		if (refusePipeCommand(argv[0])) return kStatusCommandNotFound;
 
-		const std::string exec_path = findExecutableWith(argv[0], temp_env);
+		const std::string exec_path = findExecutableWith(systemBinCommand(argv[0]), temp_env);
 		if (exec_path.empty()) {
 			if (reportDirectoryCommand(argv[0])) return kStatusCannotExecute;
 

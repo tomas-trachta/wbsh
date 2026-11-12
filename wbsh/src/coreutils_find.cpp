@@ -897,8 +897,9 @@ namespace wbsh {
 
 		static bool commandExists(Executor& exec, const std::string& name, bool in_dir) {
 			if (in_dir && name.find('/') != std::string::npos) return true;
-			if (exec.isBuiltin(name) || exec.isFunction(name)) return true;
-			return !exec.findExecutable(name).empty();
+			if (exec.isFunction(name)) return true;
+			const std::string command = exec.systemBinCommand(name);
+			return exec.isBuiltin(command) || !exec.findExecutable(command).empty();
 		}
 
 		static int runCommand(Run& run, const std::vector<std::string>& argv,

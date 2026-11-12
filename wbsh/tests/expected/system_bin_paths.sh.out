@@ -1,0 +1,25 @@
+=== builtins by path
+through env
+direct
+printf
+PIPED
+background
+=== a function does not take the path
+not the function
+=== other runners
+by command
+xargs xa
+find .
+by exec
+=== lookup
+/usr/bin/env is a shell builtin
+builtin
+/usr/bin/env
+/bin/echo: shell builtin
+=== a name that is nowhere
+wbsh: /usr/bin/no-such-command-here: command not found
+status 127
+wbsh: type: /usr/bin/no-such-command-here: not found
+status 1
+wbsh: /usr/bin/sub/dir: command not found
+status 127

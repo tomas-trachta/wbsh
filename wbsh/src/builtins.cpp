@@ -1140,7 +1140,14 @@ namespace wbsh {
 		std::vector<type_detail::Match> matches = shellMatches(exec, name, opts);
 		if (!opts.all && !matches.empty()) return matches;
 
-		std::vector<std::string> paths = exec.findAllExecutables(name);
+		// A missing `/usr/bin/NAME` runs NAME.
+		const std::string command = exec.systemBinCommand(name);
+		if (command != name && !opts.force_path && exec.isBuiltin(command)) {
+			matches.push_back({ type_detail::Kind::Builtin, {} });
+			if (!opts.all) return matches;
+		}
+
+		std::vector<std::string> paths = exec.findAllExecutables(command);
 		if (!opts.all && paths.size() > 1) paths.resize(1);
 		for (const std::string& path : paths) {
 			matches.push_back({ type_detail::Kind::File, exec.pathConv().toPosix(path) });
@@ -1325,9 +1332,10 @@ namespace wbsh {
 		if (mode != 0) return describeForCommand(exec, args, first, mode);
 
 		const std::vector<std::string> rest(args.begin() + first, args.end());
-		if (exec.isBuiltin(rest[0])) {
+		const std::string name = exec.systemBinCommand(rest[0]);
+		if (exec.isBuiltin(name)) {
 			const std::vector<std::string> sub(rest.begin() + 1, rest.end());
-			return exec.callBuiltin(rest[0], sub);
+			return exec.callBuiltin(name, sub);
 		}
 
 		return exec.runExternal(rest, {});

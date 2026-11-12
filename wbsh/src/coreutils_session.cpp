@@ -218,8 +218,9 @@ namespace wbsh {
 	}
 
 	static bool commandExists(Executor& exec, const std::string& name) {
-		if (exec.isFunction(name) || exec.isBuiltin(name) || exec.isAlias(name)) return true;
-		return !exec.findExecutable(name).empty();
+		if (exec.isFunction(name) || exec.isAlias(name)) return true;
+		const std::string command = exec.systemBinCommand(name);
+		return exec.isBuiltin(command) || !exec.findExecutable(command).empty();
 	}
 
 	static int exitStatusOf(HANDLE process) {
