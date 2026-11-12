@@ -1,0 +1,29 @@
+x: -2 -> [bc]
+x: -3 -> [abc]
+x: -4 -> []
+x:5 -> []
+x:3 -> []
+x:2:-1 -> []
+x:1:-2 -> []
+x: -4:1 -> []
+x:0:-3 -> []
+x:4:-1 -> []
+x: -1:-1 -> []
+x: -2:-1 -> [b]
+x:1 -> [bc]
+x:1:1 -> [b]
+x:0:10 -> [abc]
+x: -1:5 -> [c]
+unset -> []
+unset element -> []
+wbsh: -5: substring expression < 0
+x:1:-5 status 1
+wbsh: -1: substring expression < 0
+x:3:-1 status 1
+wbsh: -4: substring expression < 0
+x:0:-4 status 1
+wbsh: 2-7: substring expression < 0
+x:1:2-7 status 1
+wbsh: -1: substring expression < 0
+empty status 1
+utf-8: [čř] [šč] []

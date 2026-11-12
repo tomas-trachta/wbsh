@@ -2012,8 +2012,11 @@ namespace wbsh {
 		case '=':
 		case '?':
 			return evalParamDefaultOp(op, colon, ctx, argument);
-		case ':':
-			return substringExpand(ctx.named_value, argument);
+		case ':': {
+			// An unset parameter gives nothing, without the offset checks.
+			const bool unset = ctx.has_subscript ? !ctx.slot.is_set : !isParamSet(ctx.name);
+			return unset ? std::string() : substringExpand(ctx.named_value, argument);
+		}
 		case '#':
 			return stripPrefix(ctx.named_value, expandPatternArg(argument), doubled);
 		case '%':
@@ -2612,13 +2615,24 @@ namespace wbsh {
 		std::string length_text;
 		splitSliceArgs(args, offset_text, length_text);
 
+		// As in bash: an offset before the start or past the end gives
+		// nothing, and a negative length (counted from the end) must not end
+		// before the offset.
 		const long long size = static_cast<long long>(utf8Count(val));
 		long long offset = evalArith(offset_text);
-		if (offset < 0) offset = std::max<long long>(0, size + offset);
-		if (offset > size) offset = size;
+		if (offset < 0) offset += size;
+		if (failed() || offset < 0 || offset > size) return {};
 
 		long long length = length_text.empty() ? size - offset : evalArith(length_text);
-		if (length < 0) length = std::max<long long>(0, size + length - offset);
+		if (failed()) return {};
+		if (length < 0) {
+			length = size + length - offset;
+			if (length < 0) {
+				fail(length_text + ": substring expression < 0");
+				return {};
+			}
+		}
+
 		if (offset + length > size) length = size - offset;
 		return charSlice(val, static_cast<std::size_t>(offset), static_cast<std::size_t>(length));
 	}
