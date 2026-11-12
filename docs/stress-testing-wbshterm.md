@@ -178,11 +178,23 @@ the pending wrap after the alternate screen, and `--record` starting a
 fresh file. The self-test now has 496 checks and all pass; all 25 golden
 grids pass.
 
-Still open: W6 (input after `less`), Ctrl+C in snapshot sessions, CFG
-(`/guard:cf`) for wbshterm.exe, a recorded SHA-256 for the vendored
-ConPTY binaries. The self-test check "quitting a pager leaves a working
-prompt" passes even when the command does not run: it finds its marker
-in the echo of the typed line.
+Later rounds (same branch) fixed the rest:
+
+- W6 and Ctrl+C: both were faults of the snapshot driver, which did not
+  read the session output while it typed its feeds. It reads now, and
+  `sessions/less_pager` and `sessions/ctrl_c` (now `high`) pass.
+- The self-test check "quitting a pager leaves a working prompt" looks
+  for a computed value (`pager-done-$((3+4))` gives `pager-done-7`), so
+  the echo of the typed line cannot satisfy it.
+- wbshterm.exe (and wbsh.exe) are built with `/guard:cf`. Replay is
+  5–20 % slower with CFG; we accept that.
+- `conpty/fetch.ps1` writes a SHA-256 line per vendored binary into
+  `conpty/VERSION.txt`, and `security/static_scan.ps1` checks the hashes
+  and the Microsoft signatures.
+
+Run on 2026-11-12: 51 cases in `bugs` and `security`, 0 failed; the
+self-test has 496 checks and all pass. Nothing from the first run is
+open. The manual checklist (section 5) is still to do in the real window.
 
 ## 7. Next steps for the framework
 

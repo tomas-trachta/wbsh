@@ -283,15 +283,61 @@ recursion changes: no memory-safety report. The only two reports are
 ASan's own allocator running out of memory in the cases that ask for
 gigabytes on purpose; the driver now files those as `review`.
 
-Still open: input lost after quitting `less` (check in the real window
-first: snapshot sessions do not read output while they type);
-`./script.cmd` exit code and `chcp` (`.COM` on PATHEXT); upper-case
-Windows variables (`$SYSTEMROOT`); a `PATH=` prefix not used for the
-command lookup; `IFS` from the environment; running a directory (127,
-not 126); a failed readonly assignment and `echo` to a closed stdout
-return 0; `awk length()` counts bytes; the replacement part of
-`${var/pat/rep}` (backslashes, `&`); script syntax errors without the
-script name; the slow paths (pipes, globbing, `find`, gzip).
+The open items of this round are fixed in 7.2.
+
+### 7.2 Status after the later fix rounds (same branch)
+
+Fixed, each with a test in `wbsh/tests/` (or a stress case) and the
+golden suite at its baseline:
+
+| Area | Finding | Fix |
+|---|---|---|
+| Native | `chcp` not found; `./script.cmd` status | `.COM` is searched; batch-file statuses come through. |
+| Native | Upper-case Windows variables empty; `IFS` imported | `$SYSTEMROOT`, `$WINDIR` and the others have Git Bash's names; `IFS` is reset. |
+| Bugs | Directory 127, readonly assignment and closed-stdout `echo` status 0, `PATH=cmd` lookup | bash's statuses; a `PATH=` prefix is used for the lookup. |
+| Bugs | `awk length()` counted bytes | UTF-8 characters in `length`, `substr`, `index`, `match`. |
+| Bugs | `${var/pat/rep}` word parts | bash 5.2 rules (`&`, backslashes, quoting). |
+| Bugs | `${u:-\*}`, `${u:-'a*'}`, `${u:-"a b"}` lost their quoting | The default word keeps the quoting of its parts: no glob, no split, `""` is a field. |
+| Bugs | `${x: -4}` on `abc` gave `abc`; `${x:1:-5}` gave no error | bash's edge rules for offsets and negative lengths. |
+| Bugs | After an expansion error wbsh ran the rest of the line (and a loop went on) | The rest of the input line is dropped, as in bash; `eval`, `source`, subshells and `$(...)` stop at their own level. |
+| Bugs | `x=<(cmd)` ran the pipe path as a command ("All pipe instances are busy") | `<(...)` and `>(...)` stay in the word they are part of. |
+| Bugs | `[[ -x == y ]]` and `[[ -n ]]` accepted | A unary operator always takes the next word, as in bash. |
+| Bugs | `$(...)` kept NUL bytes | Dropped, with bash's warning. |
+| Bugs | A 20 000-stage `&&` chain overflowed the stack | The chain runs in a loop. |
+| Bugs | `case x in` + `a \|\| b` made the parser use all memory (fuzz-parse) | The clause stops at a token that no item can start with. |
+| UX | Script syntax errors without the script name | `wbsh: script: line N: message`. |
+| UX | A script with a UTF-8 BOM failed | The BOM is skipped (bash fails here; Windows editors write one). |
+| Security | No CFG; vendored ConPTY binaries not checked | `/guard:cf` on wbsh and wbshterm; `conpty/VERSION.txt` records SHA-256 hashes, which the security suite checks. |
+| Speed | Pipes, `find`, `ls`, `wc`, keyed `sort` | See the table below. |
+
+| Case | Before | After | Git Bash |
+|---|---|---|---|
+| `pipe_throughput` (200 MB) | 4 955 ms | 353 ms | 972 ms |
+| `find_tree` | 441 ms | 106 ms | 127 ms |
+| `ls` of 3 000 files | 245 ms | 66 ms | |
+| `wc -c` of 100 MB | 1 727 ms | 176 ms | |
+| `sort -t, -k4,4n` of 200 000 lines | 535 ms | 158 ms | 75–125 ms |
+
+After these rounds the quick `bugs` suite has no failed case, and a
+600-program `fuzz-exec` run and 1 200 `fuzz-parse` mutants show no crash
+and no difference from bash.
+
+Still open:
+
+- `compress` is about 1.8 × slower than Git Bash's gzip.
+- Small memory growth per iteration: subshell about 450 B, process
+  substitution about 800 B (`memory` suite).
+- The CRT does not buffer stdout when it points at `NUL`, so a builtin
+  that writes line by line to `/dev/null` makes one system call per
+  write (`sort` now writes blocks; others do not).
+- An arithmetic error in an array subscript or a substring offset
+  (`${a[n]}` with `n='p 2'`) is swallowed; bash drops the line.
+- `${a[@]:-\*}` keeps its backslash, and `${u:-"" a}` gives one field
+  (bash: two).
+- When a pipeline element fails to start, the later elements do not
+  start either, so `PIPESTATUS` has 1 for them (bash: their own status).
+- `<(...)` alone as a command reports "All pipe instances are busy"
+  (bash: permission denied).
 
 ## 8. Next steps for the framework
 
