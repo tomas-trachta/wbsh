@@ -135,8 +135,12 @@ namespace wbsh {
 	using executor_detail::StdioHandles;
 #endif
 
-	static void reportExpanderError(Expander& expander) {
+	// As in bash, an expansion error drops the rest of the input line (see
+	// execNode); arithmetic that a command evaluates itself, as (( )) does,
+	// only fails that command.
+	static void reportExpanderError(Expander& expander, bool drops_line = true) {
 		std::fprintf(stderr, "wbsh: %s\n", expander.takeError().c_str());
+		if (drops_line) expander.dropRestOfLine();
 	}
 
 	static void reportPathError(const std::string& path) {
@@ -818,6 +822,7 @@ namespace wbsh {
 		releaseProcessSubstitutionsSince(proc_substs);
 		if (tracks_line) env_.setCurrentLineno(static_cast<int>(node.loc.line));
 		exitOnFatalExpansionError();
+		discardAfterExpansionError();
 		return status;
 	}
 
@@ -834,6 +839,15 @@ namespace wbsh {
 		if (env_.interactive() || flowPending()) return;
 
 		raiseExit(1);
+	}
+
+	// bash stops the whole command after an expansion error: the rest of
+	// the input line, out of loops and functions. The input list drops the
+	// line; a subshell, `$(...)` or trap action ends with status 1.
+	void Executor::discardAfterExpansionError() {
+		if (!expander_.takeDropLine() || flowPending()) return;
+
+		raiseDiscard();
 	}
 
 	int Executor::dispatchNode(const Node& node) {
@@ -1028,15 +1042,36 @@ namespace wbsh {
 #else
 			status = execNode(*item.command);
 #endif
+			// As in bash, a line dropped after an expansion error neither
+			// fires the ERR trap nor ends the shell under set -e.
+			const bool dropped = dropRestOfInputLine(list, index);
+			if (dropped) status = 1;
 			if (flowPending()) return status;
 			setLastStatus(status);
 			handlePendingSignals();
 			if (flowPending()) return status;
 
-			if (!item.background && handleCommandFailure(status)) return status;
+			if (!dropped && !item.background && handleCommandFailure(status)) return status;
 		}
 
 		return status;
+	}
+
+	static std::size_t inputReadThrough(const List& list, std::size_t index,
+			const std::string& text);
+
+	// The input list takes a Discard: it skips the other items that start
+	// before the end of the line, as bash had read them with this one.
+	bool Executor::dropRestOfInputLine(const List& list, std::size_t& index) {
+		if (&list != input_echo_.list || !consumeFlow(FlowSignal::Kind::Discard)) return false;
+
+		const std::size_t line_end = inputReadThrough(list, index, *input_echo_.text);
+		while (index + 1 < list.items.size()
+				&& list.items[index + 1].command->loc.offset < line_end) {
+			++index;
+		}
+
+		return true;
 	}
 
 	// True when the shell must stop: the ERR trap left a flow signal, or
@@ -1280,7 +1315,8 @@ namespace wbsh {
 		for (const auto& word : words) {
 			std::vector<std::string> fields = expander.expandWord(word);
 			if (expander.failed()) {
-				reportExpanderError(expander);
+				// In bash the element's own process expands its words.
+				reportExpanderError(expander, /*drops_line=*/false);
 				return false;
 			}
 
@@ -1853,7 +1889,7 @@ namespace wbsh {
 		for (const auto& assignment : assignments) {
 			std::string value = expander.expandAssignmentValue(assignment.value);
 			if (expander.failed()) {
-				reportExpanderError(expander);
+				reportExpanderError(expander, /*drops_line=*/false);
 				continue;
 			}
 
@@ -2851,7 +2887,17 @@ namespace wbsh {
 		}
 
 		RedirState state;
-		if (!applyRedirectionsOrUndo(sc.redirs, state)) return 1;
+		if (!applyRedirectionsOrUndo(sc.redirs, state)) {
+			// bash expands the redirections of a command it forks in the
+			// child, so an expansion error there fails only that command.
+			// Besides external programs, wbsh's built-in utilities (cat,
+			// sort, ...) are programs in bash.
+			const ManPage* page = findManPage(argv[0]);
+			const bool shell_builtin = isBuiltin(argv[0]) && page != nullptr
+				&& page->kind == ManKind::Shell;
+			if (!isFunction(argv[0]) && !shell_builtin) expander_.takeDropLine();
+			return 1;
+		}
 
 		traceXtrace(argv);
 		compound_args_ = std::move(compound);
@@ -3706,6 +3752,7 @@ namespace wbsh {
 			return LoopFlowAction::ExitLoop;
 		case FlowSignal::Kind::Return:
 		case FlowSignal::Kind::Exit:
+		case FlowSignal::Kind::Discard:
 			return LoopFlowAction::Propagate;
 		case FlowSignal::Kind::None:
 		default:
@@ -3751,7 +3798,7 @@ namespace wbsh {
 		value = expander.evalArith(expr);
 		if (!expander.failed()) return true;
 
-		reportExpanderError(expander);
+		reportExpanderError(expander, /*drops_line=*/false);
 		return false;
 	}
 
@@ -5018,7 +5065,9 @@ namespace wbsh {
 		owned_arenas_.push_back(std::move(parsed.arena));
 	}
 
+	// A Discard ends the text it came from (a trap action, `$(...)`).
 	int Executor::finishParsedText(const ParsedText& parsed, int status) {
+		if (consumeFlow(FlowSignal::Kind::Discard)) status = 1;
 		if (parsed.diagnostics.empty() || flowPending()) return status;
 
 		std::fputs(parsed.diagnostics.c_str(), stderr);
@@ -5049,7 +5098,8 @@ namespace wbsh {
 		input_echo_ = { is_list ? static_cast<const List*>(&root) : nullptr, &source_text, 0 };
 		if (!is_list) echoInputUpTo(source_text.size());
 
-		const int status = execute(root);
+		int status = execute(root);
+		if (consumeFlow(FlowSignal::Kind::Discard)) status = 1;
 		if (!flowPending()) echoInputUpTo(source_text.size());
 
 		input_echo_ = saved;

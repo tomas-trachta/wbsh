@@ -59,6 +59,7 @@ namespace wbsh {
 			Continue,   ///< `continue N` — next iteration of the Nth loop.
 			Return,     ///< `return [N]` — unwind to the function call.
 			Exit,       ///< `exit [N]` — unwind to the shell driver.
+			Discard,    ///< Expansion error — drop the rest of the input line.
 		};
 		Kind kind = Kind::None;
 		int  status = 0;    ///< Return / Exit payload.
@@ -520,6 +521,11 @@ namespace wbsh {
 			flow_.status = status;
 			flow_.count = 1;
 		}
+		void raiseDiscard() {
+			flow_.kind = FlowSignal::Kind::Discard;
+			flow_.status = 1;
+			flow_.count = 1;
+		}
 		/**
 		 * @brief Consume the pending signal if it is of kind @p k.
 		 *
@@ -748,6 +754,8 @@ namespace wbsh {
 		bool nodeTracksLineno(const Node& node) const;
 		int dispatchNode(const Node& n);
 		void exitOnFatalExpansionError();
+		void discardAfterExpansionError();
+		bool dropRestOfInputLine(const List& list, std::size_t& index);
 		int execList(const List& l);
 		int execAndOr(const AndOr& a);
 		int execPipeline(const Pipeline& p);

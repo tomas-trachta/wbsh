@@ -174,6 +174,16 @@ namespace wbsh {
 			return fatal;
 		}
 
+		/// After a reported expansion error bash drops the rest of the
+		/// input line; the executor takes this once the command has ended.
+		void dropRestOfLine() { drop_line_ = true; }
+
+		bool takeDropLine() {
+			const bool drop = drop_line_;
+			drop_line_ = false;
+			return drop;
+		}
+
 		/**
 		 * @brief evalArith() for contexts that swallow arithmetic errors.
 		 *
@@ -285,6 +295,7 @@ namespace wbsh {
 		PathConv path_conv_;
 		std::string pending_error_;
 		bool fatal_error_ = false;
+		bool drop_line_ = false;
 		// Whether the ${...} being expanded is inside double quotes, which
 		// decides what a backslash in its word argument escapes.
 		bool param_quoted_ = true;
