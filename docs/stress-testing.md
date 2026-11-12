@@ -308,7 +308,8 @@ golden suite at its baseline:
 | UX | Script syntax errors without the script name | `wbsh: script: line N: message`. |
 | UX | A script with a UTF-8 BOM failed | The BOM is skipped (bash fails here; Windows editors write one). |
 | Security | No CFG; vendored ConPTY binaries not checked | `/guard:cf` on wbsh and wbshterm; `conpty/VERSION.txt` records SHA-256 hashes, which the security suite checks. |
-| Speed | Pipes, `find`, `ls`, `wc`, keyed `sort` | See the table below. |
+| Security | Process-substitution and `mkfifo` pipes had the default DACL (read access for Everyone) and names that are easy to guess | A protected DACL: the current user and SYSTEM only. |
+| Speed | Pipes, `find`, `ls`, `wc`, keyed `sort`, gzip, output to `/dev/null` | See the table below. |
 
 | Case | Before | After | Git Bash |
 |---|---|---|---|
@@ -317,19 +318,27 @@ golden suite at its baseline:
 | `ls` of 3 000 files | 245 ms | 66 ms | |
 | `wc -c` of 100 MB | 1 727 ms | 176 ms | |
 | `sort -t, -k4,4n` of 200 000 lines | 535 ms | 158 ms | 75–125 ms |
+| `gzip -6` of 10 MB (same output bytes) | 652 ms | 412 ms | 318 ms |
+| `grep 1` of 10 MB to `/dev/null` | 469 ms | 124 ms | |
 
-After these rounds the quick `bugs` suite has no failed case, and a
-600-program `fuzz-exec` run and 1 200 `fuzz-parse` mutants show no crash
-and no difference from bash.
+Output to `/dev/null` was slow because the CRT counts `NUL` as a
+character device, like a console, and wrote each `printf` call through
+at once; stdout now gets a full buffer while it points at `NUL`.
+
+After these rounds the quick `bugs`, `security`, `ux`, `perf` and
+`memory` suites have no failed case, and a 600-program `fuzz-exec` run
+and 1 200 `fuzz-parse` mutants show no crash and no difference from
+bash. In `perf`, only `compress` (1.2 ×) and `startup` (about equal)
+are not faster than Git Bash.
+
+The growth that the `memory` suite shows for `subshell`, `procsubst`,
+`spawn_external` and `cmdsubst_large` (0.5–8 kB per iteration between
+N and 10 × N) is not a leak: in longer runs the working set stays flat
+(7.8 MB from 2 000 to 8 000 subshells and pipelines; 10–13 MB over
+1 000 captures of 1 MB). It is heap warm-up and fragmentation.
 
 Still open:
 
-- `compress` is about 1.8 × slower than Git Bash's gzip.
-- Small memory growth per iteration: subshell about 450 B, process
-  substitution about 800 B (`memory` suite).
-- The CRT does not buffer stdout when it points at `NUL`, so a builtin
-  that writes line by line to `/dev/null` makes one system call per
-  write (`sort` now writes blocks; others do not).
 - An arithmetic error in an array subscript or a substring offset
   (`${a[n]}` with `n='p 2'`) is swallowed; bash drops the line.
 - `${a[@]:-\*}` keeps its backslash, and `${u:-"" a}` gives one field
