@@ -893,23 +893,22 @@ namespace wbsh {
 	}
 
 	bool Parser::atDBracketUnaryTest() const {
-		if (!isLiteralOnlyWord(peek())) return false;
-		if (!isDBracketUnaryOp(peek().segments[0].text)) return false;
-		if (peek(1).kind != TokKind::Word) return false;
-		return !isReserved(peek(1), "]]");
+		return isLiteralOnlyWord(peek()) && isDBracketUnaryOp(peek().segments[0].text);
 	}
 
+	// As in bash, an unquoted unary operator always takes the next word:
+	// `[[ -x == y ]]` tests a file named `==` and then fails on `y`, and
+	// `[[ -n ]]` is an error, not a test of the string "-n".
 	bool Parser::tryParseDBracketUnary(DBracketCond::Expr& e) {
 		if (!atDBracketUnaryTest()) return false;
 
-		// `-f && X` — only treat as unary if the operand is followed by a
-		// connective / closer; otherwise fall back to single-operand truthiness.
-		const Token& after = peek(2);
-		const bool operand_closed = isReserved(after, "]]")
-		    || after.kind == TokKind::AndIf
-		    || after.kind == TokKind::OrIf
-		    || after.kind == TokKind::RParen;
-		if (!operand_closed) return false;
+		const Token& operand = peek(1);
+		if (operand.kind != TokKind::Word || isReserved(operand, "]]")) {
+			error(operand, "unexpected argument `" + operand.text
+				+ "' to conditional unary operator");
+			e.lhs = tokenToWord(advance());
+			return true;
+		}
 
 		e.op = peek().segments[0].text;
 		advance();

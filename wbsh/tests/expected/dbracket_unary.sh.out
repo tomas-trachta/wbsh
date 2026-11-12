@@ -1,0 +1,14 @@
+[[ -x == y ]] status 2
+[[ -n == y ]] status 2
+[[ ! -x == y ]] status 2
+[[ -x -a y ]] status 2
+[[ -n ]] status 2
+[[ -x ]] status 2
+[[ -x && y ]] status 2
+[[ -d / || -n ]] status 2
+[[ -x == ]] status 1
+[[ a == -x ]] status 1
+[[ -o x ]] status 1
+[[ "-n" ]] status 0
+[[ -n x && -z "" ]] status 0
+[[ -e / ]] status 0
