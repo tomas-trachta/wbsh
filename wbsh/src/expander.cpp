@@ -1265,9 +1265,18 @@ namespace wbsh {
 		return out;
 	}
 
+	// A shell string cannot hold a NUL byte, so bash drops them from the
+	// output, with a warning; a variable then has the same length in both.
 	std::string Expander::runCmdSubst(const std::string& body) {
-		if (sub_ != nullptr) return sub_->run(body);
-		return {};
+		if (sub_ == nullptr) return {};
+
+		std::string output = sub_->run(body);
+		const auto nul = std::remove(output.begin(), output.end(), '\0');
+		if (nul == output.end()) return output;
+
+		output.erase(nul, output.end());
+		std::fprintf(stderr, "wbsh: warning: command substitution: ignored null byte in input\n");
+		return output;
 	}
 
 	static void ansicHexEscape(const std::string& body, std::size_t& i, std::string& out) {
