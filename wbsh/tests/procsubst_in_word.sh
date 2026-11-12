@@ -15,3 +15,5 @@ echo "9 <(quoted)" '<(single)'
 wc -l < <(printf 'a\nb\n') | sed 's/^/10 /'
 set -- 2>(true); echo "11 words: $#, starts 2: ${1:0:1}"
 diff <(echo a) <(echo a) && echo 12 same
+<(true) 2>/dev/null; echo "13 a pipe path as a command: $?"
+<(true) 2>/dev/null | cat; echo "14 ${PIPESTATUS[*]}"

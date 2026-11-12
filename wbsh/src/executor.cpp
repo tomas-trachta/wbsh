@@ -1390,6 +1390,15 @@ namespace wbsh {
 		return true;
 	}
 
+	// A <(...) path names a pipe, not a program. Opening it to look for a
+	// script line would take the reader's place, so it is refused first,
+	// with Git Bash's message and status for /dev/fd/63.
+	static bool refusePipeCommand(const std::string& name) {
+		const bool pipe = name.rfind("\\\\.\\pipe\\", 0) == 0 || name.rfind("//./pipe/", 0) == 0;
+		if (pipe) std::fprintf(stderr, "wbsh: %s: No such file or directory\n", name.c_str());
+		return pipe;
+	}
+
 	HANDLE Executor::tryDirectExternalLaunch(const Node& elem,
 	                                         HANDLE h_in, HANDLE h_out, HANDLE h_err,
 	                                         bool* tried) {
@@ -1411,6 +1420,12 @@ namespace wbsh {
 
 		if (argv.empty()) return INVALID_HANDLE_VALUE;
 		if (isBuiltin(argv[0]) || isFunction(argv[0]) || isAlias(argv[0])) {
+			return INVALID_HANDLE_VALUE;
+		}
+
+		if (refusePipeCommand(argv[0])) {
+			launch_status_ = kStatusCommandNotFound;
+			*tried = true;
 			return INVALID_HANDLE_VALUE;
 		}
 
@@ -3140,6 +3155,7 @@ namespace wbsh {
 	int Executor::runExternal(const std::vector<std::string>& argv,
 	                          const NameValueList& temp_env) {
 		if (argv.empty()) return 0;
+		if (refusePipeCommand(argv[0])) return kStatusCommandNotFound;
 
 		const std::string exec_path = findExecutableWith(argv[0], temp_env);
 		if (exec_path.empty()) {
@@ -3170,8 +3186,9 @@ namespace wbsh {
 			return runShellScript(exec_path, argv, temp_env);
 		}
 
+		// The file is there but does not start: bash's status for that.
 		std::fprintf(stderr, "wbsh: %s: %s\n", argv[0].c_str(), lastErrorString().c_str());
-		return kStatusCommandNotFound;
+		return kStatusCannotExecute;
 #else
 		return kStatusCommandNotFound;
 #endif
