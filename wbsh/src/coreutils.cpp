@@ -303,6 +303,16 @@ namespace wbsh {
 #endif
 	}
 
+	void bufferStdoutForNul() {
+#ifdef _WIN32
+		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stdout)));
+		if (handle == INVALID_HANDLE_VALUE || ::GetFileType(handle) != FILE_TYPE_CHAR) return;
+		if (isConsoleStream(stdout)) return;
+
+		std::setvbuf(stdout, nullptr, _IOFBF, 64 * 1024);
+#endif
+	}
+
 	bool isDiskStream(std::FILE* stream) {
 		const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stream)));
 		return handle != INVALID_HANDLE_VALUE && ::GetFileType(handle) == FILE_TYPE_DISK;

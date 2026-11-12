@@ -41,6 +41,7 @@
 #include <utility>
 #include <vector>
 
+#include "coreutils_internal.h"
 #include "devices.h"
 #include "exitstatus.h"
 #include "fifo.h"
@@ -1952,6 +1953,10 @@ namespace wbsh {
 		if (target == 1) std::clearerr(stdout);
 	}
 
+	static void afterRepointing(int target) {
+		if (target == 1) bufferStdoutForNul();
+	}
+
 	// The opened fd can already be `target` when target was closed.
 	static void moveFdTo(int fd, int target) {
 		if (fd == target) return;
@@ -1959,6 +1964,7 @@ namespace wbsh {
 		beforeRepointing(target);
 		_dup2(fd, target);
 		_close(fd);
+		afterRepointing(target);
 	}
 
 	// A backup of -1 records that @p fd was closed, so undoing closes it.
@@ -2206,7 +2212,10 @@ namespace wbsh {
 
 		saveFd(state, target);
 		beforeRepointing(target);
-		if (_dup2(from_fd, target) == 0) return true;
+		if (_dup2(from_fd, target) == 0) {
+			afterRepointing(target);
+			return true;
+		}
 
 		std::fprintf(stderr, "wbsh: %d: Bad file descriptor\n", from_fd);
 		return false;
@@ -2357,6 +2366,7 @@ namespace wbsh {
 
 		_dup2(backup, fd);
 		_close(backup);
+		afterRepointing(fd);
 	}
 
 	void Executor::undoRedirections(RedirState& state) {
