@@ -545,9 +545,9 @@ namespace wbsh {
 
 	static bool xargsCommandExists(Runner& runner, const std::string& name) {
 		Executor& exec = runner.exec;
-		if (exec.isBuiltin(name) || exec.isFunction(name) || !exec.findExecutable(name).empty()) {
-			return true;
-		}
+		const std::string command = exec.systemBinCommand(name);
+		if (exec.isBuiltin(command) || exec.isFunction(name)) return true;
+		if (!exec.findExecutable(command).empty()) return true;
 
 		perr("xargs", name + ": No such file or directory");
 		runner.stopped = true;
@@ -557,8 +557,9 @@ namespace wbsh {
 
 	static int invokeXargsInProcess(Executor& exec, const std::vector<std::string>& argv) {
 		const std::vector<std::string> call_args(argv.begin() + 1, argv.end());
-		if (exec.isBuiltin(argv[0])) return exec.callBuiltin(argv[0], call_args);
 		if (exec.isFunction(argv[0])) return exec.callFunction(argv[0], call_args);
+		const std::string command = exec.systemBinCommand(argv[0]);
+		if (exec.isBuiltin(command)) return exec.callBuiltin(command, call_args);
 		return exec.executeText(quoteShellArgv(argv), "<xargs>");
 	}
 

@@ -39,6 +39,11 @@ namespace wbsh {
 	/// filesystem::path without mojibake on non-ASCII names.
 	std::filesystem::path toNative(Executor& exec, const std::string& p);
 
+	/// As in Git Bash, a missing NAME with a regular file NAME.exe beside it
+	/// is that file, so `ls "$JAVA_HOME/bin/java"` finds java.exe. Any other
+	/// @p native (a device path is not probed) is returned as it is.
+	std::filesystem::path withImplicitExe(const std::filesystem::path& native);
+
 	/// fopen on a UTF-8, POSIX-or-Win32 path (`_wfopen` on Windows).
 	std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode);
 

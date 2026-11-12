@@ -97,6 +97,17 @@ namespace wbsh {
 		return utf8ToPath(exec.pathConv().toWin32(p));
 	}
 
+	fs::path withImplicitExe(const fs::path& native) {
+		if (native.empty() || !native.has_filename() || isDevicePath(native)) return native;
+
+		std::error_code ec;
+		if (fs::symlink_status(native, ec).type() != fs::file_type::not_found) return native;
+
+		fs::path exe = native;
+		exe += ".exe";
+		return fs::is_regular_file(exe, ec) ? exe : native;
+	}
+
 	static std::FILE* fopenFifo(const fs::path& native, const char* mode) {
 		const bool update = std::strchr(mode, '+') != nullptr;
 		const bool reading = mode[0] == 'r' && !update;
@@ -125,9 +136,12 @@ namespace wbsh {
 
 		if (isProcPath(p)) return fopenProc(exec, p, mode);
 
-		const std::string win32 = exec.pathConv().toWin32(p);
-		if (isFifoFile(utf8ToPath(win32))) return fopenFifo(utf8ToPath(win32), mode);
-		return openUtf8(win32, mode);
+		// Only a reader takes NAME.exe for a missing NAME; a writer makes NAME.
+		const bool reading = mode[0] == 'r' && std::strchr(mode, '+') == nullptr;
+		fs::path native = toNative(exec, p);
+		if (reading) native = withImplicitExe(native);
+		if (isFifoFile(native)) return fopenFifo(native, mode);
+		return openUtf8(pathToUtf8(native), mode);
 	}
 
 	fs::path shellTempDirectory(Executor& exec) {
@@ -1000,7 +1014,7 @@ namespace wbsh {
 	                       LsHeader header) {
 		if (isProcPath(path)) return listProcPath(exec, opts, path, header);
 
-		const fs::path target = toNative(exec, path);
+		const fs::path target = withImplicitExe(toNative(exec, path));
 		std::error_code ec;
 		const fs::file_status status = fs::symlink_status(target, ec);
 		if (ec) {
@@ -1014,7 +1028,7 @@ namespace wbsh {
 			printLsHeader(path, header);
 			if (!collectLsDirectoryEntries(target, opts, path, items)) return 1;
 		} else {
-			LsEntry entry = collectEntry(fs::path(), path);
+			LsEntry entry = collectEntry(target.parent_path(), pathToUtf8(target.filename()));
 			entry.name = path;
 			items.push_back(std::move(entry));
 		}
@@ -1251,13 +1265,14 @@ namespace wbsh {
 				continue;
 			}
 
-			if (exec.isBuiltin(name)) {
+			const std::string command = exec.systemBinCommand(name);
+			if (exec.isBuiltin(command)) {
 				std::printf("%s: shell builtin\n", name.c_str());
 				continue;
 			}
 
 			std::string found;
-			if (findOnSearchPath(exec, name, found)) {
+			if (findOnSearchPath(exec, command, found)) {
 				std::printf("%s\n", found.c_str());
 				continue;
 			}
@@ -1612,17 +1627,112 @@ namespace wbsh {
 		return false;
 	}
 
-	static bool parseEnvArgs(const std::vector<std::string>& args, EnvOptions& options) {
+	// GNU env -S: blanks separate words; quotes and backslashes keep them.
+	static bool splitEnvString(const std::string& text, std::vector<std::string>& words) {
+		std::string word;
+		bool in_word = false;
+		char quote = 0;
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			const char c = text[i];
+			if (quote == '\'') {
+				if (c == '\'') quote = 0;
+				else           word.push_back(c);
+				continue;
+			}
+
+			if (c == '\\' && i + 1 < text.size()) {
+				const char next = text[++i];
+				if (next == 'n')      word.push_back('\n');
+				else if (next == 't') word.push_back('\t');
+				else if (next == '_') word.push_back(' ');
+				else                  word.push_back(next);
+				in_word = true;
+				continue;
+			}
+
+			if (c == '"') {
+				quote = (quote == '"') ? 0 : '"';
+				in_word = true;
+				continue;
+			}
+
+			if (c == '\'' && quote == 0) {
+				quote = '\'';
+				in_word = true;
+				continue;
+			}
+
+			if ((c == ' ' || c == '\t' || c == '\n') && quote == 0) {
+				if (in_word) words.push_back(std::move(word));
+				word.clear();
+				in_word = false;
+				continue;
+			}
+
+			word.push_back(c);
+			in_word = true;
+		}
+
+		if (quote != 0) {
+			perr("env", std::string("no terminating quote in -S string"));
+			return false;
+		}
+
+		if (in_word) words.push_back(std::move(word));
+		return true;
+	}
+
+	// `-S STRING`, `-SSTRING` and `--split-string=STRING` put the words of
+	// STRING in place of the option, as a `#!/usr/bin/env -S cmd -x` line needs.
+	static bool spliceSplitString(std::vector<std::string>& args, std::size_t i) {
+		const std::string& arg = args[i];
+		std::string text;
+		std::size_t used = 1;
+		if (arg == "-S" || arg == "--split-string") {
+			if (i + 1 >= args.size()) {
+				perr("env", "option requires an argument -- 'S'");
+				return false;
+			}
+			text = args[i + 1];
+			used = 2;
+		} else if (arg.compare(0, 15, "--split-string=") == 0) {
+			text = arg.substr(15);
+		} else {
+			text = arg.substr(2);
+		}
+
+		std::vector<std::string> words;
+		if (!splitEnvString(text, words)) return false;
+		args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+			args.begin() + static_cast<std::ptrdiff_t>(i + used));
+		args.insert(args.begin() + static_cast<std::ptrdiff_t>(i), words.begin(), words.end());
+		return true;
+	}
+
+	static bool isSplitStringOption(const std::string& arg) {
+		return (arg.size() >= 2 && arg.compare(0, 2, "-S") == 0)
+			|| arg == "--split-string" || arg.compare(0, 15, "--split-string=") == 0;
+	}
+
+	static bool parseEnvArgs(const std::vector<std::string>& given, EnvOptions& options) {
+		std::vector<std::string> args = given;
 		std::size_t i = 0;
-		for (; i < args.size() && startsWithDash(args[i]); ++i) {
+		while (i < args.size() && startsWithDash(args[i])) {
 			if (args[i] == "--") {
 				++i;
 				break;
 			}
 
-			if (parseEnvOption(args, i, options)) continue;
-			perr("env", "unknown option: " + args[i]);
-			return false;
+			if (isSplitStringOption(args[i])) {
+				if (!spliceSplitString(args, i)) return false;
+				continue;
+			}
+
+			if (!parseEnvOption(args, i, options)) {
+				perr("env", "unknown option: " + args[i]);
+				return false;
+			}
+			++i;
 		}
 
 		for (; i < args.size() && isEnvAssignment(args[i]); ++i) {
@@ -2906,10 +3016,11 @@ namespace wbsh {
 	}
 
 	static int duOnePath(Executor& exec, const std::string& path, const DuOptions& opts) {
-		const fs::path native = toNative(exec, path);
+		const fs::path native = withImplicitExe(toNative(exec, path));
 		std::error_code ec;
 		if (!fs::exists(native, ec)) {
-			perr("du", path, ec);
+			if (ec) perr("du", path, ec);
+			else    perr("du", "cannot access '" + path + "': No such file or directory");
 			return 1;
 		}
 

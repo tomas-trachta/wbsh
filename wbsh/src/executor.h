@@ -618,6 +618,10 @@ namespace wbsh {
 		// path (UTF-8) or empty if not found. Honours Windows PATHEXT-style
 		// .exe/.cmd/.bat resolution. Used by `type`, `command -v`, etc.
 		std::string findExecutable(const std::string& name);
+		/// `/usr/bin/env`, `/bin/sh`: a Linux path that names no file here is
+		/// the bare NAME (a builtin, or found on PATH). Other words as given.
+		/// Covers /bin, /sbin, /usr/bin, /usr/sbin and /usr/local/bin.
+		std::string systemBinCommand(const std::string& word);
 		/// Every PATH match for `name`, in PATH order (`type -a`).
 		std::vector<std::string> findAllExecutables(const std::string& name);
 
@@ -952,6 +956,15 @@ namespace wbsh {
 		// Heuristic: does the file at `path` look like a shell script we
 		// should interpret in-process rather than handing to CreateProcess?
 		bool looksLikeShellScript(const std::string& path) const;
+		/// The file starts with `#!`: a shell script, or a script for the
+		/// interpreter its first line names. Not for CreateProcess.
+		bool startsWithShebang(const std::string& path) const;
+
+		// `#!INTERP ARGS` naming a program that is not a shell: run INTERP
+		// with ARGS, the script and argv's arguments, as the kernel does.
+		int runShebangInterpreter(const std::string& path,
+		                          const std::vector<std::string>& argv,
+		                          const std::vector<std::pair<std::string, std::string>>& temp_env);
 
 		// Read `path` and execute its contents in-process with subshell-style
 		// isolation (env / positional / $0 / function table / CWD all reset
@@ -1101,6 +1114,9 @@ namespace wbsh {
 		// fail at once until the outermost function returns.
 		bool nesting_exceeded_ = false;
 		int  source_depth_ = 0;
+		// Scripts started through a `#!` interpreter that are still running
+		// (Linux stops at 4 levels of interpreter scripts).
+		int  shebang_depth_ = 0;
 		std::vector<bool> compound_args_;
 		int  errexit_suppress_ = 0;
 		bool status_judged_ = false;

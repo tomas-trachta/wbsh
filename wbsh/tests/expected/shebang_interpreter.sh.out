@@ -1,0 +1,25 @@
+=== env, absolute path, env -S
+awk got 2 args
+absolute awk
+env -S: split
+=== cat and echo get the script path
+#!/bin/cat
+this line is printed
+hello ./by_echo one two words
+=== CRLF first line
+CRLF line
+=== a script as the interpreter
+interp got: -x ./by_script arg
+=== a missing interpreter
+wbsh: ./missing: /usr/bin/no-such-interpreter: bad interpreter: No such file or directory
+status 126
+=== in a pipeline, in the background, with a temporary variable
+HELLO ./BY_ECHO PIPED
+hello ./by_echo bg
+V=temp
+=== env -S
+a b c d
+x y
+s t
+wbsh: env: no terminating quote in -S string
+status 125

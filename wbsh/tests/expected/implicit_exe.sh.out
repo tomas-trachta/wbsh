@@ -1,0 +1,28 @@
+=== test, ls and stat
+test -x: yes
+tool
+-rwxr-xr-x 16 tool
+tool 16 regular file
+tool.exe
+=== readers
+MZ fake program
+16 tool
+MZ
+1	tool
+tool
+=== a name that is nowhere
+ls status 1
+wbsh: stat: cannot stat 'nothing': No such file or directory
+stat status 1
+wbsh: du: cannot access 'nothing': No such file or directory
+du status 1
+wbsh: cat: nothing: No such file or directory
+cat status 1
+=== writers make NAME
+text
+sub
+tool
+tool.exe
+MZ fake program
+=== a POSIX path to a file shows its size (ls -l)
+12
