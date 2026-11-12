@@ -4,8 +4,8 @@
 #   (patsub_replacement, on by default); `\&` and a quoted `&` are a plain
 #   `&`; a backslash in the literal text quotes the character after it;
 #   what a variable puts there keeps its backslashes;
-# - in an unquoted ${var:-word}, a backslash escapes the next character.
-#   (Before a glob character it stays, a known difference.)
+# - in an unquoted ${var:-word}, a backslash escapes the next character
+#   (param_default_quoting.sh has the glob characters).
 
 x=foo
 echo "1 ${x/o/[&]}"

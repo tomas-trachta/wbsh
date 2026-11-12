@@ -1115,50 +1115,82 @@ namespace wbsh {
 	// `${name:-word}`, `${name/pat/rep}`, `${name#pat}`, and friends,
 	// which — unlike a heredoc body — are ordinary shell words.
 	// Unquoted, a backslash escapes any character, as in bash (`${u:-\z}` is
-	// `z`) -- except the glob characters: the result carries no quoting, so
-	// they keep their backslash rather than be globbed.
+	// `z`). Where nothing records the quoting of the result, the glob
+	// characters keep their backslash rather than be globbed.
 	static bool unquotedWordEscapes(char c) {
 		return c != '*' && c != '?' && c != '[' && c != ']';
 	}
 
-	std::string Expander::expandParamWordArg(const std::string& body) {
-		std::string out;
-		const std::size_t end = body.size();
-		bool in_dq = false;
-		std::size_t i = 0;
-		while (i < end && !aborting()) {
-			const char c = body[i];
-			if (c == '\'') {
-				copySingleQuotedRun(body, i, out);
-				continue;
-			}
+	static bool escapesAnything(char) {
+		return true;
+	}
 
-			if (c == '"') {
-				in_dq = !in_dq;
-				++i;
-				continue;
-			}
+	// A ${...} inside an unquoted word: its own quoting carries over.
+	void Expander::expandNestedParamQuoted(const std::string& body, std::size_t& i,
+			std::string& out, WordQuoting& quoting) {
+		const std::size_t body_end = body.size();
+		const std::size_t k = scanBalanced(body, i + 2, '{', '}', 1);
+		const std::string inner = body.substr(i + 2, k - (i + 2));
+		i = (k < body_end) ? k + 1 : k;
 
-			if (c == '\\' && i + 1 < end) {
-				const bool quoted = param_quoted_ || in_dq;
-				expandBackslash(body, i, quoted ? doubleQuoteEscapes : unquotedWordEscapes, out);
-				continue;
-			}
-
-			if (c == '$' && i + 1 < end) {
-				expandHeredocDollar(body, i, out);
-				continue;
-			}
-
-			if (c == '`') {
-				expandHeredocBackquote(body, i, out);
-				continue;
-			}
-
-			out.push_back(c);
-			++i;
+		WordQuoting nested;
+		const std::string value = expandParam(inner, false, &nested);
+		out += value;
+		if (nested.set && nested.quoted.size() == value.size()) {
+			quoting.quoted.insert(quoting.quoted.end(), nested.quoted.begin(), nested.quoted.end());
 		}
 
+		quoting.quoted.resize(out.size(), 0);
+		quoting.had_quote = quoting.had_quote || nested.had_quote;
+	}
+
+	// One piece of a word argument; true when the piece is quoted text.
+	bool Expander::expandParamWordStep(const std::string& body, std::size_t& i, bool& in_dq,
+			WordQuoting* quoting, std::string& out) {
+		const char c = body[i];
+		if (c == '\'') {
+			copySingleQuotedRun(body, i, out);
+			return true;
+		}
+
+		if (c == '"') {
+			in_dq = !in_dq;
+			++i;
+			return true;
+		}
+
+		const bool more = i + 1 < body.size();
+		if (c == '\\' && more) {
+			bool (*escapes)(char) = quoting != nullptr ? escapesAnything : unquotedWordEscapes;
+			if (param_quoted_ || in_dq) escapes = doubleQuoteEscapes;
+			expandBackslash(body, i, escapes, out);
+			return true;
+		}
+
+		if (c == '$' && more && body[i + 1] == '{' && quoting != nullptr && !in_dq) {
+			expandNestedParamQuoted(body, i, out, *quoting);
+			return false;
+		}
+
+		if (c == '$' && more) expandHeredocDollar(body, i, out);
+		else if (c == '`') expandHeredocBackquote(body, i, out);
+		else out.push_back(body[i++]);
+		return in_dq;
+	}
+
+	std::string Expander::expandParamWordArg(const std::string& body, WordQuoting* quoting) {
+		std::string out;
+		bool in_dq = false;
+		std::size_t i = 0;
+		while (i < body.size() && !aborting()) {
+			const bool quoted = expandParamWordStep(body, i, in_dq, quoting, out);
+			if (quoting == nullptr) continue;
+
+			quoting->quoted.resize(out.size(), quoted ? 1 : 0);
+			quoting->had_quote = quoting->had_quote || quoted;
+		}
+
+		if (quoting != nullptr) quoting->set = true;
 		return out;
 	}
 
@@ -1777,21 +1809,25 @@ namespace wbsh {
 
 		switch (op) {
 		case '-':
-			return empty_or_unset ? expandParamWordArg(arg) : cur;
+			return empty_or_unset ? expandParamWordArg(arg, param_quoting_) : cur;
 		case '+':
-			return empty_or_unset ? std::string() : expandParamWordArg(arg);
+			return empty_or_unset ? std::string() : expandParamWordArg(arg, param_quoting_);
 		case '=': {
 			if (!empty_or_unset) return cur;
 
-			const std::string value = expandParamWordArg(arg);
+			// Quote removal comes before the assignment; the result is the
+			// new value, which is not quoted.
+			WordQuoting removed;
+			const std::string value = expandParamWordArg(arg, param_quoted_ ? nullptr : &removed);
 			assignParamDefault(ctx, value);
 			return value;
 		}
 		case '?': {
 			if (!empty_or_unset) return cur;
 
+			WordQuoting removed;
 			const std::string message = arg.empty() ? std::string("parameter null or not set")
-				: expandParamWordArg(arg);
+				: expandParamWordArg(arg, param_quoted_ ? nullptr : &removed);
 			failFatal(ctx.label + ": " + message);
 			return {};
 		}
@@ -2499,17 +2535,22 @@ namespace wbsh {
 		return expandDirectParam(resolved, label);
 	}
 
-	std::string Expander::expandParam(const std::string& body, bool quoted_ctx) {
+	std::string Expander::expandParam(const std::string& body, bool quoted_ctx,
+			WordQuoting* quoting, const std::string& label) {
 		if (body.empty()) return {};
 
 		const bool saved = param_quoted_;
+		WordQuoting* const saved_quoting = param_quoting_;
 		param_quoted_ = quoted_ctx;
+		param_quoting_ = quoted_ctx ? nullptr : quoting;
 		std::string value;
-		if (body[0] == '#' && body.size() > 1) value = expandParamLengthForm(body);
+		if (!label.empty()) value = expandDirectParam(body, label);
+		else if (body[0] == '#' && body.size() > 1) value = expandParamLengthForm(body);
 		else if (body[0] == '!' && body.size() > 1) value = expandBangParam(body);
 		else value = expandDirectParam(body, {});
 
 		param_quoted_ = saved;
+		param_quoting_ = saved_quoting;
 		return value;
 	}
 
@@ -2828,6 +2869,20 @@ namespace wbsh {
 		for (char c : text) out.push(c, mark);
 	}
 
+	static void pushParamValue(Expander::Tagged& out, const std::string& value,
+			const Expander::WordQuoting& quoting, std::uint8_t mark) {
+		if (mark != 0 || !quoting.set || quoting.quoted.size() != value.size()) {
+			pushText(out, value, mark);
+			return;
+		}
+
+		for (std::size_t k = 0; k < value.size(); ++k) {
+			out.push(value[k], quoting.quoted[k] != 0 ? Expander::F_QUOTED : 0);
+		}
+
+		if (quoting.had_quote) out.had_quote = true;
+	}
+
 	Expander::Tagged Expander::renderWord(const Word& w) {
 		Tagged out;
 		out.reserve(w.raw.size());
@@ -2904,9 +2959,9 @@ namespace wbsh {
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
 		const std::string array_name = fieldAwareArrayName(body);
 		if (array_name.empty()) {
-			const std::string value = label.empty() ? expandParam(body, inside_dq)
-				: expandDirectParam(body, label);
-			pushText(out, value, mark);
+			WordQuoting quoting;
+			const std::string value = expandParam(body, inside_dq, &quoting, label);
+			pushParamValue(out, value, quoting, mark);
 			return false;
 		}
 

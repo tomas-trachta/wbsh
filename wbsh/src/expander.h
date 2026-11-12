@@ -240,6 +240,16 @@ namespace wbsh {
 			}
 		};
 
+		// The quoting of an unquoted ${name:-word} or ${name:+word} result:
+		// which bytes came from quoted text, so a quoted `*` does not glob
+		// and a quoted space does not split, and whether the word had a
+		// quoted part at all (`${u:-""}` is one empty field).
+		struct WordQuoting {
+			std::vector<std::uint8_t> quoted;
+			bool had_quote = false;
+			bool set = false;
+		};
+
 		// One element of an array (or of a scalar, as element 0) as a
 		// lookup found it. Public for the file-static lookup helpers.
 		struct ElementSlot {
@@ -278,6 +288,9 @@ namespace wbsh {
 		// Whether the ${...} being expanded is inside double quotes, which
 		// decides what a backslash in its word argument escapes.
 		bool param_quoted_ = true;
+		// Where the word of an unquoted `-` or `+` form records its quoting;
+		// null in all other contexts.
+		WordQuoting* param_quoting_ = nullptr;
 
 		Tagged renderWord(const Word& w);
 		// renderSegment, renderArrayFields and renderParamExpSegment
@@ -327,7 +340,10 @@ namespace wbsh {
 		std::size_t arrayLength(const std::string& name) const;
 		std::vector<std::string> arrayKeys(const std::string& name) const;
 		std::vector<std::string> arrayValues(const std::string& name) const;
-		std::string expandParam(const std::string& body, bool quoted_ctx);
+		// @p quoting, when given, receives the quoting of a default or
+		// alternate word; a non-empty @p label skips the `#` and `!` forms.
+		std::string expandParam(const std::string& body, bool quoted_ctx,
+		                        WordQuoting* quoting = nullptr, const std::string& label = {});
 		std::string expandParamLengthForm(const std::string& body);
 		std::string expandBangParam(const std::string& body);
 		// @p label names the parameter in diagnostics; empty means the
@@ -430,7 +446,11 @@ namespace wbsh {
 		std::string assignmentText(const std::string& name, const std::string& value) const;
 		std::vector<std::string> keyValueWords(const std::string& name) const;
 		void failBadSubstitution(const std::string& body);
-		std::string expandParamWordArg(const std::string& body);
+		std::string expandParamWordArg(const std::string& body, WordQuoting* quoting = nullptr);
+		bool expandParamWordStep(const std::string& body, std::size_t& i, bool& in_dq,
+		                         WordQuoting* quoting, std::string& out);
+		void expandNestedParamQuoted(const std::string& body, std::size_t& i, std::string& out,
+		                             WordQuoting& quoting);
 		std::string expandReplacementArg(const std::string& raw);
 		std::string expandPatternArg(const std::string& body);
 		void appendPatternExpansion(const std::string& body, std::size_t& i, bool in_dq,
