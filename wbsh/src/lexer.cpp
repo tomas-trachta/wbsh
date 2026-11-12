@@ -300,8 +300,8 @@ namespace wbsh {
 			return;
 		}
 
-		if ((c == '<' || c == '>') && peek(1) == '(') {
-			scanProcessSubstitution();
+		if (atProcessSubstitution()) {
+			scanWord();
 			return;
 		}
 
@@ -314,25 +314,19 @@ namespace wbsh {
 		scanWord();
 	}
 
-	void Lexer::scanProcessSubstitution() {
-		Token word;
-		word.kind = TokKind::Word;
-		word.loc = loc_;
-		word.first_on_line = at_line_start_;
-		at_line_start_ = false;
+	// `<(cmd)` and `>(cmd)` are part of the word they are in, as in bash:
+	// `a<(x)b`, `x=<(cmd)` and `--file=<(cmd)` are each one word.
+	bool Lexer::atProcessSubstitution() const {
+		return (peek() == '<' || peek() == '>') && peek(1) == '(';
+	}
 
-		const std::size_t start_pos = pos_;
-		const char direction = advance();
-		advance();
-
+	void Lexer::readProcessSubstitution(std::vector<WordSegment>& out) {
 		WordSegment segment;
 		segment.kind = WordSegment::Kind::ProcSubst;
+		segment.proc_dir = advance();
+		advance();
 		segment.text = readCommandSubstitutionBody();
-		segment.proc_dir = direction;
-		word.segments.push_back(std::move(segment));
-
-		word.text = src_.substr(start_pos, pos_ - start_pos);
-		tokens_.push_back(std::move(word));
+		out.push_back(std::move(segment));
 	}
 
 	void Lexer::emitOperator(SourceLoc start, TokKind kind, const char* text) {
@@ -543,6 +537,11 @@ namespace wbsh {
 		}
 
 		if (group_depth == 0) {
+			if (atProcessSubstitution()) {
+				readProcessSubstitution(out);
+				return true;
+			}
+
 			if (endsWord(c)) return false;
 			return readWordSegment(out);
 		}
