@@ -4,7 +4,7 @@ This folder holds the stress-test framework for wbshterm. It uses the same
 probe, findings and report format as the wbsh framework
 ([`wbsh/stress/`](../../wbsh/stress/README.md)); the shared parts are in
 [`tools/stress/`](../../tools/stress). The release plan is in
-[`docs/stress-testing.md`](../../docs/stress-testing.md).
+[`docs/stress-testing-wbshterm.md`](../../docs/stress-testing-wbshterm.md).
 
 `tests/smoke.ps1` answers "do the headless modes work?". This framework
 answers "does the terminal stay fast, small, correct and safe under load and
@@ -39,12 +39,13 @@ An ASan build is detected the same way as for wbsh (`clang_rt.asan*.dll` beside 
 
 ## How it drives wbshterm
 
-All cases use the headless modes, so they run without a window:
+All cases except the `-Gui` window soak use the headless modes, so they run
+without a window:
 
 - **Replay** (`--replay in.raw --dump grid.txt --size CxR`): bytes in, grid text
   out, no shell. It tests the VT parser and the grid alone, it is
-  deterministic, and it is fast. Memory checks subtract the input, because
-  replay keeps the whole file in memory.
+  deterministic, and it is fast. Memory checks allow growth of `ratio` times
+  the input growth, because replay keeps the whole file in memory.
 - **Session** (`--snapshot … --record … --feed …`): a real pseudoconsole
   with `wbsh` in it. The driver types the feeds, waits until the output is
   quiet, then replays the recording to get the final grid as text. Sessions
@@ -118,5 +119,5 @@ objects with `Ok`, `Severity`, `Text` and `Artifact`. It can call
    with the VT specification (xterm's ctlseqs, the DEC VT510 manual). A wrong
    `.expect` file is a test bug; fix it in the same PR.
 3. **A session failure**: `logs/<suite>-<case>.grid.txt` is the final grid;
-   `work/<suite>-<case>/session.raw` (with `-KeepWork`) is every byte, and
-   `snapshot.png` is the painted screen.
+   `work/<suite>-<case>/session.raw` is every byte, and `snapshot.png` is
+   the painted screen. The driver keeps the work folder of a failed case.

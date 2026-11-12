@@ -59,7 +59,7 @@ WBSH_UTIL_API int wbshUtilLoad(const WbshApi* api) {
 the project where the SDK is:
 
 ```
-msbuild myutil.vcxproj -p:Configuration=Release -p:Platform=x64 -p:WbshSdkDir=C:\sdk\wbsh-sdk-1.0.24\
+msbuild myutil.vcxproj -p:Configuration=Release -p:Platform=x64 -p:WbshSdkDir=C:\sdk\wbsh-sdk-1.1.0\
 ```
 
 `WbshSdkDir` is the folder holding `wbshutil.props`; a project left inside
@@ -69,14 +69,15 @@ in `bin\x64\Release\`.
 **With CMake.** The same folder has a `CMakeLists.txt`:
 
 ```
-cmake -S . -B build -DWBSH_SDK_DIR=C:\sdk\wbsh-sdk-1.0.24
+cmake -S . -B build -DWBSH_SDK_DIR=C:\sdk\wbsh-sdk-1.1.0
 cmake --build build --config Release
 ```
 
 **With anything else.** Add `include\` to the include path, define
 `WIN32_LEAN_AND_MEAN`, and build a DLL. That is the whole recipe.
 
-The samples build the same way. `sdk/samples/hello` is the one to read
+The samples build the same way with MSBuild (they have no `CMakeLists.txt`).
+`sdk/samples/hello` is the one to read
 first: one command with usage text and Tab completion, one status segment,
 and a look at Ctrl+C and shell variables. `pick` is a fuzzy picker built on
 the terminal helpers, `procs` a live process monitor that also puts a count

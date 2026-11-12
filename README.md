@@ -6,7 +6,7 @@ line editor, and bundled coreutils so a fresh install is useful immediately.
 
 ![wbsh running the test suite in Windows Terminal](./preview.png)
 
-> Status: **early but released.** Tagged 1.0.x releases exist and a golden test
+> Status: **early but released.** Tagged 1.x releases exist and a golden test
 > suite covers the shell, but it is run by hand, with no CI on push yet, and
 > behavior may change between minor versions.
 
@@ -42,6 +42,11 @@ Get these from [Releases](https://github.com/tomas-trachta/wbsh/releases):
 | `wbsh-<version>-portable-x64.zip`, `wbshterm-<version>-portable-x64.zip` | Extract and run. No registry, no PATH changes. |
 
 winget and scoop packages are not published yet.
+
+For a "wbsh" profile in Windows Terminal, copy
+`installer/windows-terminal/wbsh.json` to
+`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wbsh\`. The installer does
+not do this step.
 
 ### wbshterm
 
@@ -79,8 +84,8 @@ $ wbsh -r script.sh
 > command, as in bash, so wbsh works as `$SHELL -c`; `wbsh --ast -c` dumps it.
 
 Pipelines, redirection, control flow, functions, command substitution,
-arithmetic, brace, parameter, tilde and glob expansion, here-docs, here-strings
-and traps all work.
+arithmetic, brace, parameter, tilde and glob expansion, here-docs, here-strings,
+traps and job control (`Ctrl-Z`, `jobs`, `fg`, `bg`) all work.
 
 ```
 wbsh                                 interactive shell (TTY auto-detect)
@@ -88,6 +93,7 @@ wbsh [opts] -c <command> [name [arg ...]]
                                      run the given string ($0 = name)
 wbsh [opts] <file> [arg ...]         run / dump the file ($1.. = args)
 wbsh [opts] - [arg ...]              run / dump stdin (also -s)
+options end at the first operand or at --; later words are arguments
 
   -i, --interactive                  force interactive REPL
   -r, --run                          execute the file or stdin
@@ -113,8 +119,10 @@ wbsh [opts] - [arg ...]              run / dump stdin (also -s)
 
 ### Keys
 
-Bindings follow readline. `Esc` followed by a key works as Alt with it, and
-AltGr characters type as usual.
+Bindings follow readline's emacs mode. `Esc` followed by a key works as Alt
+with it, and AltGr characters type as usual. For vi keys, use `set -o vi` (or
+`set editing-mode vi` in `~/.inputrc`). `set -o emacs` sets the emacs keys
+again.
 
 **Moving**
 
@@ -153,6 +161,8 @@ AltGr characters type as usual.
 | Keys | Action |
 |------|--------|
 | `Ctrl-X Ctrl-E`                      | edit the line in `$VISUAL` / `$EDITOR` (default notepad), then run it |
+| `Ctrl-O`                             | run the line, then show the next history entry |
+| `Alt-#`                              | comment out the line and keep it in history |
 | `Ctrl-L`                             | clear the screen |
 | `Ctrl-C`                             | abandon the line |
 | `Ctrl-D` (empty line)                | exit |
@@ -220,10 +230,16 @@ PS1='\[\e[35;1m\]\w\[\e[0m\]\g \$ '
 | `\u` | user |
 | `\h`, `\H` | short / long hostname |
 | `\w`, `\W` | working directory / its basename |
-| `\g` | ` (branch)` inside a git repo |
-| `\t` | time |
+| `\g` | ` (branch)` inside a git repo; ` (branch \| state)` during a merge, rebase, cherry-pick, revert or bisect, or when the tree has unstaged, staged or untracked changes |
+| `\d` | date (`Tue May 26`) |
+| `\t`, `\T`, `\@`, `\A` | time: 24-hour, 12-hour, 12-hour am/pm, 24-hour `HH:MM` |
+| `\D{format}` | `strftime` format |
 | `\s` | `wbsh` |
-| `\n` `\r` `\a` `\e` `\\` `\$` | the usual characters |
+| `\v`, `\V` | version: short / long |
+| `\j` | number of jobs |
+| `\!`, `\#` | history number / command number |
+| `\l` | terminal name |
+| `\n` `\r` `\a` `\e` `\\` `\$` `\nnn` | the usual characters; `\nnn` is octal |
 | `\[`, `\]` | non-printing markers |
 
 Default `PS1`:
@@ -344,12 +360,15 @@ The binary lands at `x64\Release\wbsh.exe`; installer output goes to
 ### Layout
 
 ```
-wbsh/        The shell: wbsh.vcxproj, src/, tests/ (golden suite, run-all.sh)
-wbshterm/    The terminal: Win32 window, renderer, VT parser, panes; vendored ConPTY
+wbsh/        The shell: wbsh.vcxproj, src/, tests/ (golden suite, run-all.sh), stress/
+wbshterm/    The terminal: Win32 window, renderer, VT parser, panes; vendored ConPTY;
+             tests/, stress/
 sdk/         The util SDK: wbshsdk.dll, include/wbshsdk.h, template/, samples/, tests/
-installer/   Inno Setup script and build.ps1
-tools/       check_style.py (runs before every build), make_icon.py
-docs/        Command notes; Doxygen config, regenerate with `doxygen docs/Doxyfile`
+installer/   Inno Setup scripts, build.ps1, Windows Terminal profile fragment
+tools/       check_style.py (runs before every build), gen_charwidth.py, make_icon.py,
+             stress/ (code shared by the two stress suites)
+docs/        Command notes, stress-test notes; Doxygen config, regenerate with
+             `doxygen docs/Doxyfile`
 ```
 
 [CONTRIBUTING.md](./CONTRIBUTING.md) has the file-by-file architecture tour.
@@ -363,6 +382,9 @@ docs/        Command notes; Doxygen config, regenerate with `doxygen docs/Doxyfi
 ../../x64/Release/wbsh.exe -r run-all.sh                  # every script exits 0
 WBSH_GOLDEN=1 ../../x64/Release/wbsh.exe -r run-all.sh    # also diff against expected/
 ```
+
+From PowerShell, `.\wbsh\tests\run-all.ps1` runs the same suite; add `-Golden`
+to diff against `expected/`.
 
 Each `wbsh/tests/*.sh` script exercises one slice of behavior and runs inside
 wbsh itself, so the suite is an end-to-end check of the whole pipeline. The SDK
@@ -389,7 +411,6 @@ integrate. If you need a real Linux environment, use WSL.
 
 ## Roadmap
 
-- Real job control: `Ctrl-Z` and stopped jobs.
 - CI running the golden suite on every push.
 - winget / scoop publication and code-signed releases.
 

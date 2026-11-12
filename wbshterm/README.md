@@ -11,7 +11,8 @@ its prompts and commands, so scrollback is navigable by command and a
 command's output can be copied on its own; the title bar follows the
 working directory; and `fzf` hands its list over to be drawn as a real
 overlay. Everything M4 brought — nine themes, any font, cursor styles, live
-config — is still here. One piece remains: rewrapping text on resize.
+config — is still here. Text also rewraps when the window changes size
+(see [Resizing](#resizing)).
 
 ## Install
 
@@ -46,11 +47,13 @@ msbuild ..\wbsh.sln /t:wbshterm /p:Configuration=Release /p:Platform=x64
 ```
 
 `build.ps1` builds the same sources without Visual Studio, to
-`wbshterm\build\`. Both paths compile at `/W4 /WX` and run the style
-checker; keep them flag-compatible.
+`wbshterm\build\`. Both paths compile at `/W4 /WX`; keep them
+flag-compatible. Only the msbuild path runs the style checker
+(`tools\check_style.py`) and copies the bundled ConPTY files.
 
 `conpty\` holds the pinned `Microsoft.Windows.Console.ConPTY` package:
-`conpty.dll`, `OpenConsole.exe`, its licence and version. They are checked
+`conpty.dll`, `OpenConsole.exe`, its licence, and its version with the
+SHA-256 hash of each binary in `VERSION.txt`. They are checked
 in so a clone builds offline; the project's post-build step copies them
 next to `wbshterm.exe`, and `conpty\fetch.ps1` refreshes them after a
 version bump. `pty.cpp` looks for the DLL beside the executable and takes
@@ -60,6 +63,7 @@ version bump. `pty.cpp` looks for the DLL beside the executable and takes
 .\build.ps1
 .\build\wbshterm.exe                 # the terminal
 .\tests\smoke.ps1                    # self-test, snapshot, replay determinism
+.\stress\stress.ps1                  # load, fuzz and security suites; see stress\README.md
 ```
 
 ## Modes
@@ -73,15 +77,19 @@ checked in CI.
 | *(no arguments)* | Opens the window on a wbsh session. |
 | `--selftest <report.txt>` | Parser and grid checks plus one live pty session; exit code is the verdict. |
 | `--snapshot <out.png>` | Runs a session headlessly and paints the finished grid to a PNG. |
-| `--record <out.raw>` | With `--snapshot`, also writes every byte the pty produced. |
-| `--replay <in.raw>` | Parses a recording with no shell; `--dump <txt>` writes the grid as text, `--snapshot` paints it. |
+| `--record <out.raw>` | With `--snapshot` or in the window, also writes every byte the pty produced. |
+| `--replay <in.raw>` | Parses a recording with no shell; `--dump <txt>` writes the grid as text, `--snapshot` (put it before `--replay`) paints it. |
+| `--fetch` | Prints the startup panel (see [The startup panel](#the-startup-panel)). |
 | `--scroll <n>` | With `--snapshot`, scrolls back n lines before painting. |
 | `--select <r:c-r:c>` | With `--snapshot`, highlights a selection in absolute rows. |
 | `--config <path>` | Uses this settings file instead of the one in %APPDATA%. |
 
 `--feed "ls --color\r"` types into any session (`\r` is Enter, `\e` is
 Escape, and `\x1b[A` spells any byte), `--size 100x30` sets the grid, and
-`--shell` / `--args` pick a different program to host.
+`--shell` / `--args` pick a different program to host. In snapshot mode,
+`--delay`, `--gap` and `--settle` set the wait in milliseconds before the
+first feed, between feeds, and how long the output must stay quiet
+before the paint (400, 400 and 600 by default).
 
 Record-then-replay is the test strategy: a recording is deterministic, so a
 grid dump taken from one is a golden file, and a rendering bug can be told
@@ -98,7 +106,10 @@ apart from a parsing bug by replaying the same bytes.
 | --- | --- |
 | `pty.h/.cpp` | `PtySession`: pseudoconsole, pipes, child lifetime. Loads `conpty.dll` from beside the executable, else uses the system one. |
 | `vtparse.h/.cpp` | Bytes to VT actions (DEC state machine) and UTF-8 decoding. |
-| `screen.h/.cpp` | The cell grid: printing, cursor motion, erase, scroll, SGR, query replies. |
+| `screen.h/.cpp`, `screen_vt.cpp`, `screen_cluster.cpp` | The cell grid: printing, cursor motion, erase, scroll, SGR, query replies, tab stops, hyperlinks, OSC 52, and grapheme clusters. |
+| `cell.h` | One cell of the grid, and its colour sentinels. |
+| `history.h/.cpp` | Scrollback that has left memory: lines in a temporary file, read back on demand. |
+| `search.h/.cpp` | Search across the whole session, disk history included. |
 | `keymap.h/.cpp` | Key presses to bytes: modifiers, cursor-key modes, paste bracketing. |
 | `view.h/.cpp` | What the window looks at: scroll position and selection, in absolute rows. |
 | `scrollbar.h/.cpp` | The thumb in a pane's margin: rows to pixels, and back for a drag. |
@@ -107,7 +118,8 @@ apart from a parsing bug by replaying the same bytes.
 | `titlebar.h/.cpp` | Where the caption's lights sit, and what the pointer is over. |
 | `menu.h/.cpp` | The right-click menu: what it offers, and what a click meant. |
 | `picker.h/.cpp` | The overlay list: fuzzy matching, filtering and selection. |
-| `charwidth.h/.cpp` | How many cells a character takes: zero, one or two. |
+| `charwidth.h/.cpp`, `charwidth_ucd.h/.cpp` | How many cells a character takes: zero, one or two. The table is generated by `tools\gen_charwidth.py`. |
+| `utf8.h/.cpp` | UTF-8 encoding, and the UTF-16 conversions the window needs. |
 | `session.h/.cpp` | Pty + parser + grid + reader thread; the grid is touched by one thread only. |
 | `pane.h/.cpp` | One shell in a rectangle: its session, view and overlay. |
 | `pane_tree.h/.cpp` | The split layout: splitting, closing, and slicing the client area. |
@@ -115,12 +127,16 @@ apart from a parsing bug by replaying the same bytes.
 | `render.h/.cpp` | Direct2D painting of a grid onto any render target. |
 | `window.h/.cpp` | The Win32 window and its frame, message handlers, key encoding, pane commands, and the status bar. |
 | `window_mouse.cpp`, `window_keys.cpp`, `window_uia.cpp` | The window's mouse reports, win32-input-mode keys, focus reports and IME placement, and its answers to the accessibility provider. |
-| `uia.h/.cpp`, `uia_range.cpp`, `uia_text.h/.cpp` | The UI Automation element with its text pattern and ranges, over a pure model of the text's units. |
+| `mouse.h/.cpp` | Mouse arithmetic: pixels to DIPs, wheel deltas to lines, and the reports a program gets. |
+| `uia.h/.cpp`, `uia_range.cpp`, `uia_text.h/.cpp`, `uia_host.h` | The UI Automation element with its text pattern and ranges, over a pure model of the text's units. |
+| `script.h/.cpp`, `script_config.cpp`, `script_actions.cpp`, `script_internal.h` | `init.lua`: the embedded Lua host, the config tables and `wbshterm.actions`. |
+| `fetch.h/.cpp` | The startup panel that `--fetch` prints. |
+| `utils.h/.cpp` | Loads third-party utils through the SDK, and the status segments they add. |
 | `status.h/.cpp` | A status bar segment: a label, a value, and the colour it takes. |
 | `sysinfo.h/.cpp` | The machine's readings for the status bar: load, memory, disk, battery. |
 | `snapshot.h/.cpp` | Off-screen WIC target and PNG encode. |
 | `replay.h/.cpp` | Recording in, grid out, no shell involved. |
-| `selftest.h/.cpp` | The headless checks. |
+| `selftest.h/.cpp`, `selftest_*.cpp` | The headless checks. |
 | `main.cpp` | Argument parsing and mode dispatch. |
 
 ## Input
@@ -138,8 +154,8 @@ every combination is unit-tested rather than tried by hand.
 | Ctrl+Space | NUL |
 | Shift+Tab | `CSI Z` |
 | Alt+*key* | the key's bytes, ESC-prefixed |
-| Ctrl+V, Shift+Insert | paste, wrapped in `CSI 200~`/`CSI 201~` when the shell asked for bracketed paste |
-| Ctrl+V with a picture on the clipboard | `ESC v`, the Alt+V that Claude Code on Windows reads the clipboard on |
+| Ctrl+V, Shift+Insert | paste, wrapped in `CSI 200~`/`CSI 201~` when the shell asked for bracketed paste; control characters other than Tab and line breaks are removed |
+| Ctrl+V with a picture and no text on the clipboard | `ESC v`, the Alt+V that Claude Code on Windows reads the clipboard on |
 | Files dropped on the window | their paths, space-separated and double-quoted where a path has a space, sent as a paste |
 
 Plain typing is deliberately *not* encoded here: a press that carries no
@@ -227,9 +243,9 @@ one; pick another key if the layout has a character there.
 ## The startup panel
 
 Opening a session prints a screenfetch-style panel: the wbsh logo, who and
-where you are, the OS build, uptime, CPU, memory, display, and which theme
-and font this terminal is using — then the sixteen palette colours, so a
-theme shows itself off as the session opens.
+where you are, the OS build, uptime, the shell version, CPU, memory,
+display, and which theme and font this terminal is using — then the
+sixteen palette colours, so a theme shows itself off as the session opens.
 
 Turn it off in the config:
 
@@ -277,6 +293,8 @@ fallback = Segoe UI Emoji, Microsoft YaHei UI, Segoe UI Symbol
 [window]
 padding = 10
 opacity = 0.95
+columns = 100      # the size of a new window, in cells
+rows = 30
 
 [cursor]
 style = bar        # block, bar or underline
@@ -424,7 +442,7 @@ wbshterm.bind("f12", function() wbshterm.actions.theme("dracula") end)
 | `scroll(lines)` | Scrolls the view up by `lines`, down when negative |
 | `font_size(delta)` | Steps the font size; `font_size(0)` puts it back |
 | `theme(name)` | Switches theme, and says whether the name was known |
-| `search()`, `previous_command()`, `next_command()` | The Ctrl+F / Ctrl+PageUp / Ctrl+PageDown shortcuts |
+| `search()`, `previous_command()`, `next_command()` | The Ctrl+Shift+F / Ctrl+PageUp / Ctrl+PageDown shortcuts |
 | `split("columns"` or `"rows")`, `close_pane()`, `zoom()`, `focus("left"` … `"next")` | The pane commands, without the prefix |
 | `reload()` | Re-reads the config and this script |
 
@@ -446,7 +464,8 @@ supports it.
 This is the part a generic terminal cannot do. wbsh emits semantic marks —
 OSC 633, the same codes VS Code uses — around every prompt and command, and
 OSC 7 whenever the working directory changes. Terminals that do not know
-them ignore them, so wbsh loses nothing elsewhere.
+them ignore them, so wbsh loses nothing elsewhere. The terminal also
+accepts the same marks as OSC 133, which other shells send.
 
 | The shell says | The terminal does |
 | --- | --- |
@@ -634,8 +653,8 @@ is most of the reason to split at all. Dividers drag, and the pointer
 turns into a sizing cursor over one.
 
 A program that asks for the mouse gets it: vim, htop, mc, tmux, fzf and Far
-see clicks (`CSI ?1000h`), drags (`?1002h`) or every movement (`?1003h`) of
-the left, middle and right buttons and both wheels, as SGR reports
+see presses only (`CSI ?9h`), clicks (`?1000h`), drags (`?1002h`) or every
+movement (`?1003h`) of the left, middle and right buttons and both wheels, as SGR reports
 (`?1006h`), UTF-8 (`?1005h`) or classic X10 bytes, and DECRQM answers for
 each mode. Hold Shift to get past it: Shift+drag still selects,
 Shift+right-click still opens the menu and Shift+wheel still scrolls. On the
@@ -706,6 +725,7 @@ on no matter what arrives afterwards.
 | Copy | Ctrl+Shift+C, Ctrl+Insert |
 | Paste | Ctrl+V, Shift+Insert; a picture goes out as Alt+V for the program to fetch |
 | Drop files | Their paths are pasted into the pane they land on |
+| Open a link | Ctrl+click an OSC 8 hyperlink (`http`, `https`, `ftp` and `mailto` only) |
 | Customise | Right-click, or Shift+F10 |
 | Font size | Ctrl+=, Ctrl+-, Ctrl+0 |
 | Return to the bottom | Type anything |
@@ -721,6 +741,9 @@ A thin scrollbar sits in each pane's right margin once there is history to
 scroll into. It lights up under the pointer, the thumb drags, and a press on
 the track jumps there. `clear` (and `Ctrl-L`) discards the scrollback along
 with the screen, so scrolling up afterwards finds nothing.
+
+A program can put text on the clipboard with OSC 52. It cannot read the
+clipboard back: the terminal ignores that request.
 
 Two behaviours are deliberate. New output does **not** yank the view back
 to the bottom while you are reading history — the scroll offset grows by

@@ -41,7 +41,10 @@ its bash is the reference shell for speed ratios and output comparisons.
 **ASan:** when the folder of `-Exe` holds `clang_rt.asan_dynamic-x86_64.dll`,
 the driver sets `ASAN_OPTIONS` so that every wbsh process writes its
 AddressSanitizer report to `results/<run>/asan/`. Each report is a
-`critical` finding. See `docs/stress-testing.md` § 4.1 for the build command.
+`critical` finding. An out-of-memory report from ASan's own allocator is a
+`review` finding. For an ASan build, the memory suite does not do the growth
+and handle checks, because ASan keeps freed memory in quarantine. See
+`docs/stress-testing.md` § 4.1 for the build command.
 
 The exit code is 0 when no case failed and nothing regressed. `review`
 findings do not change the exit code.
@@ -68,7 +71,7 @@ processes**:
 | Suite | Folder | What a case is | Pass rule |
 |---|---|---|---|
 | perf | `suites/perf/*.sh` | A workload. An optional `<name>.setup.sh` makes its data first (not timed). | Exit 0. No baseline regression. Optional `maxratio` (vs bash) and `maxmem`. |
-| memory | `suites/memory/*.sh` | One operation repeated `$STRESS_ITERS` times. | Run at N and 10×N: root peak memory must not grow more than `tolerance`; handle count must not grow more than `handles`. |
+| memory | `suites/memory/*.sh` | One operation repeated `$STRESS_ITERS` times. | Run at N and 10×N: root peak memory must not grow more than `tolerance` MB or 15 % of the peak at N (the larger value); handle count must not grow more than `handles`. |
 | bugs | `suites/bugs/robust/*.sh` | Assertions on edge cases (deep nesting, huge data, closed descriptors). | No `not ok` line, no crash, no hang. |
 | | `suites/bugs/diff/*.sh` | A script that must give the same output as bash. | Same stdout+stderr and exit code as bash, or the same text as `<name>.accept`. |
 | | `suites/bugs/corpus/*` | Hostile parser inputs. | `wbsh --no-ast` does not crash or hang. |
@@ -108,7 +111,7 @@ processes**:
 
 4. A `.ps1` file in `security/` or `ux/` is a PowerShell case. It gets `-Context @{ Repo; Wbsh; OutDir }` and returns objects with `Severity`, `Text` and `Artifact`.
 
-Every case gets these variables: `STRESS_WBSH` (wbsh.exe under test), `STRESS_TMP` (its own empty work folder, also the current folder), `STRESS_ROOT` (this folder), `STRESS_REPO`, `STRESS_N` (profile scale: 1 quick, 3 full), `STRESS_MODE`, `STRESS_SHELL` (`wbsh` or `bash`), `STRESS_NET`, and for memory cases `STRESS_ITERS`.
+Every case gets these variables: `STRESS_WBSH` (wbsh.exe under test), `STRESS_BASH` (the reference bash, or empty), `STRESS_TMP` (its own empty work folder, also the current folder), `STRESS_ROOT` (this folder), `STRESS_REPO`, `STRESS_N` (profile scale: 1 quick, 3 full), `STRESS_MODE`, `STRESS_SHELL` (`wbsh` or `bash`), `STRESS_NET`, and for memory cases `STRESS_ITERS`.
 
 ## From a finding to a fix
 
