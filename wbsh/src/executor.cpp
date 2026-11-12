@@ -1069,23 +1069,41 @@ namespace wbsh {
 		env_.setIndexedArrayFromList("PIPESTATUS", std::move(values));
 	}
 
+	// `a && b || c` parses as a tree that leans left: ((a && b) || c). A
+	// loop over its links, not a call per level, keeps a chain of many
+	// thousand stages off the stack. As before, set -e ignores every stage
+	// but the last.
 	int Executor::execAndOr(const AndOr& and_or) {
-		pushErrexitSuppress();
-		const int left = execNode(*and_or.left);
-		popErrexitSuppress();
-		if (flowPending()) return left;
-		setLastStatus(left);
-
-		const bool short_circuit = (and_or.op == AndOr::Op::AndIf) ? (left != 0) : (left == 0);
-		if (short_circuit) {
-			status_judged_ = true;
-			return left;
+		std::vector<const AndOr*> links;
+		const Node* first = &and_or;
+		while (first->kind == Node::Kind::AndOr) {
+			links.push_back(static_cast<const AndOr*>(first));
+			first = links.back()->left;
 		}
 
-		const int right = execNode(*and_or.right);
-		if (flowPending()) return right;
-		setLastStatus(right);
-		return right;
+		pushErrexitSuppress();
+		int status = execNode(*first);
+		popErrexitSuppress();
+		if (flowPending()) return status;
+		setLastStatus(status);
+
+		for (std::size_t k = links.size(); k-- > 0;) {
+			const AndOr& link = *links[k];
+			const bool skip = (link.op == AndOr::Op::AndIf) ? (status != 0) : (status == 0);
+			if (skip) {
+				status_judged_ = true;
+				continue;
+			}
+
+			const bool last = k == 0;
+			if (!last) pushErrexitSuppress();
+			status = execNode(*link.right);
+			if (!last) popErrexitSuppress();
+			if (flowPending()) return status;
+			setLastStatus(status);
+		}
+
+		return status;
 	}
 
 	namespace executor_detail {
