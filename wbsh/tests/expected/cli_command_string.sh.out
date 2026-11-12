@@ -53,3 +53,27 @@ List
       Word raw="the" segs=[Lit("the")]
       Word raw="file" segs=[Lit("file")]
 from the file
+=== short options combine, as in bash
+0=name 1=one
+-c first in the group
+-r too
+wbsh: -x: invalid option (see wbsh --help)
+status 2
+=== -l makes a login shell that reads ~/.wbsh_profile
+profile ran
+FROM_PROFILE=yes
+login_shell     on
+profile ran
+--login works
+FROM_PROFILE=
+login_shell     off
+status 0
+login_shell     off
+=== exit in the profile ends the shell
+status 7
+=== a subshell of a login shell is a login shell too
+yes
+=== logout ends a login shell only
+status 4
+wbsh: logout: not login shell: use `exit'
+status 1

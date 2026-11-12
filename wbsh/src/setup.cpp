@@ -18,6 +18,8 @@
 #include <cstdlib>
 #include <iterator>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -602,6 +604,28 @@ namespace wbsh {
 		applyInheritedShellParameters(env, exec);
 		applyInheritedHistory(env, exec);
 		applyInheritedJobs(env, exec);
+	}
+
+	void sourceHomeFile(Executor& exec, const std::string& name) {
+		const std::string home_dir = exec.env().get("HOME");
+		if (home_dir.empty()) return;
+
+		const std::string file_path = home_dir + "/" + name;
+		const std::filesystem::path native = utf8ToPath(exec.pathConv().toWin32(file_path));
+		std::error_code ec;
+		if (!std::filesystem::exists(native, ec)) return;
+
+		std::ifstream file(native, std::ios::binary);
+		if (!file) return;
+
+		std::stringstream contents;
+		contents << file.rdbuf();
+		exec.executeText(contents.str(), file_path);
+	}
+
+	void startLoginShell(Executor& exec) {
+		exec.env().shopts().login_shell = true;
+		sourceHomeFile(exec, ".wbsh_profile");
 	}
 
 }  // namespace wbsh

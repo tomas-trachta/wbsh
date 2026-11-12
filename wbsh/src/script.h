@@ -26,6 +26,7 @@ namespace wbsh {
 		bool show_ast        = false;
 		bool show_expansions = false;
 		bool execute         = false;
+		bool login           = false;     ///< `-l`: read `~/.wbsh_profile` first.
 	};
 
 	/**

@@ -34,8 +34,6 @@
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -325,23 +323,6 @@ namespace wbsh {
 
 		exec.loadHistoryFromFile(path);
 		trimHistoryFileToSize(exec, path);
-	}
-
-	static void sourceWbshrc(const Environment& env, Executor& exec) {
-		const std::string home_dir = env.get("HOME");
-		if (home_dir.empty()) return;
-
-		const std::string rcfile = home_dir + "/.wbshrc";
-		const fs::path native = utf8ToPath(exec.pathConv().toWin32(rcfile));
-		std::error_code ec;
-		if (!fs::exists(native, ec)) return;
-
-		std::ifstream file(native, std::ios::binary);
-		if (!file) return;
-
-		std::stringstream contents;
-		contents << file.rdbuf();
-		exec.executeText(contents.str(), rcfile);
 	}
 
 	// A host terminal can ask for one command to run once the session is
@@ -647,7 +628,7 @@ namespace wbsh {
 		emitShellMark(state, "D;" + std::to_string(exec.lastStatus()));
 	}
 
-	int runInteractive() {
+	int runInteractive(bool login) {
 		Environment env;
 		prepareEnv(env);
 		env.setInteractive(true);
@@ -660,8 +641,11 @@ namespace wbsh {
 		printBanner(state);
 		initHistoryVariables(env);
 
+		// Unlike bash, a login shell reads .wbshrc after the profile, so
+		// .wbsh_profile does not have to source it.
 		loadInputrc(exec);
-		sourceWbshrc(env, exec);
+		if (login) startLoginShell(exec);
+		if (!exec.flowPending()) sourceHomeFile(exec, ".wbshrc");
 		loadHistory(exec);
 		runInitCommand(env, exec);
 		int init_status = 0;

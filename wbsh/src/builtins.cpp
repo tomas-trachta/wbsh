@@ -708,10 +708,11 @@ namespace wbsh {
 		return 1;
 	}
 
-	// wbsh is never a login shell. Typed at the prompt `logout` ends the
-	// session like `exit`; anywhere else it is bash's error.
+	// `logout` ends a login shell (`wbsh -l`) like `exit`. Typed at the
+	// prompt it also ends the session; anywhere else it is bash's error.
 	static int builtin_logout(Executor& exec, const std::vector<std::string>& args) {
-		if (exec.env().interactive()) return builtin_exit(exec, args);
+		const bool login = exec.env().shopts().login_shell;
+		if (login || exec.env().interactive()) return builtin_exit(exec, args);
 
 		printerr("logout: not login shell: use `exit'");
 		return 1;
@@ -1408,6 +1409,10 @@ namespace wbsh {
 				status = 1;
 				continue;
 			}
+
+			// Only the command line makes a login shell; bash ignores the
+			// change without an error.
+			if (flag->flag == &ShoptFlags::login_shell) continue;
 
 			exec.env().shopts().*(flag->flag) = on;
 		}
