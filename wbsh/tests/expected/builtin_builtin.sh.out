@@ -13,11 +13,11 @@ wrapped: through the function
 past the function
 past the alias
 === errors
-wbsh: builtin: nosuch: not a shell builtin
+builtin_builtin.sh: line 30: builtin: nosuch: not a shell builtin
 status 1
-wbsh: builtin: f: not a shell builtin
+builtin_builtin.sh: line 32: builtin: f: not a shell builtin
 status 1
-wbsh: builtin: -x: invalid option
+builtin_builtin.sh: line 33: builtin: -x: invalid option
 builtin: usage: builtin [shell-builtin [arg ...]]
 status 2
 status 0

@@ -14,17 +14,17 @@ lone bang is a string
 lone -n is a string
 three equal signs
 === 2. errors
-wbsh: [: a: unary operator expected
+test_operators.sh: line 27: [: a: unary operator expected
 rc=2
-wbsh: [: x: integer expression expected
+test_operators.sh: line 28: [: x: integer expression expected
 rc=2
-wbsh: [: too many arguments
+test_operators.sh: line 29: [: too many arguments
 rc=2
-wbsh: [: (: unary operator expected
+test_operators.sh: line 30: [: (: unary operator expected
 rc=2
-wbsh: test: -q: unary operator expected
+test_operators.sh: line 31: test: -q: unary operator expected
 rc=2
-wbsh: [: missing `]'
+test_operators.sh: line 32: [: missing `]'
 rc=2
 === 3. file tests
 #! script is executable

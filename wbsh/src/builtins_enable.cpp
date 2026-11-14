@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "diagnostics.h"
 #include "executor.h"
 
 namespace wbsh::enable_detail {
@@ -29,11 +30,7 @@ namespace wbsh::enable_detail {
 	};
 
 	static bool isSpecialBuiltin(const std::string& name) {
-		for (const char* special : kSpecialBuiltins) {
-			if (name == special) return true;
-		}
-
-		return false;
+		return isPosixSpecialBuiltin(name);
 	}
 
 	static void printUsage() {
@@ -55,11 +52,11 @@ namespace wbsh::enable_detail {
 				return true;
 			case 'f':
 			case 'd':
-				std::fprintf(stderr, "wbsh: enable: -%c: loadable builtins are not supported\n",
+				shellErrorf("enable: -%c: loadable builtins are not supported\n",
 					flag);
 				return false;
 			default:
-				std::fprintf(stderr, "wbsh: enable: -%c: invalid option\n", flag);
+				shellErrorf("enable: -%c: invalid option\n", flag);
 				printUsage();
 				return false;
 		}
@@ -105,7 +102,7 @@ namespace wbsh::enable_detail {
 		int status = 0;
 		for (const std::string& name : options.names) {
 			if (!exec.isKnownBuiltin(name)) {
-				std::fprintf(stderr, "wbsh: enable: %s: not a shell builtin\n", name.c_str());
+				shellErrorf("enable: %s: not a shell builtin\n", name.c_str());
 				status = 1;
 				continue;
 			}
@@ -127,6 +124,14 @@ namespace wbsh::enable_detail {
 }  // namespace wbsh::enable_detail
 
 namespace wbsh {
+
+	bool isPosixSpecialBuiltin(const std::string& name) {
+		for (const char* special : enable_detail::kSpecialBuiltins) {
+			if (name == special) return true;
+		}
+
+		return false;
+	}
 
 	void registerEnableBuiltin(Executor& exec) {
 		exec.registerBuiltin("enable", enable_detail::builtin_enable);

@@ -1,44 +1,45 @@
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 11: p 2: arithmetic syntax error in expression (error token is "2")
 2 next line
 3 1
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 13: p 2: arithmetic syntax error in expression (error token is "2")
 4
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 15: ((: p 2: arithmetic syntax error in expression (error token is "2")
 5 (( )) status 1
-wbsh: let: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 16: let: p 2: arithmetic syntax error in expression (error token is "2")
 6 let status 1
+expansion_error_line.sh: line 17: [[: p 2: arithmetic syntax error in expression (error token is "2")
 7 [[ ]] status 1
 8 in f
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 18: p 2: arithmetic syntax error in expression (error token is "2")
 9
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 21: p 2: arithmetic syntax error in expression (error token is "2")
 10 next eval line
 10 after eval 0
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 22: p 2: arithmetic syntax error in expression (error token is "2")
 11 subshell 1
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 24: p 2: arithmetic syntax error in expression (error token is "2")
 12 substitution [] 1
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 26: p 2: arithmetic syntax error in expression (error token is "2")
 13 after pipe
-wbsh: p 2: syntax error in expression (error token is "2")
+./src.sh: line 1: p 2: arithmetic syntax error in expression (error token is "2")
 14 next sourced line
 14 after source 0
-wbsh: p 2: syntax error in expression (error token is "2")
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 30: p 2: arithmetic syntax error in expression (error token is "2")
+expansion_error_line.sh: line 31: p 2: arithmetic syntax error in expression (error token is "2")
 16 next
-wbsh: ${x!}: bad substitution
+expansion_error_line.sh: line 33: ${x!}: bad substitution
 17 next
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 35: p 2: arithmetic syntax error in expression (error token is "2")
 18 next
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 37: p 2: arithmetic syntax error in expression (error token is "2")
 19 next
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 39: p 2: arithmetic syntax error in expression (error token is "2")
 20 utility here-string: line goes on
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 40: p 2: arithmetic syntax error in expression (error token is "2")
 21 utility redirection: line goes on
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 41: p 2: arithmetic syntax error in expression (error token is "2")
 22 next
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 45: p 2: arithmetic syntax error in expression (error token is "2")
 end
-wbsh: p 2: syntax error in expression (error token is "2")
+expansion_error_line.sh: line 53: p 2: arithmetic syntax error in expression (error token is "2")
 24 status 1

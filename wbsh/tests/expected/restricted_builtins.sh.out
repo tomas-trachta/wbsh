@@ -1,0 +1,10 @@
+restricted_builtins.sh: line 8: .: ./sub/file.sh: restricted
+restricted_builtins.sh: line 9: command: -p: restricted
+restricted_builtins.sh: line 10: exec: restricted
+restricted_builtins.sh: line 11: hash: /bin/sh: restricted
+restricted_builtins.sh: line 12: hash: no-such-command-here: not found
+restricted_builtins.sh: line 13: /bin/sh: restricted
+restricted_builtins.sh: line 14: no-such-command-here: not found
+restricted_builtins.sh: line 15: set: +r: invalid option
+set: usage: set [-abefhkmnptuvxBCEHPT] [-o option-name] [--] [-] [arg ...]
+still running: 1

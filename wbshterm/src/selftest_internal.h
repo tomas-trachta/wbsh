@@ -34,6 +34,9 @@ namespace wbshterm {
 	/** The escape-sequence checks: modes, resets, scrolling and SGR. */
 	void runVtChecks(test::Report& report);
 
+	/** What the shell's marks feed: command lines and times, printed paths, saved layouts. */
+	void runMarkChecks(test::Report& report);
+
 	/** Input to the window and text out of it: typing, the wheel, copying, the picker. */
 	void runInputChecks(test::Report& report);
 

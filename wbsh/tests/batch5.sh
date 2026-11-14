@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=== alias propagation through pipelines"
-alias greet='echo hello-from-alias'
+shopt -s expand_aliases; alias greet='echo hello-from-alias'
 greet
 greet | tr a-z A-Z
 greet | wc -l

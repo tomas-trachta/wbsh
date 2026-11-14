@@ -1,0 +1,30 @@
+=== directory components
+*/f: d1/f d2/f
+d*/: d1/ d2/
+*/*/: d1/sub/ t/a/ t/c/
+*/.x: d1/.x
+d*/f/: d*/f/
+nope*/f: nope*/f
+./d*/: ./d1/ ./d2/
+quoted slash: d2/g
+whole result sorted: a-b/z a/z
+=== failglob
+subshell rc=1
+message: no match: *.none
+failglob beats nullglob rc=1
+matches still run: d1/f d2/f
+=== GLOBIGNORE
+ignore *.dot:d1: .hid a a-b d2 plain t
+ignore everything: */f
+unset again: a a-b d1 d2 plain t
+=== globstar
+t/**/*.sh: t/a/b/z.sh t/a/y.sh t/x.sh
+t/**: t/ t/a t/a/b t/a/b/z.sh t/a/y.sh t/c t/c/w.txt t/x.sh
+t/**/: t/ t/a/ t/a/b/ t/c/
+**/z: a-b/z a/z
+globstar off: t/a/y.sh
+=== nocasematch
+case: match
+case bracket: match
+[[ ]]: match
+case off: no match

@@ -17,6 +17,7 @@
 
 #include "environment.h"
 #include "executor.h"
+#include "highlight.h"
 #include "keymap.h"
 
 #ifdef _WIN32
@@ -29,8 +30,10 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace wbsh {
@@ -75,7 +78,8 @@ namespace wbsh {
 	// typed with AltGr; <RESIZE:N> makes the screen N columns wide. Before
 	// the keys, `-p PROMPT` sets the prompt,
 	// `-c COLUMNS` a screen width (the cursor's cell is then reported as
-	// @row:col), and `-o` prints what the editor wrote. A line run with
+	// @row:col), `-o` prints what the editor wrote, and `-H` colours the
+	// line as an interactive shell does (a replay leaves it plain). A line run with
 	// operate-and-get-next is followed by `then [ENTRY]`, the history
 	// entry the next prompt would start with.
 	int lineEditBuiltin(Executor& exec, const std::vector<std::string>& args);
@@ -86,6 +90,18 @@ namespace wbsh {
 		std::size_t entry;
 		std::size_t offset;
 	};
+
+#ifdef _WIN32
+	// Shift, Ctrl, Alt or a lock key pressed alone, which no command reads.
+	bool isModifierOnlyKey(const ::KEY_EVENT_RECORD& key);
+#endif
+
+	struct PathListing;
+	struct PathListingJob;
+
+	// What a word the line editor colours names on disk; kUnreachable for
+	// a network drive, which highlighting never waits on.
+	enum class PathKind : unsigned char { kMissing, kFile, kDirectory, kUnreachable };
 
 	enum class LineStatus {
 		kLine,          // Enter: the typed line is in `out`
@@ -105,6 +121,11 @@ namespace wbsh {
 		// How to build the prompt again when requestPromptRefresh() asks.
 		void setPromptRefresher(std::function<std::string()> refresher);
 
+		// The lines of an unfinished command that the next line goes on
+		// with, each ending in a newline: the line is coloured as their
+		// continuation. Empty for a new command.
+		void setHighlightContext(const std::string& pending);
+
 		// Callable from any thread: an editor waiting for a key at a prompt
 		// builds that prompt again and redraws it if it changed.
 		static void requestPromptRefresh();
@@ -112,7 +133,9 @@ namespace wbsh {
 		struct ReplayOptions {
 			std::string prompt;
 			std::size_t columns = 0;    // a screen this wide instead of the console's
+			std::size_t lines = 0;      // and this tall
 			bool show_output = false;   // also what the editor wrote, escapes spelled out
+			bool highlight = false;     // syntax colours, which a replay leaves out otherwise
 		};
 
 		// Test hook behind `__lineedit`: types `keys` into an empty line
@@ -191,6 +214,7 @@ namespace wbsh {
 		void ding();
 
 		void redraw();
+		std::size_t screenRows() const;
 		void redrawWhenIdle();
 		void typeText(const std::string& text);
 		std::string readBracketedPaste();
@@ -201,7 +225,7 @@ namespace wbsh {
 		void showPrompt();
 		void refreshPrompt();
 		std::size_t leadRows() const;
-		void appendLineText(std::string& out) const;
+		void appendLineText(std::string& out);
 		void insertChars(const std::string& text);
 		void killRange(std::size_t start, std::size_t end, bool prepend);
 		void insertYanked(const std::string& text, std::size_t& start, std::size_t& end);
@@ -277,6 +301,7 @@ namespace wbsh {
 		void killRegion();
 		void menuComplete();
 		void menuCompleteBackward();
+		void menuSelect();
 		void operateAndGetNext();
 		void overwriteMode();
 		void quotedInsert();
@@ -294,6 +319,7 @@ namespace wbsh {
 		void searchHistory(bool older, bool anchored);
 		void stepMenu(bool forward);
 		bool startMenu();
+		void showMenuPrefix();
 		void completeWith(std::vector<std::string> matches);
 		void copyToKillRing(const std::string& text);
 		void overwriteChars(const std::string& text);
@@ -397,10 +423,9 @@ namespace wbsh {
 		std::vector<std::string> completionsFor(const std::string& prefix,
 		                                        bool command_pos);
 		std::vector<std::string> commandCompletions(const std::string& prefix);
-		// PATH-derived executable names (extension-stripped), memoized
-		// across Tab presses and rebuilt only when PATH itself changes --
-		// consecutive Tabs on the same prefix never re-list every PATH
-		// directory from disk.
+		// PATH-derived executable names (extension-stripped), listed once
+		// per PATH on a worker thread that highlighting starts early;
+		// waits for that listing when it is still under way.
 		const std::set<std::string>& pathCommandNames();
 		std::vector<std::string> pathCompletions(const std::string& prefix);
 
@@ -454,10 +479,67 @@ namespace wbsh {
 		bool askYesNo();
 		std::string longestCommonPrefix(const std::vector<std::string>& words);
 
+		// COMP_WORDBREAKS, the word a function is handed and COMP_TYPE /
+		// COMP_KEY; "word\tdescription" matches keep their descriptions.
+		std::string wordBreaks() const;
+		std::string publishCompletionContext(const Tok& tok);
+		void publishCompletionKind();
+		std::vector<std::string> takeDescriptions(const std::vector<std::string>& matches);
+		std::string describeMatch(const std::string& match) const;
+		std::vector<std::string> listedNames(const std::vector<std::string>& matches) const;
+
+		// lineedit_menu.cpp: menu selection, the matches as a grid below
+		// the line that Tab, Shift-Tab and the arrows walk through.
+		struct MenuLayout {
+			std::size_t rows = 0;
+			std::size_t columns = 1;
+			std::size_t cell = 0;    // cells per column, gap included
+			std::size_t label = 0;   // cells of the longest label
+			bool described = false;  // one column, a description beside each label
+		};
+
+		enum class MenuOutcome { kStay, kAccept, kCancel, kKeep };
+
+		struct MenuGrid {
+			std::vector<std::string> matches;        // what goes into the line
+			std::vector<std::string> labels;         // what the grid shows
+			std::vector<std::string> descriptions;   // beside each label, or empty
+			std::size_t selected = static_cast<std::size_t>(-1);
+			std::size_t top_row = 0;                 // first row shown once it scrolls
+			std::size_t visible = 0;                 // rows shown, as last drawn
+			MenuLayout layout;
+			UndoPoint origin;                        // the line before the menu opened
+			bool active = false;
+		};
+
+		bool menuSelectWanted() const;
+		void openMenu(const Tok& tok, const std::vector<std::string>& matches);
+		void runMenuSelect(const Tok& tok, const std::vector<std::string>& matches,
+		                   const UndoPoint& origin);
+		void fillMenuGrid(const std::vector<std::string>& matches, const UndoPoint& origin);
+		void runMenuGrid();
+		void finishMenuGrid(MenuOutcome outcome);
+		void selectMenuItem(std::size_t index);
+		void stepMenuSelection(bool forward);
+		void stepMenuColumn(bool forward);
+		void stepMenuPage(bool forward);
+		MenuLayout menuLayout(std::size_t width) const;
+		std::size_t appendMenuRows(std::string& out, bool at_row_start, std::size_t used_rows);
+		std::vector<std::string> menuLines(std::size_t budget);
+		void scrollMenuToSelection(std::size_t visible);
+		std::string menuRow(std::size_t row, std::size_t width) const;
+		std::string menuCell(std::size_t index, std::size_t width) const;
+		std::string menuStatusLine() const;
+#ifdef _WIN32
+		MenuOutcome menuHandleKey(const ::KEY_EVENT_RECORD& key, bool& redispatch);
+		bool menuMoveKey(const ::KEY_EVENT_RECORD& key);
+#endif
+
 		Environment& env_;
 		Executor& exec_;
 		bool headless_ = false;
 		std::size_t forced_columns_ = 0;
+		std::size_t forced_rows_ = 0;
 		bool capture_output_ = false;
 		std::string captured_output_;
 		bool interrupted_ = false;
@@ -557,6 +639,14 @@ namespace wbsh {
 		bool spec_answered_ = false;
 		int last_completion_status_ = 0;
 
+		// How the matches asked for now will be used (COMP_TYPE), whether
+		// they are command names, what scripts said about them, and the
+		// menu selection grid showing them.
+		char completion_type_ = '\t';
+		bool command_matches_ = false;
+		std::map<std::string, std::string> match_descriptions_;
+		MenuGrid menu_grid_;
+
 		// Current ghost-text inline prediction (the tail past the
 		// cursor), rendered in dim style by redraw(). Empty when no
 		// prediction applies -- including while the reverse-search
@@ -571,10 +661,39 @@ namespace wbsh {
 		// match across consecutive keystrokes without rescanning history.
 		std::size_t suggestion_cache_idx_ = static_cast<std::size_t>(-1);
 
-		// Cache backing pathCommandNames(): the set of PATH-visible
-		// executable basenames, plus the PATH string it was built from.
-		std::set<std::string> path_command_cache_;
-		std::string path_command_cache_path_;
+		// lineedit_highlight.cpp: syntax colours. A command word is looked
+		// up in memory only -- the shell's own names and the PATH listing;
+		// a path is probed once per line and word, never on a network drive.
+		std::string highlightedLine();
+		bool highlightWanted() const;
+		const HighlightPalette& highlightPalette();
+		HighlightRole highlightCommandRole(const std::string& word);
+		bool namesShellCommand(const std::string& word) const;
+		HighlightRole listedCommandRole(const std::string& word);
+		HighlightRole pathCommandRole(const std::string& word);
+		bool highlightPathExists(const std::string& word);
+		PathKind cachedPathKind(const std::string& word, bool as_command);
+		PathKind probePath(const std::string& word, bool as_command);
+		bool onRemoteDrive(const std::filesystem::path& path);
+		void resetHighlightCaches();
+		bool highlightSettled();
+		void startPathListing(const std::string& path);
+		std::shared_ptr<const PathListing> pathListing(bool wait);
+
+		std::string highlight_context_;
+		bool replay_highlight_ = false;
+		bool minibuffer_active_ = false;
+		bool highlight_waiting_ = false;   // a command word waits for the PATH listing
+		bool highlight_palette_ready_ = false;
+		std::string highlight_spec_;
+		HighlightPalette highlight_palette_;
+		std::unordered_map<std::string, PathKind> highlight_paths_;
+		signed char drive_remote_[26] = {};   // per drive letter: 0 unknown, 1 remote, -1 local
+
+		// The PATH listing being made or made last, and the newest one
+		// finished, which stands in while a fresh one is made.
+		std::shared_ptr<PathListingJob> path_listing_job_;
+		std::shared_ptr<const PathListing> path_listing_;
 	};
 
 }  // namespace wbsh

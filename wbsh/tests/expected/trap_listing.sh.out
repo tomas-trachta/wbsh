@@ -12,9 +12,9 @@ trap -- 'u' SIGINT
 trap -- 'it'\''s' SIGTERM
 trap -- ': e' EXIT
 trap -- 'u' SIGUSR1
-wbsh: trap: FOO: invalid signal specification
+trap_listing.sh: line 20: trap: FOO: invalid signal specification
 status 1
-wbsh: trap: FOO: invalid signal specification
+trap_listing.sh: line 21: trap: FOO: invalid signal specification
 status 1
 === resetting
 trap -- ': e' EXIT

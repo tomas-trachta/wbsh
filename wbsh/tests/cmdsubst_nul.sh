@@ -8,8 +8,8 @@ x=`printf 'a\0b'`
 echo "2 ${#x} $x"
 echo "3 $(printf 'p\0q')" | od -An -c
 D=$(mktemp -d) || exit 1
-printf 'r\0s' > "$D/nul.bin"
-x=$(< "$D/nul.bin")
+printf 'r\0s' > "$D/zero.bin"
+x=$(< "$D/zero.bin")
 echo "4 ${#x} $x"
 x=$(printf 'no nul')
 echo "5 ${#x} $x"

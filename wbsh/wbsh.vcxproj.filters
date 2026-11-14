@@ -16,25 +16,37 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\source.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\startup.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\invocation.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\jsonrun.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\base64.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\make_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\lexer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\ast.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\parser.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\parentpid.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\capturefile.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\printer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\jobcontrol.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\pipesecurity.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\procsubst.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\environment.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\expander.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\globsort.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\executor.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\filetimes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\dateparse.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\timefmt.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\timereport.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\diagnostics.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\funcprint.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\fnmatch.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\collsyms.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\pathconv.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\consolekeys.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\keymap.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\lineedit.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\highlight.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\textcells.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\utf8.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\setup.h"><Filter>Header Files</Filter></ClInclude>
@@ -45,6 +57,7 @@
     <ClInclude Include="src\repl.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\script.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\arena.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\assocmap.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\exitstatus.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\numparse.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\optscan.h"><Filter>Header Files</Filter></ClInclude>
@@ -71,6 +84,8 @@
     <ClInclude Include="src\ftp_session.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\vi_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\fileowner.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\filemode.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\archivepath.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\filemagic.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\man_pages.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\ed_internal.h"><Filter>Header Files</Filter></ClInclude>
@@ -88,12 +103,15 @@
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\parser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\parentpid.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\capturefile.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\printer.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\jobcontrol.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\pipesecurity.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\procsubst.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\environment.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\expander.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\globsort.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins_trap.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\filetimes.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -102,7 +120,14 @@
     <ClCompile Include="src\builtins_enable.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins_ulimit.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\timefmt.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_gitbash.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\timereport.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\diagnostics.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\funcprint.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor_callstack.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\executor_procsubst.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\executor_xtrace.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\executor_restricted.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor_traps.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\builtins_declare.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -162,6 +187,11 @@
     <ClCompile Include="src\coreutils_man.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_locale.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\fileowner.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\filemode.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_chmod.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\archivepath.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\assocmap.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lexer_subscript.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\filemagic.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\filemagic_exec.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\filemagic_media.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -257,16 +287,21 @@
     <ClCompile Include="src\coreutils_process.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_ps.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\pathconv.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\pathconv_args.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\consolekeys.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\keymap.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\keymap_vi.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit_commands.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit_complete.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lineedit_highlight.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\lineedit_menu.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\highlight.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit_readline.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\lineedit_vi.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\textcells.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\fnmatch.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\collsyms.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\utf8.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\wbshterm\src\charwidth.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\wbshterm\src\charwidth_ucd.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -279,6 +314,10 @@
     <ClCompile Include="src\prompt.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\repl.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\script.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\base64.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\invocation.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\jsonrun.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\startup.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\main.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>

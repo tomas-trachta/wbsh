@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "diagnostics.h"
 #include "executor.h"
 #include "numparse.h"
 #include "testops.h"
@@ -218,7 +219,7 @@ namespace wbsh::test_detail {
 		const bool value = evalByCount(run, 0, count);
 		if (!run.failed) return value ? 0 : 1;
 
-		std::fprintf(stderr, "wbsh: %s: %s\n", name, run.error.c_str());
+		shellErrorf("%s: %s\n", name, run.error.c_str());
 		return 2;
 	}
 
@@ -228,7 +229,7 @@ namespace wbsh::test_detail {
 
 	static int builtin_lbracket(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty() || args.back() != "]") {
-			std::fprintf(stderr, "wbsh: [: missing `]'\n");
+			shellErrorf("[: missing `]'\n");
 			return 2;
 		}
 

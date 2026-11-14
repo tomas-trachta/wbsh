@@ -45,11 +45,11 @@ TERM
 15
 10
 9
-wbsh: kill: USR9: invalid signal specification
+signals.sh: line 100: kill: USR9: invalid signal specification
 status 1
-wbsh: kill: NOPE: invalid signal specification
+signals.sh: line 101: kill: NOPE: invalid signal specification
 status 1
-wbsh: kill: -s: option requires an argument
+signals.sh: line 102: kill: -s: option requires an argument
 status 2
 -n 0 probes
 -- ends the options

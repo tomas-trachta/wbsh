@@ -1,0 +1,23 @@
+=== 1. a subshell ends at the failed assignment
+readonly_discard.sh: line 6: R: readonly variable
+rc=1
+readonly_discard.sh: line 7: R: readonly variable
+rc=1
+readonly_discard.sh: line 9: arr: readonly variable
+rc=1 1 2
+=== 2. the rest of the line goes, the next line runs
+rc=1
+after f
+loop 1
+after loop
+x=[] rc=1
+after and-or
+=== 3. eval and source end, their caller goes on
+after eval rc=1
+after source rc=1
+=== 4. other assignments only fail
+prefix assignment rc=0
+declare rc=1
+for rc=1
+read rc=1
+R=1

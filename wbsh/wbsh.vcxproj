@@ -17,6 +17,14 @@
       <Configuration>Release</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64">
+      <Configuration>Debug</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64">
+      <Configuration>Release</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
 
   </ItemGroup>
   <PropertyGroup Label="Globals">
@@ -57,6 +65,19 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -73,6 +94,12 @@
       <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     </ImportGroup>
     <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+      <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    </ImportGroup>
+    <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+      <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    </ImportGroup>
+    <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
       <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     </ImportGroup>
 
@@ -97,7 +124,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
-      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;userenv.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -120,7 +147,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
-      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;userenv.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -141,7 +168,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
-      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;userenv.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -166,7 +193,53 @@
       <AdditionalOptions Condition="'$(EnableASAN)'!='true'">/guard:cf %(AdditionalOptions)</AdditionalOptions>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
-      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;userenv.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <PreBuildEvent>
+      <Command>python "$(ProjectDir)..\tools\check_style.py" "$(ProjectDir)src"</Command>
+      <Message>Running style checker (tools\check_style.py)...</Message>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <StackReserveSize>16777216</StackReserveSize>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;userenv.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <PreBuildEvent>
+      <Command>python "$(ProjectDir)..\tools\check_style.py" "$(ProjectDir)src"</Command>
+      <Message>Running style checker (tools\check_style.py)...</Message>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WBSH_VERSION_MAJOR=$(WbshVersionMajor);WBSH_VERSION_MINOR=$(WbshVersionMinor);WBSH_VERSION_PATCH=$(WbshVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ControlFlowGuard Condition="'$(EnableASAN)'!='true'">Guard</ControlFlowGuard>
+    </ClCompile>
+    <Link>
+      <AdditionalOptions Condition="'$(EnableASAN)'!='true'">/guard:cf %(AdditionalOptions)</AdditionalOptions>
+      <SubSystem>Console</SubSystem>
+      <StackReserveSize>16777216</StackReserveSize>
+      <DelayLoadDLLs>shell32.dll;user32.dll;ws2_32.dll;winhttp.dll;wtsapi32.dll;dwmapi.dll;bcrypt.dll;userenv.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
        <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -188,21 +261,32 @@
 
   <ItemGroup>
     <ClInclude Include="src\source.h" />
+    <ClInclude Include="src\startup.h" />
+    <ClInclude Include="src\invocation.h" />
+    <ClInclude Include="src\jsonrun.h" />
+    <ClInclude Include="src\base64.h" />
     <ClInclude Include="src\make_internal.h" />
     <ClInclude Include="src\lexer.h" />
     <ClInclude Include="src\ast.h" />
     <ClInclude Include="src\parser.h" />
+    <ClInclude Include="src\parentpid.h" />
+    <ClInclude Include="src\capturefile.h" />
     <ClInclude Include="src\printer.h" />
     <ClInclude Include="src\jobcontrol.h" />
     <ClInclude Include="src\pipesecurity.h" />
     <ClInclude Include="src\procsubst.h" />
     <ClInclude Include="src\environment.h" />
     <ClInclude Include="src\expander.h" />
+    <ClInclude Include="src\globsort.h" />
     <ClInclude Include="src\executor.h" />
     <ClInclude Include="src\filetimes.h" />
     <ClInclude Include="src\dateparse.h" />
     <ClInclude Include="src\timefmt.h" />
+    <ClInclude Include="src\timereport.h" />
+    <ClInclude Include="src\diagnostics.h" />
+    <ClInclude Include="src\funcprint.h" />
     <ClInclude Include="src\fnmatch.h" />
+    <ClInclude Include="src\collsyms.h" />
     <ClInclude Include="src\termreq.h" />
     <ClInclude Include="src\utils.h" />
     <ClInclude Include="src\interrupt.h" />
@@ -210,6 +294,7 @@
     <ClInclude Include="src\consolekeys.h" />
     <ClInclude Include="src\keymap.h" />
     <ClInclude Include="src\lineedit.h" />
+    <ClInclude Include="src\highlight.h" />
     <ClInclude Include="src\textcells.h" />
     <ClInclude Include="src\utf8.h" />
     <ClInclude Include="src\awk.h" />
@@ -229,6 +314,8 @@
     <ClInclude Include="src\ftp_session.h" />
     <ClInclude Include="src\vi_internal.h" />
     <ClInclude Include="src\fileowner.h" />
+    <ClInclude Include="src\filemode.h" />
+    <ClInclude Include="src\archivepath.h" />
     <ClInclude Include="src\filemagic.h" />
     <ClInclude Include="src\man_pages.h" />
     <ClInclude Include="src\ed_internal.h" />
@@ -252,6 +339,7 @@
     <ClInclude Include="src\script.h" />
     <ClInclude Include="src\coreutils_internal.h" />
     <ClInclude Include="src\arena.h" />
+    <ClInclude Include="src\assocmap.h" />
     <ClInclude Include="src\exitstatus.h" />
     <ClInclude Include="src\numparse.h" />
     <ClInclude Include="src\optscan.h" />
@@ -265,12 +353,15 @@
   <ItemGroup>
     <ClCompile Include="src\lexer.cpp" />
     <ClCompile Include="src\parser.cpp" />
+    <ClCompile Include="src\parentpid.cpp" />
+    <ClCompile Include="src\capturefile.cpp" />
     <ClCompile Include="src\printer.cpp" />
     <ClCompile Include="src\jobcontrol.cpp" />
     <ClCompile Include="src\pipesecurity.cpp" />
     <ClCompile Include="src\procsubst.cpp" />
     <ClCompile Include="src\environment.cpp" />
     <ClCompile Include="src\expander.cpp" />
+    <ClCompile Include="src\globsort.cpp" />
     <ClCompile Include="src\executor.cpp" />
     <ClCompile Include="src\builtins_trap.cpp" />
     <ClCompile Include="src\filetimes.cpp" />
@@ -279,7 +370,14 @@
     <ClCompile Include="src\builtins_enable.cpp" />
     <ClCompile Include="src\builtins_ulimit.cpp" />
     <ClCompile Include="src\timefmt.cpp" />
+    <ClCompile Include="src\coreutils_gitbash.cpp" />
+    <ClCompile Include="src\timereport.cpp" />
+    <ClCompile Include="src\diagnostics.cpp" />
+    <ClCompile Include="src\funcprint.cpp" />
     <ClCompile Include="src\executor_callstack.cpp" />
+    <ClCompile Include="src\executor_procsubst.cpp" />
+    <ClCompile Include="src\executor_xtrace.cpp" />
+    <ClCompile Include="src\executor_restricted.cpp" />
     <ClCompile Include="src\executor_traps.cpp" />
     <ClCompile Include="src\builtins.cpp" />
     <ClCompile Include="src\builtins_declare.cpp" />
@@ -333,6 +431,11 @@
     <ClCompile Include="src\coreutils_man.cpp" />
     <ClCompile Include="src\coreutils_locale.cpp" />
     <ClCompile Include="src\fileowner.cpp" />
+    <ClCompile Include="src\filemode.cpp" />
+    <ClCompile Include="src\coreutils_chmod.cpp" />
+    <ClCompile Include="src\archivepath.cpp" />
+    <ClCompile Include="src\assocmap.cpp" />
+    <ClCompile Include="src\lexer_subscript.cpp" />
     <ClCompile Include="src\filemagic.cpp" />
     <ClCompile Include="src\filemagic_exec.cpp" />
     <ClCompile Include="src\filemagic_media.cpp" />
@@ -433,16 +536,21 @@
     <ClCompile Include="src\utils.cpp" />
     <ClCompile Include="src\interrupt.cpp" />
     <ClCompile Include="src\pathconv.cpp" />
+    <ClCompile Include="src\pathconv_args.cpp" />
     <ClCompile Include="src\consolekeys.cpp" />
     <ClCompile Include="src\keymap.cpp" />
     <ClCompile Include="src\keymap_vi.cpp" />
     <ClCompile Include="src\lineedit.cpp" />
     <ClCompile Include="src\lineedit_commands.cpp" />
     <ClCompile Include="src\lineedit_complete.cpp" />
+    <ClCompile Include="src\lineedit_highlight.cpp" />
+    <ClCompile Include="src\lineedit_menu.cpp" />
+    <ClCompile Include="src\highlight.cpp" />
     <ClCompile Include="src\lineedit_readline.cpp" />
     <ClCompile Include="src\lineedit_vi.cpp" />
     <ClCompile Include="src\textcells.cpp" />
     <ClCompile Include="src\fnmatch.cpp" />
+    <ClCompile Include="src\collsyms.cpp" />
     <ClCompile Include="src\utf8.cpp" />
     <ClCompile Include="..\wbshterm\src\charwidth.cpp" />
     <ClCompile Include="..\wbshterm\src\charwidth_ucd.cpp" />
@@ -465,12 +573,39 @@
     <ClCompile Include="src\prompt.cpp" />
     <ClCompile Include="src\repl.cpp" />
     <ClCompile Include="src\script.cpp" />
+    <ClCompile Include="src\base64.cpp" />
+    <ClCompile Include="src\invocation.cpp" />
+    <ClCompile Include="src\jsonrun.cpp" />
+    <ClCompile Include="src\startup.cpp" />
     <ClCompile Include="src\main.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="src\wbsh.rc" />
     <Manifest Include="src\wbsh.manifest" />
   </ItemGroup>
+  <!-- The version banner names the commit wbsh was built from. The header is
+       rewritten only when the commit changes, so only main.cpp rebuilds. -->
+  <Target Name="WriteBuildInfo" BeforeTargets="ClCompile">
+    <Exec Command="git rev-parse --short=12 HEAD" WorkingDirectory="$(ProjectDir)" ConsoleToMSBuild="true"
+          IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="WbshBuildCommit" />
+      <Output TaskParameter="ExitCode" PropertyName="WbshBuildCommitExit" />
+    </Exec>
+    <Exec Command="git log -1 --format=%25%25cs" WorkingDirectory="$(ProjectDir)" ConsoleToMSBuild="true"
+          IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low"
+          Condition="'$(WbshBuildCommitExit)' == '0'">
+      <Output TaskParameter="ConsoleOutput" PropertyName="WbshBuildDate" />
+    </Exec>
+    <MakeDir Directories="$(IntDir)" />
+    <WriteLinesToFile File="$(IntDir)build_info.h" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Condition="'$(WbshBuildCommitExit)' == '0'"
+                      Lines="#pragma once;#define WBSH_BUILD_COMMIT &quot;$(WbshBuildCommit)&quot;;#define WBSH_BUILD_DATE &quot;$(WbshBuildDate)&quot;" />
+    <ItemGroup>
+      <ClCompile Condition="'%(Filename)' == 'main'">
+        <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      </ClCompile>
+    </ItemGroup>
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

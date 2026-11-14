@@ -33,6 +33,9 @@ namespace wbshterm {
 		OpenThemesFolder,
 		OpenScriptFile,
 		CopyLastOutput,
+		CopyBlockOutput,
+		SelectBlockOutput,
+		RerunBlock,
 	};
 
 	/**
@@ -69,7 +72,7 @@ namespace wbshterm {
 	 * The caller owns the returned menu and must DestroyMenu it.
 	 */
 	HMENU buildTerminalMenu(const Config& config, const MenuLists& lists,
-		bool has_selection, bool has_blocks);
+		bool has_selection, bool has_blocks, bool on_block = false, bool can_rerun = false);
 
 	/** Translates a command id from TrackPopupMenu into an intent. */
 	MenuChoice menuChoiceFor(int command_id, const MenuLists& lists);

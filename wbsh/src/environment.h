@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "assocmap.h"
+
 namespace wbsh {
 
 	/// The `set -o` options. Those wbsh has no counterpart for (monitor,
@@ -57,23 +59,70 @@ namespace wbsh {
 		bool xtrace      = false;
 	};
 
-	/// The `shopt` flags. globstar is on by default since bash's `**` is
-	/// the more useful behaviour for an interactive shell.
+	/// Every `shopt` flag bash 5.3 has, so rc files written for bash load
+	/// without errors; not all of them change behaviour yet. globstar is on
+	/// by default since bash's `**` is the more useful behaviour.
 	struct ShoptFlags {
-		bool nullglob       = false;
-		bool dotglob        = false;
-		bool extglob        = false;
-		bool nocaseglob     = false;
-		bool nocasematch    = false;
-		bool globstar       = true;
-		bool lastpipe       = false;
-		bool login_shell    = false;
-		bool huponexit      = false;
-		bool expand_aliases = true;
-		bool autocd         = false;
-		bool checkwinsize   = true;
-		bool promptvars     = true;
-		bool patsub_replacement = true;
+		/// Also what `assoc_expand_once`, bash 5.3's deprecated synonym, sets.
+		bool array_expand_once       = false;
+		bool autocd                  = false;
+		bool bash_source_fullpath    = false;
+		bool cdable_vars             = false;
+		bool cdspell                 = false;
+		bool checkhash               = false;
+		bool checkjobs               = false;
+		bool checkwinsize            = true;
+		bool cmdhist                 = true;
+		bool compat31                = false;
+		bool compat32                = false;
+		bool compat40                = false;
+		bool compat41                = false;
+		bool compat42                = false;
+		bool compat43                = false;
+		bool compat44                = false;
+		bool complete_fullquote      = true;
+		bool direxpand               = false;
+		bool dirspell                = false;
+		bool dotglob                 = false;
+		bool execfail                = false;
+		bool expand_aliases          = false;
+		bool extdebug                = false;
+		bool extglob                 = false;
+		bool extquote                = true;
+		bool failglob                = false;
+		bool force_fignore           = true;
+		bool globasciiranges         = true;
+		bool globskipdots            = true;
+		bool globstar                = true;
+		bool gnu_errfmt              = false;
+		bool histappend              = false;
+		bool histreedit              = false;
+		bool histverify              = false;
+		bool hostcomplete            = true;
+		bool huponexit               = false;
+		bool inherit_errexit         = false;
+		bool interactive_comments    = true;
+		bool lastpipe                = false;
+		bool lithist                 = false;
+		bool localvar_inherit        = false;
+		bool localvar_unset          = false;
+		bool login_shell             = false;
+		bool mailwarn                = false;
+		bool no_empty_cmd_completion = false;
+		bool nocaseglob              = false;
+		bool nocasematch             = false;
+		bool noexpand_translation    = false;
+		bool nullglob                = false;
+		bool patsub_replacement      = true;
+		bool progcomp                = true;
+		bool progcomp_alias          = false;
+		bool promptvars              = true;
+		bool restricted_shell        = false;
+		bool shift_verbose           = false;
+		bool sourcepath              = true;
+		bool syslog_history          = false;
+		bool varredir_close          = false;
+		bool xpg_echo                = false;
 	};
 
 	struct ShoptSpec {
@@ -101,6 +150,7 @@ namespace wbsh {
 		kAttrInteger   = 1u << 0,
 		kAttrLowercase = 1u << 1,
 		kAttrUppercase = 1u << 2,
+		kAttrCapitalize = 1u << 3,
 	};
 
 	class Environment {
@@ -150,6 +200,9 @@ namespace wbsh {
 		}
 		/// The value `name+=suffix` stores: a sum for an integer variable.
 		std::string appendedValue(const std::string& name, const std::string& suffix) const;
+		/// `+=` onto @p current, an element of @p name: arithmetic under `-i`.
+		std::string appendedTo(const std::string& name, const std::string& current,
+		                       const std::string& suffix) const;
 
 		/// Evaluates the values assigned to `declare -i` variables; the
 		/// Executor installs its arithmetic evaluator here.
@@ -189,7 +242,7 @@ namespace wbsh {
 
 		/// Sparse indexed array — bash arrays are sparse, so a sorted map.
 		using IndexedArray = std::map<long long, std::string>;
-		using AssocArray   = std::map<std::string, std::string>;
+		using AssocArray   = BashAssocMap;
 
 		/// Everything a function's `local` shadows, so the return can put it back.
 		struct VarState {
@@ -219,6 +272,19 @@ namespace wbsh {
 			auto it = indexed_.find(resolveRef(name));
 			return it == indexed_.end() ? nullptr : &it->second;
 		}
+		/// For in-place edits by the shell itself: null unless @p name is
+		/// an indexed array with no nameref, attribute, readonly flag or
+		/// scalar, so an edit means the same as setIndexedArrayFromList.
+		IndexedArray* plainIndexedArray(const std::string& name) {
+			const auto found = indexed_.find(name);
+			if (found == indexed_.end()) return nullptr;
+			if (!namerefs_.empty() && namerefs_.count(name) != 0) return nullptr;
+			if (!valueless_.empty() && valueless_.count(name) != 0) return nullptr;
+			if (readonly_.count(name) != 0 || vars_.count(name) != 0) return nullptr;
+
+			const auto attrs = attributes_.find(name);
+			return attrs != attributes_.end() && attrs->second != 0 ? nullptr : &found->second;
+		}
 		const AssocArray* getAssocArray(const std::string& name) const {
 			auto it = assoc_.find(resolveRef(name));
 			return it == assoc_.end() ? nullptr : &it->second;
@@ -234,7 +300,17 @@ namespace wbsh {
 		 * with the prior scalar at index 0 plus this assignment.
 		 */
 		void setIndexedElement(const std::string& name, long long idx, std::string val);
+		/// A negative @p idx counts back from one past the highest index;
+		/// false, reported, when it still ends up below zero.
+		bool resolveElementIndex(const std::string& name, long long& idx) const;
 		void declareAssocArray(const std::string& name);
+		/// `declare -a x` / `declare -A x` with no value: the array exists but
+		/// was never assigned, which `declare -p` shows without `=()`.
+		void markValueless(const std::string& name) { valueless_.insert(resolveRef(name)); }
+		unsigned long long optindWrites() const { return optind_writes_; }
+		bool isValueless(const std::string& name) const {
+			return valueless_.count(resolveRef(name)) != 0;
+		}
 		/// Set `assoc[key]=val`; promotes @p name to an assoc array if needed.
 		void setAssocElement(const std::string& name, std::string key, std::string val);
 		/// Drop any array form for @p name (scalar value, if any, is preserved).
@@ -276,6 +352,8 @@ namespace wbsh {
 
 		/// `$-`: the single-letter options that are on, in bash's order.
 		std::string shellOptions() const;
+		std::string enabledSetOptionNames() const;   ///< `$SHELLOPTS`
+		std::string enabledShoptNames() const;       ///< `$BASHOPTS`
 
 		SetOptions&       options()       { return options_; }
 		const SetOptions& options() const { return options_; }
@@ -297,6 +375,14 @@ namespace wbsh {
 		bool braceexpand() const { return options_.braceexpand; }
 
 		bool interactive() const { return interactive_; }
+		/// `c` or `s`: how the shell got its commands, shown last in `$-`.
+		void setInvocationLetter(char letter) { invocation_letter_ = letter; }
+		/// `set -o posix`: also sets POSIXLY_CORRECT and the shopts bash's
+		/// POSIX mode turns on, and puts them back when it is turned off.
+		void setPosixMode(bool on);
+		void enterRestrictedMode();
+		bool restricted() const { return shopt_.restricted_shell; }
+		char invocationLetter() const { return invocation_letter_; }
 		void setInteractive(bool b);
 
 		/// `shopt` flags. Defaults match bash's interactive defaults where
@@ -325,6 +411,10 @@ namespace wbsh {
 		void setAutocd(bool b) { shopt_.autocd = b; }
 		bool checkwinsize() const { return shopt_.checkwinsize; }
 		void setCheckwinsize(bool b) { shopt_.checkwinsize = b; }
+
+		/// Whether LC_ALL, else LC_CTYPE, else LANG names a UTF-8 locale;
+		/// with none of them set wbsh speaks UTF-8.
+		bool utf8Locale() const;
 
 		void   setShellName(std::string s) { shell_name_ = std::move(s); }
 		const std::string& shellName() const { return shell_name_; }
@@ -384,15 +474,27 @@ namespace wbsh {
 		std::string getResolved(const std::string& name) const;
 		bool        hasResolved(const std::string& name) const;
 		long long elapsedSeconds() const;
+		void noteGlobIgnore();
+		void notePosixlyCorrect();
+
+		struct PosixSavedShopts {
+			bool expand_aliases = false;
+			bool inherit_errexit = false;
+			bool shift_verbose = false;
+			bool interactive_comments = true;
+		};
+		PosixSavedShopts posix_saved_;
 		void importProcessVariable(std::string name, std::string value);
 
 		std::unordered_map<std::string, std::string> vars_;
 		std::unordered_map<std::string, IndexedArray> indexed_;
 		std::unordered_map<std::string, AssocArray> assoc_;
+		unsigned long long optind_writes_ = 0;
 		std::unordered_set<std::string> exported_;
 		std::unordered_set<std::string> readonly_;
 		std::unordered_map<std::string, unsigned> attributes_;
 		std::unordered_map<std::string, std::string> namerefs_;
+		std::unordered_set<std::string> valueless_;
 		ArithEvaluator arith_evaluator_ = nullptr;
 		void* arith_context_ = nullptr;
 		std::vector<std::string> positional_;
@@ -403,6 +505,7 @@ namespace wbsh {
 		std::string shell_name_ = "wbsh";
 		SetOptions options_;
 		bool interactive_ = false;
+		char invocation_letter_ = 0;
 		ShoptFlags shopt_;
 		std::chrono::steady_clock::time_point start_time_ =
 		    std::chrono::steady_clock::now();

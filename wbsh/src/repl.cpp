@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "ast.h"
+#include "diagnostics.h"
 #include "environment.h"
 #include "executor.h"
 #include "gitprompt.h"
@@ -49,6 +50,7 @@
 #include "pathconv.h"
 #include "prompt.h"
 #include "setup.h"
+#include "startup.h"
 
 #if !defined(WBSH_VERSION_MAJOR) || !defined(WBSH_VERSION_MINOR) || !defined(WBSH_VERSION_PATCH)
 #define WBSH_VERSION_MAJOR 0
@@ -76,6 +78,7 @@ namespace wbsh {
 		HistorySubstitution last_substitution;
 		bool        waiting_for_more = false;
 		bool        color_ok = false;
+		bool        command_lines = false;
 #ifdef _WIN32
 		HANDLE h_in       = INVALID_HANDLE_VALUE;
 		HANDLE h_out      = INVALID_HANDLE_VALUE;
@@ -152,6 +155,8 @@ namespace wbsh {
 
 	static bool parseErrorLooksIncomplete(const std::string& message) {
 		return message.find("expected `")        != std::string::npos
+		    || message.find("unexpected end of file") != std::string::npos
+		    || message.find("unexpected EOF") != std::string::npos
 		    || message.find("expected pipeline") != std::string::npos
 		    || message.find("expected command")  != std::string::npos;
 	}
@@ -162,6 +167,7 @@ namespace wbsh {
 
 		for (const auto& error : lex_errs) {
 			if (error.message.find("unterminated") != std::string::npos) return true;
+			if (error.message.find("unexpected EOF") != std::string::npos) return true;
 		}
 
 		for (const auto& error : parse_errs) {
@@ -226,14 +232,61 @@ namespace wbsh {
 		if (env.get("PS2").empty()) env.set("PS2", "> ");
 	}
 
-	// Semantic marks (OSC 633, as VS Code and others use) tell a terminal
-	// where a prompt starts, where a command's output begins, and how it
-	// ended. Terminals that do not know them ignore the sequence, so this
-	// costs nothing elsewhere.
+	// Semantic marks (OSC 133, which Windows Terminal, VS Code, WezTerm and
+	// wbshterm read) tell a terminal where a prompt starts and ends, where
+	// a command's output begins, and how it ended. Terminals that do not
+	// know them ignore the sequence, so this costs nothing elsewhere.
 	static void emitShellMark(const ReplState& state, const std::string& body) {
 		if (!state.color_ok) return;
 
-		std::fputs(("\x1b]633;" + body + "\x07").c_str(), stdout);
+		std::fputs(("\x1b]133;" + body + "\x07").c_str(), stdout);
+		std::fflush(stdout);
+	}
+
+	// The end of the prompt rides in the prompt itself, so it lands after
+	// the prompt's last cell however often the line editor redraws it.
+	static std::string withPromptEndMark(const ReplState& state, const std::string& prompt) {
+		if (!state.color_ok || state.waiting_for_more) return prompt;
+
+		return prompt + "\x01\x1b]133;B\x07\x02";
+	}
+
+	// The command line as VS Code's OSC 633;E carries it: backslash,
+	// semicolon and control characters escaped as \\ and \xHH.
+	static std::string escapedCommandLine(const std::string& text) {
+		static const char* kHexDigits = "0123456789abcdef";
+
+		std::string escaped;
+		for (const char letter : text) {
+			const auto byte = static_cast<unsigned char>(letter);
+			if (letter == '\\') {
+				escaped += "\\\\";
+			} else if (letter == ';' || byte < 0x20) {
+				escaped += "\\x";
+				escaped.push_back(kHexDigits[byte >> 4]);
+				escaped.push_back(kHexDigits[byte & 0x0F]);
+			} else {
+				escaped.push_back(letter);
+			}
+		}
+
+		return escaped;
+	}
+
+	// Only the terminals that use the command line hear it: VS Code, and
+	// wbshterm, which runs a command again from it. wbshterm's request is
+	// taken out of the environment, since a shell started from this one
+	// (under script, say) is not on wbshterm's screen.
+	static void noteCommandLineWanted(Environment& env, ReplState& state) {
+		const bool wbshterm = !env.get("WBSHTERM_COMMAND_LINES").empty();
+		env.unset("WBSHTERM_COMMAND_LINES");
+		state.command_lines = wbshterm || env.get("TERM_PROGRAM") == "vscode";
+	}
+
+	static void emitCommandLine(const ReplState& state, const std::string& command) {
+		if (!state.color_ok || !state.command_lines) return;
+
+		std::fputs(("\x1b]633;E;" + escapedCommandLine(command) + "\x07").c_str(), stdout);
 		std::fflush(stdout);
 	}
 
@@ -407,7 +460,49 @@ namespace wbsh {
 	                               const ReplState& state) {
 		std::string ps_raw = state.waiting_for_more ? env.get("PS2") : env.get("PS1");
 		if (ps_raw.empty()) ps_raw = state.waiting_for_more ? "> " : "$ ";
-		return expandPromptString(exec, ps_raw, stdinIsTty() && stdoutIsTty());
+		const std::string prompt = expandPromptString(exec, ps_raw, stdinIsTty() && stdoutIsTty());
+		return withPromptEndMark(state, prompt);
+	}
+
+	static std::string withoutPromptMarks(const std::string& text) {
+		std::string shown;
+		for (const char letter : text) {
+			if (letter != '\x01' && letter != '\x02') shown.push_back(letter);
+		}
+
+		return shown;
+	}
+
+	// As bash's PS0: expanded like PS1 and written to stderr once a
+	// command has been read, before it runs.
+	static void showPs0(Executor& exec) {
+		const std::string ps0 = exec.env().get("PS0");
+		if (ps0.empty()) return;
+
+		const std::string shown = expandPromptString(exec, ps0, false);
+		std::fputs(withoutPromptMarks(shown).c_str(), stderr);
+		std::fflush(stderr);
+	}
+
+	static bool hasCommandText(const std::string& text) {
+		return text.find_first_not_of(" \t\r\n") != std::string::npos;
+	}
+
+	// What a terminal hears before a command runs: its text, then where
+	// its output starts. An empty line runs nothing and says nothing.
+	static void announceCommand(Executor& exec, const ReplState& state) {
+		if (!hasCommandText(state.buffer)) return;
+
+		emitCommandLine(state, state.buffer);
+		showPs0(exec);
+		emitShellMark(state, "C");
+	}
+
+	static void reportCommandEnd(Executor& exec, const ReplState& state,
+	                             const std::string& command) {
+		if (!hasCommandText(command)) return;
+
+		emitShellMark(state, "D;" + std::to_string(exec.lastStatus()));
 	}
 
 	// PROMPT_COMMAND runs before each primary prompt; as an array, every
@@ -445,9 +540,8 @@ namespace wbsh {
 		Lexer lex(pending);
 		lex.tokenize();
 		for (const LexError& error : lex.errors()) {
-			if (error.message.find("single-quoted") != std::string::npos) return '\'';
-			if (error.message.find("$'...'") != std::string::npos) return '\'';
-			if (error.message.find("double-quoted") != std::string::npos) return '"';
+			if (error.message.find("matching `''") != std::string::npos) return '\'';
+			if (error.message.find("matching `\"'") != std::string::npos) return '"';
 		}
 
 		return '\0';
@@ -477,7 +571,8 @@ namespace wbsh {
 			discardPendingInput(state);
 			return false;
 		case HistoryExpansion::Kind::kFailed:
-			std::fprintf(stderr, "wbsh: %s\n", expansion.text.c_str());
+			std::fprintf(stderr, "%s: %s\n", exec.env().shellName().c_str(),
+				expansion.text.c_str());
 			discardPendingInput(state);
 			return false;
 		default:
@@ -527,21 +622,22 @@ namespace wbsh {
 		state.buffer += line;
 	}
 
-	static void printLexParseErrors(const std::vector<LexError>& lex_errs,
+	static void printLexParseErrors(const std::string& shell,
+	                                const std::vector<LexError>& lex_errs,
 	                                const std::vector<ParseError>& parse_errs) {
 		const bool err_color = stderrIsTty();
 		const char* err_pre = err_color ? "\x1b[31;1m" : "";
 		const char* err_loc = err_color ? "\x1b[33m"   : "";
 		const char* err_msg = err_color ? "\x1b[0m"    : "";
 		for (const auto& error : lex_errs) {
-			std::fprintf(stderr, "%swbsh: lex%s %s%zu:%zu:%s %s\n",
-				err_pre, err_msg, err_loc, error.loc.line, error.loc.column, err_msg,
+			std::fprintf(stderr, "%s%s: lex%s %s%zu:%zu:%s %s\n",
+				err_pre, shell.c_str(), err_msg, err_loc, error.loc.line, error.loc.column, err_msg,
 				error.message.c_str());
 		}
 
 		for (const auto& error : parse_errs) {
-			std::fprintf(stderr, "%swbsh: parse%s %s%zu:%zu:%s %s\n",
-				err_pre, err_msg, err_loc, error.loc.line, error.loc.column, err_msg,
+			std::fprintf(stderr, "%s%s: parse%s %s%zu:%zu:%s %s\n",
+				err_pre, shell.c_str(), err_msg, err_loc, error.loc.line, error.loc.column, err_msg,
 				error.message.c_str());
 		}
 	}
@@ -563,7 +659,8 @@ namespace wbsh {
 		state.waiting_for_more = false;
 		exec.advanceCommandNumber();
 		recordHistoryEntry(exec, state);
-		printLexParseErrors(lex.errors(), parser.errors());
+		announceCommand(exec, state);
+		printLexParseErrors(exec.env().shellName(), lex.errors(), parser.errors());
 
 		if (!parser.errors().empty() || !lex.errors().empty()) {
 			exec.setLastStatus(kSyntaxErrorStatus);
@@ -623,29 +720,37 @@ namespace wbsh {
 		collectHistoryLine(state, line);
 		appendToBuffer(state, line);
 
-		emitShellMark(state, "C");
+		const std::string command = state.buffer;
 		parseAndMaybeExecute(exec, state);
-		emitShellMark(state, "D;" + std::to_string(exec.lastStatus()));
+		if (!state.waiting_for_more) reportCommandEnd(exec, state, command);
 	}
 
-	int runInteractive(bool login) {
+	// Unlike bash, a login shell reads .wbshrc after the profile, so
+	// .wbsh_profile does not have to source it.
+	static void readStartupFiles(Executor& exec, const ShellStartup& startup) {
+		applyStartupOptions(exec, startup);
+		loadInputrc(exec);
+		sourceLoginProfile(exec, startup);
+		sourceRcFile(exec, startup);
+	}
+
+	int runInteractive(const ShellStartup& startup, const std::string& shell_name) {
 		Environment env;
 		prepareEnv(env);
+		env.setShellName(shell_name);
 		env.setInteractive(true);
+		const DiagnosticsBinding diagnostics(env);
 		Executor exec(env);
 		absorbInheritedState(env, exec);
 
 		ReplState state;
 		initConsoleAndSignals(state);
 		initShellDefaults(env, state);
+		noteCommandLineWanted(env, state);
 		printBanner(state);
 		initHistoryVariables(env);
 
-		// Unlike bash, a login shell reads .wbshrc after the profile, so
-		// .wbsh_profile does not have to source it.
-		loadInputrc(exec);
-		if (login) startLoginShell(exec);
-		if (!exec.flowPending()) sourceHomeFile(exec, ".wbshrc");
+		readStartupFiles(exec, startup);
 		loadHistory(exec);
 		runInitCommand(env, exec);
 		int init_status = 0;
@@ -665,10 +770,11 @@ namespace wbsh {
 			if (shellExited(exec, prompt_exit)) return exitWithStatus(exec, prompt_exit);
 
 			emitWorkingDirectory(state);
-			emitShellMark(state, "A");
+			if (!state.waiting_for_more) emitShellMark(state, "A");
 
 			const std::string prompt = buildPrompt(env, exec, state);
 			std::string line;
+			editor.setHighlightContext(state.waiting_for_more ? state.buffer + "\n" : std::string());
 			const LineStatus status = editor.readLine(prompt, line);
 			if (status == LineStatus::kInterrupted) {
 				abandonInterruptedInput(exec, state);

@@ -1,15 +1,16 @@
 // Windows Terminal fragment extension for wbsh.
 //
-// Install path (auto-merged on next WT launch — no settings.json edit):
+// The installer's "Add a wbsh profile to Windows Terminal" task copies it to
 //   %LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wbsh\wbsh.json
+// where both the Store and the unpackaged Windows Terminal merge it on their
+// next start, without touching settings.json. A manual install copies it
+// there by hand.
 //
-// Or, for the Microsoft Store build of Windows Terminal:
-//   %LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\
-//       LocalState\Fragments\wbsh\wbsh.json
-//
-// Once placed, WT shows a "wbsh" entry in the new-tab dropdown that
-// launches `%LOCALAPPDATA%\Programs\wbsh\wbsh.exe` (the path the
-// installer uses) under the bundled `wbsh` colour scheme.
+// WT then shows a "wbsh" entry in the new-tab dropdown that launches
+// `%LOCALAPPDATA%\Programs\wbsh\wbsh.exe` (the installer's default folder;
+// the installer writes another folder in when one was chosen) under the
+// bundled `wbsh` colour scheme. Keep this file ASCII: the installer rewrites
+// it byte for byte.
 {
     "$schema": "https://aka.ms/terminal-profiles-schema",
 

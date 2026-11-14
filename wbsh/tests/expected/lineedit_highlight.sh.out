@@ -1,0 +1,49 @@
+=== commands, unknown words, strings, expansions, operators, options, comments
+\e[0;32mecho\e[0m \e[0;33m"hi \e[0;36m$USER\e[0;33m"\e[0m | \e[0;31mnosuchcmd-xyz\e[0m \e[0;94m--long\e[0m \e[0;94m-x\e[0m > out 2>&1 \e[0;90m# note\e[0m
+\e[0;32mprintf\e[0m \e[0;33m'%s\n'\e[0m \e[0;33m$'a\tb'\e[0m \e[0;36m${HOME}\e[0m \e[0;36m$(\e[0;32mtrue\e[0;36m)\e[0m \e[0;36m`\e[0;32mpwd\e[0;36m`\e[0m \e[0;36m$((1 + 2))\e[0m
+=== keywords, loop names, case patterns, [[ ]], assignments
+\e[0;35mif\e[0m \e[0;32mtrue\e[0m; \e[0;35mthen\e[0m \e[0;32m:\e[0m; \e[0;35melif\e[0m \e[0;32mfalse\e[0m; \e[0;35mthen\e[0m \e[0;32m:\e[0m; \e[0;35melse\e[0m \e[0;32m:\e[0m; \e[0;35mfi\e[0m
+\e[0;35mfor\e[0m \e[0;36mi\e[0m \e[0;35min\e[0m a b; \e[0;35mdo\e[0m \e[0;32mecho\e[0m \e[0;36m$i\e[0m; \e[0;35mdone\e[0m
+\e[0;35mcase\e[0m \e[0;36m$x\e[0m \e[0;35min\e[0m a|b) \e[0;32mecho\e[0m y;; \e[0;35mesac\e[0m
+\e[0;35m[[\e[0m \e[0;94m-n\e[0m \e[0;36m$a\e[0m && \e[0;36m$a\e[0m == b \e[0;35m]]\e[0m && \e[0;32mecho\e[0m ok
+\e[0;36mX\e[0m=1 \e[0;36mY\e[0m+=2 \e[0;32menv\e[0m \e[0;94m-i\e[0m \e[0;36mA\e[0m=b \e[0;31mcmd-xyz\e[0m
+\e[0;36ma\e[0m=(1 2 3); \e[0;32mf\e[0m() \e[0;35m{\e[0m \e[0;32m:\e[0m; \e[0;35m}\e[0m; \e[0;31mf\e[0m
+\e[0;35m!\e[0m \e[0;32mtrue\e[0m; !!; \e[0;35mtime\e[0m \e[0;32mcommand\e[0m \e[0;94m-v\e[0m \e[0;31mnosuchcmd-xyz\e[0m
+\e[0;32mdefined\e[0m; \e[0;32maliased\e[0m; \e[0;32m\aliased\e[0m
+=== a path that exists is underlined
+\e[0;32mcat\e[0m \e[0;4m_lineedit_highlight_tmp/file.txt\e[0m _lineedit_highlight_tmp/missing.txt
+\e[0;32m./_lineedit_highlight_tmp/file.txt\e[0m
+=== unfinished quotes and substitutions colour to the end
+\e[0;32mecho\e[0m \e[0;33m'unterminated\e[0m
+\e[0;32mecho\e[0m \e[0;36m$(\e[0;32mls\e[0m | \e[0;31mnosuchcmd-xyz\e[0m
+=== the lines of a paste are coloured as one command
+\r\e[J\e[0;35mif\e[0m \e[0;32mtrue\e[0m\r\n
+\e[0;35mthen\e[0m \e[0;32mecho\e[0m \e[0;33m'a\r\n
+b'\e[0m; \e[0;35mfi\e[0m\r\e[6C
+=== here-documents and descriptors
+\e[0;32mcat\e[0m <<\e[0;33mEOF\e[0m >&2
+=== wide characters keep the cursor where it was
+[echo 日本][語] @0:9
+[echo 日本][語] @0:9
+=== the ghost text of a prediction follows the colours
+\e[0;32mecho\e[0m pre\e[90mdiction here\e[0m
+=== reverse search colours the match
+(reverse-i-search)`here': \e[0;32mecho\e[0m prediction here
+=== vi command mode keeps the colours
+\e[0;32mecho\e[0m hi
+=== NO_COLOR, TERM=dumb and syntax-highlight off leave the line plain
+echo hi | nosuchcmd-xyz
+echo hi | nosuchcmd-xyz
+echo hi | nosuchcmd-xyz
+=== colours from inputrc, and WBSH_HIGHLIGHT over them
+\e[0;34mif\e[0m \e[0;1;32mecho\e[0m; \e[0;34mthen\e[0m \e[0;1;32m:\e[0m; \e[0;34mfi\e[0m
+if \e[0;4;31mnosuchcmd-xyz\e[0m \e[0;33m'a'\e[0m; then \e[0;1;32m:\e[0m; fi
+set syntax-highlight on
+set syntax-highlight-colors ""
+=== a replay without -H stays plain
+\r\e[Je\e[90mcho prediction here\e[0m\r\e[1C\r\e[Jec\e[90mho prediction here\e[0m\r\e[2C\r\e[Jech\e[90mo prediction here\e[0m\r\e[3C\r\e[Jecho\e[90m prediction here\e[0m\r\e[4C\r\e[Jecho \e[90mprediction here\e[0m\r\e[5C\r\e[Jecho h\r\e[6C\r\e[Jecho hi\r\e[7C
+=== typed on a pseudoconsole
+shows a command and a string
+shows the string the line goes on with
+shows the line under NO_COLOR
+does not show colours under NO_COLOR

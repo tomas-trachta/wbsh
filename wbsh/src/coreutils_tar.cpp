@@ -34,9 +34,11 @@
 #include <system_error>
 #include <vector>
 
+#include "archivepath.h"
 #include "bytestream.h"
 #include "codecs.h"
 #include "executor.h"
+#include "filemode.h"
 #include "fnmatch.h"
 #include "numparse.h"
 #include "pathconv.h"
@@ -100,6 +102,7 @@ namespace wbsh {
 
 		struct ExtractState {
 			std::vector<std::pair<fs::path, std::int64_t>> directory_times;
+			std::vector<std::pair<fs::path, TarEntry>> deferred_links;
 			bool warned_absolute = false;
 			int failures = 0;
 		};
@@ -433,25 +436,16 @@ namespace wbsh {
 		return fs::file_time_type(std::chrono::duration_cast<fs::file_time_type::duration>(since));
 	}
 
-	static bool looksExecutable(const fs::path& path) {
-		std::string extension = path.extension().string();
-		for (char& c : extension) {
-			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		}
-
-		return extension == ".exe" || extension == ".sh" || extension == ".bat"
-			|| extension == ".cmd" || extension == ".com";
-	}
-
+	// Windows ignores the read-only attribute of a directory (Explorer uses it
+	// to mark customised folders), so an archive does not carry it.
 	static unsigned modeFor(const fs::path& path, fs::file_type type) {
-		if (type == fs::file_type::directory) return 0755;
 		if (type == fs::file_type::symlink) return 0777;
+		if (type == fs::file_type::directory) return filePermissions(path, true, false);
 
 		std::error_code ec;
 		const fs::perms perms = fs::status(path, ec).permissions();
-		const bool writable = (perms & fs::perms::owner_write) != fs::perms::none;
-		const unsigned base = looksExecutable(path) ? 0755 : 0644;
-		return writable ? base : base & 0555;
+		const bool read_only = (perms & fs::perms::owner_write) == fs::perms::none;
+		return filePermissions(path, false, read_only);
 	}
 
 	static void printVerboseName(const TarOptions& options, const std::string& name) {
@@ -777,18 +771,6 @@ namespace wbsh {
 		std::printf("\n");
 	}
 
-	static bool hasParentComponent(const std::string& name) {
-		std::size_t start = 0;
-		while (start <= name.size()) {
-			std::size_t end = name.find('/', start);
-			if (end == std::string::npos) end = name.size();
-			if (name.compare(start, end - start, "..") == 0 && end - start == 2) return true;
-			start = end + 1;
-		}
-
-		return false;
-	}
-
 	static bool stripComponents(std::string& name, int count) {
 		for (int k = 0; k < count; ++k) {
 			const std::size_t slash = name.find('/');
@@ -799,26 +781,17 @@ namespace wbsh {
 		return !name.empty();
 	}
 
+	static void stripAbsolutePrefix(ExtractState& state, std::string& name) {
+		if (!stripMemberRoot(name) || state.warned_absolute) return;
+
+		std::fprintf(stderr, "tar: Removing leading '/' from member names\n");
+		state.warned_absolute = true;
+	}
+
 	static bool safeMemberName(const TarOptions& options, ExtractState& state, std::string& name) {
-		if (!options.absolute) {
-			bool stripped = false;
-			if (name.size() >= 2 && name[1] == ':') {
-				name.erase(0, 2);
-				stripped = true;
-			}
+		if (!options.absolute) stripAbsolutePrefix(state, name);
 
-			while (!name.empty() && name[0] == '/') {
-				name.erase(0, 1);
-				stripped = true;
-			}
-
-			if (stripped && !state.warned_absolute) {
-				std::fprintf(stderr, "tar: Removing leading '/' from member names\n");
-				state.warned_absolute = true;
-			}
-		}
-
-		if (!options.absolute && hasParentComponent(name)) {
+		if (!options.absolute && memberEscapes(name)) {
 			std::fprintf(stderr, "tar: %s: Member name contains '..'\n", name.c_str());
 			++state.failures;
 			return false;
@@ -876,6 +849,21 @@ namespace wbsh {
 		}
 	};
 
+	// An execute bit is stored only when it differs from what the name and
+	// content already imply, so most members get no mode stream.
+	static void applyMemberMode(const fs::path& path, unsigned mode) {
+		std::error_code ec;
+		const bool execute = (mode & 0100) != 0;
+		if (execute != hasOwnerExecute(path, false)) {
+			setFilePermissions(path, mode & 0777, ec);
+			return;
+		}
+
+		if ((mode & 0200) != 0) return;
+
+		fs::permissions(path, fs::perms::owner_write, fs::perm_options::remove, ec);
+	}
+
 	static bool writeMemberFile(const fs::path& path, const TarEntry& entry,
 	                            const TarOptions& options, MemberData& data) {
 		std::error_code ec;
@@ -896,10 +884,7 @@ namespace wbsh {
 		bool ok = data.copyTo(out);
 		ok = std::fclose(out) == 0 && ok;
 		setTimes(path, entry, options);
-		if ((entry.mode & 0222) == 0) {
-			fs::permissions(path, fs::perms::owner_write, fs::perm_options::remove, ec);
-		}
-
+		applyMemberMode(path, entry.mode);
 		return ok;
 	}
 
@@ -930,9 +915,29 @@ namespace wbsh {
 	static fs::path hardLinkTarget(Executor& exec, const TarOptions& options,
 	                               const TarEntry& entry) {
 		std::string target = entry.link;
-		while (!options.absolute && !target.empty() && target[0] == '/') target.erase(0, 1);
+		if (!options.absolute) stripMemberRoot(target);
+		if (!options.absolute && memberEscapes(target)) return fs::path();
 		if (!stripComponents(target, options.strip)) return fs::path();
 		return outputPath(exec, options, target);
+	}
+
+	// A link that may lead out of the extraction directory is made only after
+	// every other member, so nothing in the archive is written through it
+	// (GNU tar and busybox do the same).
+	static void writeOrDeferSymlink(const fs::path& path, const TarEntry& entry,
+	                                const TarOptions& options, ExtractState& state) {
+		if (!options.absolute && isEscapingLinkTarget(entry.link)) {
+			state.deferred_links.emplace_back(path, entry);
+			return;
+		}
+
+		if (!writeMemberLink(path, entry, fs::path())) ++state.failures;
+	}
+
+	static void createDeferredLinks(ExtractState& state) {
+		for (const auto& link : state.deferred_links) {
+			if (!writeMemberLink(link.first, link.second, fs::path())) ++state.failures;
+		}
 	}
 
 	static bool isRegularType(char type) {
@@ -950,8 +955,10 @@ namespace wbsh {
 				state.directory_times.emplace_back(path, entry.mtime);
 				break;
 			case '1':
-			case '2':
 				if (!writeMemberLink(path, entry, hardLinkTarget(exec, options, entry))) ++state.failures;
+				break;
+			case '2':
+				writeOrDeferSymlink(path, entry, options, state);
 				break;
 			case '0':
 			case '\0':
@@ -1118,6 +1125,7 @@ namespace wbsh {
 		const int status = walkInput(exec, options, raw, state);
 		if (file != stdin) std::fclose(file);
 
+		createDeferredLinks(state);
 		applyDirectoryTimes(state, options);
 		std::fflush(stdout);
 		if (status != 0) return status;

@@ -1,0 +1,66 @@
+=== -c runs, operands are $0 $1 ..
+ran zero one 1
+no name: 0
+=== options before the command string
+login_shell         	on
+status 1
+braceexpand:errexit:hashall:interactive-comments:nounset:pipefail
++ echo traced
+traced
+{a,b}
+extglob             	on
+globstar            	off
+=== bad command lines exit 2
+wbsh: -c: option requires an argument
+status 2
+wbsh: -Z: invalid option
+status 2
+wbsh: no-such-option: invalid option name
+status 2
+wbsh: no_such_shopt: invalid shell option name
+status 2
+wbsh: --no-such-long-option: invalid option
+status 2
+=== script files and stdin
+script 2 a b
+script 1 c
+stdin 1 x
+lone dash
+plain stdin
+=== -n parses only
+status 0
+wbsh: -c: line 1: syntax error near unexpected token `then'
+wbsh: -c: line 1: `if then'
+status 2
+=== debugging dumps replace running unless -r
+--- AST ---
+List
+dumped and ran
+=== named sh / bash
+posix          	on
+posix          	off
+=== startup files
+with -i: rcfile
+without -i: none
+norc: none
+.profile is not read: none
+login: wbsh_profile
+noprofile: none login_shell         	on
+profile exit: 7
+=== --ec
+HI ARG
+HI UNPADDED
+prefixed
+utf16
+ok
+status 1
+wbsh: --ec: invalid base64
+status 2
+=== BASHOPTS and SHELLOPTS
+checkwinsize listed
+histappend listed
+noglob listed
+=== $- names how the commands arrived
+hBc
+ehuBc
+hBs

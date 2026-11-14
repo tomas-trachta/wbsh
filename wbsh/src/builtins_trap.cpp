@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "diagnostics.h"
 #include "executor.h"
 #include "numparse.h"
 #include "signals.h"
@@ -81,7 +82,7 @@ namespace wbsh::trap_detail {
 	}
 
 	static void reportInvalid(const std::string& spec) {
-		std::fprintf(stderr, "wbsh: trap: %s: invalid signal specification\n", spec.c_str());
+		shellErrorf("trap: %s: invalid signal specification\n", spec.c_str());
 	}
 
 	static int printTraps(const Executor& exec, const std::vector<std::string>& specs) {

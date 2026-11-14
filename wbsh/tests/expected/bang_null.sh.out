@@ -1,0 +1,5 @@
+bare: 1
+double: 0
+double true: 0
+double false: 1
+own line: 1

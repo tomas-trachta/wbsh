@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "diagnostics.h"
 #include "executor.h"
 #include "numparse.h"
 #include "pathconv.h"
@@ -44,7 +45,7 @@ namespace wbsh::fc_detail {
 	};
 
 	static void printErr(const std::string& message) {
-		std::fprintf(stderr, "wbsh: fc: %s\n", message.c_str());
+		shellErrorf("fc: %s\n", message.c_str());
 	}
 
 	static bool looksNegative(const std::string& arg) {
@@ -304,7 +305,7 @@ namespace wbsh::fc_detail {
 	static int builtin_fc(Executor& exec, const std::vector<std::string>& args) {
 		Options options;
 		if (!parseOptions(args, options)) {
-			printErr(kUsage);
+			std::fprintf(stderr, "fc: %s\n", kUsage);
 			return 2;
 		}
 

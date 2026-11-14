@@ -2,10 +2,30 @@
 ; Per-user install, no UAC. Ships wbsh.exe alongside the terminal: the
 ; terminal looks for the shell next to itself first, so an install of
 ; wbshterm is usable on its own without a separate wbsh install.
-; Driven by installer\build.ps1, which stages payload into stage-wbshterm\.
+; Driven by installer\build.ps1, which stages payload into stage-wbshterm\
+; (x64) or stage-wbshterm-<arch>\ and passes /DArch=<arch> for any other
+; architecture.
 
 #ifndef AppVersion
 #define AppVersion "1.1.1"
+#endif
+
+#ifndef Arch
+#define Arch "x64"
+#endif
+
+#ifndef StageDir
+#if Arch == "x64"
+#define StageDir "stage-wbshterm"
+#else
+#define StageDir "stage-wbshterm-" + Arch
+#endif
+#endif
+
+#if Arch == "x64"
+#define ArchAllowed "x64compatible"
+#else
+#define ArchAllowed Arch
 #endif
 
 [Setup]
@@ -19,10 +39,10 @@ LicenseFile=..\LICENSE
 DefaultDirName={localappdata}\Programs\wbshterm
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#ArchAllowed}
+ArchitecturesInstallIn64BitMode={#ArchAllowed}
 OutputDir=output
-OutputBaseFilename=wbshterm-setup-x64
+OutputBaseFilename=wbshterm-setup-{#Arch}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -41,20 +61,20 @@ Name: "addtopath";   Description: "Add wbshterm to the user PATH"; GroupDescript
 Name: "explorer";    Description: "Add ""Open wbshterm here"" to the Explorer right-click menu"; GroupDescription: "Integration:"
 
 [Files]
-Source: "stage-wbshterm\wbshterm.exe";      DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\wbshterm.exe";      DestDir: "{app}"; Flags: ignoreversion
 ; The shell the terminal hosts. Bundled so wbshterm works on its own; an
 ; existing wbsh install elsewhere is left alone.
-Source: "stage-wbshterm\wbsh.exe";          DestDir: "{app}"; Flags: ignoreversion
-Source: "stage-wbshterm\wbshterm-here.cmd"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\wbsh.exe";          DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\wbshterm-here.cmd"; DestDir: "{app}"; Flags: ignoreversion
 ; Visual C++ runtime DLLs, staged app-local by build.ps1.
-Source: "stage-wbshterm\wbshsdk.dll";        DestDir: "{app}"; Flags: ignoreversion
-Source: "stage-wbshterm\msvcp140.dll";      DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "stage-wbshterm\vcruntime140.dll";  DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "stage-wbshterm\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\wbshsdk.dll";        DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\msvcp140.dll";      DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\vcruntime140.dll";  DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Microsoft's current ConPTY (MIT, see wbshterm\conpty). Optional: without it
 ; wbshterm uses the pseudoconsole built into Windows, which is far slower.
-Source: "stage-wbshterm\conpty.dll";         DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "stage-wbshterm\OpenConsole.exe";    DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\conpty.dll";         DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\OpenConsole.exe";    DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 ; Where a third-party util goes. Created empty so there is somewhere

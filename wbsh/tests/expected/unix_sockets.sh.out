@@ -43,5 +43,5 @@ s ./agent.sock
 === waiting for a socket
 late.sock appeared
 === hook usage
-wbsh: __mksock: usage: __mksock PATH...
+__mksock: usage: __mksock PATH...
 status 2

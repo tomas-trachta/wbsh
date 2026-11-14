@@ -1,0 +1,43 @@
+=== 1. runtime errors in a script name it and the line
+a
+_run_tmp/prefix_probe.sh: line 2: nosuch_cmd_wbsh_x: command not found
+_run_tmp/prefix_probe.sh: line 3: u: gone
+rc=1
+_run_tmp/prefix_probe.sh: line 1: cd: ./no-such-dir: No such file or directory
+_run_tmp/prefix_probe.sh: line 2: ./no-such-file.sh: No such file or directory
+_run_tmp/prefix_probe.sh: line 3: 1 / 0 : division by 0 (error token is "0 ")
+rc=1
+_run_tmp/prefix_probe.sh: line 2: R: readonly variable
+_run_tmp/prefix_probe.sh: line 3: 7: Bad file descriptor
+rc=1
+=== 2. a function reports the line inside it
+_run_tmp/prefix_probe.sh: line 2: 2 ** -1 : exponent less than 0 (error token is "1 ")
+rc=1
+=== 3. -c says line, and uses the name after the command
+a
+wbsh: line 2: nosuch_cmd_wbsh_x: command not found
+rc=127
+myname: line 1: nosuch_cmd_wbsh_x: command not found
+rc=127
+=== 4. a sourced file names itself
+in lib
+_run_tmp/prefix_lib.sh: line 2: nosuch_cmd_wbsh_x: command not found
+_run_tmp/prefix_probe.sh: line 2: nosuch_cmd_wbsh_y: command not found
+rc=127
+=== 5. getopts names $0 only; usage lines have no prefix
+_run_tmp/prefix_probe.sh: illegal option -- x
+_run_tmp/prefix_probe.sh: option requires an argument -- b
+printf: usage: printf [-v var] format [arguments]
+rc=2
+=== 6. arithmetic keeps bash's spacing
+_run_tmp/prefix_probe.sh: line 1: 1 / 0 : division by 0 (error token is "0 ")
+_run_tmp/prefix_probe.sh: line 2: ((: 3 3 : arithmetic syntax error in expression (error token is "3 ")
+_run_tmp/prefix_probe.sh: line 3: let: 1 % 0 : division by 0 (error token is "0 ")
+_run_tmp/prefix_probe.sh: line 4: 1 ? : expression expected (error token is "? ")
+_run_tmp/prefix_probe.sh: line 5: 08: value too great for base (error token is "08")
+rc=1
+=== 7. eval syntax errors: bash's two lines, status 2
+_run_tmp/prefix_probe.sh: eval: line 1: syntax error near unexpected token `then'
+_run_tmp/prefix_probe.sh: eval: line 1: `if then'
+rc=2
+rc=0

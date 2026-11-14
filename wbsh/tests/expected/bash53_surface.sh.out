@@ -1,0 +1,62 @@
+=== GLOBSORT
+[] 10 100 9 a b c
+[name] 10 100 9 a b c
+[-name] c b a 9 100 10
+[size] 10 100 9 c a b
+[-size] b a c 9 100 10
+[numeric] 9 10 100 a b c
+[-numeric] c b a 100 10 9
+[blocks] 10 100 9 a b c
+[+bogus] 10 100 9 a b c
+[-] c b a 9 100 10
+[+] 10 100 9 a b c
+size of [abc]: c a b
+mtime: b c a
+-mtime: a c b
+nosort keeps all 6 names
+=== BASH_MONOSECONDS
+monotonic and positive
+usable in arithmetic
+assignment ignored
+=== BASH_TRAPSIG
+outside: unset
+USR1: 10
+ERR: 66
+RETURN: 67
+USR1: 10
+restored: keep
+EXIT: 0
+=== read -E
+[read with -E] 0
+3
+=== source -p
+lib: one two
+cwd file
+bash53_surface.sh: line 66: .: here.sh: file not found
+status 1
+cwd file
+bash53_surface.sh: line 68: source: -p: option requires an argument
+source: usage: source [-p path] filename [arguments]
+status 2
+bash53_surface.sh: line 69: source: -x: invalid option
+source: usage: source [-p path] filename [arguments]
+status 2
+lib: from-path
+No such file or directory
+=== printf %ls %lc %S %C
+[ žluť][kůň   ][žl][    ě]
+[é][  ž][ů  ][štěně][č]
+[žluť][ž]
+[ ďábel]
+ [ \0 ]
+[žluť][ž]
+=== array_expand_once
+shopt -u array_expand_once
+shopt -u assoc_expand_once
+shopt -s array_expand_once
+shopt -s assoc_expand_once
+shopt -u assoc_expand_once
+=== patsub_replacement
+he[l]lo he<&><&>o h&llo
+heello h&&llo
+he[&]lo

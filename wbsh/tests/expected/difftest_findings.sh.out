@@ -1,0 +1,67 @@
+=== associative array keys @ and *
+difftest_findings.sh: line 16: m[*]: bad array subscript
+after m[*]=: 1
+difftest_findings.sh: line 18: m[@]: bad array subscript
+after m[@]=: 1 2
+[*]=kstar
+[@]=kat
+[a]=1
+4 elements
+declare -A m=(["*"]="kstar" ["@"]="kat" [b]="2" [a]="1" )
+declare -A m=([b]="2" [a]="1" )
+difftest_findings.sh: line 29: a[*]: bad array subscript
+indexed a[*]=: 1 1 2
+declare -a a=()
+unset of a missing element: 0
+=== readonly in arithmetic
+difftest_findings.sh: line 37: R: readonly variable
+(( )): 1
+difftest_findings.sh: line 38: R: readonly variable
+let: 1
+difftest_findings.sh: line 39: R: readonly variable
+R++: 1 R=1
+difftest_findings.sh: line 40: R: readonly variable
+after $(( )): 1
+=== readonly prefix assignment
+difftest_findings.sh: line 44: R: readonly variable
+status 0
+difftest_findings.sh: line 45: R: readonly variable
+R is still 1
+=== dynamic variables in arithmetic
+LINENO 1
+EPOCHSECONDS
+RANDOM
+=== GLOBIGNORE and dotglob
+.hidden
+shopt -s dotglob
+.hidden shown
+shopt -s dotglob
+shown
+shopt -u dotglob
+=== [[ arithmetic errors
+difftest_findings.sh: line 61: [[: 1x: value too great for base (error token is "1x")
+status 1
+difftest_findings.sh: line 62: [[: 08: value too great for base (error token is "08")
+status 1
+=== eval line numbers
+66
+67
+69
+d
+difftest_findings.sh: eval: line 71: syntax error near unexpected token `)'
+difftest_findings.sh: eval: line 71: `)'
+status 2
+=== kill messages
+difftest_findings.sh: line 74: kill: nosuch: arguments must be process or job IDs
+status 1
+difftest_findings.sh: line 75: kill: NOSIG: invalid signal specification
+status 1
+difftest_findings.sh: line 76: kill: %99: no such job
+status 1
+=== here-document in a pipeline stage
+hd.sh: line 2: warning: here-document at line 1 delimited by end-of-file (wanted `END')
+abc
+=== $- in a pipeline stage of -c
+hBc
+=== background job with redirections
+started after 0s

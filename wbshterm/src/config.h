@@ -77,6 +77,22 @@ namespace wbshterm {
 		int  refresh_ms = 2000;
 	};
 
+	/**
+	 * @brief What the terminal does with the shell's marks: a gutter mark
+	 *        per command, the time it took once that passes a threshold,
+	 *        the editor Ctrl+click opens a file:line in, and whether the
+	 *        panes and their directories come back at the next start.
+	 *
+	 * @p editor is a command line with {file}, {line} and {column} in it;
+	 * empty opens the file with its associated program instead.
+	 */
+	struct ShellSettings {
+		bool        marks             = true;
+		int         duration_after_ms = 1000;
+		std::string editor;
+		bool        restore_session   = false;
+	};
+
 	struct Config {
 		FontSettings   font;
 		WindowSettings window;
@@ -85,6 +101,7 @@ namespace wbshterm {
 		KeyboardSettings keyboard;
 		TitleBarSettings titlebar;
 		StatusBarSettings statusbar;
+		ShellSettings  shell;
 		Palette        palette;
 		std::string    theme_name      = "catppuccin-mocha";
 		int            scrollback_lines = 10000;

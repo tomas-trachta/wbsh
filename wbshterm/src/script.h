@@ -71,6 +71,8 @@ namespace wbshterm {
 		virtual void zoomPane() = 0;
 		virtual void movePane(PaneMove move) = 0;
 		virtual void reloadSettings() = 0;
+		virtual void copyCommandOutput() {}
+		virtual void rerunCommand() {}
 	};
 
 	/**

@@ -99,6 +99,9 @@ namespace wbshterm {
 		/** A lit bar is one under the pointer or being dragged. */
 		void drawScrollbar(const PaneCanvas& canvas, const ScrollbarShape& shape, bool lit);
 
+		/** Each marked command's status in the margin and its time beside it. */
+		void drawCommandMarks(const PaneCanvas& canvas);
+
 		void drawDivider(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 		void drawStatusBar(const StatusBarCanvas& canvas);
 		void drawTitleBar(const TitleBarCanvas& canvas);
@@ -131,6 +134,10 @@ namespace wbshterm {
 			CursorStyle style  = CursorStyle::Block;
 			bool        blinks = true;
 		};
+
+		std::uint32_t markColor(const CommandBlock& block) const;
+		void drawGutterMark(const PaneCanvas& canvas, const CommandBlock& block, int viewport_row);
+		void drawBlockLabel(const PaneCanvas& canvas, const CommandBlock& block, int viewport_row);
 
 		CursorLook cursorLookFor(CursorShape shape) const;
 		bool prepareBrush(ID2D1RenderTarget* target);

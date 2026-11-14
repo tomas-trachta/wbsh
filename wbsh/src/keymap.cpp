@@ -37,7 +37,7 @@ namespace wbsh {
 			"history-substring-search-backward", "history-substring-search-forward",
 			"insert-comment", "insert-completions", "kill-line", "kill-region",
 			"kill-whole-line", "kill-word", "menu-complete", "menu-complete-backward",
-			"next-history", "non-incremental-forward-search-history",
+			"menu-select", "next-history", "non-incremental-forward-search-history",
 			"non-incremental-reverse-search-history", "operate-and-get-next", "overwrite-mode",
 			"paste-from-clipboard", "possible-completions", "previous-history", "quoted-insert",
 			"re-read-init-file", "redraw-current-line", "reverse-search-history",
@@ -112,8 +112,11 @@ namespace wbsh {
 			{ "editing-mode", "emacs" },
 			{ "enable-bracketed-paste", "on" },
 			{ "mark-directories", "on" },
+			{ "menu-complete-display-prefix", "off" },
+			{ "menu-select", "off" },
 			{ "show-all-if-ambiguous", "off" },
 			{ "show-all-if-unmodified", "on" },
+			{ "syntax-highlight", "on" },
 		};
 
 		static std::string trimmed(const std::string& text) {

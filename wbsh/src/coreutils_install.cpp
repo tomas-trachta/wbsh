@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "executor.h"
+#include "filemode.h"
 #include "fileowner.h"
 #include "filetimes.h"
 #include "numparse.h"
@@ -102,24 +103,15 @@ namespace wbsh {
 			bool InstallOptions::*member;
 		};
 
-		struct ModeClause {
-			unsigned who = 0;
-			char op = 0;
-			unsigned bits = 0;
-		};
-
 	}  // namespace install_detail
 
 	using install_detail::Backup;
 	using install_detail::FlagMember;
 	using install_detail::InstallJob;
 	using install_detail::InstallOptions;
-	using install_detail::ModeClause;
 	using install_detail::Transfer;
 
-	static const unsigned kModeWhoAll = 0777;
 	static const unsigned kOwnerWrite = 0200;
-	static const unsigned long kMaxOctalMode = 07777;
 
 	static std::string inQuotes(const std::string& text) {
 		return "'" + text + "'";
@@ -213,122 +205,16 @@ namespace wbsh {
 		return true;
 	}
 
-	static unsigned whoBits(char c) {
-		switch (c) {
-			case 'u':
-				return 04700;
-			case 'g':
-				return 02070;
-			case 'o':
-				return 01007;
-			case 'a':
-				return 07777;
-			default:
-				return 0;
-		}
-	}
-
-	static unsigned permissionBits(char c, unsigned mode) {
-		switch (c) {
-			case 'r':
-				return 0444;
-			case 'w':
-				return 0222;
-			case 'x':
-				return 0111;
-			case 'X':
-				return (mode & 0111) != 0 ? 0111 : 0;
-			case 's':
-				return 06000;
-			case 't':
-				return 01000;
-			default:
-				return 0;
-		}
-	}
-
-	static unsigned copiedBits(char c, unsigned mode) {
-		const unsigned shift = c == 'u' ? 6 : c == 'g' ? 3 : 0;
-		const unsigned rwx = (mode >> shift) & 07;
-		return rwx * 0111;
-	}
-
-	static unsigned applyClause(const ModeClause& clause, unsigned mode) {
-		const unsigned affected = (clause.who == 0 ? kModeWhoAll : clause.who) & clause.bits;
-		if (clause.op == '+') return mode | affected;
-		if (clause.op == '-') return mode & ~affected;
-
-		const unsigned cleared = mode & ~(clause.who == 0 ? 07777u : clause.who);
-		return cleared | affected;
-	}
-
-	static bool readClauseBits(const std::string& text, std::size_t& at, unsigned mode,
-	                           unsigned& bits) {
-		bits = 0;
-		const bool copies = at < text.size() && whoBits(text[at]) != 0 && text[at] != 'a';
-		if (copies) {
-			bits = copiedBits(text[at++], mode);
-			return true;
-		}
-
-		for (; at < text.size() && text[at] != ',' && text[at] != '+' && text[at] != '-'
-				&& text[at] != '='; ++at) {
-			const unsigned one = permissionBits(text[at], mode);
-			if (one == 0 && text[at] != 'X') return false;
-			bits |= one;
-		}
-
-		return true;
-	}
-
-	static bool applySymbolicPart(const std::string& text, std::size_t& at, unsigned& mode) {
-		ModeClause clause;
-		for (; at < text.size() && whoBits(text[at]) != 0; ++at) clause.who |= whoBits(text[at]);
-		if (at >= text.size() || std::strchr("+-=", text[at]) == nullptr) return false;
-
-		while (at < text.size() && std::strchr("+-=", text[at]) != nullptr) {
-			clause.op = text[at++];
-			if (!readClauseBits(text, at, mode, clause.bits)) return false;
-			mode = applyClause(clause, mode);
-		}
-
-		return at >= text.size() || text[at] == ',';
-	}
-
-	static bool evaluateSymbolicMode(const std::string& text, unsigned& mode) {
-		mode = 0;
-		std::size_t at = 0;
-		while (at < text.size()) {
-			if (!applySymbolicPart(text, at, mode)) return false;
-			if (at < text.size()) ++at;
-		}
-
-		return !text.empty() && text.back() != ',';
-	}
-
-	static bool evaluateMode(const std::string& text, unsigned& mode) {
-		unsigned long octal = 0;
-		std::size_t used = 0;
-		const bool digits = !text.empty()
-			&& text.find_first_not_of("01234567") == std::string::npos;
-		if (digits) {
-			if (!parseUL(text, octal, 8, &used) || octal > kMaxOctalMode) return false;
-			mode = static_cast<unsigned>(octal);
-			return true;
-		}
-
-		return evaluateSymbolicMode(text, mode);
-	}
-
 	bool parseFileMode(const std::string& text, unsigned& mode) {
-		return evaluateMode(text, mode);
+		mode = 0;
+		return applyModeText(text, 0, mode);
 	}
 
 	static bool settleMode(InstallOptions& options) {
 		if (options.mode.empty()) return true;
 
 		unsigned mode = 0;
-		if (!evaluateMode(options.mode, mode)) {
+		if (!parseFileMode(options.mode, mode)) {
 			perr("install", "invalid mode " + inQuotes(options.mode));
 			return false;
 		}

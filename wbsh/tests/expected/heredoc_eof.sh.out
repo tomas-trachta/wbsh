@@ -1,0 +1,17 @@
+=== 1. the body runs to the end of the file
+before
+_run_tmp/heredoc_eof_probe.sh: line 4: warning: here-document at line 2 delimited by end-of-file (wanted `EOF')
+never closed
+last line
+rc=0
+=== 2. no final newline; a quoted delimiter
+_run_tmp/heredoc_eof_probe.sh: line 2: warning: here-document at line 1 delimited by end-of-file (wanted `END')
+$keep
+rc=0
+=== 3. in -c and eval
+wbsh: line 2: warning: here-document at line 1 delimited by end-of-file (wanted `EOF')
+body
+rc=0
+heredoc_eof.sh: line 30: warning: here-document at line 29 delimited by end-of-file (wanted `EOF')
+from eval
+rc=0

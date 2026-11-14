@@ -1,0 +1,55 @@
+=== unzip
+status 1
+  inflating: good.txt
+  inflating: sub/inner.txt
+  inflating: wbsh-zipslip-rooted.txt
+  inflating: wbsh-zipslip-drive.txt
+  inflating: wbsh-zipslip-relative.txt
+  inflating: wbsh-zipslip-server/share/unc.txt
+wbsh: unzip: skipping: ../up.txt: path leads outside the destination
+wbsh: unzip: skipping: sub/../../up2.txt: path leads outside the destination
+wbsh: unzip: skipping: ..\back.txt: path leads outside the destination
+wbsh: unzip: skipping: .. /dots.txt: path leads outside the destination
+wbsh: unzip: warning: stripped absolute path spec from /wbsh-zipslip-rooted.txt
+wbsh: unzip: warning: stripped absolute path spec from C:\wbsh-zipslip-drive.txt
+wbsh: unzip: warning: stripped absolute path spec from C:wbsh-zipslip-relative.txt
+wbsh: unzip: warning: stripped absolute path spec from \\wbsh-zipslip-server\share\unc.txt
+a/dest/good.txt
+a/dest/sub/inner.txt
+a/dest/wbsh-zipslip-drive.txt
+a/dest/wbsh-zipslip-relative.txt
+a/dest/wbsh-zipslip-rooted.txt
+a/dest/wbsh-zipslip-server/share/unc.txt
+ROOTED
+nothing above dest
+nothing at a root
+=== unzip -d
+status 1
+b/dest/good.txt
+b/dest/sub/inner.txt
+b/dest/wbsh-zipslip-drive.txt
+b/dest/wbsh-zipslip-relative.txt
+b/dest/wbsh-zipslip-rooted.txt
+b/dest/wbsh-zipslip-server/share/unc.txt
+=== unzip of a clean archive still exits 0
+  inflating: one.txt
+  inflating: dir/two.txt
+status 0
+=== tar refuses .. members
+../src/f
+tar: ../src/f: Member name contains '..'
+status 2
+=== tar makes an escaping link only after the other members
+lrwxrwxrwx link -> ..
+-rw-r--r-- link/esc.txt
+status 2
+nothing written through the link
+l/x/y/link/esc.txt
+=== cpio refuses .. names
+cpio: ../up.txt: refusing to write outside the current directory
+1 blocks
+status 1
+=== cpio makes an escaping link only after the other entries
+status 1
+nothing written through the link
+q/x/y/link/esc.txt

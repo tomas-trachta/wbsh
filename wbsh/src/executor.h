@@ -33,6 +33,7 @@
 #endif
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -134,9 +135,12 @@ namespace wbsh {
 	/// well: a priority class, or CREATE_NO_WINDOW to outlive the console.
 	/// With @c pseudo_console the child's console and all three standard
 	/// streams are that pseudoconsole, and the shell's stdio is not passed on.
+	/// Unless @c outlives_shell (a background job, nohup, setsid) the child
+	/// also starts in childLifetimeJob(), so killing the shell ends it.
 	struct SpawnPlacement {
 		HANDLE job = nullptr;
 		bool new_process_group = false;
+		bool outlives_shell = false;
 		DWORD creation_flags = 0;
 		HPCON pseudo_console = nullptr;
 	};
@@ -177,6 +181,16 @@ namespace wbsh {
 	/// `declare -p`'s line for @p name (`declare -a a=([0]="x")`).
 	std::string declarationText(const Environment& env, const std::string& name);
 
+	/// `set` / `declare` with no arguments: every variable, then the functions.
+	int listShellVariables(Executor& exec);
+
+	/// The element of a pipeline that runs in this process, if any.
+	enum class PipelineLocalStage {
+		None,
+		LastHere,
+		FirstInSubshell,
+	};
+
 	/**
 	 * @brief AST executor and runtime registry.
 	 *
@@ -202,6 +216,8 @@ namespace wbsh {
 
 		std::string run(const std::string& body) override;
 		std::string runRaw(const std::string& body) override;
+		std::string runInCurrentShell(const std::string& body) override;
+		std::string runForReply(const std::string& body) override;
 		std::string startProcessSubstitution(const std::string& body, char direction) override;
 
 		Environment& env()        { return env_; }
@@ -317,6 +333,9 @@ namespace wbsh {
 		/// `wait PID` for a `<(...)` / `>(...)` process; false if @p pid is not one.
 		bool waitForProcSubstChild(long long pid, int& status);
 		void waitForProcSubstChildren();
+		/// `eval` re-reads its words, which would strip the backslashes of a
+		/// `\\.\pipe\...` path that `<(...)` put there; this doubles them.
+		std::string protectProcSubstPaths(std::string text) const;
 
 		/// Install the trap action for @p sig. Replaces any prior action.
 		///
@@ -386,9 +405,19 @@ namespace wbsh {
 		// Internal getopts state: we keep the per-arg subindex across calls.
 		int& getoptsSubindex() { return getopts_subindex_; }
 		void resetGetopts() { getopts_subindex_ = 1; }
+		/// bash restarts getopts inside an argument whenever OPTIND is
+		/// assigned by anyone but getopts itself.
+		void syncGetoptsWithOptind() {
+			if (env_.optindWrites() != getopts_seen_writes_) resetGetopts();
+			getopts_seen_writes_ = env_.optindWrites();
+		}
+		void noteGetoptsWroteOptind() { getopts_seen_writes_ = env_.optindWrites(); }
 
 		using CompletionSpec = wbsh::CompletionSpec;
 		void setCompletionSpec(const std::string& cmd, CompletionSpec spec) {
+			const auto existing = completion_specs_.find(cmd);
+			spec.defined_at = existing != completion_specs_.end() ? existing->second.defined_at
+				: ++completion_specs_defined_;
 			completion_specs_[cmd] = std::move(spec);
 		}
 		void removeCompletionSpec(const std::string& cmd) {
@@ -488,6 +517,14 @@ namespace wbsh {
 
 		int  loopDepth() const  { return loop_depth_; }
 		int  funcDepth() const  { return func_depth_; }
+		/// The line the running simple command's text ends on, where bash
+		/// starts counting the lines of an `eval` string.
+		int  commandEndLine() const { return command_end_line_; }
+		/// POSIX mode in a non-interactive shell: the errors that end the shell.
+		bool posixErrorsExit() const;
+		/// A `.`, `source` or `eval` error that ends a POSIX-mode shell
+		/// (a missing file, a syntax error), as bash's special_builtin_failed.
+		void markSpecialBuiltinFailure() { special_builtin_failed_ = true; }
 
 		// errexit suppression — incremented while we're inside a context
 		// where `set -e` should NOT trigger (if/while conditions, left
@@ -556,6 +593,7 @@ namespace wbsh {
 		/// False outside a function. A new local starts out unset, keeping
 		/// only the export attribute of the variable it shadows.
 		bool makeLocal(const std::string& name);
+		bool unsetCallerLocal(const std::string& name);
 		std::vector<std::string> localNames() const;
 
 		/// Assign `name=(...)` or `name+=(...)`, expanding the items.
@@ -631,7 +669,14 @@ namespace wbsh {
 		// Drop the PATH-lookup memoization built up by findExecutable().
 		// Used by `hash -r` to force re-resolution after PATH-visible
 		// executables change on disk (installs, PATHEXT edits, etc.).
-		void clearExecutablePathCache() { exec_path_cache_.clear(); }
+		void clearExecutablePathCache() {
+			exec_path_cache_.clear();
+			hashed_.clear();
+		}
+		/// `hash`: names remembered with the path they run from, as shown.
+		void hashCommand(const std::string& name, std::string path) { hashed_[name] = std::move(path); }
+		bool unhashCommand(const std::string& name) { return hashed_.erase(name) != 0; }
+		const std::map<std::string, std::string>& hashedCommands() const { return hashed_; }
 
 		// Pre-expanded assignment forms used by execSimpleCommand. Built from
 		// the SimpleCommand AST's `assignments` list before the command runs.
@@ -652,6 +697,7 @@ namespace wbsh {
 			bool has_key = false;  ///< written `[key]=value`
 			std::string key;
 			std::string value;
+			bool append = false;   ///< written `[key]+=value`
 		};
 		struct ArrayAssign  {
 			std::string name;
@@ -688,6 +734,7 @@ namespace wbsh {
 			Node* root = nullptr;
 			std::string diagnostics;
 			Arena arena;
+			std::size_t resume_offset = std::string::npos;
 		};
 
 		/// One FUNCNAME / BASH_SOURCE / BASH_LINENO entry: a function, a
@@ -710,6 +757,18 @@ namespace wbsh {
 
 		const ParsedText& parsedTrapAction(const std::string& action);
 		int  runTrapAction(const std::string& action);
+		bool runsAsPosixSpecialBuiltin(const std::string& name) const;
+		int  runPosixSpecialBuiltin(const std::string& name, const std::vector<std::string>& args,
+		                            const std::vector<std::pair<std::string, std::string>>& assigns);
+		bool rejectSpecialBuiltinFunction(const std::string& name);
+		bool abandonsAfterAssignError(const std::string& command);
+		bool runParsedAlias(const SimpleCommand& sc, const std::vector<std::string>& argv,
+		                    int& status);
+		bool expandUnsplitRedirWord(const Word& target, std::string& out);
+		void takeKeywordAssignments(const SimpleCommand& sc, std::vector<std::string>& argv,
+		                            std::vector<std::pair<std::string, std::string>>& assigns);
+		int  runTrapPublishingSignal(const std::string& action, int trap_number);
+		int  runExitTrapText(const std::string& action);
 
 		// ERR fires where errexit is judged, once per failure: a compound
 		// command whose status came from an already judged inner command,
@@ -734,7 +793,7 @@ namespace wbsh {
 		void restoreTrapsAfterFunction(std::vector<SuspendedTrap>& suspended);
 
 		bool trapActionFor(const char* name, std::string& action) const;
-		void runTrapKeepingStatus(const std::string& action);
+		void runTrapKeepingStatus(const std::string& action, int trap_number);
 		void actOnSignal(int signum);
 #ifdef _WIN32
 		void endForegroundOnFatalSignal(const std::vector<HANDLE>& processes);
@@ -750,6 +809,8 @@ namespace wbsh {
 		ParsedText parseText(const std::string& source_text, const std::string& origin,
 		                     std::size_t first_line = 1);
 		int finishParsedText(const ParsedText& parsed, int status);
+		int resumeAfterDiscardedCommand(const ParsedText& parsed, const std::string& source_text,
+		                                const std::string& origin, std::size_t first_line);
 		void keepArenaIfDefined(ParsedText& parsed, std::size_t definitions_before);
 		void  echoInputBefore(const List& list, std::size_t index);
 		void  echoInputUpTo(std::size_t end);
@@ -795,8 +856,9 @@ namespace wbsh {
 		int  runArithLoop(const ForClause& clause);
 		int  runForLoop(const ForClause& clause);
 		int  runSelectLoop(const ForClause& clause);
-		bool caseItemMatches(const CaseClause::Item& item, const std::string& subject);
+		bool caseItemMatches(const CaseClause::Item& item, const std::string& subject, bool& failed);
 		int  runCaseItems(const CaseClause& clause, const std::string& subject);
+		std::size_t runCaseArmsFrom(const CaseClause& clause, std::size_t first, int& status);
 
 		struct RedirState {
 			// Saved fds: target_fd -> dup'd backup fd, or -1 if target was closed
@@ -855,6 +917,7 @@ namespace wbsh {
 		bool applyDupRedir        (const Redirection& r, int target, RedirState& s);
 		bool applyHeredocRedir    (const Redirection& r, int target, RedirState& s);
 		bool applyHerestringRedir (const Redirection& r, int target, RedirState& s);
+		void warnHeredocAtEof     (const Redirection& r);
 
 		// Helpers for execSimpleCommand. Each returns true / a status; on a
 		// recoverable expansion error they print a diagnostic and return false
@@ -865,13 +928,27 @@ namespace wbsh {
 		bool expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv,
 		                         std::vector<bool>& compound);
 		std::string expandDeclarationArg(const DeclarationArg& arg);
-		void aliasExpandArgvHead(std::vector<std::string>& argv);
+		bool isAliasCandidate(const Word& word, const std::string& field) const;
+		bool expandAliasAt(std::vector<std::string>& argv, std::size_t& pos);
+		void aliasExpandArgvHead(const SimpleCommand& sc, std::vector<std::string>& argv);
 		// `exec` with no command: install the redirections on the current
 		// shell permanently and return the resulting status.
 		int  execBareRedirsForExec(const std::vector<Redirection>& redirs);
 		void applyBareAssignmentsToShell(const SimpleCmdAssigns& a);
 		int  execSimpleCommandNoArgv(const SimpleCommand& sc, SimpleCmdAssigns& assigns_data);
 		void traceXtrace(const std::vector<std::string>& argv);
+		// `set -x` lines for what is not a simple command (executor_xtrace.cpp).
+		void traceText(const std::string& text);
+		void traceAssignment(const Assignment& assignment, const SimpleCmdAssigns& expanded);
+		void traceLoopHeader(const char* keyword, const ForClause& clause);
+		void traceCaseHeader(const CaseClause& clause);
+		bool evalTracedArith(const std::string& expr, bool loop_part, long long& value);
+		void checkXtraceFdAssignment(const SimpleCmdAssigns& expanded);
+		void dropRestrictedHashAssignments(SimpleCmdAssigns& expanded);
+	public:
+		/// A restricted shell hashes only commands that a PATH search finds.
+		bool restrictedHashTargetAllowed(const std::string& target, const char* label);
+	private:
 
 		// State snapshotted at the start of a shell-script invocation
 		// (`./script.sh` and similar). Restored after the script returns,
@@ -889,6 +966,7 @@ namespace wbsh {
 			std::unordered_map<std::string, std::string> saved_traps;
 			bool saved_lists_inherited_traps = false;
 			SetOptions saved_options;
+			bool saved_expand_aliases = false;
 			std::filesystem::path saved_cwd;
 		};
 		ShellScriptScope snapshotShellScriptScope() const;
@@ -897,9 +975,12 @@ namespace wbsh {
 		// A `( ... )`, `$(...)` or `<(...)` body runs in this process, so
 		// everything it can change is snapshotted on entry and put back on
 		// the way out, as if it had been a forked child.
+		/// `local -` is the entry named `-`; it saves the `set` options.
 		struct ScopeEntry {
 			std::string name;
 			Environment::VarState saved;
+			SetOptions options;
+			int getopts_subindex = 1;
 		};
 
 		struct SubshellScope {
@@ -922,16 +1003,22 @@ namespace wbsh {
 		int endSubshell(int status);
 		int consumeSubshellFlow(int status);
 		int runExitTrapAction(const std::string& action, int status);
+		void dropErrexitForSubstitution();
 		int runCommandSubstitutionBody(const std::string& body);
 		int executeSubstitutionText(const std::string& body, std::size_t first_line);
 		int writeFileToStdout(const Redirection& redir);
-		std::string captureSubstitution(const std::string& body, int& status);
+		int runSubstitutionInCurrentShell(const std::string& body);
+		int runSubstitutionBody(const std::string& body, bool in_current_shell);
+		std::string finishSubstitution(std::string out, int status);
+		std::string captureSubstitution(const std::string& body, int& status,
+			bool in_current_shell = false);
 
 #ifdef _WIN32
 		// Build the argv passed to CreateProcess: replaces argv[0] with the
 		// resolved exec_path and POSIX-to-Win32-translates each arg unless
 		// the callee is an MSYS binary, or WBSH_NO_PATHCONV / MSYS_NO_PATHCONV
 		// is set (in the shell env OR in @p temp_env's prefix assignments).
+		// MSYS2_ARG_CONV_EXCL keeps the args it names as they are.
 		std::vector<std::string>
 		prepareExternalArgv(const std::vector<std::string>& argv,
 		                    const std::string& exec_path,
@@ -980,6 +1067,12 @@ namespace wbsh {
 		// Returns the resolved pipeline status (pipefail-aware) BEFORE any
 		// `! pipeline` negation by the caller.
 		int execPipelineMultiCmd(const Pipeline& p);
+		bool runsLastStageHere() const;
+		int runLastStageHere(const Node& stage, HANDLE input);
+		bool runsFirstStageInSubshell() const;
+		PipelineLocalStage chooseLocalStage() const;
+		int runFirstStageInSubshell(const Node& stage, HANDLE output, bool merge_stderr);
+		int runLocalStage(const Pipeline& pipeline, PipelineLocalStage local, HANDLE pipe_end);
 
 		// `cmd &` — spawn a detached child sharing our std{in,out,err} fds,
 		// register it as a job, announce `[id] pid` to stderr when interactive.
@@ -1021,6 +1114,9 @@ namespace wbsh {
 		void addSubshellState(std::vector<std::pair<std::string, std::string>>& overrides);
 		std::vector<std::string> selfSpawnArgv(const std::string& self,
 		                                       const std::string& command) const;
+		HANDLE launchExternalRedirected(const SimpleCommand& command,
+		                                const std::vector<std::string>& argv,
+		                                const std::string& exec_path);
 		HANDLE launchExternalDirect(const SimpleCommand& sc,
 		                            const std::vector<std::string>& argv,
 		                            const std::string& exec_path,
@@ -1042,11 +1138,16 @@ namespace wbsh {
 		// once it is done (see releaseProcSubstRelay).
 		std::size_t procSubstWatermark() const { return proc_substs_.size(); }
 		void releaseProcessSubstitutionsSince(std::size_t watermark);
+		// `exec 4< <(cmd)` keeps the pipe open past the command, as bash
+		// keeps the fd.
+		void keepProcessSubstitutionsSince(std::size_t watermark);
 		std::vector<ProcSubstRelay> proc_substs_;
+		std::vector<ProcSubstRelay> kept_proc_substs_;
 		std::vector<HANDLE> proc_subst_children_;
 #else
 		std::size_t procSubstWatermark() const { return 0; }
 		void releaseProcessSubstitutionsSince(std::size_t) {}
+		void keepProcessSubstitutionsSince(std::size_t) {}
 #endif
 		bool isAbsoluteOrRelativePath(const std::string& name) const;
 		bool patternMatches(const std::string& pat, const std::string& s);
@@ -1054,6 +1155,7 @@ namespace wbsh {
 		// value (or unset if the name didn't exist before). Called when a
 		// function body finishes for any reason.
 		void popLocalScope();
+		void restoreGetoptsPosition(int subindex);
 
 		Environment& env_;
 		Expander expander_;
@@ -1078,12 +1180,14 @@ namespace wbsh {
 		bool in_exit_trap_ = false;
 		int  exit_trap_status_ = 0;
 		std::unordered_map<std::string, CompletionSpec> completion_specs_;
+		unsigned long long completion_specs_defined_ = 0;
 		// findExecutable() memoizes name -> resolved path here (bash-style
 		// command hash) so repeated invocations of the same command skip
 		// re-walking PATH and re-probing the filesystem. Invalidated
 		// wholesale whenever PATH itself changes.
 		std::unordered_map<std::string, std::string> exec_path_cache_;
 		std::string exec_path_cache_path_;
+		std::map<std::string, std::string> hashed_;
 		std::vector<Job> jobs_;
 		std::unordered_map<long long, int> finished_job_statuses_;
 		// Set while a `&` command is being started: it gets its own
@@ -1092,6 +1196,7 @@ namespace wbsh {
 		SpawnPlacement spawn_placement_;
 #endif
 		int getopts_subindex_ = 1;
+		unsigned long long getopts_seen_writes_ = 0;
 		// Arenas of parsed text that defined functions (`source`, `eval`,
 		// inherited `WBSH_FUNCTIONS`, ...), so the raw FunctionDef* pointers
 		// in `functions_` stay valid. Text that defined none is freed once
@@ -1107,6 +1212,9 @@ namespace wbsh {
 		// pipe this process was started with only when nothing replaced it.
 		mutable int stdout_redirects_ = 0;
 		bool stdout_started_as_pipe_ = false;
+		// The stdout_redirects_ depth at which fd 1 is that pipe: 0, or
+		// deeper while a pipeline element runs here writing into its pipe.
+		int  sigpipe_redirects_ = 0;
 		int  cmdsubst_status_ = 0;
 		int  loop_depth_ = 0;
 		int  func_depth_ = 0;
@@ -1122,6 +1230,9 @@ namespace wbsh {
 		bool status_judged_ = false;
 		bool in_err_trap_ = false;
 		int  trap_depth_ = 0;
+		int  command_end_line_ = 0;
+		bool special_builtin_failed_ = false;
+		bool prefix_assign_failed_ = false;
 		bool call_set_err_trap_ = false;
 		InputEcho input_echo_;
 		FlowSignal flow_;
@@ -1134,6 +1245,8 @@ namespace wbsh {
 	void registerReadBuiltin(Executor& exec);
 	void registerUlimitBuiltin(Executor& exec);
 	void registerEnableBuiltin(Executor& exec);
+	/// `.`, `:`, `break`, `eval`, `export`, ... : the builtins POSIX calls special.
+	bool isPosixSpecialBuiltin(const std::string& name);
 	void registerTrapBuiltin(Executor& exec);
 	void registerFcBuiltin(Executor& exec);
 	void registerTestBuiltins(Executor& exec);

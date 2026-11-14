@@ -91,6 +91,7 @@ namespace wbsh {
 			{ "kill-region",                             &LineEditor::killRegion },
 			{ "menu-complete",                           &LineEditor::menuComplete },
 			{ "menu-complete-backward",                  &LineEditor::menuCompleteBackward },
+			{ "menu-select",                             &LineEditor::menuSelect },
 			{ "non-incremental-forward-search-history",  &LineEditor::forwardSearchHistory },
 			{ "non-incremental-reverse-search-history",  &LineEditor::reverseSearchHistory },
 			{ "operate-and-get-next",                    &LineEditor::operateAndGetNext },
@@ -192,11 +193,16 @@ namespace wbsh {
 	}
 
 	// Each press puts the next match in place of the word; after the last
-	// one the word comes back as it was typed, with a bell.
+	// one the word comes back as it was typed, with a bell. With
+	// menu-complete-display-prefix the first press shows their common part.
 	void LineEditor::stepMenu(bool forward) {
 		const bool continuing = readline_detail::isMenuComplete(last_command_)
 			&& !menu_matches_.empty();
 		if (!continuing && !startMenu()) return;
+		if (!continuing && shellKeymap().isOn("menu-complete-display-prefix")) {
+			showMenuPrefix();
+			return;
+		}
 
 		const std::size_t choices = menu_matches_.size() + 1;
 		menu_index_ = forward ? (menu_index_ + 1) % choices
@@ -215,17 +221,20 @@ namespace wbsh {
 		menu_end_ = cursor_;
 	}
 
-	// A single match is completed at once, as complete does.
+	// A single match is completed at once, as complete does; with
+	// menu-select on, the matches open as a grid instead of cycling.
 	bool LineEditor::startMenu() {
+		completion_type_ = '%';
 		Tok tok = currentToken();
 		menu_matches_ = currentMatches(tok);
+		completion_type_ = '\t';
 		if (menu_matches_.empty()) {
 			ding();
 			return false;
 		}
 
-		if (menu_matches_.size() == 1) {
-			insertMatch(tok, menu_matches_[0], true);
+		if (menu_matches_.size() == 1 || menuSelectWanted()) {
+			applyCompletion(tok, menu_matches_);
 			menu_matches_.clear();
 			return false;
 		}
@@ -237,8 +246,29 @@ namespace wbsh {
 		return true;
 	}
 
+	void LineEditor::showMenuPrefix() {
+		Tok tok = menu_tok_;
+		tok.end = menu_end_;
+		insertMatch(tok, longestCommonPrefix(menu_matches_), false);
+		menu_end_ = cursor_;
+	}
+
 	void LineEditor::menuComplete() {
 		stepMenu(true);
+	}
+
+	// The grid whatever menu-select says, for a key of its own.
+	void LineEditor::menuSelect() {
+		completion_type_ = '%';
+		Tok tok = currentToken();
+		const std::vector<std::string> matches = currentMatches(tok);
+		completion_type_ = '\t';
+		if (matches.size() < 2) {
+			applyCompletion(tok, matches);
+			return;
+		}
+
+		openMenu(tok, matches);
 	}
 
 	void LineEditor::menuCompleteBackward() {
@@ -246,8 +276,10 @@ namespace wbsh {
 	}
 
 	void LineEditor::insertCompletions() {
+		completion_type_ = '*';
 		Tok tok = currentToken();
 		const std::vector<std::string> matches = currentMatches(tok);
+		completion_type_ = '\t';
 		if (matches.empty()) {
 			ding();
 			return;

@@ -1,8 +1,8 @@
 #!/bin/bash
-# `wbsh -c` runs the command without -r, as `$SHELL -c` callers expect; a
-# dump flag without -r still only dumps. A file still needs -r (#291).
-# -l/--login and combined short options (-lc) are accepted, as omp and
-# other `$SHELL -l -c` callers pass them.
+# `wbsh -c` and `wbsh FILE` run without -r, as `$SHELL -c` callers expect; a
+# dump flag without -r only dumps (#291). -l/--login and combined short
+# options (-lc) are accepted, as omp and other `$SHELL -l -c` callers pass
+# them; the other letters are bash's `set` flags.
 
 WBSH=../../x64/Release/wbsh.exe
 [ -x "$WBSH" ] || WBSH=../../x64/Debug/wbsh.exe
@@ -15,13 +15,13 @@ echo "=== -c runs"
 
 echo "=== a dump flag without -r only dumps"
 "$WBSH" --ast -c 'echo not run'
-"$WBSH" -t -c 'echo not run'
-"$WBSH" -e -c 'echo not run'
+"$WBSH" --tokens -c 'echo not run'
+"$WBSH" --expand -c 'echo not run'
 
 echo "=== -r with a dump flag dumps and runs"
 "$WBSH" -r --ast -c 'echo ran'
 
-echo "=== a file without -r is dumped, with -r it runs"
+echo "=== a file runs, with or without -r"
 mkdir -p _run_tmp
 echo 'echo from the file' > _run_tmp/cli_file.sh
 "$WBSH" _run_tmp/cli_file.sh
@@ -36,7 +36,8 @@ echo "=== short options combine, as in bash"
 "$WBSH" -lc 'echo "0=$0 1=$1"' name one
 "$WBSH" -cl 'echo -c first in the group'
 "$WBSH" -rlc 'echo -r too'
-"$WBSH" -lx -c 'echo not run'; echo "status $?"
+"$WBSH" -lZ -c 'echo not run'; echo "status $?"
+"$WBSH" -lx -c 'echo traced' 2>&1
 
 echo "=== -l makes a login shell that reads ~/.wbsh_profile"
 echo 'echo profile ran; FROM_PROFILE=yes' > "$HOME/.wbsh_profile"

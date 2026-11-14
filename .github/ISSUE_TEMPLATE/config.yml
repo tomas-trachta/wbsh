@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Compatibility ledger (known divergences from GNU bash)
+    url: https://github.com/tomas-trachta/wbsh/blob/main/docs/compat-ledger.md
+    about: Check whether a GNU bash test-suite difference is already listed before filing it.
+  - name: Difftest findings
+    url: https://github.com/tomas-trachta/wbsh/blob/main/tools/difftest/FINDINGS.md
+    about: Known divergences found by the differential corpus.

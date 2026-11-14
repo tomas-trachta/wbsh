@@ -10,12 +10,16 @@ mkdir -p $T
 echo "=== system files"
 [ "$(grep -c ^processor /proc/cpuinfo)" = "$(nproc)" ] && echo "one cpuinfo block per processor"
 grep -m1 '^model name' /proc/cpuinfo | grep -q ': .' && echo "model name present"
-grep -m1 '^flags' /proc/cpuinfo | grep -qw sse2 && echo "flags list sse2"
+# CPUID flags exist on x86 only; ARM64 has no CPUID and an empty flags line.
+case $(uname -m) in
+    x86_64 | i?86) grep -m1 '^flags' /proc/cpuinfo | grep -qw sse2 && echo "flags fit the cpu" ;;
+    *) grep -q '^flags' /proc/cpuinfo && echo "flags fit the cpu" ;;
+esac
 cut -d: -f1 /proc/meminfo | tr '\n' ' '; echo
 awk '/^MemTotal:/ { exit !($2 > 0 && $3 == "kB") }' /proc/meminfo && echo "MemTotal in kB"
 grep -Eq '^[0-9]+\.[0-9]{2} [0-9]+\.[0-9]{2}$' /proc/uptime && echo "uptime shape"
 grep -Eq '^0\.00 0\.00 0\.00 1/[0-9]+ [0-9]+$' /proc/loadavg && echo "loadavg shape"
-grep -q '^wbsh version [0-9.]* (wbsh ' /proc/version && echo "version shape"
+grep -q '^MINGW64_NT-[0-9.]*-[0-9]* version [0-9.]* (wbsh ' /proc/version && echo "version shape"
 grep -qi microsoft /proc/version || echo "version does not look like WSL"
 wc -l < /proc/uptime
 

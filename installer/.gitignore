@@ -2,3 +2,6 @@ stage/
 output/
 stage-wbshterm/
 stage-sdk/
+stage-skill/
+stage-arm64/
+stage-wbshterm-arm64/

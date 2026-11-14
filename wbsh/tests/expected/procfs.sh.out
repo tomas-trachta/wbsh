@@ -1,7 +1,7 @@
 === system files
 one cpuinfo block per processor
 model name present
-flags list sse2
+flags fit the cpu
 MemTotal MemFree MemAvailable Buffers Cached SwapCached SwapTotal SwapFree CommitLimit Committed_AS 
 MemTotal in kB
 uptime shape
@@ -31,7 +31,7 @@ fd 7 is a pipe
 fd 7 gone
 fd 8 is the file
 through-fd
-wbsh version 
+MINGW64_NT-10
 === test
 -e file
 -f file
@@ -46,9 +46,9 @@ wbsh version
 === errors
 wbsh: cat: /proc/no-such: No such file or directory
 status 1
-wbsh: /proc/no-such: No such file or directory
+procfs.sh: line 74: /proc/no-such: No such file or directory
 status 1
-wbsh: /proc/cpuinfo: Permission denied
+procfs.sh: line 75: /proc/cpuinfo: Permission denied
 status 1
 wbsh: cat: /proc: Is a directory
 status 1

@@ -30,5 +30,5 @@ no file made
 installing
 other
 === a line break is refused
-wbsh: ./show.bat: an argument with a line break cannot be passed to a batch file
+batch_args.sh: line 43: ./show.bat: an argument with a line break cannot be passed to a batch file
 status 126

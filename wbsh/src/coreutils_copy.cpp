@@ -945,20 +945,39 @@ namespace wbsh {
 		return true;
 	}
 
-	static bool copyOne(Executor& exec, const Transfer& transfer, const CpOptions& opts) {
-		Endpoint src;
-		loadCopySource(toNative(exec, transfer.source), transfer.source, followsLinks(opts, true),
-			src);
-		if (!src.exists) {
-			reportCopy("cp", "cannot stat " + inQuotes(transfer.source)
-				+ ": No such file or directory");
-			return false;
-		}
-
+	static bool copyLoaded(Executor& exec, const Endpoint& src, const Transfer& transfer,
+	                       const CpOptions& opts) {
 		Endpoint dst;
 		loadCopyTarget(toNative(exec, transfer.dest), transfer.dest, dst);
 		if (refuseCopy(src, dst, opts)) return false;
 		return copyEntry(src, dst, opts);
+	}
+
+	static bool hasExeSuffix(const std::string& path) {
+		return path.size() >= 4 && _stricmp(path.c_str() + path.size() - 4, ".exe") == 0;
+	}
+
+	// As Cygwin's cp does: `cp prog dest` with no `prog` but a `prog.exe`
+	// copies that, and the copy is named `dest.exe`.
+	static Transfer withExeSuffix(const Transfer& transfer) {
+		Transfer exe = transfer;
+		exe.source += ".exe";
+		if (!hasExeSuffix(exe.dest)) exe.dest += ".exe";
+		return exe;
+	}
+
+	static bool copyOne(Executor& exec, const Transfer& transfer, const CpOptions& opts) {
+		Endpoint src;
+		const bool follow = followsLinks(opts, true);
+		loadCopySource(toNative(exec, transfer.source), transfer.source, follow, src);
+		if (src.exists) return copyLoaded(exec, src, transfer, opts);
+
+		const Transfer exe = withExeSuffix(transfer);
+		loadCopySource(toNative(exec, exe.source), exe.source, follow, src);
+		if (src.exists && !isRealDirectory(src.status)) return copyLoaded(exec, src, exe, opts);
+
+		reportCopy("cp", "cannot stat " + inQuotes(transfer.source) + ": No such file or directory");
+		return false;
 	}
 
 	static int builtin_cp(Executor& exec, const std::vector<std::string>& args) {

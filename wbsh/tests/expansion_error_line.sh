@@ -26,7 +26,7 @@ echo 12 not reached); echo "12 substitution [$y] $?"
 echo "13 $(( n ))" | cat; echo 13 after pipe
 D=$(mktemp -d) || exit 1
 printf 'x=$(( n )); echo 14 not reached\necho 14 next sourced line\n' > "$D/src.sh"
-. "$D/src.sh"; echo "14 after source $?"
+cd "$D"; . ./src.sh; echo "14 after source $?"; cd - >/dev/null
 if x=$(( n )); then echo 15 not reached; fi; echo 15 not reached
 x=$(( n )) || echo 16 not reached
 echo 16 next

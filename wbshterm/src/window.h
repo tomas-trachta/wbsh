@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "keymap.h"
+#include "layout_store.h"
 #include "menu.h"
 #include "mouse.h"
 #include "pane_tree.h"
@@ -25,6 +26,9 @@
 #include <vector>
 
 namespace wbshterm {
+
+	/** An OSC 7 directory as CreateProcess wants it: backslashes, UTF-16. */
+	std::wstring nativeDirectory(const std::string& reported);
 
 	/**
 	 * @brief One window hosting a tree of panes, each with its own shell.
@@ -47,6 +51,8 @@ namespace wbshterm {
 		void copySelected() override;
 		void pasteClipboard() override;
 		void copyLastOutput() override;
+		void copyCommandOutput() override;
+		void rerunCommand() override;
 		void sendText(const std::string& text) override;
 		void scrollLines(int lines) override;
 		void fontSizeStep(int delta) override;
@@ -219,6 +225,20 @@ namespace wbshterm {
 		void copySelection();
 		bool jumpToCommand(bool backwards);
 		void copyLastCommandOutput();
+
+		// window_blocks.cpp: one marked command, printed paths, the layout.
+		const CommandBlock* currentBlock() const;
+		const CommandBlock* menuBlock() const;
+		void copyBlockOutput(const CommandBlock& block);
+		void selectBlock(const CommandBlock& block);
+		void rerunBlock(const CommandBlock& block);
+		bool runBlockChoice(const MenuChoice& choice);
+		bool openPathAt(const PaneNode& leaf, const GridPoint& point);
+		void saveLayout() const;
+		bool loadLayout(SavedPane& out_root) const;
+		bool splitIntoDirectory(SplitAxis axis, const std::string& directory);
+		void rebuildSplits(const SavedPane& node, PaneNode* leaf);
+		void restoreSplits(const SavedPane& root);
 		D2D1_POINT_2F dipsOf(POINT pixels) const;
 		D2D1_POINT_2F mouseDips(LPARAM lparam) const;
 		void applyWindowDpi(UINT dpi);
@@ -265,6 +285,7 @@ namespace wbshterm {
 		PaneNode*    scrollbar_hover_ = nullptr;
 		float        scroll_grab_ = 0.0f;
 		std::wstring directory_hint_;
+		int          menu_row_ = -1;
 		std::string  shown_clock_;
 		std::vector<StatusSegment> shown_system_;
 		SystemMonitor monitor_;

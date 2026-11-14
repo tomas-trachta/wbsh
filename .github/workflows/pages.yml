@@ -1,0 +1,66 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # Jekyll renders the markdown pages. The Doxygen reference in
+      # docs/html (about 11 MB, ~650 files) is copied in afterwards as-is:
+      # Jekyll would drop its underscore-prefixed files.
+      - name: Stage markdown
+        run: |
+          mkdir -p "$RUNNER_TEMP/site-src"
+          rsync -a --exclude html/ --exclude Doxyfile docs/ "$RUNNER_TEMP/site-src/"
+
+      - name: Render markdown
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ${{ runner.temp }}/site-src
+          destination: ./_site
+
+      - name: Add the API reference
+        run: |
+          sudo chown -R "$(id -u)" _site
+          cp -r docs/html _site/html
+
+      - name: Upload
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

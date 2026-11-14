@@ -7,6 +7,7 @@
 
 #ifdef _WIN32
 
+#include <cstdlib>
 #include <vector>
 
 #include "interrupt.h"
@@ -160,15 +161,19 @@ namespace wbsh::jobcontrol_detail {
 
 namespace wbsh {
 
-	HANDLE createProcessGroup() {
-		return ::CreateJobObjectW(nullptr, nullptr);
-	}
-
 	static bool setJobLimits(HANDLE job, DWORD flags) {
 		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
 		limits.BasicLimitInformation.LimitFlags = flags;
 		return ::SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits,
 			sizeof(limits)) != 0;
+	}
+
+	// Breakaway lets a `nohup` or `setsid` run by a child shell of the
+	// group leave it, and the shell's lifetime job above it, as well.
+	HANDLE createProcessGroup() {
+		const HANDLE group = ::CreateJobObjectW(nullptr, nullptr);
+		if (group != nullptr) setJobLimits(group, JOB_OBJECT_LIMIT_BREAKAWAY_OK);
+		return group;
 	}
 
 	HANDLE createExecJob() {
@@ -187,6 +192,34 @@ namespace wbsh {
 
 		setJobLimits(job, JOB_OBJECT_LIMIT_BREAKAWAY_OK);
 		::CloseHandle(job);
+	}
+
+	static void releaseLifetimeJob() {
+		setJobLimits(childLifetimeJob(), JOB_OBJECT_LIMIT_BREAKAWAY_OK);
+	}
+
+	// The console's close, logoff or shutdown is no kill: the commands
+	// still on that console get the same event, and what left it (a GUI
+	// program, a server) lives on as it does when the shell exits.
+	static BOOL WINAPI releaseOnConsoleEnd(DWORD event) {
+		const bool ending = event == CTRL_CLOSE_EVENT || event == CTRL_LOGOFF_EVENT
+			|| event == CTRL_SHUTDOWN_EVENT;
+		if (ending) releaseLifetimeJob();
+		return FALSE;
+	}
+
+	static HANDLE openLifetimeJob() {
+		const HANDLE job = createExecJob();
+		if (job == nullptr) return nullptr;
+
+		std::atexit(releaseLifetimeJob);
+		::SetConsoleCtrlHandler(releaseOnConsoleEnd, TRUE);
+		return job;
+	}
+
+	HANDLE childLifetimeJob() {
+		static const HANDLE job = openLifetimeJob();
+		return job;
 	}
 
 	void suspendProcessGroup(HANDLE group) {

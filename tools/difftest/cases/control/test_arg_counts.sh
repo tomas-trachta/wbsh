@@ -1,0 +1,6 @@
+[ ] ; echo "0 args rc=$?"
+[ x ] ; echo "1 arg rc=$?"
+[ -n ] ; echo "-n alone rc=$?"
+[ ! ] ; echo "! alone rc=$?"
+[ -z -z ] ; echo "-z -z rc=$?"
+[ = = = ] ; echo "= = = rc=$?"

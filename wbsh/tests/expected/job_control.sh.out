@@ -3,7 +3,7 @@ status 143
 both gone
 by name 143
 by substring 143
-wbsh: kill: %9: no such job
+job_control.sh: line 18: kill: %9: no such job
 no job 1
 === jobs
 [1]-  Running                 sleep 1 &
@@ -20,7 +20,7 @@ nothing left 127
 0
 late wait 5
 === bg without job control
-wbsh: bg: no job control
+job_control.sh: line 43: bg: no job control
 bg rc 1
 === Ctrl+C stops sleep and loops
 endless sleep loop rc=130

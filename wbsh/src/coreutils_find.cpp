@@ -36,6 +36,7 @@
 #include "fnmatch.h"
 #include "numparse.h"
 #include "fifo.h"
+#include "filemode.h"
 #include "pathconv.h"
 #include "posixregex.h"
 
@@ -355,12 +356,9 @@ namespace wbsh {
 			const char type = entryType(entry);
 			if (type == 'l') return 0777;
 
-			unsigned mode = 0644;
-			if (type == 'd' || hasExecutableExtension(entry.native)) mode = 0755;
-
 			const FileStat& stat = entryStat(entry);
-			if (stat.ok && (stat.attributes & FILE_ATTRIBUTE_READONLY) != 0) mode &= ~0222u;
-			return mode;
+			const bool read_only = stat.ok && (stat.attributes & FILE_ATTRIBUTE_READONLY) != 0;
+			return filePermissions(entry.native, type == 'd', read_only);
 		}
 
 		static std::string modeString(Entry& entry) {

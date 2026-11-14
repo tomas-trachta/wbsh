@@ -8,7 +8,7 @@ b>
 [] rc=0
 not empty
 === a missing file
-wbsh: _run_tmp/fr_missing: No such file or directory
+cmdsubst_file_read.sh: line 25: _run_tmp/fr_missing: No such file or directory
 rc=1 []
 === anything more than the lone redirection runs as usual
 [more]

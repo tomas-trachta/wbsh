@@ -13,6 +13,7 @@
 #endif /* _WIN32 */
 
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 
 namespace wbsh {
@@ -219,6 +220,40 @@ namespace wbsh {
 		}
 	}
 
+	static int hexValue(char c) {
+		if (c >= '0' && c <= '9') return c - '0';
+		if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+		return c - 'A' + 10;
+	}
+
+	bool readUnicodeEscape(const std::string& text, std::size_t& i, char letter, char32_t& code) {
+		const std::size_t max_digits = letter == 'U' ? 8 : 4;
+		std::size_t digits = 0;
+		code = 0;
+		while (digits < max_digits && i + digits < text.size()
+				&& std::isxdigit(static_cast<unsigned char>(text[i + digits]))) {
+			code = code * 16 + static_cast<char32_t>(hexValue(text[i + digits]));
+			++digits;
+		}
+
+		i += digits;
+		return digits > 0;
+	}
+
+	void appendUnicodeEscape(std::string& out, char32_t code, bool utf8_locale) {
+		const bool encodable = code <= 0x10FFFF && !utf8_detail::isStrayCode(code);
+		if (code < 0x80 || (utf8_locale && encodable)) {
+			appendUtf8(out, code);
+			return;
+		}
+
+		char escape[16];
+		const unsigned long value = static_cast<unsigned long>(code);
+		if (code <= 0xFFFF) std::snprintf(escape, sizeof escape, "\\u%04lX", value);
+		else std::snprintf(escape, sizeof escape, "\\U%08lX", value);
+		out += escape;
+	}
+
 	char32_t upperCode(char32_t code) {
 		return utf8_detail::mapCase(code, true);
 	}
@@ -230,6 +265,7 @@ namespace wbsh {
 	bool isInCharClass(const std::string& name, char32_t code) {
 		if (name == "print") return utf8_detail::isPrintable(code);
 		if (name == "word" && code == '_') return true;
+		if (name == "ascii") return code < 0x80;
 
 		const utf8_detail::NamedClass* entry = utf8_detail::findClass(name);
 		if (entry == nullptr) return false;

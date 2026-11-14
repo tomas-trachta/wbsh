@@ -21,14 +21,21 @@
 #include <string>
 #include <vector>
 
+#if __has_include("build_info.h")
+#  include "build_info.h"
+#endif
+
 #include "coreutils_internal.h"
 #include "executor.h"
+#include "invocation.h"
+#include "jsonrun.h"
 #include "numparse.h"
 #include "pathconv.h"
 #include "repl.h"
 #include "script.h"
 #include "signalbox.h"
 #include "source.h"
+#include "startup.h"
 
 using namespace wbsh;
 
@@ -46,30 +53,48 @@ using namespace wbsh;
 	WBSH_VSTR(WBSH_VERSION_MINOR) "." \
 	WBSH_VSTR(WBSH_VERSION_PATCH)
 
+static const int kStatusScriptNotFound = 127;
+
 static void printHelp() {
 	std::cout <<
 		"wbsh " WBSH_VERSION_STR " -- a Bash-compatible shell for Windows\n"
 		"\n"
 		"usage:\n"
-		"  wbsh                          interactive shell (TTY auto-detect)\n"
-		"  wbsh [opts] -c <command> [name [arg ...]]\n"
-		"                                run the given string ($0 = name)\n"
-		"  wbsh [opts] <file> [arg ...]  run / dump the file ($1.. = args)\n"
-		"  wbsh [opts] - [arg ...]       run / dump stdin (also -s)\n"
-		"  options end at the first operand or at --; later words are arguments\n"
-		"  short options combine: -lc <command> is -l -c <command>\n"
+		"  wbsh [options]                         interactive shell (TTY auto-detect)\n"
+		"  wbsh [options] -c <command> [name [arg ...]]\n"
+		"                                         run the command ($0 = name)\n"
+		"  wbsh [options] <file> [arg ...]        run the file ($1.. = args)\n"
+		"  wbsh [options] -s [arg ...]            run stdin (also a lone -)\n"
+		"  wbsh [options] --ec <base64> [name [arg ...]]\n"
+		"                                         run a base64-encoded command\n"
+		"  wbsh --json [options] -c <command>     run it, then print one JSON result\n"
 		"\n"
-		"modes (-c runs; a file or stdin is only dumped as an AST -- see -r):\n"
-		"  -i, --interactive             force interactive REPL\n"
-		"  -l, --login                   login shell: read ~/.wbsh_profile first\n"
-		"  -r, --run                     actually execute the file or stdin\n"
-		"  -e, --expand                  walk the AST and dump expanded words\n"
-		"  -t, --tokens                  dump the token stream\n"
-		"  --ast                         dump the AST (with -c and no -r: dump only)\n"
-		"  --no-ast                      suppress the AST dump\n"
-		"  -h, --help                    show this help\n"
-		"  -v, --version                 print version and exit\n"
-		"  --agent-info                  print a longer brief for scripts/tools/AI agents\n";
+		"options (as in bash; letters may be clustered, e.g. -ec):\n"
+		"  -c                    the first operand is the command string\n"
+		"  -s                    read commands from stdin\n"
+		"  -i                    interactive; with -c or a file, read ~/.wbshrc first\n"
+		"  -l, --login           login shell: read ~/.wbsh_profile first\n"
+		"  -abefhkmnptuvxBCEHPT  the same letters as `set` (+x turns one off)\n"
+		"  -o NAME, +o NAME      set / unset an option by name, e.g. -o pipefail\n"
+		"  -O NAME, +O NAME      set / unset a shopt option\n"
+		"  --posix               POSIX mode (also when started as sh.exe)\n"
+		"  --norc, --noprofile   skip ~/.wbshrc / the login profile\n"
+		"  --rcfile FILE         read FILE instead of ~/.wbshrc\n"
+		"  --ec, --encodedcommand B64\n"
+		"                        the command as base64 (UTF-8 or UTF-16LE), so\n"
+		"                        no quoting survives any layer in between\n"
+		"  --json                capture stdout and stderr apart, then print one line\n"
+		"                        {\"status\":N,\"stdout\":\"..\",\"stderr\":\"..\",\n"
+		"                        \"duration_ms\":N}\n"
+		"\n"
+		"debugging (instead of running, unless -r/--run is given too):\n"
+		"  --tokens              dump the token stream\n"
+		"  --ast                 dump the parse tree\n"
+		"  --expand              dump expanded words\n"
+		"\n"
+		"  -h, --help            show this help\n"
+		"  --version             print version and build\n"
+		"  --agent-info          print a longer brief for scripts/tools/AI agents\n";
 }
 
 static void printAgentInfo() {
@@ -84,15 +109,34 @@ static void printAgentInfo() {
 		"  work without anything else on PATH. System tools (git, vim, less, ...)\n"
 		"  are auto-discovered on PATH and invoked as native Windows processes.\n"
 		"\n"
-		"HOW TO RUN A COMMAND (READ THIS FIRST)\n"
-		"  wbsh -c runs the command, as in bash. A script file or stdin is\n"
-		"  NOT executed by default -- wbsh parses and dumps the AST instead.\n"
-		"  Pass -r/--run to execute it:\n"
+		"HOW TO RUN A COMMAND\n"
+		"  Exactly as with bash:\n"
 		"    wbsh -c \"echo hello && ls -la\"        run one command line\n"
-		"    wbsh -r ./script.sh                   run a script file\n"
-		"    wbsh -r -                             run a script from stdin\n"
-		"  Without -r, wbsh ./script.sh only prints a parse tree and exits\n"
-		"  0 -- it will NOT run the script. -r is accepted with -c as well.\n"
+		"    wbsh -eu -o pipefail -c \"...\"         with errexit, nounset, pipefail\n"
+		"    wbsh ./script.sh arg1                 run a script file\n"
+		"    wbsh -s < script.sh                   run a script from stdin\n"
+		"  A copy named bash.exe behaves the same; one named sh.exe starts in\n"
+		"  POSIX mode.\n"
+		"\n"
+		"QUOTE-PROOF INVOCATION\n"
+		"  Every layer between an agent and the shell can re-quote or expand a\n"
+		"  command. Base64 it instead and nothing is left to escape:\n"
+		"    wbsh --ec ZWNobyAiaGkgJFVTRVIi        runs: echo \"hi $USER\"\n"
+		"  UTF-8 or UTF-16LE (PowerShell's -EncodedCommand form), padding\n"
+		"  optional, line breaks ignored, an optional v1: prefix is dropped.\n"
+		"  Options still go first: wbsh -eu --ec <b64>.\n"
+		"  Windows caps a command line at 32767 characters (cmd.exe at 8191);\n"
+		"  write a longer command to a file and run wbsh FILE, or pipe it to\n"
+		"  wbsh -s.\n"
+		"\n"
+		"STRUCTURED RESULT\n"
+		"  --json runs the command as usual (traps, exit N, set -e) with stdout\n"
+		"  and stderr captured apart, then prints one line of JSON:\n"
+		"    wbsh --json -c 'echo hi; echo oops >&2; exit 3'\n"
+		"    {\"status\":3,\"stdout\":\"hi\\n\",\"stderr\":\"oops\\n\",\"duration_ms\":4}\n"
+		"  The line is pure ASCII (non-ASCII as \\uXXXX); bytes that are not\n"
+		"  UTF-8 become U+FFFD. The exit status is the command's. It combines\n"
+		"  with --ec and script files: wbsh --json --ec <b64>.\n"
 		"\n"
 		"PATH TRANSLATION\n"
 		"  POSIX-style paths are converted for native Windows executables:\n"
@@ -103,178 +147,24 @@ static void printAgentInfo() {
 		"  Standard POSIX exit-status conventions apply ($?, &&, ||, pipefail\n"
 		"  when set). Output is written LF-only (no CRLF translation), so\n"
 		"  `$(...)` command substitution and `read` behave like on Linux.\n"
+		"  Non-interactive runs print no banner and read no rc file.\n"
 		"\n"
 		"COMPATIBILITY NOTES\n"
 		"  Core POSIX shell syntax, pipelines, redirection, functions, [[ ]],\n"
-		"  arrays, and common bash builtins are supported. This is an early\n"
-		"  but released project (see README) -- some bash edge cases may not\n"
-		"  yet match exactly. When in doubt, test the exact command with\n"
-		"  `wbsh -c \"...\"` first rather than assuming bash parity.\n"
+		"  arrays, and common bash builtins are supported. Some bash edge\n"
+		"  cases may not yet match exactly.\n"
 		"\n"
 		"MORE\n"
 		"  wbsh --help          short flag reference\n"
-		"  wbsh --version       version string\n"
+		"  wbsh --version       version and build\n"
 		"  README.md            full docs, install, feature list\n";
 }
 
-enum class Action {
-	RunScript,
-	RunInteractive,
-	PrintHelp,
-	PrintAgentInfo,
-	PrintVersion,
-};
-
-enum class SourceKind {
-	Unset,
-	CommandString,
-	File,
-	Stdin,
-};
-
-enum class AstDump {
-	Default,
-	Shown,
-	Hidden,
-};
-
-// The first informational flag (-h, -v, -i, ...) decides the action.
-// Option parsing stops at the source operand: every later word is an
-// argument for the script (for -c the first of them becomes `$0`).
-struct Options {
-	Action      action = Action::RunScript;
-	SourceKind  source = SourceKind::Unset;
-	std::string command;
-	std::string file_path;
-	std::vector<std::string> operands;
-	bool        show_tokens     = false;
-	bool        show_expansions = false;
-	bool        execute         = false;
-	bool        login           = false;
-	AstDump     ast             = AstDump::Default;
-};
-
-static void setAction(Options& options, Action action) {
-	if (options.action == Action::RunScript) options.action = action;
-}
-
-static bool parseInfoFlag(const std::string& arg, Options& options) {
-	const bool help        = arg == "-h" || arg == "--help";
-	const bool version     = arg == "-v" || arg == "--version";
-	const bool interactive = arg == "-i" || arg == "--interactive";
-	if (help)                  { setAction(options, Action::PrintHelp);      return true; }
-	if (arg == "--agent-info") { setAction(options, Action::PrintAgentInfo); return true; }
-	if (version)               { setAction(options, Action::PrintVersion);   return true; }
-	if (interactive)           { setAction(options, Action::RunInteractive); return true; }
-	return false;
-}
-
-static bool parseModeFlag(const std::string& arg, Options& options) {
-	if (arg == "-t" || arg == "--tokens") { options.show_tokens     = true; return true; }
-	if (arg == "-e" || arg == "--expand") { options.show_expansions = true; return true; }
-	if (arg == "-r" || arg == "--run")    { options.execute         = true; return true; }
-	if (arg == "-l" || arg == "--login")  { options.login           = true; return true; }
-	if (arg == "--ast")                   { options.ast = AstDump::Shown;   return true; }
-	if (arg == "--no-ast")                { options.ast = AstDump::Hidden;  return true; }
-	return false;
-}
-
-static void takeOperands(int argc, char** argv, int first, Options& options) {
-	for (int i = first; i < argc; ++i) options.operands.emplace_back(argv[i]);
-}
-
-static bool takeCommandString(int argc, char** argv, int i, Options& options,
-		std::string& out_error) {
-	if (i + 1 >= argc) {
-		out_error = "-c requires an argument";
-		return false;
-	}
-
-	options.source  = SourceKind::CommandString;
-	options.command = argv[i + 1];
-	takeOperands(argc, argv, i + 2, options);
-	return true;
-}
-
-static void takeScriptFile(int argc, char** argv, int i, Options& options) {
-	if (i >= argc) return;
-
-	options.source    = SourceKind::File;
-	options.file_path = argv[i];
-	takeOperands(argc, argv, i + 1, options);
-}
-
-static void takeStdin(int argc, char** argv, int i, Options& options) {
-	options.source = SourceKind::Stdin;
-	takeOperands(argc, argv, i + 1, options);
-}
-
-static bool isOptionWord(const std::string& arg) {
-	return arg.size() > 1 && arg[0] == '-';
-}
-
-// `-lc` and the like: two or more letters after a single dash.
-static bool isShortGroup(const std::string& arg) {
-	return arg.size() > 2 && arg[0] == '-' && arg[1] != '-';
-}
-
-// `-lc cmd` is `-l -c cmd`, as in bash. -c takes the next word wherever
-// it stands in the group, so `-cl cmd` works too; -c wins over -s.
-static bool parseShortGroup(int argc, char** argv, int i, Options& options,
-		bool& out_done, std::string& out_error) {
-	const std::string arg = argv[i];
-	bool command_string = false;
-	bool stdin_script   = false;
-	for (std::size_t k = 1; k < arg.size(); ++k) {
-		const std::string flag = { '-', arg[k] };
-		if (flag == "-c") { command_string = true; continue; }
-		if (flag == "-s") { stdin_script   = true; continue; }
-		if (parseInfoFlag(flag, options) || parseModeFlag(flag, options)) continue;
-
-		out_error = flag + ": invalid option (see wbsh --help)";
-		return false;
-	}
-
-	out_done = command_string || stdin_script;
-	if (command_string) return takeCommandString(argc, argv, i, options, out_error);
-	if (stdin_script) takeStdin(argc, argv, i, options);
-	return true;
-}
-
-static bool parseArgs(int argc, char** argv, Options& options, std::string& out_error) {
-	for (int i = 1; i < argc; ++i) {
-		const std::string arg = argv[i];
-		if (parseInfoFlag(arg, options) || parseModeFlag(arg, options)) continue;
-
-		if (isShortGroup(arg)) {
-			bool done = false;
-			if (!parseShortGroup(argc, argv, i, options, done, out_error)) return false;
-			if (done) return true;
-			continue;
-		}
-
-		if (arg == "-c") return takeCommandString(argc, argv, i, options, out_error);
-
-		if (arg == "-" || arg == "-s") {
-			takeStdin(argc, argv, i, options);
-			return true;
-		}
-
-		if (arg == "--") {
-			takeScriptFile(argc, argv, i + 1, options);
-			return true;
-		}
-
-		if (isOptionWord(arg)) {
-			out_error = arg + ": invalid option (see wbsh --help)";
-			return false;
-		}
-
-		takeScriptFile(argc, argv, i, options);
-		return true;
-	}
-
-	return true;
+static void printVersion() {
+	std::cout << "wbsh " WBSH_VERSION_STR "\n";
+#ifdef WBSH_BUILD_COMMIT
+	std::cout << "commit " WBSH_BUILD_COMMIT " (" WBSH_BUILD_DATE ")\n";
+#endif /* WBSH_BUILD_COMMIT */
 }
 
 static std::string readAll(std::istream& in) {
@@ -297,34 +187,16 @@ static bool stdinIsTerminal() {
 
 // The path may be POSIX (`/d/work/x.sh`), as tools on PATH pass it; `$0`
 // keeps the spelling given.
-static bool readScriptFile(const std::string& path, std::string& out_text) {
+static bool readScriptFile(const Invocation& invocation, std::string& out_text) {
+	const std::string& path = invocation.file_path;
 	std::ifstream file(utf8ToPath(PathConv().toWin32(path)), std::ios::binary);
 	if (file.fail()) {
-		std::cerr << "wbsh: cannot open file: " << path << "\n";
+		std::cerr << invocation.shell_name << ": " << path << ": No such file or directory\n";
 		return false;
 	}
 
 	out_text = readAll(file);
 	return true;
-}
-
-// `-c` runs, as `$SHELL -c` callers expect, unless a dump is asked for
-// without -r. A file or stdin is only dumped unless -r is given.
-static bool executes(const Options& options) {
-	if (options.execute) return true;
-	if (options.source != SourceKind::CommandString) return false;
-
-	const bool dump_asked = options.show_tokens || options.show_expansions
-		|| options.ast == AstDump::Shown;
-	return !dump_asked;
-}
-
-// A run hides the AST unless asked for with --ast; a dump shows it unless
-// told otherwise with --no-ast.
-static bool astShown(const Options& options) {
-	if (options.ast == AstDump::Shown)  return true;
-	if (options.ast == AstDump::Hidden) return false;
-	return !executes(options);
 }
 
 // A self-spawned pipeline stage is a slice of its parent's script and
@@ -338,44 +210,74 @@ static std::size_t inheritedFirstLine() {
 }
 
 // `wbsh -c cmd name a b` runs cmd with $0 = name and $1.. = a b, as bash does.
-static void loadCommandString(const Options& options, ScriptRun& run) {
-	run.source = options.command;
+static void loadCommandString(const Invocation& invocation, ScriptRun& run) {
+	run.source = invocation.command;
+	run.command_string = true;
 	run.first_line = inheritedFirstLine();
-	if (options.operands.empty()) return;
+	run.positional.clear();
+	if (invocation.operands.empty()) return;
 
-	run.script_name = options.operands.front();
-	run.positional.assign(options.operands.begin() + 1, options.operands.end());
+	run.script_name = invocation.operands.front();
+	run.positional.assign(invocation.operands.begin() + 1, invocation.operands.end());
 }
 
-static bool loadScriptRun(const Options& options, ScriptRun& run) {
-	run.show_tokens     = options.show_tokens;
-	run.show_ast        = astShown(options);
-	run.show_expansions = options.show_expansions;
-	run.execute         = executes(options);
-	run.login           = options.login;
-	run.positional      = options.operands;
+static void loadRunSettings(const Invocation& invocation, ScriptRun& run) {
+	run.show_tokens     = invocation.show_tokens;
+	run.show_ast        = invocationShowsAst(invocation);
+	run.show_expansions = invocation.show_expansions;
+	run.execute         = invocationExecutes(invocation);
+	run.read_rc         = invocation.interactive;
+	run.startup         = invocation.startup;
+	run.positional      = invocation.operands;
+	run.script_name     = invocation.shell_name;
+}
 
-	switch (options.source) {
-	case SourceKind::CommandString:
-		loadCommandString(options, run);
+// bash reads a script from standard input a command at a time, so that a
+// command in it that reads standard input gets the lines that follow.
+static void loadStdinScript(ScriptRun& run) {
+	run.invocation_letter = 's';
+	const bool dumps = run.show_tokens || run.show_ast || run.show_expansions;
+	run.stream_stdin = run.execute && !dumps;
+	if (!run.stream_stdin) run.source = readAll(std::cin);
+}
+
+static bool loadScriptRun(const Invocation& invocation, ScriptRun& run) {
+	loadRunSettings(invocation, run);
+
+	switch (invocation.source) {
+	case InvocationSource::CommandString:
+		loadCommandString(invocation, run);
+		run.invocation_letter = 'c';
 		return true;
-	case SourceKind::File:
-		run.script_name = options.file_path;
+	case InvocationSource::File:
+		run.script_name = invocation.file_path;
 		run.from_file = true;
-		return readScriptFile(options.file_path, run.source);
-	case SourceKind::Stdin:
-	case SourceKind::Unset:
+		return readScriptFile(invocation, run.source);
+	case InvocationSource::Stdin:
+	case InvocationSource::Unset:
 	default:
-		run.source = readAll(std::cin);
+		loadStdinScript(run);
 		return true;
 	}
 }
 
-static int runScriptAction(const Options& options) {
+static int loadAndRunScript(const Invocation& invocation) {
 	ScriptRun run;
-	if (!loadScriptRun(options, run)) return 2;
+	if (!loadScriptRun(invocation, run)) return kStatusScriptNotFound;
 
 	return runScript(run);
+}
+
+static int runScriptAction(const Invocation& invocation) {
+	if (!invocation.json) return loadAndRunScript(invocation);
+
+	return runCapturedAsJson([&invocation] { return loadAndRunScript(invocation); });
+}
+
+static bool startsInteractive(const Invocation& invocation) {
+	if (invocation.source != InvocationSource::Unset || invocation.json) return false;
+
+	return invocation.interactive || stdinIsTerminal();
 }
 
 #ifdef _WIN32
@@ -449,31 +351,32 @@ static void expandArgvFile(int& argc, char**& argv,
 }
 
 static int runShell(int argc, char** argv) {
-	Options options;
+	Invocation invocation;
 	std::string error;
-	if (!parseArgs(argc, argv, options, error)) {
-		std::cerr << "wbsh: " << error << "\n";
+	if (!parseInvocation(argc, argv, invocation, error)) {
+		std::cerr << invocation.shell_name << ": " << error << "\n";
 		return 2;
 	}
 
-	const bool nothing_to_read = options.source == SourceKind::Unset && stdinIsTerminal();
-	if (nothing_to_read) setAction(options, Action::RunInteractive);
+	if (startsInteractive(invocation) && invocation.action == InvocationAction::RunScript) {
+		invocation.action = InvocationAction::RunInteractive;
+	}
 
-	switch (options.action) {
-	case Action::PrintHelp:
+	switch (invocation.action) {
+	case InvocationAction::PrintHelp:
 		printHelp();
 		return 0;
-	case Action::PrintAgentInfo:
+	case InvocationAction::PrintAgentInfo:
 		printAgentInfo();
 		return 0;
-	case Action::PrintVersion:
-		std::cout << "wbsh " WBSH_VERSION_STR "\n";
+	case InvocationAction::PrintVersion:
+		printVersion();
 		return 0;
-	case Action::RunInteractive:
-		return runInteractive(options.login);
-	case Action::RunScript:
+	case InvocationAction::RunInteractive:
+		return runInteractive(invocation.startup, invocation.shell_name);
+	case InvocationAction::RunScript:
 	default:
-		return runScriptAction(options);
+		return runScriptAction(invocation);
 	}
 }
 

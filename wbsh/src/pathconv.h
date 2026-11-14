@@ -140,15 +140,15 @@ namespace wbsh {
 		std::string pathListWin32ToPosix(const std::string& list) const;
 		std::string pathListPosixToWin32(const std::string& list) const;
 
-		/// Heuristic for native callees: true when the argument looks
-		/// like a POSIX absolute path and not a flag, a URL, or a
-		/// single-char arg like `/`.
-		bool argLooksTranslatable(const std::string& arg) const;
-
-		/// Returns the Win32 form when the argument looks translatable,
-		/// otherwise the input unchanged. `--opt=PATH` / `-X=PATH` get
-		/// only their value side translated.
+		/// An argument for a native (non-MSYS) program, with its POSIX paths
+		/// in Win32 form by the rules Git Bash's MSYS runtime applies:
+		/// `//x` unescaped to `/x`, `--opt=/c/x`, `-I/c/x`, `VAR=/c/x`,
+		/// `/c/x:/d/y` lists. URLs, globs and other non-paths stay as they are.
 		std::string translateArg(const std::string& arg) const;
+
+		/// The Win32 form of @p p through the mount table; false when no
+		/// mount covers @p p.
+		bool applyMount(const std::string& p, std::string& out) const;
 
 	private:
 		struct Mount {
@@ -158,9 +158,13 @@ namespace wbsh {
 		};
 
 		const Mount* findMount(const std::string& p) const;
-		bool applyMount(const std::string& p, std::string& out) const;
 
 		std::vector<Mount> mounts_;
 	};
+
+	/// True when @p exclusions, an `MSYS2_ARG_CONV_EXCL` value, keeps @p arg
+	/// from translation: `*` for every argument, otherwise `;`-separated
+	/// prefixes of the arguments to leave alone.
+	bool argExcludedFromConversion(const std::string& arg, const std::string& exclusions);
 
 }  // namespace wbsh

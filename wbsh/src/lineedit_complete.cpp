@@ -18,6 +18,7 @@
 
 #include "completion.h"
 #include "keymap.h"
+#include "man_pages.h"
 #include "numparse.h"
 #include "pathconv.h"
 #include "strscan.h"
@@ -207,19 +208,27 @@ namespace wbsh {
 			return spans;
 		}
 
-		static CommandWords commandWordsBefore(const std::string& text, std::size_t end) {
-			const std::vector<WordSpan> spans = wordSpansBefore(text, end);
+		static std::string spanText(const std::string& text, const WordSpan& span) {
+			return text.substr(span.start, span.end - span.start);
+		}
 
-			CommandWords command;
-			command.start = end;
-			for (const WordSpan& span : spans) {
-				std::string word = text.substr(span.start, span.end - span.start);
-				if (command.words.empty() && isAssignmentWord(word)) continue;
+		static std::vector<WordSpan> commandSpansBefore(const std::string& text, std::size_t end) {
+			std::vector<WordSpan> command;
+			for (const WordSpan& span : wordSpansBefore(text, end)) {
+				if (command.empty() && isAssignmentWord(spanText(text, span))) continue;
 
-				if (command.words.empty()) command.start = span.start;
-				command.words.push_back(std::move(word));
+				command.push_back(span);
 			}
 
+			return command;
+		}
+
+		static CommandWords commandWordsBefore(const std::string& text, std::size_t end) {
+			const std::vector<WordSpan> spans = commandSpansBefore(text, end);
+
+			CommandWords command;
+			command.start = spans.empty() ? end : spans.front().start;
+			for (const WordSpan& span : spans) command.words.push_back(spanText(text, span));
 			return command;
 		}
 
@@ -232,22 +241,75 @@ namespace wbsh {
 			return std::min<std::size_t>(i, text.size());
 		}
 
-		// COMP_WORDS: the words before the cursor's word, that whole word,
-		// and the words after it up to the end of the command.
-		static std::vector<std::string> wordsOfCommand(const std::string& text,
-		                                               const std::vector<std::string>& before,
-		                                               std::size_t word_start,
-		                                               std::size_t word_end,
-		                                               std::size_t command_end) {
-			std::vector<std::string> words = before;
-			words.push_back(text.substr(word_start, word_end - word_start));
-			for (const WordSpan& span : wordSpansBefore(text, command_end)) {
-				if (span.start < word_end) continue;
+		// The COMP_WORDBREAKS characters that cut a shell word: blanks end
+		// words anyway, and quotes open quoted text instead.
+		static bool breaksWord(char letter, const std::string& breaks) {
+			if (isSpaceByte(letter) || letter == '"' || letter == '\'') return false;
 
-				words.push_back(text.substr(span.start, span.end - span.start));
+			return breaks.find(letter) != std::string::npos;
+		}
+
+		// One shell word as bash's COMP_WORDS has it: each run of break
+		// characters is a word of its own, and quoted text never splits.
+		static std::vector<WordSpan> piecesOf(const std::string& text, const WordSpan& span,
+		                                      const std::string& breaks) {
+			std::vector<WordSpan> pieces;
+			std::size_t piece_start = span.start;
+			bool in_break = false;
+			std::size_t i = span.start;
+			while (i < span.end) {
+				const bool is_break = breaksWord(text[i], breaks);
+				if (i > piece_start && is_break != in_break) {
+					pieces.push_back({ piece_start, i });
+					piece_start = i;
+				}
+
+				in_break = is_break;
+				i = is_break ? i + 1 : skipUnit(text, i, span.end);
 			}
 
-			return words;
+			pieces.push_back({ piece_start, (std::max)(piece_start, (std::min)(i, span.end)) });
+			return pieces;
+		}
+
+		static void appendPieces(const std::string& text, const std::vector<WordSpan>& pieces,
+		                         std::vector<std::string>& words) {
+			for (const WordSpan& piece : pieces) words.push_back(spanText(text, piece));
+		}
+
+		static std::size_t cursorPiece(const std::vector<WordSpan>& pieces, std::size_t cursor) {
+			for (std::size_t i = 0; i < pieces.size(); ++i) {
+				if (pieces[i].end >= cursor) return i;
+			}
+
+			return pieces.size() - 1;
+		}
+
+		struct CompWords {
+			std::vector<std::string> words;
+			std::size_t cword = 0;
+		};
+
+		// COMP_WORDS and COMP_CWORD: the words of the command the cursor is
+		// in, its own word included whole, each cut at COMP_WORDBREAKS.
+		static CompWords compWords(const std::string& text, const WordSpan& current,
+		                           std::size_t cursor, std::size_t command_end,
+		                           const std::string& breaks) {
+			CompWords comp;
+			for (const WordSpan& span : commandSpansBefore(text, current.start)) {
+				appendPieces(text, piecesOf(text, span, breaks), comp.words);
+			}
+
+			const std::vector<WordSpan> pieces = piecesOf(text, current, breaks);
+			comp.cword = comp.words.size() + cursorPiece(pieces, cursor);
+			appendPieces(text, pieces, comp.words);
+			for (const WordSpan& span : wordSpansBefore(text, command_end)) {
+				if (span.start < current.end) continue;
+
+				appendPieces(text, piecesOf(text, span, breaks), comp.words);
+			}
+
+			return comp;
 		}
 
 		static std::size_t commandEndAfter(const std::string& text, std::size_t from) {
@@ -281,15 +343,15 @@ namespace wbsh {
 			scan.value.push_back(letter);
 		}
 
-		// After an unquoted `=` -- and after a `:` once there was one, as in
-		// PATH=/a:/b -- the completion starts afresh, as with bash's
-		// COMP_WORDBREAKS.
-		static bool startsValue(const WordScan& scan, char letter) {
-			return letter == '=' || (letter == ':' && scan.assigned);
+		// After an unquoted COMP_WORDBREAKS character -- `=` by default --
+		// the completion starts afresh, and so after a `:` once there was
+		// one, as in PATH=/a:/b.
+		static bool startsValue(const WordScan& scan, char letter, const std::string& breaks) {
+			return breaksWord(letter, breaks) || (letter == ':' && scan.assigned);
 		}
 
 		static void scanUnquoted(const std::string& text, std::size_t& i, std::size_t end,
-		                         WordScan& scan) {
+		                         const std::string& breaks, WordScan& scan) {
 			const char letter = text[i];
 			if (isWordBreak(letter)) {
 				scan = WordScan();
@@ -306,7 +368,7 @@ namespace wbsh {
 				appendLetter(scan, letter);
 			}
 
-			if (!startsValue(scan, letter)) return;
+			if (!startsValue(scan, letter, breaks)) return;
 
 			scan.assigned = true;
 			scan.value_start = i + 1;
@@ -326,13 +388,14 @@ namespace wbsh {
 			appendLetter(scan, escapes ? text[++i] : letter);
 		}
 
-		static WordScan scanWordBefore(const std::string& text, std::size_t end) {
+		static WordScan scanWordBefore(const std::string& text, std::size_t end,
+		                               const std::string& breaks) {
 			WordScan scan;
 			for (std::size_t i = 0; i < end; ++i) {
 				if (scan.quote != 0) {
 					scanQuoted(text, i, end, scan);
 				} else {
-					scanUnquoted(text, i, end, scan);
+					scanUnquoted(text, i, end, breaks, scan);
 				}
 			}
 
@@ -354,7 +417,8 @@ namespace wbsh {
 	// Quotes and backslashes are taken out of the word, and in an unquoted
 	// `name=value` or `--option=value` only the value is completed.
 	LineEditor::Tok LineEditor::currentToken() const {
-		const complete_detail::WordScan scan = complete_detail::scanWordBefore(buffer_, cursor_);
+		const complete_detail::WordScan scan =
+			complete_detail::scanWordBefore(buffer_, cursor_, wordBreaks());
 
 		Tok token;
 		token.start = scan.start;
@@ -364,55 +428,6 @@ namespace wbsh {
 		token.word = scan.assigned ? scan.value : scan.word;
 		token.first = !scan.assigned && complete_detail::inCommandPosition(buffer_, scan.start);
 		return token;
-	}
-
-	static bool endsWithLowered(const std::string& name, const char* suffix) {
-		const std::size_t length = std::strlen(suffix);
-		if (name.size() <= length) return false;
-
-		const std::size_t offset = name.size() - length;
-		for (std::size_t k = 0; k < length; ++k) {
-			const int lowered = std::tolower(static_cast<unsigned char>(name[offset + k]));
-			if (lowered != suffix[k]) return false;
-		}
-
-		return true;
-	}
-
-	static std::string stripExeExtension(std::string name) {
-		static const char* const kExtensions[] = { ".exe", ".cmd", ".bat", ".com", nullptr };
-
-		for (int i = 0; kExtensions[i] != nullptr; ++i) {
-			if (!endsWithLowered(name, kExtensions[i])) continue;
-
-			name.resize(name.size() - std::strlen(kExtensions[i]));
-			break;
-		}
-
-		return name;
-	}
-
-	const std::set<std::string>& LineEditor::pathCommandNames() {
-		const std::string path = env_.get("PATH");
-		if (path == path_command_cache_path_) return path_command_cache_;
-
-		path_command_cache_.clear();
-		for (const std::string& dir : splitPathList(path)) {
-			if (dir.empty()) continue;
-
-			std::error_code ec;
-			const fs::path base = utf8ToPath(exec_.pathConv().toWin32(dir));
-			fs::directory_iterator entries(base, ec);
-			if (ec) continue;
-
-			for (const auto& entry : entries) {
-				const std::string name = pathToUtf8(entry.path().filename());
-				path_command_cache_.insert(stripExeExtension(name));
-			}
-		}
-
-		path_command_cache_path_ = path;
-		return path_command_cache_;
 	}
 
 	template <typename Names>
@@ -524,6 +539,8 @@ namespace wbsh {
 		filename_matches_ = false;
 		completion_nospace_ = false;
 		spec_answered_ = false;
+		command_matches_ = command_pos;
+		match_descriptions_.clear();
 		const Tok current = currentToken();
 		if (command_pos && prefix.find('/') == std::string::npos) {
 			return commandWordCompletions(prefix, current);
@@ -537,6 +554,11 @@ namespace wbsh {
 
 	std::vector<std::string> LineEditor::prevTokensBefore(const Tok& tok) const {
 		return complete_detail::commandWordsBefore(buffer_, tok.start).words;
+	}
+
+	std::string LineEditor::wordBreaks() const {
+		const Environment& env = exec_.env();
+		return env.has("COMP_WORDBREAKS") ? env.get("COMP_WORDBREAKS") : kDefaultWordBreaks;
 	}
 
 	static void publishCompWords(Environment& env, const std::vector<std::string>& comp_words,
@@ -556,19 +578,33 @@ namespace wbsh {
 		env.unset("COMPREPLY");
 	}
 
+	// COMP_TYPE as bash sets it -- TAB, or `?` `!` `@` `%` `*` for the ways
+	// matches are listed, cycled or inserted -- and COMP_KEY, the key pressed.
+	void LineEditor::publishCompletionKind() {
+		Environment& env = exec_.env();
+		const unsigned char key = current_keys_.empty()
+			? '\t' : static_cast<unsigned char>(current_keys_.back());
+		env.set("COMP_TYPE", std::to_string(static_cast<int>(completion_type_)));
+		env.set("COMP_KEY", std::to_string(static_cast<int>(key)));
+	}
+
 	// COMP_LINE, COMP_POINT, COMP_WORDS and COMP_CWORD for the command the
-	// cursor is in, as a -F function or -C command reads them.
-	void LineEditor::publishCompletionContext(const Tok& tok,
-	                                          const std::vector<std::string>& prev) {
+	// cursor is in, as a -F function or -C command reads them; the word
+	// before the cursor's is a function's $3.
+	std::string LineEditor::publishCompletionContext(const Tok& tok) {
 		Environment& env = exec_.env();
 
 		const std::size_t start = complete_detail::commandWordsBefore(buffer_, tok.start).start;
 		const std::size_t end = complete_detail::commandEndAfter(buffer_, tok.end);
-		const std::size_t word_end = complete_detail::wordEndAfter(buffer_, tok.end);
-		const std::vector<std::string> words =
-			complete_detail::wordsOfCommand(buffer_, prev, tok.start, word_end, end);
-		publishCompWords(env, words, prev.size());
+		const complete_detail::WordSpan current =
+			{ tok.start, complete_detail::wordEndAfter(buffer_, tok.end) };
+		const complete_detail::CompWords comp =
+			complete_detail::compWords(buffer_, current, tok.end, end, wordBreaks());
+		publishCompWords(env, comp.words, comp.cword);
 		publishCompLine(env, buffer_.substr(start, end - start), tok.end - start);
+		publishCompletionKind();
+
+		return comp.cword == 0 ? std::string() : comp.words[comp.cword - 1];
 	}
 
 	void LineEditor::markDirectories(std::vector<std::string>& matches) const {
@@ -586,11 +622,10 @@ namespace wbsh {
 	std::vector<std::string> LineEditor::specCompletions(const CompletionSpec& spec,
 	                                                     const std::string& prefix, const Tok& tok,
 	                                                     const std::vector<std::string>& prev) {
-		publishCompletionContext(tok, prev);
 		CompletionRequest request;
+		request.previous = publishCompletionContext(tok);
 		request.command = prev.empty() ? std::string() : prev.front();
 		request.word = prefix;
-		request.previous = prev.empty() ? std::string() : prev.back();
 
 		const CompletionResult result = generateCompletions(exec_, spec, request);
 		spec_answered_ = true;
@@ -598,7 +633,7 @@ namespace wbsh {
 		filename_matches_ = result.file_names && !result.hasOption("noquote");
 		completion_nospace_ = result.hasOption("nospace");
 
-		std::vector<std::string> matches = result.matches;
+		std::vector<std::string> matches = takeDescriptions(result.matches);
 		if (result.file_names) markDirectories(matches);
 		return matches;
 	}
@@ -1232,9 +1267,43 @@ namespace wbsh {
 		return shown;
 	}
 
+	std::vector<std::string> LineEditor::listedNames(
+		const std::vector<std::string>& matches) const {
+		return filename_matches_ ? complete_detail::shownNames(matches) : matches;
+	}
+
+	// A script may answer "word<TAB>description"; the word alone is the
+	// match, and the menu shows the description beside it.
+	std::vector<std::string> LineEditor::takeDescriptions(
+		const std::vector<std::string>& matches) {
+		std::vector<std::string> words;
+		words.reserve(matches.size());
+		for (const std::string& match : matches) {
+			const std::size_t tab = match.find('\t');
+			if (tab == std::string::npos) {
+				words.push_back(match);
+				continue;
+			}
+
+			words.push_back(match.substr(0, tab));
+			match_descriptions_[words.back()] = match.substr(tab + 1);
+		}
+
+		return words;
+	}
+
+	// A command name is described by its manual's one-line summary.
+	std::string LineEditor::describeMatch(const std::string& match) const {
+		const auto described = match_descriptions_.find(match);
+		if (described != match_descriptions_.end()) return described->second;
+		if (!command_matches_) return {};
+
+		const ManPage* page = findManPage(match);
+		return page == nullptr ? std::string() : std::string(page->summary);
+	}
+
 	void LineEditor::listMatches(const std::vector<std::string>& all_matches) {
-		const std::vector<std::string> matches = filename_matches_
-			? complete_detail::shownNames(all_matches) : all_matches;
+		const std::vector<std::string> matches = listedNames(all_matches);
 		const std::size_t pad = longestLength(matches) + 2;
 		const std::size_t cols = std::max<std::size_t>(1, screenColumns() / pad);
 		const std::size_t rows = (matches.size() + cols - 1) / cols;
@@ -1257,6 +1326,12 @@ namespace wbsh {
 			return;
 		}
 
+		if (menuSelectWanted()) {
+			last_was_tab_ = false;
+			openMenu(tok, matches);
+			return;
+		}
+
 		const std::string common = longestCommonPrefix(matches);
 		const bool extended = complete_detail::extendsWord(common, tok.word);
 		last_was_tab_ = true;
@@ -1268,6 +1343,16 @@ namespace wbsh {
 		} else if (!extended) {
 			ding();
 		}
+	}
+
+	// The common part goes in first; Esc in the menu takes the word back
+	// to what was typed.
+	void LineEditor::openMenu(const Tok& tok, const std::vector<std::string>& matches) {
+		const UndoPoint origin = { buffer_, cursor_ };
+		const std::string common = longestCommonPrefix(matches);
+		if (complete_detail::extendsWord(common, tok.word)) insertMatch(tok, common, false);
+
+		runMenuSelect(tok, matches, origin);
 	}
 
 	// readline's choice for an ambiguous word: show-all-if-ambiguous lists

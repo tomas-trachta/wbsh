@@ -19,8 +19,9 @@
 0=wbsh n=0 all=[]
 0=name n=2 all=[a b c]
 0=-x 1=-y
-=== 5. stdin with arguments: - and -s
+=== 5. stdin with arguments: -s; a lone - ends the options, as in bash
 n=2 all=[a b]
+n=0 all=[]
 n=1 all=[c]
 === 6. positionals reach pipeline elements
 p
@@ -30,5 +31,5 @@ f: me 1
 after shift: b
 now: z
 === 8. unknown options are rejected
-wbsh: -z: invalid option (see wbsh --help)
+wbsh: -z: invalid option
 rc=2

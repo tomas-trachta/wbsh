@@ -21,6 +21,9 @@ namespace wbshterm {
 	static const int kCommandLastOutput  = 105;
 	static const int kCommandStatusBar   = 106;
 	static const int kCommandOpenScript  = 107;
+	static const int kCommandBlockOutput = 108;
+	static const int kCommandBlockSelect = 109;
+	static const int kCommandBlockRerun  = 110;
 
 	static const int kCommandThemeBase   = 200;
 	static const int kCommandCursorBase  = 300;
@@ -151,9 +154,21 @@ namespace wbshterm {
 		::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(child), label);
 	}
 
+	// Right-clicked on a command the shell marked, the menu offers that
+	// command: its output to copy or select, or the line to run again.
+	static void appendBlockItems(HMENU menu, bool can_rerun) {
+		::AppendMenuW(menu, MF_STRING, kCommandBlockOutput,
+			L"Copy this command's output\tCtrl+Shift+O");
+		::AppendMenuW(menu, MF_STRING, kCommandBlockSelect, L"Select this command's output");
+		::AppendMenuW(menu, MF_STRING | (can_rerun ? 0 : MF_GRAYED), kCommandBlockRerun,
+			L"Run this command again");
+		::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+	}
+
 	HMENU buildTerminalMenu(const Config& config, const MenuLists& lists,
-			bool has_selection, bool has_blocks) {
+			bool has_selection, bool has_blocks, bool on_block, bool can_rerun) {
 		HMENU menu = ::CreatePopupMenu();
+		if (on_block) appendBlockItems(menu, can_rerun);
 
 		::AppendMenuW(menu, MF_STRING | (has_selection ? 0 : MF_GRAYED), kCommandCopy,
 			L"Copy\tCtrl+Shift+C");
@@ -208,6 +223,9 @@ namespace wbshterm {
 		case kCommandOpenThemes: out_choice.action = MenuAction::OpenThemesFolder; return true;
 		case kCommandOpenScript: out_choice.action = MenuAction::OpenScriptFile; return true;
 		case kCommandLastOutput: out_choice.action = MenuAction::CopyLastOutput; return true;
+		case kCommandBlockOutput: out_choice.action = MenuAction::CopyBlockOutput; return true;
+		case kCommandBlockSelect: out_choice.action = MenuAction::SelectBlockOutput; return true;
+		case kCommandBlockRerun:  out_choice.action = MenuAction::RerunBlock; return true;
 		case kCommandStatusBar:  out_choice.action = MenuAction::ToggleStatusBar; return true;
 		default:                 return false;
 		}

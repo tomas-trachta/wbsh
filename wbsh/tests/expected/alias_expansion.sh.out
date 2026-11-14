@@ -1,0 +1,31 @@
+=== 1. off in a script until expand_aliases
+not expanded rc=127
+expand_aliases is off
+hello
+=== 2. only an unquoted name typed as such
+[aliased] plain
+backslash
+single
+double
+expanded-name
+=== 3. a value ending in a blank makes the next word a candidate
+TARGET target
+echo TARGET
+target
+TARGET
+=== 4. an alias does not expand itself again
+self rc=127
+=== 5. listing
+alias quoted='say '\''it'\'''
+alias target='TARGET'
+alias quoted='say '\''it'\'''
+alias -- -dash='echo dash'
+alias_expansion.sh: line 41: alias: -z: invalid option
+alias: usage: alias [-p] [name[=value] ... ]
+invalid option rc=2
+alias_expansion.sh: line 43: alias: quoted: not found
+unaliased rc=1
+=== 6. a subshell and a pipeline stage keep the setting
+hello
+hello
+x=hello

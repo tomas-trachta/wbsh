@@ -407,6 +407,13 @@ namespace wbshterm {
 		::SetEnvironmentVariableW(L"WBSHTERM_SCROLLBACK", L"1");
 	}
 
+	// And that it runs a marked command again from the line OSC 633;E
+	// carries. The shell takes this one out of its environment, so a shell
+	// inside `script` or ssh does not send command lines nobody reads.
+	static void announceCommandLineSupport() {
+		::SetEnvironmentVariableW(L"WBSHTERM_COMMAND_LINES", L"1");
+	}
+
 	static int runWindow(const Options& options) {
 		const std::wstring config_path = options.config_path.empty()
 			? defaultConfigPath()
@@ -426,6 +433,7 @@ namespace wbshterm {
 		announcePickerSupport();
 		announcePaneSupport();
 		announceScrollbackSupport();
+		announceCommandLineSupport();
 
 		TerminalWindow window;
 		if (!options.record_path.empty()) window.recordTo(options.record_path);

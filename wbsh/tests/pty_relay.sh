@@ -48,7 +48,7 @@ script -qac 'echo again' $T/one.log > /dev/null
 grep -c '^Script started' $T/one.log
 script -c 'echo loud' $T/loud.log | unix
 (cd $T && script -qc 'echo default' > /dev/null && typescript typescript)
-printf 'echo from-input\nexit 5\n' | script -q -e -B $T/io.log > /dev/null; echo "status $?"
+printf 'echo from-input\nexit 5\n' | NO_COLOR=1 script -q -e -B $T/io.log > /dev/null; echo "status $?"
 grep -c 'echo from-input' $T/io.log
 printf 'abc\n' | script -q -I $T/in.log -c 'stty -echo; read -r x; echo "read $x"' | unix
 typescript $T/in.log

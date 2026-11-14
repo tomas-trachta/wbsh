@@ -34,11 +34,13 @@
 
 #include "awk.h"
 #include "coreutils_internal.h"
+#include "diagnostics.h"
 #include "devices.h"
 #include "executor.h"
 #include "filetimes.h"
 #include "exitstatus.h"
 #include "fifo.h"
+#include "filemode.h"
 #include "inflate.h"
 #include "interrupt.h"
 #include "jobcontrol.h"
@@ -128,7 +130,26 @@ namespace wbsh {
 		return fopenProcNode(exec.pathConv(), node, mode);
 	}
 
+	static bool namesStandardInput(const std::string& path) {
+		return path == "/dev/stdin" || path == "/dev/fd/0" || path == "/proc/self/fd/0";
+	}
+
+	// The /dev/stdin mount names the console; a reader wants fd 0 itself,
+	// which may be a pipe or a file. The stream owns a duplicate, so
+	// closing it leaves fd 0 open.
+	static std::FILE* reopenStandardInput(const char* mode) {
+		const int fd = _dup(0);
+		if (fd < 0) return nullptr;
+		if (std::strchr(mode, 'b') != nullptr) _setmode(fd, _O_BINARY);
+
+		std::FILE* stream = _fdopen(fd, mode);
+		if (stream == nullptr) _close(fd);
+		return stream;
+	}
+
 	std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode) {
+		if (mode[0] == 'r' && namesStandardInput(p)) return reopenStandardInput(mode);
+
 		if (isGeneratorDevice(p)) {
 			if (mode[0] == 'r') return fopenGeneratorDevice(p);
 			return openUtf8("NUL", mode);
@@ -305,6 +326,23 @@ namespace wbsh {
 		version.build = os.dwBuildNumber;
 		return version;
 	}
+
+	// msys2-runtime names the kernel after MSYSTEM: MSYS (or none) gives
+	// MSYS_NT, a 32-bit environment MINGW32_NT and every other MINGW64_NT.
+	static std::string msystemKernelPrefix(const std::string& msystem) {
+		if (msystem.empty() || msystem == "MSYS") return "MSYS";
+		if (msystem.find("32") != std::string::npos) return "MINGW32";
+
+		return "MINGW64";
+	}
+
+	std::string unameSystemName(const std::string& msystem, const std::string& override_name) {
+		if (!override_name.empty()) return override_name;
+
+		const WindowsVersion os = windowsVersion();
+		return msystemKernelPrefix(msystem) + "_NT-" + std::to_string(os.major) + "."
+			+ std::to_string(os.minor) + "-" + std::to_string(os.build);
+	}
 #endif /* _WIN32 */
 
 	bool isConsoleStream(std::FILE* stream) {
@@ -401,6 +439,7 @@ namespace wbsh {
 		bool is_executable = false;
 		bool is_hidden = false;
 		bool valid = false;
+		unsigned permissions = 0;
 	};
 
 	static bool windowsHidden(const fs::path& path) {
@@ -425,14 +464,17 @@ namespace wbsh {
 #endif
 	}
 
-	bool hasExecutableExtension(const fs::path& full) {
-		std::string ext = pathToUtf8(full.extension());
-		std::transform(ext.begin(), ext.end(), ext.begin(),
-			[](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
-		return ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".com" || ext == ".ps1";
+	static bool lsNeedsPermissions(const LsOpts& opts) {
+		return opts.long_fmt || opts.use_color || opts.indicator == LsOpts::ClassifyIndicator;
 	}
 
-	static LsEntry collectEntry(const fs::path& parent, const std::string& name) {
+	static void readEntryPermissions(LsEntry& entry) {
+		entry.permissions = filePermissions(entry.full, entry.is_dir, windowsReadOnly(entry.full));
+		entry.is_executable = !entry.is_dir && (entry.permissions & 0100) != 0;
+	}
+
+	static LsEntry collectEntry(const fs::path& parent, const std::string& name,
+	                            const LsOpts& opts) {
 		LsEntry entry;
 		entry.name = name;
 		const fs::path native = utf8ToPath(name);
@@ -455,7 +497,7 @@ namespace wbsh {
 		entry.mtime = fs::last_write_time(entry.full, mtime_ec);
 		if (entry.is_socket) entryWriteTime(entry.full, entry.mtime);
 		entry.is_hidden = (!name.empty() && name[0] == '.') || windowsHidden(entry.full);
-		entry.is_executable = hasExecutableExtension(entry.full);
+		if (lsNeedsPermissions(opts)) readEntryPermissions(entry);
 		entry.valid = true;
 		return entry;
 	}
@@ -534,18 +576,12 @@ namespace wbsh {
 	}
 
 	static std::string permString(const LsEntry& entry) {
-		const char* execute = (entry.is_executable || entry.is_dir) ? "x" : "-";
-		const char* write = windowsReadOnly(entry.full) ? "-" : "w";
+		static const char kLetters[] = "rwxrwxrwx";
+		std::string perms(1, permTypeChar(entry));
+		for (int bit = 0; bit < 9; ++bit) {
+			perms.push_back((entry.permissions & (0400u >> bit)) != 0 ? kLetters[bit] : '-');
+		}
 
-		std::string perms;
-		perms += permTypeChar(entry);
-		perms += "r";
-		perms += write;
-		perms += execute;
-		perms += "r-";
-		perms += execute;
-		perms += "r-";
-		perms += execute;
 		return perms;
 	}
 
@@ -874,7 +910,7 @@ namespace wbsh {
 	// junctions and sockets (reparse points) and FIFO markers (system
 	// attribute) still go through collectEntry for the exact answer.
 	static bool lsEntryFromFindData(const fs::path& parent, const WIN32_FIND_DATAW& data,
-	                                LsEntry& entry) {
+	                                const LsOpts& opts, LsEntry& entry) {
 		const DWORD slow = FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_SYSTEM;
 		if ((data.dwFileAttributes & slow) != 0) return false;
 
@@ -890,7 +926,7 @@ namespace wbsh {
 		entry.mtime = fs::file_time_type(fs::file_time_type::duration(ticks));
 		const bool hidden_attribute = (data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0;
 		entry.is_hidden = data.cFileName[0] == L'.' || hidden_attribute;
-		entry.is_executable = hasExecutableExtension(entry.full);
+		if (lsNeedsPermissions(opts)) readEntryPermissions(entry);
 		entry.valid = true;
 		return true;
 	}
@@ -908,8 +944,8 @@ namespace wbsh {
 			if (name == L"." || name == L"..") continue;
 
 			LsEntry entry;
-			if (!lsEntryFromFindData(target, data, entry)) {
-				entry = collectEntry(target, wideToUtf8(name));
+			if (!lsEntryFromFindData(target, data, opts, entry)) {
+				entry = collectEntry(target, wideToUtf8(name), opts);
 			}
 
 			if (!opts.all && entry.is_hidden) continue;
@@ -935,7 +971,7 @@ namespace wbsh {
 		}
 
 		for (const auto& dir_entry : it) {
-			LsEntry entry = collectEntry(target, pathToUtf8(dir_entry.path().filename()));
+			LsEntry entry = collectEntry(target, pathToUtf8(dir_entry.path().filename()), opts);
 			if (!opts.all && entry.is_hidden) continue;
 			items.push_back(std::move(entry));
 		}
@@ -967,6 +1003,7 @@ namespace wbsh {
 		entry.is_dir = node.type == ProcType::Directory
 			|| lookupProcPath(exec.pathConv(), path, true).type == ProcType::Directory;
 		entry.mtime = fs::file_time_type::clock::now();
+		entry.permissions = entry.is_dir ? 0755 : 0644;
 		entry.valid = true;
 		return entry;
 	}
@@ -1028,7 +1065,7 @@ namespace wbsh {
 			printLsHeader(path, header);
 			if (!collectLsDirectoryEntries(target, opts, path, items)) return 1;
 		} else {
-			LsEntry entry = collectEntry(target.parent_path(), pathToUtf8(target.filename()));
+			LsEntry entry = collectEntry(target.parent_path(), pathToUtf8(target.filename()), opts);
 			entry.name = path;
 			items.push_back(std::move(entry));
 		}
@@ -1054,10 +1091,63 @@ namespace wbsh {
 		return status;
 	}
 
-	static LsHeader lsHeaderFor(std::size_t index, std::size_t path_count, bool recursive) {
-		if (path_count <= 1 && !recursive) return LsHeader::None;
-		if (index == 0) return LsHeader::First;
-		return LsHeader::Subsequent;
+	// As GNU ls does: operands that are not directories are listed first, as
+	// one block, then each directory under its own header.
+	struct LsOperands {
+		std::vector<LsEntry> files;
+		std::vector<std::string> dirs;
+		int status = 0;
+	};
+
+	static void classifyLsOperand(Executor& exec, const LsOpts& opts, const std::string& path,
+	                              LsOperands& operands) {
+		if (isProcPath(path)) {
+			operands.dirs.push_back(path);
+			return;
+		}
+
+		const fs::path target = withImplicitExe(toNative(exec, path));
+		std::error_code ec;
+		const fs::file_status status = fs::symlink_status(target, ec);
+		if (ec) {
+			perr("ls", path, ec);
+			operands.status = 1;
+			return;
+		}
+
+		if (fs::is_directory(status) && !opts.directory_itself) {
+			operands.dirs.push_back(path);
+			return;
+		}
+
+		LsEntry entry = collectEntry(target.parent_path(), pathToUtf8(target.filename()), opts);
+		entry.name = path;
+		operands.files.push_back(std::move(entry));
+	}
+
+	static LsOperands classifyLsOperands(Executor& exec, const LsOpts& opts,
+	                                     const std::vector<std::string>& paths) {
+		LsOperands operands;
+		for (const std::string& path : paths) classifyLsOperand(exec, opts, path, operands);
+
+		sortEntries(operands.files, opts);
+		std::sort(operands.dirs.begin(), operands.dirs.end());
+		if (opts.reverse) std::reverse(operands.dirs.begin(), operands.dirs.end());
+		return operands;
+	}
+
+	static int listLsDirectories(Executor& exec, const LsOpts& opts, const LsOperands& operands,
+	                             bool with_headers) {
+		int status = 0;
+		bool first = operands.files.empty();
+		for (const std::string& dir : operands.dirs) {
+			const LsHeader header = !with_headers ? LsHeader::None
+				: (first ? LsHeader::First : LsHeader::Subsequent);
+			if (listOnePath(exec, opts, dir, header) != 0) status = 1;
+			first = false;
+		}
+
+		return status;
 	}
 
 	static int builtin_ls(Executor& exec, const std::vector<std::string>& args) {
@@ -1066,34 +1156,99 @@ namespace wbsh {
 		const int parse_status = parseLsArgs(args, opts, paths);
 		if (parse_status != 0) return parse_status;
 
-		int status = 0;
-		for (std::size_t i = 0; i < paths.size(); ++i) {
-			const LsHeader header = lsHeaderFor(i, paths.size(), opts.recursive);
-			if (listOnePath(exec, opts, paths[i], header) != 0) status = 1;
-		}
+		const LsOperands operands = classifyLsOperands(exec, opts, paths);
+		if (!operands.files.empty()) emitLsItems(operands.files, opts, exec);
 
+		const bool with_headers = paths.size() > 1 || opts.recursive;
+		const int dir_status = listLsDirectories(exec, opts, operands, with_headers);
 		std::fflush(stdout);
-		return status;
+		return (operands.status != 0 || dir_status != 0) ? 1 : 0;
 	}
 
 	struct CatOptions {
 		bool number = false;
 		bool number_nonblank = false;
+		bool squeeze_blank = false;
+		bool show_nonprinting = false;
+		bool show_ends = false;
+		bool show_tabs = false;
 		std::vector<std::string> files;
 	};
 
 	struct CatEmitState {
 		bool at_line_start = true;
+		bool previous_blank = false;
 		std::size_t lineno = 0;
 	};
+
+	struct CatLongOption {
+		const char* name;
+		char flag;
+	};
+
+	static const CatLongOption kCatLongOptions[] = {
+		{ "--show-all",         'A' },
+		{ "--number-nonblank",  'b' },
+		{ "--show-ends",        'E' },
+		{ "--number",           'n' },
+		{ "--squeeze-blank",    's' },
+		{ "--show-tabs",        'T' },
+		{ "--show-nonprinting", 'v' },
+	};
+
+	static bool applyCatFlag(char flag, CatOptions& opts) {
+		switch (flag) {
+		case 'A':
+			opts.show_nonprinting = true;
+			opts.show_ends = true;
+			opts.show_tabs = true;
+			return true;
+		case 'b':
+			opts.number_nonblank = true;
+			return true;
+		case 'e':
+			opts.show_nonprinting = true;
+			opts.show_ends = true;
+			return true;
+		case 'E':
+			opts.show_ends = true;
+			return true;
+		case 'n':
+			opts.number = true;
+			return true;
+		case 's':
+			opts.squeeze_blank = true;
+			return true;
+		case 't':
+			opts.show_nonprinting = true;
+			opts.show_tabs = true;
+			return true;
+		case 'T':
+			opts.show_tabs = true;
+			return true;
+		case 'u':
+			return true;
+		case 'v':
+			opts.show_nonprinting = true;
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	static bool applyCatLongFlag(const std::string& arg, CatOptions& opts) {
+		for (const CatLongOption& option : kCatLongOptions) {
+			if (arg == option.name) return applyCatFlag(option.flag, opts);
+		}
+
+		return false;
+	}
 
 	// Flags seen before an unknown letter stay applied; the whole cluster
 	// is then treated as a file name, as it always was.
 	static bool applyCatShortFlags(const std::string& cluster, CatOptions& opts) {
 		for (std::size_t k = 1; k < cluster.size(); ++k) {
-			if (cluster[k] == 'n') opts.number = true;
-			else if (cluster[k] == 'b') opts.number_nonblank = true;
-			else return false;
+			if (!applyCatFlag(cluster[k], opts)) return false;
 		}
 
 		return true;
@@ -1108,16 +1263,7 @@ namespace wbsh {
 				break;
 			}
 
-			if (arg == "-n" || arg == "--number") {
-				opts.number = true;
-				continue;
-			}
-
-			if (arg == "-b" || arg == "--number-nonblank") {
-				opts.number_nonblank = true;
-				continue;
-			}
-
+			if (applyCatLongFlag(arg, opts)) continue;
 			if (isShortFlagCluster(arg) && applyCatShortFlags(arg, opts)) continue;
 			opts.files.push_back(arg);
 		}
@@ -1126,27 +1272,85 @@ namespace wbsh {
 		return opts;
 	}
 
+	static bool catPassesThrough(const CatOptions& opts) {
+		return !opts.number && !opts.number_nonblank && !opts.squeeze_blank
+			&& !opts.show_nonprinting && !opts.show_ends && !opts.show_tabs;
+	}
+
+	// GNU's -v notation: M- for a set high bit, then ^X for a control
+	// character and ^? for DEL.
+	static void appendVisibleByte(std::string& out, unsigned char c) {
+		if (c >= 0x80) {
+			out += "M-";
+			c = static_cast<unsigned char>(c - 0x80);
+		}
+
+		if (c < 0x20) {
+			out.push_back('^');
+			out.push_back(static_cast<char>(c + 0x40));
+		} else if (c == 0x7f) {
+			out += "^?";
+		} else {
+			out.push_back(static_cast<char>(c));
+		}
+	}
+
+	static void appendCatByte(std::string& out, unsigned char c, const CatOptions& opts) {
+		if (c == '\t') {
+			out += opts.show_tabs ? "^I" : "\t";
+			return;
+		}
+
+		if (opts.show_nonprinting) {
+			appendVisibleByte(out, c);
+			return;
+		}
+
+		out.push_back(static_cast<char>(c));
+	}
+
+	static void appendCatLineNumber(std::string& out, std::size_t lineno) {
+		char label[32];
+		std::snprintf(label, sizeof(label), "%6zu\t", lineno);
+		out += label;
+	}
+
+	// False for a blank line that -s squeezes away.
+	static bool startCatLine(bool blank, const CatOptions& opts, CatEmitState& state,
+	                         std::string& out) {
+		if (blank && opts.squeeze_blank && state.previous_blank) return false;
+
+		state.previous_blank = blank;
+		state.at_line_start = false;
+		const bool numbered = opts.number_nonblank ? !blank : opts.number;
+		if (numbered) appendCatLineNumber(out, ++state.lineno);
+		return true;
+	}
+
 	static void catEmitChunk(const char* data, std::size_t length,
 	                         const CatOptions& opts, CatEmitState& state) {
-		if (!opts.number && !opts.number_nonblank) {
+		if (catPassesThrough(opts)) {
 			std::fwrite(data, 1, length, stdout);
 			return;
 		}
 
+		std::string out;
+		out.reserve(length * 2);
 		for (std::size_t i = 0; i < length; ++i) {
-			if (state.at_line_start) {
-				const bool blank_line = data[i] == '\n';
-				if (!opts.number_nonblank || !blank_line) {
-					++state.lineno;
-					std::fprintf(stdout, "%6zu\t", state.lineno);
-				}
+			const unsigned char c = static_cast<unsigned char>(data[i]);
+			if (state.at_line_start && !startCatLine(c == '\n', opts, state, out)) continue;
 
-				state.at_line_start = false;
+			if (c == '\n') {
+				if (opts.show_ends) out.push_back('$');
+				out.push_back('\n');
+				state.at_line_start = true;
+				continue;
 			}
 
-			std::fputc(data[i], stdout);
-			if (data[i] == '\n') state.at_line_start = true;
+			appendCatByte(out, c, opts);
 		}
+
+		std::fwrite(out.data(), 1, out.size(), stdout);
 	}
 
 	// Like read(2), whatever has arrived is returned at once, and it is
@@ -2125,38 +2329,81 @@ namespace wbsh {
 		bool release = false;
 		bool version = false;
 		bool machine = false;
+		bool processor = false;
+		bool platform = false;
 		bool opsys = false;
 	};
 
 	struct UnameInfo {
+		std::string kernel;
 		std::string node;
 		std::string arch;
 		std::string release;
 		std::string version;
 	};
 
+	static const char kUnameUnknown[] = "unknown";
+	static const char kUnameOperatingSystem[] = "Msys";
+
 	static void applyUnameFlag(char flag, UnameOptions& opts) {
 		switch (flag) {
-		case 'a': opts.all = true; break;
-		case 's': opts.kernel = true; break;
-		case 'n': opts.node = true; break;
-		case 'r': opts.release = true; break;
-		case 'v': opts.version = true; break;
-		case 'm': opts.machine = true; break;
-		case 'o': opts.opsys = true; break;
+			case 'a':
+				opts.all = true;
+				break;
+			case 's':
+				opts.kernel = true;
+				break;
+			case 'n':
+				opts.node = true;
+				break;
+			case 'r':
+				opts.release = true;
+				break;
+			case 'v':
+				opts.version = true;
+				break;
+			case 'm':
+				opts.machine = true;
+				break;
+			case 'p':
+				opts.processor = true;
+				break;
+			case 'i':
+				opts.platform = true;
+				break;
+			case 'o':
+				opts.opsys = true;
+				break;
 		}
 	}
 
 	static bool applyUnameLongOption(const std::string& arg, UnameOptions& opts) {
-		if      (arg == "--all")              applyUnameFlag('a', opts);
-		else if (arg == "--kernel-name")      applyUnameFlag('s', opts);
-		else if (arg == "--nodename")         applyUnameFlag('n', opts);
-		else if (arg == "--kernel-release")   applyUnameFlag('r', opts);
-		else if (arg == "--kernel-version")   applyUnameFlag('v', opts);
-		else if (arg == "--machine")          applyUnameFlag('m', opts);
-		else if (arg == "--operating-system") applyUnameFlag('o', opts);
+		if      (arg == "--all")               applyUnameFlag('a', opts);
+		else if (arg == "--kernel-name")       applyUnameFlag('s', opts);
+		else if (arg == "--nodename")          applyUnameFlag('n', opts);
+		else if (arg == "--kernel-release")    applyUnameFlag('r', opts);
+		else if (arg == "--kernel-version")    applyUnameFlag('v', opts);
+		else if (arg == "--machine")           applyUnameFlag('m', opts);
+		else if (arg == "--processor")         applyUnameFlag('p', opts);
+		else if (arg == "--hardware-platform") applyUnameFlag('i', opts);
+		else if (arg == "--operating-system")  applyUnameFlag('o', opts);
 		else return false;
 		return true;
+	}
+
+	static bool anyUnameField(const UnameOptions& opts) {
+		return opts.all || opts.kernel || opts.node || opts.release || opts.version
+			|| opts.machine || opts.processor || opts.platform || opts.opsys;
+	}
+
+	// -a leaves out -p and -i, whose answer is unknown, as GNU uname does.
+	static void selectAllUnameFields(UnameOptions& opts) {
+		opts.kernel = true;
+		opts.node = true;
+		opts.release = true;
+		opts.version = true;
+		opts.machine = true;
+		opts.opsys = true;
 	}
 
 	static UnameOptions parseUnameArgs(const std::vector<std::string>& args) {
@@ -2167,34 +2414,33 @@ namespace wbsh {
 			for (std::size_t k = 1; k < arg.size(); ++k) applyUnameFlag(arg[k], opts);
 		}
 
-		const bool any = opts.all || opts.kernel || opts.node || opts.release
-			|| opts.version || opts.machine || opts.opsys;
-		if (!any) opts.kernel = true;
-		if (opts.all) {
-			opts.kernel = true;
-			opts.node = true;
-			opts.release = true;
-			opts.version = true;
-			opts.machine = true;
-			opts.opsys = true;
-		}
-
+		if (!anyUnameField(opts)) opts.kernel = true;
+		if (opts.all) selectAllUnameFields(opts);
 		return opts;
+	}
+
+	static std::string unameMachine() {
+#if defined(_M_ARM64) || defined(__aarch64__)
+		return "aarch64";
+#else
+		return "x86_64";
+#endif
 	}
 
 	static UnameInfo collectUnameInfo(Executor& exec) {
 		UnameInfo info;
 		info.node = exec.env().get("COMPUTERNAME");
 		if (info.node.empty()) info.node = exec.env().get("HOSTNAME");
+
+		info.arch = unameMachine();
 #ifdef _WIN32
-		info.arch = exec.env().get("PROCESSOR_ARCHITECTURE");
-		if (info.arch.empty()) info.arch = "x86_64";
+		info.kernel = unameSystemName(exec.env().get("MSYSTEM"), exec.env().get("WBSH_UNAME_S"));
 
 		const WindowsVersion os = windowsVersion();
 		info.release = std::to_string(os.major) + "." + std::to_string(os.minor);
 		info.version = std::to_string(os.build);
 #else
-		info.arch = "x86_64";
+		info.kernel = "wbsh";
 		info.release = "0";
 		info.version = "0";
 #endif
@@ -2206,18 +2452,23 @@ namespace wbsh {
 		out += word;
 	}
 
+	static std::string unameLine(const UnameOptions& opts, const UnameInfo& info) {
+		std::string out;
+		if (opts.kernel)    appendWord(out, info.kernel);
+		if (opts.node)      appendWord(out, info.node);
+		if (opts.release)   appendWord(out, info.release);
+		if (opts.version)   appendWord(out, info.version);
+		if (opts.machine)   appendWord(out, info.arch);
+		if (opts.processor) appendWord(out, kUnameUnknown);
+		if (opts.platform)  appendWord(out, kUnameUnknown);
+		if (opts.opsys)     appendWord(out, kUnameOperatingSystem);
+		return out;
+	}
+
 	static int builtin_uname(Executor& exec, const std::vector<std::string>& args) {
 		const UnameOptions opts = parseUnameArgs(args);
 		const UnameInfo info = collectUnameInfo(exec);
-
-		std::string out;
-		if (opts.kernel)  appendWord(out, "wbsh");
-		if (opts.node)    appendWord(out, info.node);
-		if (opts.release) appendWord(out, info.release);
-		if (opts.version) appendWord(out, info.version);
-		if (opts.machine) appendWord(out, info.arch);
-		if (opts.opsys)   appendWord(out, "Windows");
-		std::printf("%s\n", out.c_str());
+		std::printf("%s\n", unameLine(opts, info).c_str());
 		return 0;
 	}
 
@@ -3114,56 +3365,6 @@ namespace wbsh {
 		return status;
 	}
 
-	// Only the owner write bit is honoured: it maps onto the read-only
-	// attribute, the one permission Windows files actually carry.
-	static bool chmodWantsWritable(const std::string& mode) {
-		if (mode == "-w" || mode == "u-w" || mode == "a-w" || mode == "go-w") return false;
-		if (mode == "+w" || mode == "u+w" || mode == "a+w" || mode == "go+w") return true;
-
-		const bool octal = mode.size() == 3
-			&& isDigitChar(mode[0]) && isDigitChar(mode[1]) && isDigitChar(mode[2]);
-		if (octal) return ((mode[0] - '0') & 2) != 0;
-		return true;
-	}
-
-	static bool chmodOnePath(Executor& exec, const std::string& path, bool writable) {
-		const std::string native = exec.pathConv().toWin32(path);
-#ifdef _WIN32
-		const std::wstring wide = utf8ToFileWide(native);
-		DWORD attributes = ::GetFileAttributesW(wide.c_str());
-		if (attributes == INVALID_FILE_ATTRIBUTES) {
-			perr("chmod", path + ": not found");
-			return false;
-		}
-
-		if (writable) attributes &= ~FILE_ATTRIBUTE_READONLY;
-		else          attributes |= FILE_ATTRIBUTE_READONLY;
-		if (::SetFileAttributesW(wide.c_str(), attributes) != 0) return true;
-
-		perr("chmod", path + ": cannot change");
-		return false;
-#else
-		(void)native;
-		(void)writable;
-		return true;
-#endif
-	}
-
-	static int builtin_chmod(Executor& exec, const std::vector<std::string>& args) {
-		if (args.size() < 2) {
-			perr("chmod", "usage: chmod MODE FILE...");
-			return 1;
-		}
-
-		const bool writable = chmodWantsWritable(args[0]);
-		int status = 0;
-		for (std::size_t i = 1; i < args.size(); ++i) {
-			if (!chmodOnePath(exec, args[i], writable)) status = 1;
-		}
-
-		return status;
-	}
-
 	struct LnOptions {
 		bool symbolic = false;
 		bool force = false;
@@ -3199,8 +3400,23 @@ namespace wbsh {
 
 		DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
 		std::error_code ec;
-		if (fs::is_directory(utf8ToPath(native_target), ec)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+		const fs::path resolved = utf8ToPath(native_link).parent_path() / utf8ToPath(native_target);
+		const fs::path checked = utf8ToPath(native_target).is_absolute() ? utf8ToPath(native_target)
+			: resolved;
+		if (fs::is_directory(checked, ec)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
 		return ::CreateSymbolicLinkW(wide_link.c_str(), wide_target.c_str(), flags) != 0;
+	}
+
+	// A relative target is relative to the link's directory and Windows
+	// resolves it only with backslashes.
+	static std::string symlinkTargetText(Executor& exec, const std::string& target) {
+		const bool relative = !target.empty() && target[0] != '/' && target[0] != '\\'
+			&& !(target.size() > 1 && target[1] == ':');
+		if (!relative) return exec.pathConv().toWin32(target);
+
+		std::string native = target;
+		std::replace(native.begin(), native.end(), '/', '\\');
+		return native;
 	}
 #endif
 
@@ -3214,7 +3430,8 @@ namespace wbsh {
 #ifdef _WIN32
 		const std::string& target = opts.operands[0];
 		const std::string& link = opts.operands[1];
-		const std::string native_target = exec.pathConv().toWin32(target);
+		const std::string native_target = opts.symbolic ? symlinkTargetText(exec, target)
+			: exec.pathConv().toWin32(target);
 		const std::string native_link = exec.pathConv().toWin32(link);
 		if (opts.force) ::DeleteFileW(utf8ToFileWide(native_link).c_str());
 		if (createWindowsLink(native_target, native_link, opts.symbolic)) return 0;
@@ -3236,7 +3453,15 @@ namespace wbsh {
 		return exec.pathConv().toPosix(pathToUtf8(cwd));
 	}
 
+	// DIRSTACK holds the stack, the current directory first.
+	static void publishDirStack(Executor& exec) {
+		std::vector<std::string> entries = exec.dirStack();
+		if (entries.empty()) entries.push_back(currentCwdPosix(exec));
+		exec.env().setIndexedArrayFromList("DIRSTACK", std::move(entries));
+	}
+
 	static void printDirStack(Executor& exec, bool numbered) {
+		publishDirStack(exec);
 		const auto& stack = exec.dirStack();
 		if (stack.empty()) {
 			std::printf("%s\n", currentCwdPosix(exec).c_str());
@@ -3587,6 +3812,11 @@ namespace wbsh {
 	}
 
 	static const int kSignalKill = 9;
+
+	// kill is a bash builtin, so its errors carry the script and line.
+	static void killError(const std::string& message) {
+		shellError("kill: " + message);
+	}
 	static const int kSignalsPerListLine = 5;
 
 	static void killPrintSignalList() {
@@ -3612,7 +3842,7 @@ namespace wbsh {
 			return true;
 		}
 
-		perr("kill", spec + ": invalid signal specification");
+		killError(spec + ": invalid signal specification");
 		return false;
 	}
 
@@ -3637,7 +3867,7 @@ namespace wbsh {
 		const char* reason = probe == ProcessProbe::Denied
 			? "operation not permitted"
 			: "no such process";
-		std::fprintf(stderr, "wbsh: kill: %d: %s\n", pid, reason);
+		killError(std::to_string(pid) + ": " + reason);
 		return false;
 	}
 
@@ -3662,12 +3892,12 @@ namespace wbsh {
 
 		const HANDLE process = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
 		if (process == nullptr) {
-			std::fprintf(stderr, "wbsh: kill: %d: no such process\n", pid);
+			killError(std::to_string(pid) + ": no such process");
 			return false;
 		}
 
 		const bool terminated = ::TerminateProcess(process, static_cast<UINT>(128 + signum)) != 0;
-		if (!terminated) std::fprintf(stderr, "wbsh: kill: %d: cannot terminate\n", pid);
+		if (!terminated) killError(std::to_string(pid) + ": cannot terminate");
 		::CloseHandle(process);
 		return terminated;
 #else
@@ -3702,8 +3932,7 @@ namespace wbsh {
 		int pid = 0;
 		if (arg.empty() || arg[0] != '%') {
 			if (!parseInt(arg, pid)) {
-				std::fprintf(stderr, "wbsh: kill: %s: arguments must be process or job IDs\n",
-					arg.c_str());
+				killError(arg + ": arguments must be process or job IDs");
 				return false;
 			}
 
@@ -3713,7 +3942,7 @@ namespace wbsh {
 
 		Executor::Job* job = exec.findJob(arg);
 		if (job == nullptr || !job->running) {
-			std::fprintf(stderr, "wbsh: kill: %s: no such job\n", arg.c_str());
+			killError(arg + ": no such job");
 			return false;
 		}
 
@@ -3730,7 +3959,7 @@ namespace wbsh {
 	static bool killSignalArgument(const std::string& option, const std::vector<std::string>& args,
 	                               std::size_t& i, KillRequest& request) {
 		if (i + 1 >= args.size()) {
-			perr("kill", option + ": option requires an argument");
+			killError(option + ": option requires an argument");
 			request.failure = 2;
 			return false;
 		}
@@ -3738,7 +3967,7 @@ namespace wbsh {
 		const std::string& spec = args[++i];
 		if (parseSignalSpec(spec, request.signum)) return true;
 
-		perr("kill", spec + ": invalid signal specification");
+		killError(spec + ": invalid signal specification");
 		return false;
 	}
 
@@ -3765,7 +3994,7 @@ namespace wbsh {
 			}
 
 			if (!parseSignalSpec(arg.substr(1), request.signum)) {
-				perr("kill", arg.substr(1) + ": invalid signal specification");
+				killError(arg.substr(1) + ": invalid signal specification");
 				return false;
 			}
 		}
@@ -3800,7 +4029,6 @@ namespace wbsh {
 		exec.registerBuiltin("mkdir",    builtin_mkdir);
 		exec.registerBuiltin("rmdir",    builtin_rmdir);
 		exec.registerBuiltin("wc",       builtin_wc);
-		exec.registerBuiltin("chmod",    builtin_chmod);
 		exec.registerBuiltin("ln",       builtin_ln);
 		exec.registerBuiltin("cmp",      builtin_cmp);
 		exec.registerBuiltin("diff",     builtin_diff);
@@ -3871,6 +4099,7 @@ namespace wbsh {
 		registerSessionBuiltins(exec);
 		registerTopBuiltin(exec);
 		registerOwnerBuiltins(exec);
+		registerChmodBuiltin(exec);
 		registerInstallBuiltin(exec);
 		registerFileTypeBuiltin(exec);
 		registerManBuiltin(exec);
@@ -3885,6 +4114,7 @@ namespace wbsh {
 		registerCronBuiltins(exec);
 		registerScriptBuiltins(exec);
 		registerFifoBuiltins(exec);
+		registerGitBashBuiltins(exec);
 	}
 
 }  // namespace wbsh

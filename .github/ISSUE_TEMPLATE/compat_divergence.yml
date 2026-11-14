@@ -1,0 +1,53 @@
+name: Compatibility divergence
+description: A script prints something different under wbsh than under GNU bash.
+labels: [compat]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GNU bash is the reference: whatever bash prints is, by definition, right.
+        The fastest way to get a divergence fixed is to turn it into a difftest case
+        (`tools/difftest/cases/<area>/<name>.sh`, see `tools/difftest/README.md`);
+        a pull request with just the failing case is very welcome.
+  - type: textarea
+    id: script
+    attributes:
+      label: The script
+      description: As small as you can make it. Deterministic output only (no PIDs, dates, absolute paths).
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: wbsh-output
+    attributes:
+      label: wbsh output
+      description: stdout and stderr, plus the exit status (`echo $?`).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: bash-output
+    attributes:
+      label: bash output
+      description: The same, from GNU bash.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: "`wbsh --version` and `bash --version` (first line of each), and where that bash came from (Git Bash, MSYS2, WSL, Linux)."
+      placeholder: wbsh 1.1.1 / GNU bash 5.3.0(1)-release from WSL Ubuntu
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Where did you hit it?
+      options:
+        - my own script
+        - a framework or init script (oh-my-bash, bash-it, nvm, ...)
+        - GNU bash's test suite (docs/compat-ledger.md)
+        - the difftest corpus
+        - other

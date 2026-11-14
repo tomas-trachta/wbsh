@@ -28,15 +28,15 @@
 <TAB> echo two two
 <TAB> echo one
 === errors
-wbsh: fc: history specification out of range
+fc_builtin.sh: line 30: fc: history specification out of range
 status 1
-wbsh: fc: no command found
+fc_builtin.sh: line 31: fc: no command found
 status 1
-wbsh: fc: -x: invalid option
-wbsh: fc: usage: fc [-e ename] [-lnr] [first] [last] or fc -s [pat=rep] [command]
+fc_builtin.sh: line 32: fc: -x: invalid option
+fc: usage: fc [-e ename] [-lnr] [first] [last] or fc -s [pat=rep] [command]
 status 2
-wbsh: fc: -e: option requires an argument
-wbsh: fc: usage: fc [-e ename] [-lnr] [first] [last] or fc -s [pat=rep] [command]
+fc_builtin.sh: line 33: fc: -e: option requires an argument
+fc: usage: fc [-e ename] [-lnr] [first] [last] or fc -s [pat=rep] [command]
 status 2
 === fc -s runs a command again, after pat=rep substitutions
 echo three
@@ -47,7 +47,7 @@ Echo onE
 onE
 echo one
 one
-wbsh: fc: no command found
+fc_builtin.sh: line 40: fc: no command found
 status 1
 --- its status is the command's
 false

@@ -1,0 +1,352 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BASH_REFERENCE_VERSION: '5.3'
+  BASH_REFERENCE_SHA256: 0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba
+
+jobs:
+  windows:
+    # windows-2022 carries Visual Studio 2022, whose v143 toolset every
+    # .vcxproj in the solution asks for.
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Style check
+        run: python tools/check_style.py
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $projects = @(
+              'sdk\wbshsdk.vcxproj',
+              'wbsh\wbsh.vcxproj',
+              'sdk\samples\hello\hello.vcxproj',
+              'sdk\samples\pick\pick.vcxproj',
+              'sdk\samples\procs\procs.vcxproj',
+              'sdk\samples\tally\tally.vcxproj',
+              'wbshterm\wbshterm.vcxproj'
+          )
+          foreach ($project in $projects) {
+              msbuild $project -nologo -m -v:minimal -p:Configuration=Release -p:Platform=x64
+              if ($LASTEXITCODE -ne 0) { throw "MSBuild failed for $project (exit $LASTEXITCODE)" }
+          }
+
+      # Uploaded before the tests so the difftest job can still run when
+      # the golden suite fails.
+      - name: Upload wbsh.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: wbsh-x64
+          path: x64/Release/wbsh.exe
+          if-no-files-found: error
+
+      - name: Version
+        run: x64\Release\wbsh.exe --version
+
+      - name: Golden test suite
+        working-directory: wbsh/tests
+        env:
+          WBSH_GOLDEN: '1'
+        run: ..\..\x64\Release\wbsh.exe run-all.sh
+
+      - name: Agent invocation shapes
+        run: python -I tools/agents/check_agent_shapes.py --wbsh x64\Release\wbsh.exe
+
+      - name: SDK tests
+        shell: pwsh
+        run: .\sdk\tests\sdk.ps1
+
+  difftest-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache GNU bash
+        id: cache-bash
+        uses: actions/cache@v4
+        with:
+          path: ~/gnu-bash
+          key: gnu-bash-${{ env.BASH_REFERENCE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Build GNU bash ${{ env.BASH_REFERENCE_VERSION }}
+        if: steps.cache-bash.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          tarball="bash-${BASH_REFERENCE_VERSION}.tar.gz"
+          workdir="$(mktemp -d)"
+          curl -fsSL --retry 3 -o "$workdir/$tarball" "https://ftp.gnu.org/gnu/bash/$tarball"
+          echo "${BASH_REFERENCE_SHA256}  $workdir/$tarball" | sha256sum -c -
+          tar -xzf "$workdir/$tarball" -C "$workdir"
+          cd "$workdir/bash-${BASH_REFERENCE_VERSION}"
+          ./configure --prefix="$HOME/gnu-bash" --without-bash-malloc
+          make -j"$(nproc)"
+          make install
+
+      - name: Reference bash version
+        run: ~/gnu-bash/bin/bash --version | head -1
+
+      - name: Record reference outputs
+        run: python3 -I tools/difftest/run.py --shell "$HOME/gnu-bash/bin/bash" --record difftest-reference
+
+      - name: Upload reference outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: difftest-reference
+          path: difftest-reference
+          if-no-files-found: error
+
+  difftest:
+    needs: [windows, difftest-reference]
+    if: ${{ !cancelled() && needs.difftest-reference.result == 'success' }}
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download wbsh.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: wbsh-x64
+          path: wbsh-bin
+
+      - name: Download reference outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: difftest-reference
+          path: difftest-reference
+
+      # Mismatches are reported, not fatal: the run fails only when fewer
+      # cases pass than tools/difftest/baseline.txt says.
+      - name: Compare wbsh against bash
+        shell: pwsh
+        run: >
+          python -I tools/difftest/run.py
+          --shell wbsh-bin\wbsh.exe
+          --compare difftest-reference
+          --baseline tools/difftest/baseline.txt
+          --json difftest-results.json
+          --diff-dir difftest-diffs
+          --summary-md $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: difftest-results
+          path: |
+            difftest-results.json
+            difftest-diffs
+          if-no-files-found: ignore
+
+  # GNU bash 5.3's own tests/run-* suites under wbsh (tools/bashtests).
+  # Reports only: the totals land in the job summary and
+  # docs/compat-ledger.md is refreshed from the uploaded JSON by hand.
+  bashtests:
+    needs: windows
+    if: ${{ !cancelled() }}
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download wbsh.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: wbsh-x64
+          path: wbsh-bin
+
+      - name: Cache bash ${{ env.BASH_REFERENCE_VERSION }} tests
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bash-src
+          key: bash-tests-${{ env.BASH_REFERENCE_VERSION }}-${{ env.BASH_REFERENCE_SHA256 }}
+
+      - name: Run the upstream suites
+        shell: pwsh
+        run: >
+          python -I tools/bashtests/run.py
+          --shell wbsh-bin\wbsh.exe
+          --fetch "${{ runner.temp }}\bash-src"
+          --jobs 2
+          --json bashtests-results.json
+          --markdown bashtests-table.md
+          --diff-dir bashtests-diffs
+          --summary-md $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bashtests-results
+          path: |
+            bashtests-results.json
+            bashtests-table.md
+            bashtests-diffs
+          if-no-files-found: ignore
+
+  # Perf gate (tools/bench/README.md, "Perf gate"). Every case is timed as
+  # a ratio to the runner's own Git Bash in the same interleaved run, and
+  # compared with the ratios stored for this runner image. Without a stored
+  # baseline the job records one and passes.
+  bench:
+    needs: windows
+    if: ${{ !cancelled() }}
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download wbsh.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: wbsh-x64
+          path: wbsh-bin
+
+      - name: Benchmarks and perf gate
+        shell: pwsh
+        run: |
+          $baseline = 'tools/bench/baselines/github-windows-2022.json'
+          $arguments = @(
+              '-I', 'tools/bench/bench.py',
+              '--shell', 'wbsh=wbsh-bin\wbsh.exe',
+              '--shell', 'git-bash=C:\Program Files\Git\bin\bash.exe',
+              '--yardstick', 'git-bash',
+              '--runs', '10',
+              '--json', 'bench-results.json',
+              '--markdown', 'bench-results.md',
+              '--write-baseline', 'bench-baseline-candidate.json',
+              '--summary-md', $env:GITHUB_STEP_SUMMARY
+          )
+          if (Test-Path $baseline) {
+              $arguments += @('--gate', $baseline)
+          } else {
+              "No $baseline yet: this run only records bench-baseline-candidate.json." >> $env:GITHUB_STEP_SUMMARY
+          }
+          python @arguments
+          $status = $LASTEXITCODE
+          Get-Content bench-results.md >> $env:GITHUB_STEP_SUMMARY
+          exit $status
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            bench-results.json
+            bench-results.md
+            bench-baseline-candidate.json
+          if-no-files-found: ignore
+
+  # The ARM64 build on GitHub's Windows 11 ARM runner, so the binaries the
+  # release ships for ARM64 are run and tested, not only compiled.
+  windows-arm64:
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $projects = @(
+              'sdk\wbshsdk.vcxproj',
+              'wbsh\wbsh.vcxproj',
+              'sdk\samples\hello\hello.vcxproj',
+              'sdk\samples\pick\pick.vcxproj',
+              'sdk\samples\procs\procs.vcxproj',
+              'sdk\samples\tally\tally.vcxproj',
+              'wbshterm\wbshterm.vcxproj'
+          )
+          foreach ($project in $projects) {
+              msbuild $project -nologo -m -v:minimal -p:Configuration=Release -p:Platform=ARM64
+              if ($LASTEXITCODE -ne 0) { throw "MSBuild failed for $project (exit $LASTEXITCODE)" }
+          }
+
+      - name: Check the binaries are ARM64
+        shell: pwsh
+        run: |
+          # IMAGE_FILE_MACHINE_ARM64 (0xAA64) in the PE header of each binary.
+          foreach ($name in 'wbsh.exe', 'wbshsdk.dll', 'wbshterm.exe', 'conpty.dll', 'OpenConsole.exe') {
+              $bytes = [IO.File]::ReadAllBytes("ARM64\Release\$name")
+              $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+              $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+              if ($machine -ne 0xAA64) { throw ("$name is not ARM64 (machine 0x{0:X4})" -f $machine) }
+              "{0,-16} ARM64" -f $name
+          }
+
+      - name: Upload wbsh.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: wbsh-arm64
+          path: ARM64/Release/wbsh.exe
+          if-no-files-found: error
+
+      - name: Version
+        run: ARM64\Release\wbsh.exe --version
+
+      - name: Golden test suite
+        working-directory: wbsh/tests
+        env:
+          WBSH_GOLDEN: '1'
+        run: ..\..\ARM64\Release\wbsh.exe run-all.sh
+
+      - name: Agent invocation shapes
+        run: python -I tools/agents/check_agent_shapes.py --wbsh ARM64\Release\wbsh.exe --quick

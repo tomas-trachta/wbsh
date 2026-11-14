@@ -12,7 +12,9 @@
 #include <string>
 #include <vector>
 
+#include "diagnostics.h"
 #include "executor.h"
+#include "funcprint.h"
 
 namespace wbsh::declare_detail {
 
@@ -22,13 +24,13 @@ namespace wbsh::declare_detail {
 		const char* usage;
 	};
 
-	static const Command kDeclare  = { "declare", "aAfFgilnprtuxI",
+	static const Command kDeclare  = { "declare", "aAcfFgilnprtuxI",
 		"declare [-aAfFgilnrtux] [-p] [name[=value] ...]" };
-	static const Command kTypeset  = { "typeset", "aAfFgilnprtuxI",
+	static const Command kTypeset  = { "typeset", "aAcfFgilnprtuxI",
 		"typeset [-aAfFgilnrtux] [-p] name[=value] ..." };
-	static const Command kLocal    = { "local", "aAfFgilnprtuxI",
+	static const Command kLocal    = { "local", "aAcfFgilnprtuxI",
 		"local [option] name[=value] ..." };
-	static const Command kExport   = { "export", "fnp",
+	static const Command kExport   = { "export", "aAfnp",
 		"export [-fn] [name[=value] ...] or export -p" };
 	static const Command kReadonly = { "readonly", "aAfp",
 		"readonly [-aAf] [name[=value] ...] or readonly -p" };
@@ -68,9 +70,15 @@ namespace wbsh::declare_detail {
 	static void applyAttributeLetter(char letter, bool on, Options& opts) {
 		const unsigned bit = letter == 'i' ? kAttrInteger
 			: letter == 'l' ? kAttrLowercase
+			: letter == 'c' ? kAttrCapitalize
 			: kAttrUppercase;
 		if (on) opts.add_attrs |= bit;
 		else    opts.remove_attrs |= bit;
+
+		// As in bash, turning one case attribute on turns the other two
+		// off, so `declare -lu` ends up with neither.
+		const unsigned case_attrs = kAttrLowercase | kAttrUppercase | kAttrCapitalize;
+		if (on && (bit & case_attrs) != 0) opts.remove_attrs |= case_attrs & ~bit;
 	}
 
 	static void applyOptionLetter(char letter, bool on, Options& opts) {
@@ -95,6 +103,7 @@ namespace wbsh::declare_detail {
 				if (on) opts.export_on = true;
 				else    opts.export_off = true;
 				break;
+			case 'c':
 			case 'i':
 			case 'l':
 			case 'u':
@@ -106,7 +115,7 @@ namespace wbsh::declare_detail {
 	}
 
 	static int reportInvalidOption(const Command& cmd, char sign, char letter) {
-		std::fprintf(stderr, "wbsh: %s: %c%c: invalid option\n", cmd.name, sign, letter);
+		shellErrorf("%s: %c%c: invalid option\n", cmd.name, sign, letter);
 		std::fprintf(stderr, "%s: usage: %s\n", cmd.name, cmd.usage);
 		return 2;
 	}
@@ -187,14 +196,14 @@ namespace wbsh::declare_detail {
 	}
 
 	static int reportInvalidIdentifier(const Command& cmd, const std::string& text) {
-		std::fprintf(stderr, "wbsh: %s: `%s': not a valid identifier\n", cmd.name, text.c_str());
+		shellErrorf("%s: `%s': not a valid identifier\n", cmd.name, text.c_str());
 		return 1;
 	}
 
 	// Like bash, only the builtins that create variables name themselves.
 	static int reportReadonly(const Command& cmd, const std::string& name) {
 		const bool named = &cmd != &kExport && &cmd != &kReadonly;
-		std::fprintf(stderr, "wbsh: %s%s%s: readonly variable\n", named ? cmd.name : "",
+		shellErrorf("%s%s%s: readonly variable\n", named ? cmd.name : "",
 			named ? ": " : "", name.c_str());
 		return 1;
 	}
@@ -215,8 +224,27 @@ namespace wbsh::declare_detail {
 		return quoted;
 	}
 
+	static bool hasControlChar(const std::string& text) {
+		for (const char c : text) {
+			const unsigned char code = static_cast<unsigned char>(c);
+			if (code < 0x20 || code == 0x7f) return true;
+		}
+
+		return false;
+	}
+
+	// bash switches to $'...' as soon as a value holds a control character.
+	static std::string valueQuoted(const std::string& text) {
+		return hasControlChar(text) ? shellQuoteAlways(text) : doubleQuoted(text);
+	}
+
+	static bool isWholeArrayKey(const std::string& key) {
+		return key == "@" || key == "*";
+	}
+
 	static std::string assocKeyText(const std::string& key) {
-		if (!key.empty() && shellQuoteForReuse(key) == key) return key;
+		if (hasControlChar(key)) return shellQuoteAlways(key);
+		if (!key.empty() && !isWholeArrayKey(key) && shellQuoteForReuse(key) == key) return key;
 		return doubleQuoted(key);
 	}
 
@@ -224,7 +252,7 @@ namespace wbsh::declare_detail {
 		std::string text = "(";
 		for (const auto& element : array) {
 			if (text.size() > 1) text.push_back(' ');
-			text += "[" + std::to_string(element.first) + "]=" + doubleQuoted(element.second);
+			text += "[" + std::to_string(element.first) + "]=" + valueQuoted(element.second);
 		}
 
 		return text + ")";
@@ -233,10 +261,18 @@ namespace wbsh::declare_detail {
 	static std::string assocArrayText(const Environment::AssocArray& array) {
 		std::string text = "(";
 		for (const auto& element : array) {
-			text += "[" + assocKeyText(element.first) + "]=" + doubleQuoted(element.second) + " ";
+			text += "[" + assocKeyText(element.first) + "]=" + valueQuoted(element.second) + " ";
 		}
 
 		return text + ")";
+	}
+
+	static bool isValuelessArray(const Environment& env, const std::string& name) {
+		if (!env.isValueless(name)) return false;
+
+		const auto* indexed = env.getIndexedArray(name);
+		const auto* assoc = env.getAssocArray(name);
+		return (indexed != nullptr && indexed->empty()) || (assoc != nullptr && assoc->empty());
 	}
 
 	static bool arrayText(const Environment& env, const std::string& name, std::string& out) {
@@ -264,11 +300,11 @@ namespace wbsh::declare_detail {
 
 		const std::string letters = env.attributeLetters(name);
 		std::string line = "declare -" + (letters.empty() ? std::string("-") : letters) + " " + name;
-		if (!env.has(name)) return line;
+		if (!env.has(name) || isValuelessArray(env, name)) return line;
 
 		std::string array;
 		if (arrayText(env, name, array)) return line + "=" + array;
-		return line + "=" + doubleQuoted(env.get(name));
+		return line + "=" + valueQuoted(env.get(name));
 	}
 
 	static std::string listingLine(const Environment& env, const std::string& name) {
@@ -315,7 +351,7 @@ namespace wbsh::declare_detail {
 	}
 
 	static void printFunctionDefinition(const FunctionDef& def) {
-		std::printf("%s () \n%s\n", def.name.c_str(), def.body_text.c_str());
+		std::printf("%s\n", functionDefinitionText(def).c_str());
 	}
 
 	static std::vector<std::string> sortedFunctionNames(Executor& exec) {
@@ -362,7 +398,7 @@ namespace wbsh::declare_detail {
 		for (std::size_t i = first; i < args.size(); ++i) {
 			const std::string name = args[i].substr(0, args[i].find('='));
 			if (!isKnownVariable(exec.env(), name)) {
-				std::fprintf(stderr, "wbsh: %s: %s: not found\n", cmd.name, name.c_str());
+				shellErrorf("%s: %s: not found\n", cmd.name, name.c_str());
 				status = 1;
 				continue;
 			}
@@ -399,7 +435,7 @@ namespace wbsh::declare_detail {
 		for (std::size_t i = first; i < args.size(); ++i) {
 			if (exec.findFunction(args[i]) != nullptr) continue;
 
-			std::fprintf(stderr, "wbsh: %s: %s: not a function\n", cmd.name, args[i].c_str());
+			shellErrorf("%s: %s: not a function\n", cmd.name, args[i].c_str());
 			status = 1;
 		}
 
@@ -419,7 +455,7 @@ namespace wbsh::declare_detail {
 	}
 
 	static bool reportConversion(const std::string& name, const char* from, const char* to) {
-		std::fprintf(stderr, "wbsh: %s: cannot convert %s to %s array\n", name.c_str(), from, to);
+		shellErrorf("%s: cannot convert %s to %s array\n", name.c_str(), from, to);
 		return false;
 	}
 
@@ -431,6 +467,7 @@ namespace wbsh::declare_detail {
 		const std::string value = env.get(name);
 		env.declareAssocArray(name);
 		if (had_value) env.setAssocElement(name, "0", value);
+		else env.markValueless(name);
 		return true;
 	}
 
@@ -439,8 +476,10 @@ namespace wbsh::declare_detail {
 		if (env.isAssocArray(name)) return reportConversion(name, "associative", "indexed");
 
 		std::vector<std::string> values;
-		if (env.has(name)) values.push_back(env.get(name));
+		const bool had_value = env.has(name);
+		if (had_value) values.push_back(env.get(name));
 		env.setIndexedArrayFromList(name, std::move(values));
+		if (!had_value) env.markValueless(name);
 		return true;
 	}
 
@@ -452,9 +491,10 @@ namespace wbsh::declare_detail {
 
 	static void applyValueAttributes(Environment& env, const Options& opts,
 			const std::string& name) {
+		const unsigned case_attrs = kAttrLowercase | kAttrUppercase | kAttrCapitalize;
+		const unsigned case_added = opts.add_attrs & case_attrs;
 		unsigned attrs = env.attributes(name) | opts.add_attrs;
-		if ((opts.add_attrs & kAttrLowercase) != 0) attrs &= ~kAttrUppercase;
-		if ((opts.add_attrs & kAttrUppercase) != 0) attrs &= ~kAttrLowercase;
+		if (case_added != 0) attrs = (attrs & ~case_attrs) | case_added;
 		env.setAttributes(name, attrs & ~opts.remove_attrs);
 	}
 
@@ -480,7 +520,7 @@ namespace wbsh::declare_detail {
 		index = expander.evalArith(subscript);
 		if (!expander.failed()) return true;
 
-		std::fprintf(stderr, "wbsh: %s\n", expander.takeError().c_str());
+		shellErrorf("%s\n", expander.takeError().c_str());
 		expander.dropRestOfLine();
 		return false;
 	}
@@ -578,13 +618,13 @@ namespace wbsh::declare_detail {
 	}
 
 	static int reportBadRefTarget(const Command& cmd, const std::string& target) {
-		std::fprintf(stderr, "wbsh: %s: `%s': invalid variable name for name reference\n",
+		shellErrorf("%s: `%s': invalid variable name for name reference\n",
 			cmd.name, target.c_str());
 		return 1;
 	}
 
 	static int reportSelfReference(const Command& cmd, const std::string& name) {
-		std::fprintf(stderr, "wbsh: %s: %s: nameref variable self references not allowed\n",
+		shellErrorf("%s: %s: nameref variable self references not allowed\n",
 			cmd.name, name.c_str());
 		return 1;
 	}
@@ -654,18 +694,84 @@ namespace wbsh::declare_detail {
 		return listDeclarations(exec, filter, false);
 	}
 
-	static bool unsetArrayElement(Executor& exec, const std::string& arg) {
+	static bool splitElementOperand(const std::string& arg, std::string& name,
+			std::string& subscript) {
 		const std::size_t bracket = arg.find('[');
-		if (bracket == std::string::npos || arg.back() != ']') return false;
+		if (bracket == std::string::npos || bracket == 0 || arg.back() != ']') return false;
+		if (nameLength(arg) != bracket || bracket + 2 > arg.size() - 1) return false;
 
-		const std::string name = arg.substr(0, bracket);
-		const std::string subscript = arg.substr(bracket + 1, arg.size() - bracket - 2);
-		if (!isArray(exec.env(), name)) return false;
+		name = arg.substr(0, bracket);
+		subscript = arg.substr(bracket + 1, arg.size() - bracket - 2);
+		return true;
+	}
+
+	// bash 5.2+ (compat > 51): `unset 'a[@]'` empties an indexed array but
+	// keeps it declared; on an assoc array `@` and `*` are ordinary keys.
+	static int unsetAssocElement(Executor& exec, const std::string& name,
+			const std::string& subscript) {
+		Expander& expander = exec.expander();
+		const bool expand = !exec.env().shopts().array_expand_once;
+		const std::string key = expand ? expander.expandHeredoc(subscript, false) : subscript;
+		if (expander.failed()) {
+			shellErrorf("%s\n", expander.takeError().c_str());
+			return 1;
+		}
+
+		if (key.empty()) {
+			shellErrorf("unset: [%s]: bad array subscript\n", subscript.c_str());
+			return 1;
+		}
+
+		exec.env().unsetElement(name, 0, key);
+		return 0;
+	}
+
+	static int unsetIndexedElement(Executor& exec, const std::string& name,
+			const std::string& subscript) {
+		if (subscript == "@" || subscript == "*") {
+			exec.env().setIndexedArraySparse(name, {});
+			return 0;
+		}
 
 		long long index = 0;
-		if (!exec.env().isAssocArray(name) && !evalSubscript(exec, subscript, index)) return true;
+		if (!evalSubscript(exec, subscript, index)) return 1;
+		if (index < 0 && !exec.env().resolveElementIndex(name, index)) return 1;
+
 		exec.env().unsetElement(name, index, subscript);
-		return true;
+		return 0;
+	}
+
+	static int unsetScalarElement(Executor& exec, const std::string& name,
+			const std::string& subscript) {
+		if (!exec.env().has(name)) return 0;
+
+		long long index = -1;
+		const bool whole = subscript == "@" || subscript == "*";
+		if (!whole && !evalSubscript(exec, subscript, index)) return 1;
+		if (index == 0) {
+			exec.env().unset(name);
+			return 0;
+		}
+
+		shellErrorf("unset: %s: not an array variable\n", name.c_str());
+		return 1;
+	}
+
+	// -1: not an element operand at all.
+	static int unsetArrayElement(Executor& exec, const std::string& arg) {
+		std::string name;
+		std::string subscript;
+		if (!splitElementOperand(arg, name, subscript)) return -1;
+
+		const Environment& env = exec.env();
+		if (env.isReadonly(name)) {
+			shellErrorf("unset: %s: cannot unset: readonly variable\n", name.c_str());
+			return 1;
+		}
+
+		if (env.isAssocArray(name)) return unsetAssocElement(exec, name, subscript);
+		if (env.isIndexedArray(name)) return unsetIndexedElement(exec, name, subscript);
+		return unsetScalarElement(exec, name, subscript);
 	}
 
 	static int unsetOperand(Executor& exec, const Options& opts, const std::string& text) {
@@ -674,12 +780,13 @@ namespace wbsh::declare_detail {
 			return 0;
 		}
 
-		if (!text.empty() && unsetArrayElement(exec, text)) return 0;
+		const int element_status = unsetArrayElement(exec, text);
+		if (element_status >= 0) return element_status;
 		if (nameLength(text) != text.size()) return reportInvalidIdentifier(kUnset, text);
 
 		Environment& env = exec.env();
 		if (env.isReadonly(text)) {
-			std::fprintf(stderr, "wbsh: unset: %s: cannot unset: readonly variable\n", text.c_str());
+			shellErrorf("unset: %s: cannot unset: readonly variable\n", text.c_str());
 			return 1;
 		}
 
@@ -693,6 +800,7 @@ namespace wbsh::declare_detail {
 			return 0;
 		}
 
+		if (exec.unsetCallerLocal(text)) return 0;
 		env.unset(text);
 		return 0;
 	}
@@ -705,13 +813,28 @@ namespace wbsh::declare_detail {
 		return runDeclare(exec, kTypeset, args, false);
 	}
 
+	// `local -` makes the function's `set` option changes its own.
+	static std::vector<std::string> takeLocalOptions(Executor& exec,
+			const std::vector<std::string>& args) {
+		std::vector<std::string> rest;
+		for (const std::string& arg : args) {
+			if (arg == "-") exec.makeLocal(arg);
+			else rest.push_back(arg);
+		}
+
+		return rest;
+	}
+
 	static int builtin_local(Executor& exec, const std::vector<std::string>& args) {
 		if (exec.funcDepth() == 0) {
-			std::fprintf(stderr, "wbsh: local: can only be used in a function\n");
+			shellErrorf("local: can only be used in a function\n");
 			return 1;
 		}
 
-		return runDeclare(exec, kLocal, args, true);
+		const std::vector<std::string> rest = takeLocalOptions(exec, args);
+		if (rest.empty() && !args.empty()) return 0;
+
+		return runDeclare(exec, kLocal, rest, true);
 	}
 
 	static int builtin_export(Executor& exec, const std::vector<std::string>& args) {
@@ -760,6 +883,10 @@ namespace wbsh {
 
 	std::string declarationText(const Environment& env, const std::string& name) {
 		return declare_detail::declareLine(env, name);
+	}
+
+	int listShellVariables(Executor& exec) {
+		return declare_detail::listDeclarations(exec, declare_detail::Options{}, false);
 	}
 
 	void registerDeclarationBuiltins(Executor& exec) {

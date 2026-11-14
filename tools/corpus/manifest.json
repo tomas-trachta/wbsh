@@ -1,0 +1,201 @@
+{
+    "assets": [
+        {
+            "name": "oh-my-bash",
+            "writable": true,
+            "description": "framework: themes, plugins, aliases, completions",
+            "repo": "https://github.com/ohmybash/oh-my-bash",
+            "ref": "master",
+            "commit": "94c2977eda06f230aafa9628fcd869123f01896b",
+            "entries": [
+                {
+                    "name": "oh-my-bash.sh (template defaults)",
+                    "file": "oh-my-bash.sh",
+                    "modes": ["interactive"],
+                    "setup": [
+                        "export OSH=\"$ASSET\" DISABLE_AUTO_UPDATE=true",
+                        "OSH_THEME=font; OMB_USE_SUDO=true",
+                        "completions=(git composer ssh); aliases=(general); plugins=(git bashmarks)"
+                    ],
+                    "check": "declare -F _omb_util_command_exists >/dev/null"
+                },
+                {
+                    "glob": [
+                        "plugins/*/*.plugin.sh",
+                        "themes/*/*.theme.sh",
+                        "aliases/*.aliases.sh",
+                        "completions/*.completion.sh"
+                    ],
+                    "modes": ["interactive"],
+                    "setup": [
+                        "export OSH=\"$ASSET\" DISABLE_AUTO_UPDATE=true",
+                        "OSH_THEME=; completions=(); aliases=(); plugins=()",
+                        "source \"$OSH/oh-my-bash.sh\""
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "bash-it",
+            "writable": true,
+            "description": "framework: themes, plugins, aliases, completions",
+            "repo": "https://github.com/Bash-it/bash-it",
+            "ref": "v3.2.0",
+            "commit": "0f04edce0ca93fbe66f1fe23c8d9b7a01e53f94c",
+            "entries": [
+                {
+                    "name": "bash_it.sh (template defaults)",
+                    "file": "bash_it.sh",
+                    "setup": [
+                        "BASH_IT=\"$ASSET\"; export BASH_IT_THEME=bobby",
+                        "unset MAILCHECK; export IRC_CLIENT=irssi; TODO=t"
+                    ],
+                    "check": "declare -F _bash-it-plugins >/dev/null"
+                },
+                {
+                    "glob": [
+                        "plugins/available/*.plugin.bash",
+                        "themes/*/*.theme.bash",
+                        "aliases/available/*.aliases.bash",
+                        "completion/available/*.completion.bash"
+                    ],
+                    "modes": ["interactive"],
+                    "setup": [
+                        "BASH_IT=\"$ASSET\"; export BASH_IT_THEME=",
+                        "source \"$BASH_IT/bash_it.sh\""
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "bash-completion",
+            "description": "the bash-completion framework and its bundled completions",
+            "repo": "https://github.com/scop/bash-completion",
+            "ref": "2.18.0",
+            "commit": "b80d38cce5645fb98acd4eba857843fdf66be570",
+            "entries": [
+                {
+                    "name": "bash_completion",
+                    "file": "bash_completion",
+                    "check": "declare -F _comp_initialize >/dev/null"
+                },
+                {
+                    "glob": ["completions-core/*.bash", "completions-fallback/*.bash"],
+                    "modes": ["interactive"],
+                    "setup": ["source \"$ASSET/bash_completion\""]
+                }
+            ]
+        },
+        {
+            "name": "nvm",
+            "description": "Node version manager",
+            "repo": "https://github.com/nvm-sh/nvm",
+            "ref": "v0.41.0",
+            "commit": "4e8758a801eea9479b32a904f31093e410ddaba4",
+            "entries": [
+                {
+                    "name": "nvm.sh",
+                    "file": "nvm.sh",
+                    "setup": ["export NVM_DIR=\"$HOME/.nvm\"; mkdir -p \"$NVM_DIR\""],
+                    "check": "declare -F nvm >/dev/null && nvm --version >/dev/null"
+                },
+                {
+                    "name": "bash_completion (after nvm.sh)",
+                    "file": "bash_completion",
+                    "setup": ["export NVM_DIR=\"$HOME/.nvm\"; mkdir -p \"$NVM_DIR\"", "source \"$ASSET/nvm.sh\""],
+                    "check": "complete -p nvm >/dev/null"
+                }
+            ]
+        },
+        {
+            "name": "sdkman",
+            "description": "SDK manager init script, in a minimal hand-made SDKMAN_DIR layout",
+            "repo": "https://github.com/sdkman/sdkman-cli",
+            "ref": "5.24.0",
+            "commit": "5dbdea513a043658ab185ddf6de27a508a3486dc",
+            "entries": [
+                {
+                    "name": "sdkman-init.sh",
+                    "file": "src/main/bash/sdkman-init.sh",
+                    "setup": [
+                        "export SDKMAN_DIR=\"$HOME/.sdkman\"",
+                        "mkdir -p \"$SDKMAN_DIR\"/src \"$SDKMAN_DIR\"/ext \"$SDKMAN_DIR\"/var \"$SDKMAN_DIR\"/etc \"$SDKMAN_DIR\"/candidates \"$SDKMAN_DIR\"/contrib/completion/bash",
+                        "for f in \"$ASSET\"/src/main/bash/sdkman-*.sh; do case $f in */sdkman-init.sh) ;; *) cp \"$f\" \"$SDKMAN_DIR/src/\" ;; esac; done",
+                        "cp \"$ASSET/contrib/completion/bash/sdk\" \"$SDKMAN_DIR/contrib/completion/bash/\"",
+                        "printf 'java,maven,gradle' > \"$SDKMAN_DIR/var/candidates\"; printf 'mingw64' > \"$SDKMAN_DIR/var/platform\"",
+                        "printf 'sdkman_auto_complete=true\\nsdkman_debug_mode=false\\n' > \"$SDKMAN_DIR/etc/config\"",
+                        "export SDKMAN_CANDIDATES_API=https://api.sdkman.io/2 SDKMAN_BROKER_API=https://broker.sdkman.io"
+                    ],
+                    "check": "declare -F sdk >/dev/null && complete -p sdk >/dev/null"
+                }
+            ]
+        },
+        {
+            "name": "asdf",
+            "description": "version manager (v0.15.0, the last bash implementation)",
+            "repo": "https://github.com/asdf-vm/asdf",
+            "ref": "v0.15.0",
+            "commit": "31e8c93004abd76253d186b8896785895069749b",
+            "entries": [
+                {
+                    "name": "asdf.sh",
+                    "file": "asdf.sh",
+                    "setup": ["export ASDF_DIR=\"$ASSET\" ASDF_DATA_DIR=\"$HOME/.asdf\""],
+                    "check": "declare -F asdf >/dev/null"
+                },
+                {
+                    "name": "completions/asdf.bash (after asdf.sh)",
+                    "file": "completions/asdf.bash",
+                    "setup": ["export ASDF_DIR=\"$ASSET\" ASDF_DATA_DIR=\"$HOME/.asdf\"", "source \"$ASSET/asdf.sh\""],
+                    "check": "complete -p asdf >/dev/null"
+                }
+            ]
+        },
+        {
+            "name": "git-contrib",
+            "description": "git's contrib/completion",
+            "repo": "https://github.com/git/git",
+            "ref": "v2.56.1",
+            "commit": "03b41523c576f26ad34085378717a0c1b287470f",
+            "sparse": ["/contrib/completion/"],
+            "entries": [
+                {
+                    "name": "git-completion.bash",
+                    "file": "contrib/completion/git-completion.bash",
+                    "check": "complete -p git >/dev/null && declare -F __git_main >/dev/null"
+                },
+                {
+                    "name": "git-prompt.sh",
+                    "file": "contrib/completion/git-prompt.sh",
+                    "check": "declare -F __git_ps1 >/dev/null && __git_ps1 '(%s)' >/dev/null"
+                }
+            ]
+        }
+    ],
+    "generated": [
+        {
+            "name": "starship",
+            "tool": "starship",
+            "args": ["init", "bash", "--print-full-init"],
+            "entries": [{"name": "starship init bash", "file": "init.bash", "check": "declare -F starship_precmd >/dev/null"}]
+        },
+        {
+            "name": "zoxide",
+            "tool": "zoxide",
+            "args": ["init", "bash"],
+            "entries": [{"name": "zoxide init bash", "file": "init.bash", "check": "declare -F z >/dev/null"}]
+        },
+        {
+            "name": "direnv",
+            "tool": "direnv",
+            "args": ["hook", "bash"],
+            "entries": [{"name": "direnv hook bash", "file": "init.bash", "check": "declare -F _direnv_hook >/dev/null"}]
+        },
+        {
+            "name": "fzf",
+            "tool": "fzf",
+            "args": ["--bash"],
+            "entries": [{"name": "fzf --bash", "file": "init.bash"}]
+        }
+    ]
+}

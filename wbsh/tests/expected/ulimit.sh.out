@@ -26,24 +26,24 @@ core file size          (blocks, -c) unlimited
 data seg size           (kbytes, -d) unlimited
 === setting
 rc=0 core 0 hard 0
-wbsh: ulimit: core file size: cannot modify limit: Invalid argument
+ulimit.sh: line 19: ulimit: core file size: cannot modify limit: Invalid argument
 rc=1 core 0
-wbsh: ulimit: virtual memory: cannot modify limit: Invalid argument
+ulimit.sh: line 20: ulimit: virtual memory: cannot modify limit: Invalid argument
 rc=1 (soft limit is still unlimited)
 rc=0 hard v 1000 soft v 500
-wbsh: ulimit: virtual memory: cannot modify limit: Operation not permitted
+ulimit.sh: line 22: ulimit: virtual memory: cannot modify limit: Operation not permitted
 rc=1
-wbsh: ulimit: virtual memory: cannot modify limit: Operation not permitted
+ulimit.sh: line 23: ulimit: virtual memory: cannot modify limit: Operation not permitted
 rc=1
 rc=0 open files 1000
 rc=0 open files 1000
-wbsh: ulimit: open files: cannot modify limit: Operation not permitted
+ulimit.sh: line 26: ulimit: open files: cannot modify limit: Operation not permitted
 rc=1
-wbsh: ulimit: pipe size: cannot modify limit: Invalid argument
+ulimit.sh: line 27: ulimit: pipe size: cannot modify limit: Invalid argument
 rc=1
 === errors
-wbsh: ulimit: -z: invalid option
+ulimit.sh: line 30: ulimit: -z: invalid option
 ulimit: usage: ulimit [-SHacdefilmnpqrstuvx] [limit]
 rc=2
-wbsh: ulimit: abc: invalid number
+ulimit.sh: line 31: ulimit: abc: invalid number
 rc=1

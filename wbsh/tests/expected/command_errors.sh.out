@@ -1,13 +1,14 @@
 === a directory is not a command
-wbsh: ./adir: Is a directory
+command_errors.sh: line 12: ./adir: Is a directory
 status 126
 === readonly assignments
-wbsh: y: readonly variable
+command_errors.sh: line 18: y: readonly variable
 bare assignment: 1
+command_errors.sh: line 20: y: readonly variable
 prefix assignment still runs the command
 y is 1
 === echo to a closed stdout
-wbsh: echo: write error: Bad file descriptor
+command_errors.sh: line 24: echo: write error: Bad file descriptor
 status 1
 === a PATH= prefix finds its command
 found through the prefix

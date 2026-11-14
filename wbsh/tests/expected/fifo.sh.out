@@ -23,8 +23,8 @@ status 1
 ! -p regular file
 prw-r--r--
 p|
-q|
 plain
+q|
 fifo prw-r--r-- 11a4 0
 ./p
 ./q
@@ -50,7 +50,7 @@ after-close
 two
 one
 === modes
-wbsh: ro: Permission denied
+fifo.sh: line 95: ro: Permission denied
 status 1
 symbolic mode accepted
 === Ctrl+C ends a wait

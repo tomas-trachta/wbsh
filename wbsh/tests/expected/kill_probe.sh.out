@@ -5,5 +5,5 @@ killall -0: 0
 still running: 0
 ping still running: 0
 kill: 0
-wbsh: kill: PID: no such process
+kill_probe.sh: line 27: kill: PID: no such process
 after kill: 1

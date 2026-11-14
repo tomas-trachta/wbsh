@@ -1,0 +1,18 @@
+getopts: usage: getopts optstring name [arg ...]
+status 2
+getopts_opterr.sh: line 8: getopts: -a: invalid option
+getopts: usage: getopts optstring name [arg ...]
+status 2
+got a
+got ?
+got b
+got a
+getopts_opterr.sh: illegal option -- c
+got ?
+got b
+declare -- both="AbC"
+declare -l up="xyz"
+getopts_opterr.sh: line 27: getopts: `opt-var': not a valid identifier
+status 1 OPTIND=2
+getopts_opterr.sh: illegal option -- z
+declare -r RO="foo"

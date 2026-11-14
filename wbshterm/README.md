@@ -462,16 +462,19 @@ supports it.
 ## What the shell tells the terminal
 
 This is the part a generic terminal cannot do. wbsh emits semantic marks —
-OSC 633, the same codes VS Code uses — around every prompt and command, and
-OSC 7 whenever the working directory changes. Terminals that do not know
-them ignore them, so wbsh loses nothing elsewhere. The terminal also
-accepts the same marks as OSC 133, which other shells send.
+OSC 133, which Windows Terminal, VS Code and WezTerm read too — around every
+prompt and command, VS Code's OSC 633;E with the command line, and OSC 7
+whenever the working directory changes. Terminals that do not know them
+ignore them, so wbsh loses nothing elsewhere. The terminal accepts the same
+marks as OSC 633, which VS Code's own shell scripts send.
 
 | The shell says | The terminal does |
 | --- | --- |
-| `OSC 633;A` | Remembers where this prompt began |
-| `OSC 633;C` | Remembers where the command's output began |
-| `OSC 633;D;<exit>` | Closes the block and records how it ended |
+| `OSC 133;A` | Remembers where this prompt began |
+| `OSC 133;B` | Remembers where the prompt ends and typing starts |
+| `OSC 633;E;<command>` | Remembers the command line, for running it again |
+| `OSC 133;C` | Remembers where the command's output began, and when |
+| `OSC 133;D;<exit>` | Closes the block and records how it ended, and when |
 | `OSC 7;file://…` | Puts the working directory in the title bar |
 | `OSC 1337;pick;…` | Draws the picker as an overlay and answers with the choice |
 | `OSC 1337;tmux;attach` | Starts pane mode, the way typing `tmux` does |
@@ -482,11 +485,42 @@ That turns a wall of scrollback into a list of commands:
 | Action | Binding |
 | --- | --- |
 | Previous / next command | Ctrl+PageUp, Ctrl+PageDown |
+| Copy a command's output | Ctrl+Shift+O, or right-click it → Copy this command's output |
+| Select a command's output | Right-click it → Select this command's output |
+| Run a command again | Right-click it → Run this command again |
 | Copy the last command's output | Right-click → Copy last command output |
+| Open a printed path | Ctrl+click `src/main.cpp:42:7`, `main.cpp(42,7)`, `/c/Users/me/x.txt` |
 
 Jumping scrolls a command's prompt to the top of the window, so its output
 reads from there down. Copying the output takes exactly that — not the
-command line above it, not the prompt below.
+command line above it, not the prompt below. Ctrl+Shift+O takes the command
+whose prompt is at the top of the window when scrolled back, the last one
+otherwise; Lua has the same as `copy_command_output()` and
+`rerun_command()`. Running a command again needs the shell at a prompt: the
+line being typed is cleared and the command goes in as a paste would.
+
+Beside each prompt, in the left margin, a mark shows how the command ended —
+green, red, or blue while it still runs — and once a command took longer
+than `duration_after_ms` its time, with a failing status, appears at the
+right end of its line wherever that end is empty.
+
+A Ctrl+clicked path is read from the shell's directory (OSC 7) and opened
+only if it exists: in `editor` at its line when that is set (say
+`code -g "{file}:{line}:{column}"`), otherwise with the program Windows
+opens it with — except programs and scripts, which are shown in Explorer
+rather than run.
+
+```ini
+[shell]
+marks = true
+duration_after_ms = 1000
+editor =
+restore_session = false
+```
+
+With `restore_session` on, a closing window writes its panes and each
+one's directory to `session.txt` beside the config file, and the next start
+lays them out again, in pane mode.
 
 ### The picker
 

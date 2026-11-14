@@ -1,0 +1,1 @@
+echo $"plain locale string"

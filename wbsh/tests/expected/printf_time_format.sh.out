@@ -17,8 +17,8 @@ empty format is %X
 [NN|NN|NN|NN|pm]
 [%|~|TUE]
 === errors
-wbsh: printf: abc: invalid number
+printf_time_format.sh: line 31: printf: abc: invalid number
 [1970]
 status 1
-wbsh: printf: warning: `(': invalid time format specification
+printf_time_format.sh: line 33: printf: warning: `(': invalid time format specification
 [%(status 1

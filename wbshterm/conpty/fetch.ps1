@@ -2,7 +2,8 @@
 <#
 .SYNOPSIS
     Downloads the pinned Microsoft.Windows.Console.ConPTY package and unpacks
-    the x64 conpty.dll and OpenConsole.exe next to this script.
+    the x64 conpty.dll and OpenConsole.exe next to this script, and the
+    ARM64 ones into arm64\ (the ARM64 build copies those instead).
 
 .DESCRIPTION
     wbshterm loads conpty.dll from its own directory when one is there and
@@ -33,9 +34,12 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($archive)
 try {
     $wanted = @{
-        'runtimes/win-x64/native/conpty.dll'       = 'conpty.dll'
-        'build/native/runtimes/x64/OpenConsole.exe' = 'OpenConsole.exe'
+        'runtimes/win-x64/native/conpty.dll'          = 'conpty.dll'
+        'build/native/runtimes/x64/OpenConsole.exe'   = 'OpenConsole.exe'
+        'runtimes/win-arm64/native/conpty.dll'        = 'arm64/conpty.dll'
+        'build/native/runtimes/arm64/OpenConsole.exe' = 'arm64/OpenConsole.exe'
     }
+    New-Item -ItemType Directory -Force -Path (Join-Path $here 'arm64') | Out-Null
 
     foreach ($entry in $zip.Entries) {
         if (-not $wanted.ContainsKey($entry.FullName)) { continue }
@@ -50,7 +54,7 @@ try {
 }
 
 # The hashes let a review (wbshterm/stress static scan) see a swapped binary.
-$hashes = foreach ($name in 'conpty.dll', 'OpenConsole.exe') {
+$hashes = foreach ($name in 'conpty.dll', 'OpenConsole.exe', 'arm64/conpty.dll', 'arm64/OpenConsole.exe') {
     "SHA256 $((Get-FileHash (Join-Path $here $name) -Algorithm SHA256).Hash)  $name"
 }
 Set-Content -Path (Join-Path $here 'VERSION.txt') -Value (@(

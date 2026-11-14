@@ -93,6 +93,19 @@ namespace wbshterm {
 		"# How often the readings are taken, in milliseconds.\n"
 		"refresh_ms = 2000\n"
 		"\n"
+		"[shell]\n"
+		"# A mark beside each command's prompt, green or red by how it ended,\n"
+		"# and the time it took once it ran this long (0 always, -1 never).\n"
+		"marks = true\n"
+		"duration_after_ms = 1000\n"
+		"# Ctrl+click on a path such as src/main.cpp:42 opens it here, with\n"
+		"# {file}, {line} and {column} filled in; empty uses the program\n"
+		"# Windows opens the file with.\n"
+		"# editor = code -g \"{file}:{line}:{column}\"\n"
+		"editor =\n"
+		"# Reopen the last window's panes in their directories at start.\n"
+		"restore_session = false\n"
+		"\n"
 		"[scrollback]\n"
 		"# Rows kept in memory; older rows are swapped out to a temp file\n"
 		"# and read back when scrolled to. Search covers both.\n"
@@ -303,6 +316,17 @@ namespace wbshterm {
 		if (setting.key == "status") config.panes.status = parseBool(setting.value);
 	}
 
+	static void applyShellSetting(const Setting& setting, Config& config) {
+		ShellSettings& shell = config.shell;
+		if (setting.key == "marks")           shell.marks = parseBool(setting.value);
+		if (setting.key == "editor")          shell.editor = setting.value;
+		if (setting.key == "restore_session") shell.restore_session = parseBool(setting.value);
+
+		if (setting.key == "duration_after_ms") {
+			shell.duration_after_ms = parseInt(setting.value, shell.duration_after_ms);
+		}
+	}
+
 	static void applyStatusBarSetting(const Setting& setting, Config& config) {
 		StatusBarSettings& bar = config.statusbar;
 		if (setting.key == "enabled") bar.enabled = parseBool(setting.value);
@@ -447,6 +471,7 @@ namespace wbshterm {
 		if (setting.section == "keyboard") applyKeyboardSetting(setting, config);
 		if (setting.section == "titlebar") applyTitleBarSetting(setting, config);
 		if (setting.section == "statusbar") applyStatusBarSetting(setting, config);
+		if (setting.section == "shell") applyShellSetting(setting, config);
 		if (setting.section == "theme")  applyThemeSetting(setting, config);
 		if (setting.section == "startup" && setting.key == "fetch") {
 			config.startup_fetch = parseBool(setting.value);

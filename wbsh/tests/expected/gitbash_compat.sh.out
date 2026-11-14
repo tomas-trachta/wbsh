@@ -1,0 +1,323 @@
+=== cygpath to unix
+-u C:\Users\x                -> /c/Users/x
+[0]
+-u C:\Users\x\               -> /c/Users/x/
+[0]
+-u C:/Users/x                -> /c/Users/x
+[0]
+c:\x                         -> /c/x
+[0]
+--unix D:\a b\c              -> /d/a b/c
+[0]
+-u C:                        -> /c
+[0]
+-u C:\                       -> /c/
+[0]
+-u C:foo                     -> C:foo
+[0]
+-u foo\bar                   -> foo/bar
+[0]
+-u foo/bar                   -> foo/bar
+[0]
+-u /c/x//y                   -> /c/x//y
+[0]
+-u C:\x\..\y                 -> /c/y
+[0]
+-u C:\x\.\y\                 -> /c/x/y/
+[0]
+-u \\server\share\x          -> //server/share/x
+[0]
+-u ~                         -> ~
+[0]
+=== cygpath to windows and mixed
+-w /c/Users/x                -> C:\Users\x
+[0]
+-w /c/Users/x/               -> C:\Users\x\
+[0]
+-m /c/Users/x                -> C:/Users/x
+[0]
+-w /c                        -> C:\
+[0]
+-w /c/                       -> C:\
+[0]
+-w C:/x                      -> C:\x
+[0]
+-w C:\Users\..               -> C:\
+[0]
+-w /c/x//y                   -> C:\x\y
+[0]
+-m C:/Users//x/              -> C:/Users/x/
+[0]
+-m foo\bar                   -> foo/bar
+[0]
+-w foo/bar                   -> foo\bar
+[0]
+-w ./foo                     -> foo
+[0]
+-w a/./b                     -> a\b
+[0]
+-w \\server\share\x          -> \\server\share\x
+[0]
+-m //server/share/x          -> //server/share/x
+[0]
+-w /dev/null                 -> NUL
+[0]
+--windows /d/a /e/b          -> D:\a
+E:\b
+[0]
+-t mixed /c/x                -> C:/x
+[0]
+-t windows /c/x              -> C:\x
+[0]
+--type unix C:\x             -> /c/x
+[0]
+=== cygpath path lists
+-w -p /c/a:/d/b              -> C:\a;D:\b
+[0]
+-m -p /c/a:/d/b              -> C:/a;D:/b
+[0]
+-w -p /c/a::/d/b             -> C:\a;.;D:\b
+[0]
+-w -p a:b                    -> a;b
+[0]
+-u -p C:\a;D:\b              -> /c/a:/d/b
+[0]
+-u -p C:\a;;D:\b             -> /c/a:/d/b
+[0]
+-u -p /c/a:/c/b              -> /c/a:/c/b
+[0]
+-m -p C:\x:/c/y              -> C:/x;C:/y
+[0]
+--path --mixed /c/a;/d/b     -> C:/a;D:/b
+[0]
+=== cygpath against the shell's own view
+-u -a foo is $PWD/foo
+-u -a keeps a trailing slash
+-w -a foo is $PWD\foo
+-m -a ../x
+-w ../x resolves
+-u -a leaves a POSIX name alone
+round trip
+/tmp maps to a drive path
+-w and -m agree
+-s then -l round trips
+-l -a gives the long absolute name
+=== cygpath short and long names of missing paths
+-w -s C:\definitely\not\here -> wbsh: cygpath: cannot create short name of C:\definitely\not\here
+[2]
+-m -l C:\nonexist\PROGRA~1   -> C:/nonexist/PROGRA~1
+[0]
+=== cygpath -f and -0
+-u -f names                  -> /c/a
+/c/b
+foo/bar
+[0]
+-m -f names                  -> C:/a
+C:/b
+foo/bar
+[0]
+C:\x
+-u -f gap                    -> /c/a
+wbsh: cygpath: can't convert empty path
+[1]
+-u -f missing_file           -> wbsh: cygpath: missing_file: No such file or directory
+[1]
+ / c / a \0 / c / b \0
+ C : \ a \0
+=== cygpath special folders
+-W ok
+-S ok
+-H ok
+-D ok
+-O ok
+-P ok
+-A -D ok
+-F 36 is the Windows directory
+--folder 0x25 is the system directory
+-F 999                       -> wbsh: cygpath: failed to retrieve special folder path
+[1]
+-F abc                       -> wbsh: cygpath: syntax error in special folder ID abc
+[1]
+=== cygpath usage
+Usage: cygpath (-d|-m|-u|-w|-t TYPE) [-f FILE] [OPTION]... NAME...
+       cygpath [-ADHOPSW]
+       cygpath [-F ID]
+Try 'cygpath --help' for more information.
+[1]
+-u                           -> wbsh: cygpath: can't convert empty path
+[1]
+-x                           -> wbsh: cygpath: invalid option -- 'x'
+Try 'cygpath --help' for more information.
+[1]
+--bogus                      -> wbsh: cygpath: unrecognized option '--bogus'
+Try 'cygpath --help' for more information.
+[1]
+-t bogus x                   -> wbsh: cygpath: unknown type: bogus
+Try 'cygpath --help' for more information.
+[1]
+wbsh: cygpath: option requires an argument -- 'F'
+Try 'cygpath --help' for more information.
+[1]
+Usage: cygpath (-d|-m|-u|-w|-t TYPE) [-f FILE] [OPTION]... NAME...
+1
+cygpath (wbsh) N.N.N
+Path Conversion Utility
+=== man pages
+cygpath (1)          - convert Unix and Windows format paths
+start (1)            - open a file, folder or URL, or start a program
+winpty (1)           - run a program on a console (pass-through)
+=== start
+Usage: start [/wait] [/min | /max] FILE|URL|PROGRAM [ARG]...
+Open FILE, a folder or URL with the program Windows associates with it,
+or start PROGRAM with ARGs, without waiting for it.
+
+  -w, --wait, /wait   wait for the program and return its exit status
+  /min, /max          start the window minimized or maximized
+  -h, --help          display this help and exit
+      --version       output version information and exit
+[1]
+Usage: start [/wait] [/min | /max] FILE|URL|PROGRAM [ARG]...
+Open FILE, a folder or URL with the program Windows associates with it,
+start (wbsh) N.N.N
+wbsh: start: definitely_missing_wbsh_file.txt: No such file or directory
+[1]
+wbsh: start: definitely_missing_wbsh_file.txt: No such file or directory
+[1]
+start is a shell builtin
+=== winpty
+hi
+[0]
+plain
+[0]
+f got a b c
+[3]
+dashdash
+child
+[4]
+[1]
+gitbash_compat.sh: line 149: definitely_missing_wbsh_cmd: command not found
+[127]
+Usage: winpty [OPTIONS] PROGRAM [ARG]...
+Run PROGRAM with ARGs.
+
+wbsh runs programs on a real console or pseudo console already, so winpty
+only passes the command through: a builtin, function or program on PATH,
+with its exit status. winpty's own options (-Xallow-non-tty, -Xplain,
+-Xcolor, --mouse, --showkey) are accepted and ignored.
+[1]
+winpty (wbsh) N.N.N
+pass-through: wbsh gives programs a real console
+Usage: winpty [OPTIONS] PROGRAM [ARG]...
+=== cat -v family
+a^M$
+b^Ic^A^?M-^@M-^_M- M-^?M-i$
+$
+$
+$
+end
+a^M
+b	c^A^?M-^@M-^_M- M-^?M-i
+
+
+
+end
+a^M$
+b	c^A^?M-^@M-^_M- M-^?M-i$
+$
+$
+$
+end
+a^M
+b^Ic^A^?M-^@M-^_M- M-^?M-i
+
+
+
+end
+ a \r $ \n b \t c 001 177 200 237 240 377 351 $ \n
+ $ \n $ \n $ \n e n d
+ a \r \n b ^ I c 001 177 200 237 240 377 351 \n \n
+ \n \n e n d
+a^M$
+b^Ic^A^?M-^@M-^_M- M-^?M-i$
+$
+$
+$
+end
+a^M$
+b^Ic^A^?M-^@M-^_M- M-^?M-i$
+$
+$
+$
+end
+a^M$
+b^Ic^A^?M-^@M-^_M- M-^?M-i$
+$
+$
+$
+end
+=== cat numbering and squeezing
+x
+
+y
+
+--
+     1	x
+     2	
+     3	y
+     4	
+--
+     1	x
+
+
+
+     2	y
+
+--
+     1	x
+
+     2	y
+
+--
+     1	x
+
+     2	y
+
+--
+     1	x
+     2	
+     3	
+     4	
+     5	y
+     6	
+     7	a
+--
+6
+wbsh: cat: -nq: No such file or directory
+     1	x
+     2	
+     3	
+     4	
+     5	y
+     6	
+[1]
+=== time report
+ \n r e a l \t N m N . N N N s \n u
+ s e r \t N m N . N N N s \n s y s
+ \t N m N . N N N s \n
+real N.NN
+user N.NN
+sys N.NN
+real N.NN
+user N.NN
+sys N.NN
+R=N.NNN U=N.NNN S=N.NNN P=N.NN pct=% one=N.N none=N long=NmN.NNNs two-long=NmN.NNs
+0
+real N.NN
+user N.NN
+sys N.NN
+|real_NmN.NNNs|user_NmN.NNNs|sys_NmN.NNNs|
+|real_NmN.NNNs|user_NmN.NNNs|sys_NmN.NNNs|
+real covers the sleep
+user+sys counts the child
+user+sys counts builtin work
+time false: 1

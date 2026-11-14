@@ -17,12 +17,12 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <sys/stat.h>
 
 #include "executor.h"
 #include "fifo.h"
+#include "filemode.h"
 #include "numparse.h"
 #include "pathconv.h"
 #include "procfs.h"
@@ -37,8 +37,6 @@ namespace wbsh::testops_detail {
 		"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full", "/dev/tty",
 		"/dev/stdin", "/dev/stdout", "/dev/stderr", "NUL", "nul", "CON", "con",
 	};
-
-	static const char* const kRunnableExtensions[] = { ".exe", ".com", ".bat", ".cmd" };
 
 	static const std::string kFdPrefix = "/dev/fd/";
 
@@ -59,32 +57,11 @@ namespace wbsh::testops_detail {
 		return utf8ToPath(exec.pathConv().toWin32(operand));
 	}
 
-	static std::string lowerExtension(const fs::path& path) {
-		std::string extension = pathToUtf8(path.extension());
-		for (char& c : extension) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		return extension;
-	}
-
-	static bool startsWithRunnableMagic(const fs::path& path) {
-		std::ifstream file(path, std::ios::binary);
-		char magic[2] = { 0, 0 };
-		if (!file.read(magic, sizeof magic)) return false;
-
-		return (magic[0] == '#' && magic[1] == '!') || (magic[0] == 'M' && magic[1] == 'Z');
-	}
-
 	static bool isRunnable(Executor& exec, const std::string& operand) {
 		struct stat info {};
 		if (!statOperand(exec, operand, info)) return false;
-		if ((info.st_mode & S_IFMT) == S_IFDIR) return true;
 
-		const fs::path path = nativePath(exec, operand);
-		const std::string extension = lowerExtension(path);
-		for (const char* runnable : kRunnableExtensions) {
-			if (extension == runnable) return true;
-		}
-
-		return startsWithRunnableMagic(path);
+		return hasOwnerExecute(nativePath(exec, operand), (info.st_mode & S_IFMT) == S_IFDIR);
 	}
 
 	static bool isLink(Executor& exec, const std::string& operand) {

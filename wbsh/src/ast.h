@@ -63,6 +63,7 @@ namespace wbsh {
 		Word target;
 		std::string heredoc_body;
 		bool heredoc_quoted = false;
+		std::size_t heredoc_eof_line = 0;   ///< The body ran to the end of input on this line.
 	};
 
 	// A `name=value` prefix assignment: scalar, indexed element
@@ -80,6 +81,7 @@ namespace wbsh {
 		// indexed arithmetic subscript or an assoc-array string key.
 		struct Keyed {
 			bool has_key = false;
+			bool append = false;        ///< `[key]+=value`
 			Word key;                   ///< Key text; expanded at exec time.
 			Word value;
 		};
@@ -146,6 +148,7 @@ namespace wbsh {
 		Pipeline() : Node(Kind::Pipeline) {}
 		bool bang = false;                  ///< `!`-prefixed: invert exit status.
 		bool timed = false;
+		bool time_posix = false;            ///< `time -p`: the POSIX report format.
 		std::vector<NodePtr> commands;
 		// `stderr_to_stdout[i]` applies to the pipe between
 		// `commands[i]` and `commands[i+1]` (true for `|&`).

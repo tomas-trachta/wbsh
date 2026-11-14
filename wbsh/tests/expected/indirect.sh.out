@@ -43,25 +43,25 @@ v=myvarx
 RANDOM SECONDS LINENO
 in $(): myvar1 myvar2 myvarx
 === 5. errors
-wbsh: a b: bad substitution
+indirect.sh: line 56: a b: bad substitution
 rc=1
-wbsh: 1a: bad substitution
+indirect.sh: line 57: 1a: bad substitution
 rc=1
-wbsh: : bad substitution
+indirect.sh: line 58: : bad substitution
 rc=1
-wbsh: a[1: bad substitution
+indirect.sh: line 59: a[1: bad substitution
 rc=1
-wbsh: $y: bad substitution
+indirect.sh: line 60: $y: bad substitution
 rc=1
-wbsh: y:-q: bad substitution
+indirect.sh: line 61: y:-q: bad substitution
 rc=1
-wbsh: !x: invalid indirect expansion
+indirect.sh: line 62: !x: invalid indirect expansion
 rc=1
-wbsh: !x: parameter null or not set
+indirect.sh: line 63: !x: parameter null or not set
 rc=1
-wbsh: !x: unbound variable
+indirect.sh: line 64: !x: unbound variable
 rc=1
-wbsh: !x: unbound variable
+indirect.sh: line 65: !x: unbound variable
 rc=1
 ok
 === 6. default operators on array elements
@@ -71,5 +71,5 @@ ok
 p  q seven
 new
 p i=1
-wbsh: a[9]: parameter null or not set
+indirect.sh: line 75: a[9]: parameter null or not set
 rc=1

@@ -17,9 +17,9 @@ builtin
 /usr/bin/env
 /bin/echo: shell builtin
 === a name that is nowhere
-wbsh: /usr/bin/no-such-command-here: command not found
+system_bin_paths.sh: line 33: /usr/bin/no-such-command-here: command not found
 status 127
-wbsh: type: /usr/bin/no-such-command-here: not found
+system_bin_paths.sh: line 35: type: /usr/bin/no-such-command-here: not found
 status 1
-wbsh: /usr/bin/sub/dir: command not found
+system_bin_paths.sh: line 37: /usr/bin/sub/dir: command not found
 status 127

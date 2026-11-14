@@ -1,0 +1,17 @@
+[hello]
+[hello]
+[hello]
+[first|second]
+got x
+got stop
+done
+in f: one
+multi
+line 8
+ok
+wbsh: line 2: syntax error near unexpected token `fi'
+wbsh: line 2: `fi'
+syntax status: 2
+heredoc body
+a \n b
+exit status: 7

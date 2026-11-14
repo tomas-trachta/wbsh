@@ -1,0 +1,72 @@
+{
+  "format": 1,
+  "recorded": "2026-11-13T22:48:57Z",
+  "machine": {
+    "os": "Windows-10-10.0.19045-SP0",
+    "logical_cpus": 16,
+    "python": "3.10.0",
+    "cpu": "AMD Ryzen 7 5800H with Radeon Graphics",
+    "memory_gib": 15.9,
+    "windows_build": "10.0.19045"
+  },
+  "protocol": {
+    "runs": 10,
+    "warmup": 1,
+    "scale": 1.0
+  },
+  "subject": {
+    "name": "wbsh",
+    "version": "5.2.37(1)-release"
+  },
+  "yardstick": {
+    "name": "git-bash",
+    "version": "4.4.23(2)-release"
+  },
+  "cases": {
+    "startup": {
+      "metric": 0.632863406190663,
+      "subject_p50": 0.03422250004950911,
+      "yardstick_p50": 0.054075649997685105
+    },
+    "function_calls": {
+      "metric": 0.8573151373543718,
+      "subject_p50": 0.17399214999750257,
+      "yardstick_p50": 0.20295005000662059
+    },
+    "arith_loop": {
+      "metric": 0.5350818104006666,
+      "subject_p50": 0.16522314999019727,
+      "yardstick_p50": 0.3087810999713838
+    },
+    "string_append": {
+      "metric": 0.653947272223554,
+      "subject_p50": 0.10359885002253577,
+      "yardstick_p50": 0.1584207999985665
+    },
+    "array_fill": {
+      "metric": 0.6377694421031884,
+      "subject_p50": 0.10307549999561161,
+      "yardstick_p50": 0.16161874996032566
+    },
+    "builtin_pipeline": {
+      "metric": 0.3551157212404547,
+      "subject_p50": 0.48044269991805777,
+      "yardstick_p50": 1.3529186999658123
+    },
+    "external_spawn": {
+      "metric": 0.5149116644071781,
+      "subject_p50": 2.40784805000294,
+      "yardstick_p50": 4.676235200022347
+    },
+    "cmdsubst_loop": {
+      "metric": 0.09008262907483375,
+      "subject_p50": 0.11510875000385568,
+      "yardstick_p50": 1.277812950022053
+    },
+    "read_loop": {
+      "metric": 0.22280499392588718,
+      "subject_p50": 0.11257825006032363,
+      "yardstick_p50": 0.5052770500187762
+    }
+  }
+}
