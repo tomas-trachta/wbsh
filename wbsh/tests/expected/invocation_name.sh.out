@@ -1,0 +1,7 @@
+0=bash
+bash: line 1: nosuch_command_xyz: command not found
+0=sh
+set -o posix
+named 0=given
+stdin 0=bash
+bash: no_such_script.sh: No such file or directory

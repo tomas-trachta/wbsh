@@ -45,6 +45,15 @@ namespace wbsh {
 
 	void appendUtf8(std::string& out, char32_t code);
 
+	/// bash's `\uHHHH` and `\UHHHHHHHH`, with @p i just past the `u` or `U`
+	/// (@p letter): up to 4 resp. 8 hex digits. False, consuming nothing,
+	/// when no hex digit follows.
+	bool readUnicodeEscape(const std::string& text, std::size_t& i, char letter, char32_t& code);
+
+	/// The character in UTF-8; outside a UTF-8 locale a non-ASCII character
+	/// is written back as its escape (`é`), as bash does.
+	void appendUnicodeEscape(std::string& out, char32_t code, bool utf8_locale);
+
 	char32_t upperCode(char32_t code);
 	char32_t lowerCode(char32_t code);
 

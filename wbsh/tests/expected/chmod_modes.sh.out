@@ -1,0 +1,85 @@
+=== defaults
+plain      644 -rw-r--r-- -rw-r--r-- - - w
+data.txt   644 -rw-r--r-- -rw-r--r-- - - w
+deploy.sh  755 -rwxr-xr-x -rwxr-xr-x x x w
+tool       755 -rwxr-xr-x -rwxr-xr-x x x w
+run.exe    755 -rwxr-xr-x -rwxr-xr-x x x w
+dir        755 drwxr-xr-x drwxr-xr-x x x w
+=== +x / -x
+plain      755 -rwxr-xr-x -rwxr-xr-x x x w
+deploy.sh  644 -rw-r--r-- -rw-r--r-- - - w
+tool       644 -rw-r--r-- -rw-r--r-- - - w
+run.exe    644 -rw-r--r-- -rw-r--r-- - - w
+deploy.sh  744 -rwxr--r-- -rwxr--r-- x x w
+=== octal
+data.txt   755 -rwxr-xr-x -rwxr-xr-x x x w
+data.txt   644 -rw-r--r-- -rw-r--r-- - - w
+data.txt   600 -rw------- -rw------- - - w
+data.txt   700 -rwx------ -rwx------ x x w
+data.txt   755 -rwxr-xr-x -rwxr-xr-x x x w
+data.txt   444 -r--r--r-- -r--r--r-- - - -
+data.txt   5 -------r-x -------r-x - - -
+=== symbolic
+a=rx           data.txt   555 -r-xr-xr-x -r-xr-xr-x x x -
+u+w            data.txt   755 -rwxr-xr-x -rwxr-xr-x x x w
+go-w           data.txt   755 -rwxr-xr-x -rwxr-xr-x x x w
+a=r            data.txt   444 -r--r--r-- -r--r--r-- - - -
+u+w,g+w        data.txt   664 -rw-rw-r-- -rw-rw-r-- - - w
+ugo-w          data.txt   444 -r--r--r-- -r--r--r-- - - -
+u=rwx,g=rx,o=  data.txt   750 -rwxr-x--- -rwxr-x--- x x w
+g=u            data.txt   770 -rwxrwx--- -rwxrwx--- x x w
+o=g            data.txt   777 -rwxrwxrwx -rwxrwxrwx x x w
+u-x,a+X        data.txt   777 -rwxrwxrwx -rwxrwxrwx x x w
+=rw            data.txt   644 -rw-r--r-- -rw-r--r-- - - w
++w             data.txt   644 -rw-r--r-- -rw-r--r-- - - w
+=== X sets execute only on directories and executables
+tree       755 drwxr-xr-x drwxr-xr-x x x w
+tree/sub   755 drwxr-xr-x drwxr-xr-x x x w
+tree/a     644 -rw-r--r-- -rw-r--r-- - - w
+tree/sub/b 644 -rw-r--r-- -rw-r--r-- - - w
+plain      644 -rw-r--r-- -rw-r--r-- - - w
+tool       644 -rw-r--r-- -rw-r--r-- - - w
+=== -R
+tree       700 drwx------ drwx------ x x w
+tree/sub   700 drwx------ drwx------ x x w
+tree/sub/b 600 -rw------- -rw------- - - w
+tree/a     755 -rwxr-xr-x -rwxr-xr-x x x w
+tree/sub/b 755 -rwxr-xr-x -rwxr-xr-x x x w
+=== -v / -c / --reference
+mode of 'plain' changed from 0644 (rw-r--r--) to 0640 (rw-r-----)
+mode of 'plain' retained as 0640 (rw-r-----)
+mode of 'plain' changed from 0640 (rw-r-----) to 0600 (rw-------)
+plain      644 -rw-r--r-- -rw-r--r-- - - w
+=== the modification time is kept
+mtime kept
+600
+=== the umask limits clauses without u/g/o/a
+344
+=== copies and renames keep the mode
+copy       750 -rwxr-x--- -rwxr-x--- x x w
+moved      750 -rwxr-x--- -rwxr-x--- x x w
+=== find sees the same bits
+./copy
+./deploy.sh
+./masked
+./moved
+./copy
+./deploy.sh
+./masked
+./moved
+=== a script made executable runs and passes -x
+job not executable yet
+ran
+=== errors
+no operands: 1
+no file: 1
+wbsh: chmod: invalid mode: 'rwx'
+bad mode: 1
+wbsh: chmod: invalid mode: '9'
+bad octal: 1
+wbsh: chmod: invalid mode: 'u+q'
+bad letter: 1
+wbsh: chmod: cannot access 'missing': No such file or directory
+missing: 1
+wbsh: chmod: unrecognized option '--bogus'
+bad option: 1

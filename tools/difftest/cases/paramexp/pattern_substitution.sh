@@ -1,0 +1,7 @@
+s="the cat sat on the mat"
+echo "${s/at/og}"
+echo "${s//at/og}"
+echo "${s/#the/a}"
+echo "${s/%mat/rug}"
+echo "${s//[cs]at}"
+echo "${s/}" "${s//t/}"

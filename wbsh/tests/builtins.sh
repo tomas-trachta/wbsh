@@ -77,7 +77,7 @@ counter
 echo "outer: n=$n"
 
 echo "=== alias"
-alias greet='echo hi'
+shopt -s expand_aliases; alias greet='echo hi'
 greet there
 unalias greet
 

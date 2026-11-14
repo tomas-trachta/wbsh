@@ -1,0 +1,102 @@
+=== plain paths
+/c/Users               -> C:\Users
+/c/                    -> C:\
+/c/x//y                -> C:\x\y
+/c/x\y                 -> C:\x\y
+/c:/x                  -> c:/x
+/dev/null              -> nul
+=== two-letter switches stay; // unescapes
+/c                     -> /c
+/F                     -> /F
+//c                    -> /c
+//F                    -> /F
+//PID                  -> /PID
+//                     -> /
+///                    -> //
+///c                   -> //c
+=== UNC paths stay
+//server/share         -> //server/share
+//server/share/x       -> //server/share/x
+//c/x                  -> //c/x
+//c/                   -> //c/
+//:x                   -> //:x
+=== options and assignments
+--opt=/c/x             -> --opt=C:\x
+-I/c/x                 -> -IC:\x
+-L/c/x                 -> -LC:\x
+-o/c/x                 -> -oC:\x
+-D/c/x                 -> -DC:\x
+-I=/c/x                -> -I=C:\x
+-I//c                  -> -I/c
+-DFOO=/c/x             -> -DFOO=C:\x
+VAR=/c/x               -> VAR=C:\x
+a=b=/c/x               -> a=b=C:\x
+/c/x=y                 -> C:\x=y
+-Wl,/c/x               -> -Wl,C:\x
+-Wl,-rpath,/c/x        -> -Wl,-rpath,C:\x
++/c/x                  -> +C:\x
+@/c/x                  -> @C:\x
+=/c/x                  -> =C:\x
+=== option forms that stay
+-ab/c/x                -> -ab/c/x
+--/c/x                 -> --/c/x
+-/c/x                  -> -/c/x
+-1/c/x                 -> -1/c/x
+foo,/c/x               -> foo,/c/x
+x=y:/c/z               -> x=y:/c/z
+a=b:/c/x               -> a=b:/c/x
+=== path lists
+/c/x:/d/y              -> C:\x;D:\y
+-I/c/x:/d/y            -> -IC:\x;D:\y
+--opt=/c/x:/d/y        -> --opt=C:\x;D:\y
+x=/c/a:/c/b            -> x=C:\a;C:\b
+/c/x:.                 -> C:\x;.
+.:/c/x                 -> .;C:\x
+=== lists with an unconvertible entry stay
+/c/x:/usr              -> /c/x:/usr
+/c/x:./y               -> /c/x:./y
+foo:/c/x               -> foo:/c/x
+:/c/x                  -> :/c/x
+=== not paths
+http://example.com/a   -> http://example.com/a
+https://x/y:/z         -> https://x/y:/z
+s/a/b/                 -> s/a/b/
+a:b                    -> a:b
+file.cpp:12            -> file.cpp:12
+/c/x:12                -> /c/x:12
+/c/x:                  -> /c/x:
+a::b                   -> a::b
+/c/x::y                -> /c/x::y
+/c/x:http://a          -> /c/x:http://a
+rel/x                  -> rel/x
+./rel/path             -> ./rel/path
+../x                   -> ../x
+/../x                  -> /../x
+C:/x                   -> C:/x
+C:\x                   -> C:\x
+~/x                    -> ~/x
+/c/~x                  -> /c/~x
+=== glob, quote and list characters stop conversion
+/c/x*                  -> /c/x*
+/c/x?                  -> /c/x?
+/c/[ab]                -> /c/[ab]
+/c/x'y                 -> /c/x'y
+/c/x`y                 -> /c/x`y
+/c/x;y                 -> /c/x;y
+/c/x;/c/y              -> /c/x;/c/y
+/c/x@@y                -> /c/x@@y
+=== paths no mount covers stay
+/                      -> /
+/usr/bin               -> /usr/bin
+/ab                    -> /ab
+/dev/stdin             -> /dev/stdin
+/dev/tty               -> /dev/tty
+=== MSYS2_ARG_CONV_EXCL
+--foo=/c/x /c/Users C:\x --bar=C:\x
+/c/x C:\y
+/c/x //y
+C:\x /c/y
+C:\x C:\y
+=== MSYS_NO_PATHCONV keeps // too
+//c /c/y /dev/null
+=== done

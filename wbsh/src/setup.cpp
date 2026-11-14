@@ -8,9 +8,6 @@
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
-#  include <tlhelp32.h>
-#else
-#  include <unistd.h>
 #endif /* _WIN32 */
 
 #include <algorithm>
@@ -23,7 +20,9 @@
 #include <string>
 #include <vector>
 
+#include "coreutils_internal.h"
 #include "numparse.h"
+#include "parentpid.h"
 #include "pathconv.h"
 
 namespace wbsh {
@@ -113,9 +112,16 @@ namespace wbsh {
 		const char* suffix;
 	};
 
+	// A candidate already on PATH would not be added, so it is not probed.
+	struct ToolDirFilter {
+		const PathConv& path_conv;
+		std::string     path;
+	};
+
 	static bool fileExists(const std::filesystem::path& path) {
 		std::error_code ec;
-		return std::filesystem::exists(path, ec) && !std::filesystem::is_directory(path, ec);
+		const std::filesystem::file_status status = std::filesystem::status(path, ec);
+		return std::filesystem::exists(status) && !std::filesystem::is_directory(status);
 	}
 
 	static std::string environmentUtf8(const char* name) {
@@ -123,21 +129,29 @@ namespace wbsh {
 		return value == nullptr ? std::string() : wideToUtf8(value);
 	}
 
+	static bool alreadyOnPath(const ToolDirFilter& filter, const std::string& dir) {
+		if (filter.path.empty()) return false;
+
+		return filter.path.find(filter.path_conv.toPosix(dir)) != std::string::npos;
+	}
+
 	static std::vector<std::string> probeToolDirs(const ToolDirProbe* probes,
-	                                              const char* marker_exe) {
+	                                              const char* marker_exe,
+	                                              const ToolDirFilter& filter) {
 		std::vector<std::string> hits;
 		for (int i = 0; probes[i].env_var != nullptr; ++i) {
 			const std::string base = environmentUtf8(probes[i].env_var);
 			if (base.empty()) continue;
 
 			std::string dir = base + probes[i].suffix;
+			if (alreadyOnPath(filter, dir)) continue;
 			if (fileExists(utf8ToPath(dir) / marker_exe)) hits.push_back(std::move(dir));
 		}
 
 		return hits;
 	}
 
-	static std::vector<std::string> findGitDirs() {
+	static std::vector<std::string> findGitDirs(const ToolDirFilter& filter) {
 		static const ToolDirProbe kProbes[] = {
 			{ "ProgramFiles",      "\\Git\\cmd" },
 			{ "ProgramFiles(x86)", "\\Git\\cmd" },
@@ -148,13 +162,13 @@ namespace wbsh {
 			{ "ProgramData",       "\\chocolatey\\bin" },
 			{ nullptr, nullptr },
 		};
-		return probeToolDirs(kProbes, "git.exe");
+		return probeToolDirs(kProbes, "git.exe", filter);
 	}
 
 	// Not redundant with findGitDirs: git hooks and editor wrappers use
 	// `#!/usr/bin/env sh` shebangs that resolve sh through PATH, and
 	// sh.exe lives in `\Git\usr\bin`, not `\Git\cmd`.
-	static std::vector<std::string> findGitUnixDirs() {
+	static std::vector<std::string> findGitUnixDirs(const ToolDirFilter& filter) {
 		static const ToolDirProbe kProbes[] = {
 			{ "ProgramFiles",      "\\Git\\usr\\bin" },
 			{ "ProgramFiles(x86)", "\\Git\\usr\\bin" },
@@ -163,10 +177,10 @@ namespace wbsh {
 			{ "USERPROFILE",       "\\scoop\\apps\\git\\current\\usr\\bin" },
 			{ nullptr, nullptr },
 		};
-		return probeToolDirs(kProbes, "sh.exe");
+		return probeToolDirs(kProbes, "sh.exe", filter);
 	}
 
-	static std::vector<std::string> findDockerDirs() {
+	static std::vector<std::string> findDockerDirs(const ToolDirFilter& filter) {
 		static const ToolDirProbe kProbes[] = {
 			{ "ProgramFiles",      "\\Docker\\Docker\\resources\\bin" },
 			{ "ProgramFiles(x86)", "\\Docker\\Docker\\resources\\bin" },
@@ -176,7 +190,7 @@ namespace wbsh {
 			{ "ProgramData",       "\\chocolatey\\bin" },
 			{ nullptr, nullptr },
 		};
-		return probeToolDirs(kProbes, "docker.exe");
+		return probeToolDirs(kProbes, "docker.exe", filter);
 	}
 
 	static std::string missingPosixDirs(const PathConv& path_conv, const std::string& path,
@@ -222,13 +236,17 @@ namespace wbsh {
 		env.exportVar("PWD");
 	}
 
+	static ToolDirFilter currentPathFilter(const Environment& env, const PathConv& path_conv) {
+		return ToolDirFilter{ path_conv, env.get("PATH") };
+	}
+
 	static void addDiscoveredToolDirs(Environment& env, const PathConv& path_conv) {
 #ifdef _WIN32
 		prependDirsToPath(env, path_conv, registryPathDirs());
 #endif /* _WIN32 */
-		prependDirsToPath(env, path_conv, findGitDirs());
-		prependDirsToPath(env, path_conv, findGitUnixDirs());
-		prependDirsToPath(env, path_conv, findDockerDirs());
+		prependDirsToPath(env, path_conv, findGitDirs(currentPathFilter(env, path_conv)));
+		prependDirsToPath(env, path_conv, findGitUnixDirs(currentPathFilter(env, path_conv)));
+		prependDirsToPath(env, path_conv, findDockerDirs(currentPathFilter(env, path_conv)));
 	}
 
 	bool isChildShell(const Environment& env) {
@@ -256,28 +274,6 @@ namespace wbsh {
 #else
 		return "x86_64";
 #endif
-	}
-
-	static long long parentProcessId() {
-#ifdef _WIN32
-		const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-		if (snapshot == INVALID_HANDLE_VALUE) return 0;
-
-		const DWORD self = ::GetCurrentProcessId();
-		PROCESSENTRY32W entry{};
-		entry.dwSize = sizeof(entry);
-		long long parent = 0;
-		BOOL more = ::Process32FirstW(snapshot, &entry);
-		while (more && parent == 0) {
-			if (entry.th32ProcessID == self) parent = entry.th32ParentProcessID;
-			more = ::Process32NextW(snapshot, &entry);
-		}
-
-		::CloseHandle(snapshot);
-		return parent;
-#else
-		return static_cast<long long>(::getppid());
-#endif /* _WIN32 */
 	}
 
 	// A self-spawned subshell keeps its parent shell's `$PPID`.
@@ -323,6 +319,32 @@ namespace wbsh {
 		env.exportVar("SHLVL");
 	}
 
+	// Git Bash exports MSYSTEM; scripts and Git for Windows tools read it to
+	// tell which MSYS2 environment they run in.
+	static void seedMsystem(Environment& env) {
+		if (!env.get("MSYSTEM").empty()) return;
+
+		env.set("MSYSTEM", kDefaultMsystem);
+		env.exportVar("MSYSTEM");
+	}
+
+	// A subshell carries on with its parent's getopts state.
+	static void seedGetoptsVariables(Environment& env) {
+		if (isChildShell(env)) return;
+
+		env.set("OPTIND", "1");
+		env.set("OPTERR", "1");
+	}
+
+	// bash always has these two associative arrays, so `declare -A` and
+	// `set` list them even when nothing is aliased or hashed.
+	static void seedHashArrays(Environment& env) {
+		if (isChildShell(env)) return;
+
+		env.declareAssocArray("BASH_ALIASES");
+		env.declareAssocArray("BASH_CMDS");
+	}
+
 	static void seedBashVariables(Environment& env, const PathConv& path_conv) {
 		const std::string machine = hostType() + "-pc-msys";
 		env.set("BASH_VERSION", "5.2.37(1)-release");
@@ -340,6 +362,8 @@ namespace wbsh {
 		setReadonlyInteger(env, "PPID", shellParentPid(env));
 		seedIdentity(env);
 		seedShellLevel(env);
+		seedGetoptsVariables(env);
+		seedHashArrays(env);
 	}
 
 	// The Windows variables Git Bash scripts use by their upper-case names:
@@ -389,10 +413,17 @@ namespace wbsh {
 		env.unexportVar("IFS");
 	}
 
+	// `_` from the environment stays a plain variable, as in bash: it holds
+	// the last argument of the last command, which is no one's to inherit.
+	static void unexportLastArgument(Environment& env) {
+		env.unexportVar("_");
+	}
+
 	void prepareEnv(Environment& env) {
 		env.loadFromProcessEnv();
 		seedUpperCaseNames(env);
 		resetInheritedIfs(env);
+		unexportLastArgument(env);
 
 		const PathConv path_conv;
 		const std::string path = env.get("PATH");
@@ -403,6 +434,7 @@ namespace wbsh {
 		seedHome(env, path_conv);
 		seedPwd(env, path_conv);
 		seedBashVariables(env, path_conv);
+		seedMsystem(env);
 	}
 
 	static void unexportInheritedLocals(Environment& env, const std::string& names) {
@@ -507,6 +539,10 @@ namespace wbsh {
 		if (parseInt(env.get("WBSH_STATUS"), status)) exec.setLastStatus(status);
 		env.unset("WBSH_STATUS");
 		env.unset("WBSH_PPID");
+
+		const std::string letter = env.get("WBSH_INVOCATION");
+		if (letter.size() == 1) env.setInvocationLetter(letter[0]);
+		env.unset("WBSH_INVOCATION");
 	}
 
 	static void applyInheritedHistory(Environment& env, Executor& exec) {

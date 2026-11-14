@@ -1,0 +1,18 @@
+=== 1. ;& falls through every following arm until ;;
+one
+two
+three
+=== 2. ;& into an empty arm and on
+A
+C
+=== 3. ;;& tests the patterns after it
+first
+second
+fell into q
+star
+=== 4. the last arm's ;& ends the case
+last
+status 0
+=== 5. status of the last body run
+status 0
+status 1

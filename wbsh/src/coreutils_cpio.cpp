@@ -21,6 +21,7 @@
 #include <system_error>
 #include <vector>
 
+#include "archivepath.h"
 #include "bytestream.h"
 #include "executor.h"
 #include "fnmatch.h"
@@ -72,6 +73,11 @@ namespace wbsh {
 			std::uint64_t alignment = 4;
 		};
 
+		struct DeferredLink {
+			fs::path path;
+			std::string target;
+		};
+
 		struct CpioWriter {
 			ByteSink* sink = nullptr;
 			CpioFormat format = CpioFormat::Newc;
@@ -87,6 +93,7 @@ namespace wbsh {
 	using cpio_detail::CpioMode;
 	using cpio_detail::CpioOptions;
 	using cpio_detail::CpioWriter;
+	using cpio_detail::DeferredLink;
 
 	static const std::uint32_t kTypeMask      = 0170000;
 	static const std::uint32_t kTypeDirectory = 0040000;
@@ -333,17 +340,9 @@ namespace wbsh {
 		return false;
 	}
 
-	static std::string withForwardSlashes(std::string name) {
-		std::replace(name.begin(), name.end(), '\\', '/');
-		return name;
-	}
-
-	static bool safeCpioName(const std::string& raw_name) {
-		const std::string name = withForwardSlashes(raw_name);
-		if (name.empty() || name[0] == '/' || (name.size() > 1 && name[1] == ':')) return false;
-		return name != ".." && name.compare(0, 3, "../") != 0
-			&& name.find("/../") == std::string::npos
-			&& (name.size() < 3 || name.compare(name.size() - 3, 3, "/..") != 0);
+	static bool safeCpioName(const std::string& name) {
+		std::string relative = name;
+		return !name.empty() && !stripMemberRoot(relative) && !memberEscapes(relative);
 	}
 
 	static const std::size_t kCopyChunk = 64 * 1024;
@@ -419,19 +418,38 @@ namespace wbsh {
 		return in.readExact(reinterpret_cast<std::uint8_t*>(&target[0]), target.size());
 	}
 
-	static bool extractCpioLink(Executor& exec, const CpioEntry& entry, InputBuffer& in,
-	                            std::uint64_t& left) {
-		std::string target;
-		if (!readLinkTarget(entry, in, target)) return false;
-		left = entry.link.empty() ? 0 : entry.size;
-
+	static bool createLink(const DeferredLink& link) {
 		std::error_code ec;
-		fs::create_symlink(utf8ToPath(target), toNative(exec, entry.name), ec);
+		fs::create_symlink(utf8ToPath(link.target), link.path, ec);
 		return !ec;
 	}
 
-	static bool extractCpioEntry(Executor& exec, const CpioEntry& entry,
-	                             const CpioOptions& options, InputBuffer& in, std::uint64_t& left) {
+	// A link that may lead out of the extraction directory is made only after
+	// every other entry, so nothing in the archive is written through it.
+	static bool extractCpioLink(Executor& exec, const CpioEntry& entry, InputBuffer& in,
+	                            std::uint64_t& left, std::vector<DeferredLink>& deferred) {
+		DeferredLink link{ toNative(exec, entry.name), std::string() };
+		if (!readLinkTarget(entry, in, link.target)) return false;
+		left = entry.link.empty() ? 0 : entry.size;
+
+		if (!isEscapingLinkTarget(link.target)) return createLink(link);
+
+		deferred.push_back(std::move(link));
+		return true;
+	}
+
+	static bool createDeferredLinks(const std::vector<DeferredLink>& deferred) {
+		bool ok = true;
+		for (const DeferredLink& link : deferred) {
+			if (!createLink(link)) ok = false;
+		}
+
+		return ok;
+	}
+
+	static bool extractCpioEntry(Executor& exec, const CpioEntry& entry, const CpioOptions& options,
+	                             InputBuffer& in, std::uint64_t& left,
+	                             std::vector<DeferredLink>& deferred) {
 		if (!safeCpioName(entry.name)) {
 			std::fprintf(stderr, "cpio: %s: refusing to write outside the current directory\n",
 				entry.name.c_str());
@@ -445,19 +463,20 @@ namespace wbsh {
 			return true;
 		}
 
-		if (type == kTypeSymlink) return extractCpioLink(exec, entry, in, left);
+		if (type == kTypeSymlink) return extractCpioLink(exec, entry, in, left, deferred);
 		if (type != kTypeRegular) return true;
 		return extractCpioFile(exec, entry, options, in, left);
 	}
 
 	static bool handleCpioEntry(Executor& exec, const CpioOptions& options, InputBuffer& in,
-	                            const CpioEntry& entry, bool& ok) {
+	                            const CpioEntry& entry, std::vector<DeferredLink>& deferred,
+	                            bool& ok) {
 		std::uint64_t left = entry.size;
 		if (cpioSelected(options, entry.name)) {
 			const bool list = options.mode == CpioMode::List;
 			std::FILE* report = list ? stdout : stderr;
 			if (list || options.verbose) std::fprintf(report, "%s\n", entry.name.c_str());
-			if (!list && !extractCpioEntry(exec, entry, options, in, left)) ok = false;
+			if (!list && !extractCpioEntry(exec, entry, options, in, left, deferred)) ok = false;
 		}
 
 		return finishEntryData(in, entry, left);
@@ -467,12 +486,13 @@ namespace wbsh {
 		int status = 0;
 		bool any = false;
 		CpioEntry entry;
+		std::vector<DeferredLink> deferred;
 		while (nextCpioEntry(in, entry)) {
 			any = true;
 			if (entry.name == kTrailer) break;
 
 			bool ok = true;
-			const bool complete = handleCpioEntry(exec, options, in, entry, ok);
+			const bool complete = handleCpioEntry(exec, options, in, entry, deferred, ok);
 			if (!ok) status = 1;
 			if (!complete) {
 				perr("cpio", "premature end of archive");
@@ -485,6 +505,7 @@ namespace wbsh {
 			return 2;
 		}
 
+		if (!createDeferredLinks(deferred)) status = 1;
 		std::fprintf(stderr, "%llu blocks\n", static_cast<unsigned long long>((in.consumed() + 511) / 512));
 		return status;
 	}

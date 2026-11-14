@@ -30,7 +30,9 @@
 #include <vector>
 
 #include "coreutils_internal.h"
+#include "diagnostics.h"
 #include "executor.h"
+#include "funcprint.h"
 #include "exitstatus.h"
 #include "interrupt.h"
 #ifdef _WIN32
@@ -43,6 +45,7 @@
 #include "parser.h"
 #include "sockets.h"
 #include "timefmt.h"
+#include "utf8.h"
 
 namespace wbsh {
 
@@ -62,20 +65,19 @@ namespace wbsh {
 		return value;
 	}
 
-	static int firstArgAsInt(const std::vector<std::string>& args, int fallback,
-			bool require_positive = false) {
-		if (args.empty()) return fallback;
-
+	static bool isLongInteger(const std::string& text) {
 		bool ok = false;
-		const long long value = toIntSafe(args[0], ok);
-		if (!ok) return fallback;
-		if (require_positive && value <= 0) return fallback;
-
-		return static_cast<int>(value);
+		toIntSafe(text, ok);
+		return ok;
 	}
 
 	static void printerr(const std::string& message) {
-		std::fprintf(stderr, "wbsh: %s\n", message.c_str());
+		shellError(message);
+	}
+
+	// bash prints a builtin's usage line without the script and line.
+	static void printUsage(const std::string& usage) {
+		std::fprintf(stderr, "%s\n", usage.c_str());
 	}
 
 	static void writeStdout(const std::string& text) {
@@ -163,12 +165,48 @@ namespace wbsh {
 		out.push_back(static_cast<char>(value));
 	}
 
-	static void appendEchoEscape(const std::string& text, std::size_t& i, std::string& out) {
+	namespace escape_detail {
+
+		/// printf, unlike echo, complains about a `\u` with no digits.
+		struct EscapeStyle {
+			bool utf8_locale = true;
+			bool printf_style = false;
+		};
+
+	}  // namespace escape_detail
+
+	using escape_detail::EscapeStyle;
+
+	// @p i is at the `u` or `U`; without a hex digit after it the escape
+	// stays as written.
+	static void appendEchoUnicode(const std::string& text, std::size_t& i, std::string& out,
+			const EscapeStyle& style) {
+		std::size_t at = i + 1;
+		char32_t code = 0;
+		if (!readUnicodeEscape(text, at, text[i], code)) {
+			if (style.printf_style) {
+				printerr(std::string("printf: missing unicode digit for \\") + text[i]);
+			}
+
+			out.push_back('\\');
+			out.push_back(text[i]);
+			return;
+		}
+
+		appendUnicodeEscape(out, code, style.utf8_locale);
+		i = at - 1;
+	}
+
+	static void appendEchoEscape(const std::string& text, std::size_t& i, std::string& out,
+			const EscapeStyle& style) {
 		const char next = text[++i];
 		switch (next) {
 		case 'a':  out.push_back('\a'); break;
 		case 'b':  out.push_back('\b'); break;
 		case 'e':  out.push_back('\x1b'); break;
+		case 'E':  out.push_back('\x1b'); break;
+		case 'u':  appendEchoUnicode(text, i, out, style); break;
+		case 'U':  appendEchoUnicode(text, i, out, style); break;
 		case 'f':  out.push_back('\f'); break;
 		case 'n':  out.push_back('\n'); break;
 		case 'r':  out.push_back('\r'); break;
@@ -190,13 +228,13 @@ namespace wbsh {
 
 	// Returns false when the text held `\c`: everything after it, the
 	// trailing newline included, is suppressed.
-	static bool interpretEcho(const std::string& text, std::string& out) {
+	static bool interpretEcho(const std::string& text, std::string& out, const EscapeStyle& style) {
 		for (std::size_t i = 0; i < text.size(); ++i) {
 			const char c = text[i];
 			if (isStopEscape(text, i)) return false;
 
 			if (c == '\\' && i + 1 < text.size()) {
-				appendEchoEscape(text, i, out);
+				appendEchoEscape(text, i, out, style);
 				continue;
 			}
 
@@ -240,24 +278,26 @@ namespace wbsh {
 	}
 
 	static std::string echoText(const std::vector<std::string>& args, std::size_t first,
-			bool newline, bool interpret) {
+			bool newline, bool interpret, const EscapeStyle& style) {
 		std::string out;
 		for (std::size_t i = first; i < args.size(); ++i) {
 			if (i > first) out.push_back(' ');
 			if (!interpret) out += args[i];
-			else if (!interpretEcho(args[i], out)) return out;
+			else if (!interpretEcho(args[i], out, style)) return out;
 		}
 
 		if (newline) out.push_back('\n');
 		return out;
 	}
 
-	static int builtin_echo(Executor&, const std::vector<std::string>& args) {
+	static int builtin_echo(Executor& exec, const std::vector<std::string>& args) {
 		bool newline = true;
-		bool interpret = false;
+		bool interpret = exec.env().shopts().xpg_echo;
 		const std::size_t first = parseEchoFlags(args, newline, interpret);
 
-		writeStdout(echoText(args, first, newline, interpret));
+		EscapeStyle style;
+		style.utf8_locale = exec.env().utf8Locale();
+		writeStdout(echoText(args, first, newline, interpret, style));
 		if (std::fflush(stdout) == 0 && !std::ferror(stdout)) return 0;
 
 		// A reader that went away is SIGPIPE, which bash reports with no
@@ -266,7 +306,7 @@ namespace wbsh {
 		const int status = stdoutFailureStatus();
 		if (status != 1) return status;
 
-		std::fprintf(stderr, "wbsh: echo: write error: %s\n", std::strerror(error));
+		shellErrorf("echo: write error: %s\n", std::strerror(error));
 		return 1;
 	}
 
@@ -277,8 +317,12 @@ namespace wbsh {
 			std::size_t next_arg = 0;
 			std::string out;
 			bool bad_number = false;
+			bool bad_format = false;
 			bool stopped = false;
+			EscapeStyle escapes;
 			bool has_time_format = false;
+			bool long_form = false;
+			bool wide_locale = false;
 			std::string time_format;
 			std::time_t shell_start = 0;
 		};
@@ -287,20 +331,28 @@ namespace wbsh {
 
 	using printf_detail::PrintfRun;
 
-	static void appendFormatEscape(const std::string& fmt, std::size_t& i, std::string& out) {
+	static void appendFormatEscape(const std::string& fmt, std::size_t& i, PrintfRun& run) {
 		const char next = fmt[i + 1];
 		if (next >= '0' && next <= '7') {
-			appendOctalEscape(fmt, i, out);
+			appendOctalEscape(fmt, i, run.out);
 			return;
 		}
 
-		if (next == '"') {
-			out.push_back('"');
+		if (next == '"' || next == '\'' || next == '?') {
+			run.out.push_back(next);
 			++i;
 			return;
 		}
 
-		appendEchoEscape(fmt, i, out);
+		appendEchoEscape(fmt, i, run.out, run.escapes);
+	}
+
+	// bash stops at a bad conversion: what came before it is printed and
+	// the status is 1.
+	static void rejectFormat(PrintfRun& run, const std::string& message) {
+		printerr("printf: " + message);
+		run.bad_format = true;
+		run.stopped = true;
 	}
 
 	static std::string takePrintfArg(PrintfRun& run) {
@@ -317,7 +369,7 @@ namespace wbsh {
 	}
 
 	static void reportBadNumber(const std::string& text, PrintfRun& run) {
-		std::fprintf(stderr, "wbsh: printf: %s: invalid number\n", text.c_str());
+		shellErrorf("printf: %s: invalid number\n", text.c_str());
 		run.bad_number = true;
 	}
 
@@ -358,8 +410,14 @@ namespace wbsh {
 		appendPrintfDigits(fmt, i, out_spec);
 	}
 
-	static void skipLengthModifiers(const std::string& fmt, std::size_t& i) {
-		while (i < fmt.size() && std::strchr("hlLjzt", fmt[i]) != nullptr) ++i;
+	static bool skipLengthModifiers(const std::string& fmt, std::size_t& i) {
+		bool long_form = false;
+		while (i < fmt.size() && std::strchr("hlLjzt", fmt[i]) != nullptr) {
+			long_form = long_form || fmt[i] == 'l';
+			++i;
+		}
+
+		return long_form;
 	}
 
 	// `%(datefmt)T`: the strftime format between the parentheses.
@@ -383,6 +441,7 @@ namespace wbsh {
 
 	static bool parsePrintfConversionSpec(const std::string& fmt, std::size_t& i, PrintfRun& run,
 			std::string& out_spec) {
+		const std::size_t start = i;
 		out_spec = "%";
 		++i;
 		while (i < fmt.size() && std::strchr("-+ #0", fmt[i]) != nullptr) {
@@ -396,8 +455,11 @@ namespace wbsh {
 		}
 
 		if (!takeTimeFormat(fmt, i, run)) return false;
-		skipLengthModifiers(fmt, i);
-		if (i >= fmt.size()) return false;
+		run.long_form = skipLengthModifiers(fmt, i);
+		if (i >= fmt.size()) {
+			rejectFormat(run, "`" + fmt.substr(start) + "': missing format character");
+			return false;
+		}
 
 		out_spec.push_back(fmt[i]);
 		return true;
@@ -441,9 +503,24 @@ namespace wbsh {
 		return quoted;
 	}
 
+	static bool hasControlChar(const std::string& text) {
+		for (const char c : text) {
+			const unsigned char code = static_cast<unsigned char>(c);
+			if (code < 0x20 || code == 0x7f) return true;
+		}
+
+		return false;
+	}
+
+	// Control characters make bash quote the whole word as `$'...'`.
+	static std::string shellQuoteForPrintf(const std::string& text) {
+		if (hasControlChar(text)) return shellQuoteAlways(text);
+		return shellQuoteBackslash(text);
+	}
+
 	static std::string formatEscapedArg(const std::string& spec, PrintfRun& run) {
 		std::string expanded;
-		if (!interpretEcho(takePrintfArg(run), expanded)) run.stopped = true;
+		if (!interpretEcho(takePrintfArg(run), expanded, run.escapes)) run.stopped = true;
 		return formatString(spec, expanded);
 	}
 
@@ -451,6 +528,86 @@ namespace wbsh {
 		const long long value = printfIntegerArg(takePrintfArg(run), run);
 		return formatValue(specWithConversion(spec, std::string("ll") + conversion),
 			static_cast<unsigned long long>(value));
+	}
+
+	namespace printf_detail {
+
+		struct WideSpec {
+			bool left = false;
+			std::size_t width = 0;
+			bool has_precision = false;
+			std::size_t precision = 0;
+		};
+
+		static std::size_t readSpecNumber(const std::string& spec, std::size_t& i) {
+			std::size_t value = 0;
+			while (i < spec.size() && std::isdigit(static_cast<unsigned char>(spec[i]))) {
+				value = value * 10 + static_cast<std::size_t>(spec[i] - '0');
+				++i;
+			}
+
+			return value;
+		}
+
+		// A `*` width already became digits, a negative one with its `-`,
+		// which reads here as the left-justify flag.
+		static WideSpec parseWideSpec(const std::string& spec) {
+			WideSpec wide;
+			std::size_t i = 1;
+			while (i < spec.size() && std::strchr("-+ #0", spec[i]) != nullptr) {
+				wide.left = wide.left || spec[i] == '-';
+				++i;
+			}
+
+			wide.width = readSpecNumber(spec, i);
+			if (i < spec.size() && spec[i] == '.') {
+				++i;
+				wide.has_precision = true;
+				wide.precision = readSpecNumber(spec, i);
+			}
+
+			return wide;
+		}
+
+		static std::string padWide(const WideSpec& wide, std::string text, std::size_t chars) {
+			if (chars >= wide.width) return text;
+
+			const std::string padding(wide.width - chars, ' ');
+			return wide.left ? text + padding : padding + text;
+		}
+
+		// bash 5.3's `%ls` / `%S` count width and precision in characters.
+		static std::string formatWideString(const std::string& spec, const std::string& text) {
+			const WideSpec wide = parseWideSpec(spec);
+			std::size_t chars = utf8Count(text);
+			std::string shown = text;
+			if (wide.has_precision && wide.precision < chars) {
+				shown = text.substr(0, utf8Advance(text, 0, wide.precision));
+				chars = wide.precision;
+			}
+
+			return padWide(wide, std::move(shown), chars);
+		}
+
+		static std::string firstCharacter(const std::string& text) {
+			return text.substr(0, utf8CharLength(text, 0));
+		}
+
+	}  // namespace printf_detail
+
+	static bool wideConversion(const PrintfRun& run, char conversion) {
+		const bool wide_letter = conversion == 'S' || conversion == 'C';
+		return run.wide_locale && (run.long_form || wide_letter);
+	}
+
+	static std::string formatWideArg(const std::string& spec, char conversion, PrintfRun& run) {
+		const std::string text = takePrintfArg(run);
+		if (conversion == 's' || conversion == 'S') {
+			return printf_detail::formatWideString(spec, text);
+		}
+
+		if (text.empty()) return formatValue(specWithConversion(spec, "c"), 0);
+		return printf_detail::formatWideString(spec, printf_detail::firstCharacter(text));
 	}
 
 	static std::string formatCharArg(const std::string& spec, PrintfRun& run) {
@@ -476,14 +633,16 @@ namespace wbsh {
 	static std::string formatPrintfConversion(const std::string& spec, char conversion,
 			PrintfRun& run) {
 		if (run.has_time_format && conversion == 'T') return formatTimeArg(spec, run);
+		if (wideConversion(run, conversion)) return formatWideArg(spec, conversion, run);
 
 		switch (conversion) {
 		case 's':
-			return formatString(spec, takePrintfArg(run));
+		case 'S':
+			return formatString(specWithConversion(spec, "s"), takePrintfArg(run));
 		case 'b':
 			return formatEscapedArg(spec, run);
 		case 'q':
-			return formatString(spec, shellQuoteBackslash(takePrintfArg(run)));
+			return formatString(spec, shellQuoteForPrintf(takePrintfArg(run)));
 		case 'd':
 		case 'i':
 			return formatValue(specWithConversion(spec, "lld"),
@@ -503,11 +662,13 @@ namespace wbsh {
 		case 'A':
 			return formatValue(spec, printfDoubleArg(takePrintfArg(run), run));
 		case 'c':
-			return formatCharArg(spec, run);
+		case 'C':
+			return formatCharArg(specWithConversion(spec, "c"), run);
 		case '%':
 			return "%";
 		default:
-			return spec;
+			rejectFormat(run, std::string("`") + conversion + "': invalid format character");
+			return std::string();
 		}
 	}
 
@@ -515,7 +676,7 @@ namespace wbsh {
 		for (std::size_t i = 0; i < fmt.size() && !run.stopped; ++i) {
 			const char c = fmt[i];
 			if (c == '\\' && i + 1 < fmt.size()) {
-				appendFormatEscape(fmt, i, run.out);
+				appendFormatEscape(fmt, i, run);
 				continue;
 			}
 
@@ -527,8 +688,7 @@ namespace wbsh {
 			const std::size_t spec_start = i;
 			std::string spec;
 			if (!parsePrintfConversionSpec(fmt, i, run, spec)) {
-				const std::size_t end = run.stopped ? i + 1 : std::string::npos;
-				run.out.append(fmt, spec_start, end == std::string::npos ? end : end - spec_start);
+				if (!run.bad_format) run.out.append(fmt, spec_start, i + 1 - spec_start);
 				return;
 			}
 
@@ -580,18 +740,21 @@ namespace wbsh {
 		std::string target;
 		const std::size_t first = parsePrintfTarget(args, target);
 		if (first >= args.size()) {
-			printerr("printf: usage: printf [-v var] format [arguments]");
+			printUsage("printf: usage: printf [-v var] format [arguments]");
 			return 2;
 		}
 
 		PrintfRun run;
 		run.args.assign(args.begin() + static_cast<std::ptrdiff_t>(first) + 1, args.end());
 		run.shell_start = exec.env().startEpoch();
+		run.escapes.utf8_locale = exec.env().utf8Locale();
+		run.wide_locale = run.escapes.utf8_locale;
+		run.escapes.printf_style = true;
 		appendFormatCycles(args[first], run);
 
 		const int store_status = storePrintfResult(exec, target, run.out);
 		if (store_status != 0) return store_status;
-		return run.bad_number ? 1 : 0;
+		return run.bad_number || run.bad_format ? 1 : 0;
 	}
 
 	static std::filesystem::path resolvedPath(const std::filesystem::path& path) {
@@ -658,7 +821,7 @@ namespace wbsh {
 				if (arg[k] == 'P') physical = true;
 				else if (arg[k] == 'L') physical = false;
 				else if (arg[k] != 'e' && arg[k] != '@') {
-					std::fprintf(stderr, "wbsh: cd: -%c: invalid option\n", arg[k]);
+					shellErrorf("cd: -%c: invalid option\n", arg[k]);
 					std::fprintf(stderr, "cd: usage: cd [-L|[-P [-e]] [-@]] [dir]\n");
 					return false;
 				}
@@ -669,6 +832,11 @@ namespace wbsh {
 	}
 
 	static int builtin_cd(Executor& exec, const std::vector<std::string>& args) {
+		if (exec.env().restricted()) {
+			printerr("cd: restricted");
+			return 1;
+		}
+
 		bool physical = exec.env().options().physical;
 		std::size_t first = 0;
 		if (!parseCdOptions(args, first, physical)) return 2;
@@ -678,15 +846,40 @@ namespace wbsh {
 
 		std::string error;
 		if (!changeDirectory(exec, target, error, physical)) {
-			std::fprintf(stderr, "wbsh: cd: %s: %s\n", target.c_str(), error.c_str());
+			shellErrorf("cd: %s: %s\n", target.c_str(), error.c_str());
 			return 1;
 		}
 
 		return 0;
 	}
 
+	static const int kStatusBadUsage = 2;
+
+	// The one optional integer operand of exit, return, shift, break and
+	// continue. bash 5.3 rejects a word that is not a number, and extra
+	// operands, with status 2 and does not act.
+	static bool readNumericOperand(const std::string& builtin, const std::vector<std::string>& args,
+			long long& value) {
+		if (args.empty()) return true;
+
+		bool ok = false;
+		value = toIntSafe(args[0], ok);
+		if (!ok) {
+			printerr(builtin + ": " + args[0] + ": numeric argument required");
+			return false;
+		}
+
+		if (args.size() == 1) return true;
+
+		printerr(builtin + ": too many arguments");
+		return false;
+	}
+
 	static int builtin_exit(Executor& exec, const std::vector<std::string>& args) {
-		const int status = shellStatusFromInt(firstArgAsInt(args, exec.defaultExitStatus()));
+		long long value = exec.defaultExitStatus();
+		if (!readNumericOperand("exit", args, value)) return kStatusBadUsage;
+
+		const int status = shellStatusFromInt(static_cast<int>(value));
 		exec.raiseExit(status);
 		return status;
 	}
@@ -724,9 +917,32 @@ namespace wbsh {
 			return 1;
 		}
 
-		const int status = shellStatusFromInt(firstArgAsInt(args, exec.lastStatus()));
+		long long value = exec.lastStatus();
+		if (args.size() > 1) return readNumericOperand("return", args, value) ? 0 : kStatusBadUsage;
+		if (!readNumericOperand("return", args, value)) value = kStatusBadUsage;
+
+		const int status = shellStatusFromInt(static_cast<int>(value));
 		exec.raiseReturn(status);
 		return status;
+	}
+
+	// A count that is not a number abandons the whole command line, as bash's
+	// top-level jump does; a count below 1 is only an error.
+	static bool readLoopCount(Executor& exec, const std::string& builtin,
+			const std::vector<std::string>& args, long long& count, int& status) {
+		count = 1;
+		const bool number = args.empty() || isLongInteger(args[0]);
+		if (!readNumericOperand(builtin, args, count)) {
+			status = kStatusBadUsage;
+			if (!number) exec.raiseDiscard();
+			return false;
+		}
+
+		if (count >= 1) return true;
+
+		printerr(builtin + ": " + args[0] + ": loop count out of range");
+		status = 1;
+		return false;
 	}
 
 	static int builtin_break(Executor& exec, const std::vector<std::string>& args) {
@@ -735,7 +951,11 @@ namespace wbsh {
 			return 0;
 		}
 
-		exec.raiseBreak(firstArgAsInt(args, 1, /*require_positive=*/true));
+		long long count = 1;
+		int status = 0;
+		if (!readLoopCount(exec, "break", args, count, status)) return status;
+
+		exec.raiseBreak(static_cast<int>(count));
 		return 0;
 	}
 
@@ -745,25 +965,36 @@ namespace wbsh {
 			return 0;
 		}
 
-		exec.raiseContinue(firstArgAsInt(args, 1, /*require_positive=*/true));
+		long long count = 1;
+		int status = 0;
+		if (!readLoopCount(exec, "continue", args, count, status)) return status;
+
+		exec.raiseContinue(static_cast<int>(count));
 		return 0;
+	}
+
+	// A negative count is always reported; one past the parameters only
+	// under shift_verbose (on in POSIX mode).
+	static bool shiftCountInRange(Executor& exec, long long count, std::size_t available) {
+		const bool too_many = count > static_cast<long long>(available);
+		if (count >= 0 && !too_many) return true;
+
+		if (count < 0 || exec.env().shopts().shift_verbose) {
+			printerr("shift: " + std::to_string(count) + ": shift count out of range");
+		}
+
+		return false;
 	}
 
 	static int builtin_shift(Executor& exec, const std::vector<std::string>& args) {
-		const int count = firstArgAsInt(args, 1);
+		long long count = 1;
+		if (!readNumericOperand("shift", args, count)) return kStatusBadUsage;
+
 		std::vector<std::string> positional = exec.env().positional();
-		if (count < 0 || static_cast<std::size_t>(count) > positional.size()) return 1;
+		if (!shiftCountInRange(exec, count, positional.size())) return 1;
 
 		positional.erase(positional.begin(), positional.begin() + count);
 		exec.env().setPositional(std::move(positional));
-		return 0;
-	}
-
-	static int dumpAllShellVars(Executor& exec) {
-		for (const auto& entry : sortedEntries(exec.env().vars())) {
-			std::printf("%s=%s\n", entry.first.c_str(), entry.second.c_str());
-		}
-
 		return 0;
 	}
 
@@ -790,6 +1021,11 @@ namespace wbsh {
 	}
 
 	static void applySetOption(Environment& env, const SetOptionSpec& spec, bool on) {
+		if (spec.flag == &SetOptions::posix) {
+			env.setPosixMode(on);
+			return;
+		}
+
 		SetOptions& options = env.options();
 		options.*(spec.flag) = on;
 
@@ -809,7 +1045,7 @@ namespace wbsh {
 	static int applyNamedSetOption(Environment& env, const std::string& name, bool on) {
 		const SetOptionSpec* spec = findSetOption(name);
 		if (spec == nullptr) {
-			std::fprintf(stderr, "wbsh: set: %s: invalid option name\n", name.c_str());
+			shellErrorf("set: %s: invalid option name\n", name.c_str());
 			return 2;
 		}
 
@@ -829,10 +1065,15 @@ namespace wbsh {
 		return applyNamedSetOption(env, args[next++], on);
 	}
 
+	// `-r` is not a `set -o` option and, once on, cannot be turned off.
+	static bool isRestrictFlag(char sign, char letter) {
+		return sign == '-' && letter == 'r';
+	}
+
 	static int reportInvalidSetFlag(char sign, char letter) {
-		std::fprintf(stderr, "wbsh: set: %c%c: invalid option\n", sign, letter);
+		shellErrorf("set: %c%c: invalid option\n", sign, letter);
 		std::fprintf(stderr,
-			"set: usage: set [-abefhkmnptuvxBCHP] [-o option-name] [--] [arg ...]\n");
+			"set: usage: set [-abefhkmnptuvxBCEHPT] [-o option-name] [--] [-] [arg ...]\n");
 		return 2;
 	}
 
@@ -849,6 +1090,18 @@ namespace wbsh {
 				if (status != 0) return status;
 
 				continue;
+			}
+
+			if (isRestrictFlag(cluster[0], letter)) {
+				env.enterRestrictedMode();
+				continue;
+			}
+
+			if (letter == 'r') {
+				if (!env.restricted()) continue;
+
+				reportInvalidSetFlag(cluster[0], letter);
+				return 1;
 			}
 
 			const SetOptionSpec* spec = findSetFlag(letter);
@@ -891,6 +1144,7 @@ namespace wbsh {
 				continue;
 			}
 
+			if (letter == 'r') continue;
 			if (findSetFlag(letter) == nullptr) return reportInvalidSetFlag(cluster[0], letter);
 		}
 
@@ -935,7 +1189,7 @@ namespace wbsh {
 	}
 
 	static int builtin_set(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) return dumpAllShellVars(exec);
+		if (args.empty()) return listShellVariables(exec);
 
 		SetOperands operands;
 		const int status = parseSetFlags(exec, args, operands);
@@ -1040,6 +1294,10 @@ namespace wbsh {
 	// trap never runs.
 	static int builtin_exec(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) return 0;
+		if (exec.env().restricted()) {
+			shellErrorf("exec: restricted\n");
+			return 1;
+		}
 
 		exec.clearTrap("EXIT");
 		const int status = isExternalProgram(exec, args[0]) ? execProgram(exec, args)
@@ -1048,11 +1306,21 @@ namespace wbsh {
 		return status;
 	}
 
+	// Windows programs print CRLF, and `eval "$(tool completion)"` is how
+	// their shell code is loaded; Git Bash reads that text as if the CRs
+	// before each newline, and the one `$( )` left at the end, were absent.
+	static std::string evalSourceText(const Executor& exec, const std::vector<std::string>& args) {
+		std::string text = exec.protectProcSubstPaths(joinWithSpaces(args.begin(), args.end()));
+		normalizeCrlf(text);
+		if (!text.empty() && text.back() == '\r') text.pop_back();
+		return text;
+	}
+
 	static int builtin_eval(Executor& exec, const std::vector<std::string>& args) {
-		const std::string joined = joinWithSpaces(args.begin(), args.end());
+		const std::string joined = evalSourceText(exec, args);
 		if (joined.empty()) return 0;
 
-		const int line = exec.env().currentLineno();
+		const int line = (std::max)(exec.env().currentLineno(), exec.commandEndLine());
 		return exec.executeInputText(joined, "eval", static_cast<std::size_t>(line > 0 ? line : 1));
 	}
 
@@ -1068,29 +1336,176 @@ namespace wbsh {
 		return true;
 	}
 
-	static int builtin_source(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) {
-			printerr("source: filename required");
+	namespace source_detail {
+
+		struct Request {
+			std::string command;
+			bool has_path = false;
+			std::string path;
+			std::string file;
+			std::vector<std::string> args;
+		};
+
+		static int reportUsage(const Request& request, const char* message) {
+			if (message != nullptr) printerr(request.command + ": " + message);
+			printUsage(request.command + ": usage: " + request.command
+				+ " [-p path] filename [arguments]");
 			return 2;
 		}
 
+		static int parseRequest(const std::vector<std::string>& args, Request& request) {
+			std::size_t i = 0;
+			while (i < args.size() && args[i].size() > 1 && args[i][0] == '-') {
+				if (args[i] == "--") {
+					++i;
+					break;
+				}
+
+				if (args[i].compare(0, 2, "-p") != 0) {
+					printerr(request.command + ": " + args[i].substr(0, 2) + ": invalid option");
+					return reportUsage(request, nullptr);
+				}
+
+				if (args[i].size() > 2) request.path = args[i].substr(2);
+				else if (i + 1 < args.size()) request.path = args[++i];
+				else return reportUsage(request, "-p: option requires an argument");
+
+				request.has_path = true;
+				++i;
+			}
+
+			if (i >= args.size()) return reportUsage(request, "filename argument required");
+
+			request.file = args[i];
+			request.args.assign(args.begin() + static_cast<std::ptrdiff_t>(i) + 1, args.end());
+			return 0;
+		}
+
+		static bool isPathLike(const std::string& name) {
+			if (name.empty()) return false;
+			if (name[0] == '/' || name[0] == '\\') return true;
+			if (name.compare(0, 2, "./") == 0 || name.compare(0, 3, "../") == 0) return true;
+			return name.size() > 1 && name[1] == ':';
+		}
+
+		static bool isReadableFile(Executor& exec, const std::string& path) {
+			std::error_code ec;
+			const std::filesystem::path native = utf8ToPath(exec.pathConv().toWin32(path));
+			return std::filesystem::is_regular_file(native, ec);
+		}
+
+		static std::string findInDirectories(Executor& exec, const std::string& name,
+				const std::string& directories) {
+			for (std::string dir : splitPathList(directories)) {
+				if (dir.empty()) dir = ".";
+				const std::string candidate = dir + "/" + name;
+				if (isReadableFile(exec, candidate)) return candidate;
+			}
+
+			return std::string();
+		}
+
+		// With -p only the given directories are searched; without it a name
+		// with no slash is looked up in PATH (shopt sourcepath) and then in
+		// the current directory.
+		static bool resolveFile(Executor& exec, const Request& request, std::string& out) {
+			if (isPathLike(request.file)) {
+				out = request.file;
+				return true;
+			}
+
+			if (request.has_path) {
+				out = findInDirectories(exec, request.file,
+					request.path.empty() ? std::string(".") : request.path);
+				if (!out.empty()) return true;
+
+				printerr(request.command + ": " + request.file + ": file not found");
+				exec.markSpecialBuiltinFailure();
+				return false;
+			}
+
+			const bool searches_path = exec.env().shopts().sourcepath
+				&& request.file.find('/') == std::string::npos;
+			if (searches_path) out = findInDirectories(exec, request.file, exec.env().get("PATH"));
+			if (!out.empty() || isPathLike(request.file) || !exec.env().options().posix) {
+				if (out.empty()) out = request.file;
+				return true;
+			}
+
+			printerr(request.command + ": " + request.file + ": file not found");
+			exec.markSpecialBuiltinFailure();
+			return false;
+		}
+
+	}  // namespace source_detail
+
+	// `/dev/stdin` would map to the console; `. /dev/stdin` reads the
+	// shell's own standard input, a pipe as often as not.
+	static bool namesStandardInput(const std::string& file) {
+		return file == "/dev/stdin" || file == "/dev/fd/0" || file == "/proc/self/fd/0";
+	}
+
+	static bool readStandardInput(std::string& out_body) {
+		char buffer[65536];
+		int got = 0;
+		while ((got = _read(0, buffer, sizeof buffer)) > 0) {
+			out_body.append(buffer, static_cast<std::size_t>(got));
+		}
+
+		stripUtf8Bom(out_body);
+		normalizeCrlf(out_body);
+		return got == 0;
+	}
+
+	static bool readSourcedText(Executor& exec, const std::string& file, std::string& out_body) {
+		if (namesStandardInput(file)) return readStandardInput(out_body);
+
+		return readScriptFile(utf8ToPath(exec.pathConv().toWin32(file)), out_body);
+	}
+
+	static int runSourcedFile(Executor& exec, const std::string& file,
+			const std::vector<std::string>& args) {
 		std::string body;
-		const std::filesystem::path path = utf8ToPath(exec.pathConv().toWin32(args[0]));
-		if (!readScriptFile(path, body)) {
-			std::fprintf(stderr, "wbsh: source: %s: %s\n", args[0].c_str(), std::strerror(errno));
+		if (!readSourcedText(exec, file, body)) {
+			shellErrorf("%s: %s\n", file.c_str(), std::strerror(errno));
+			exec.markSpecialBuiltinFailure();
 			return 1;
 		}
 
 		std::vector<std::string> saved = exec.env().positional();
-		if (args.size() > 1) exec.env().setPositional({ args.begin() + 1, args.end() });
+		if (!args.empty()) exec.env().setPositional(args);
 
-		exec.beginSource(args[0]);
-		int status = exec.executeInputText(body, args[0]);
+		exec.beginSource(file);
+		int status = exec.executeInputText(body, file);
 		exec.consumeFlow(FlowSignal::Kind::Return, &status);
 		exec.fireReturnTrap();
 		exec.endSource();
 		exec.env().setPositional(std::move(saved));
 		return status;
+	}
+
+	static int runSourceCommand(Executor& exec, const char* command,
+			const std::vector<std::string>& args) {
+		source_detail::Request request;
+		request.command = command;
+		const int usage = source_detail::parseRequest(args, request);
+		if (usage != 0) return usage;
+		if (exec.env().restricted() && request.file.find('/') != std::string::npos) {
+			shellErrorf("%s: %s: restricted\n", command, request.file.c_str());
+			return 1;
+		}
+
+		std::string file;
+		if (!source_detail::resolveFile(exec, request, file)) return 1;
+		return runSourcedFile(exec, file, request.args);
+	}
+
+	static int builtin_source(Executor& exec, const std::vector<std::string>& args) {
+		return runSourceCommand(exec, "source", args);
+	}
+
+	static int builtin_dot(Executor& exec, const std::vector<std::string>& args) {
+		return runSourceCommand(exec, ".", args);
 	}
 
 	namespace type_detail {
@@ -1171,7 +1586,7 @@ namespace wbsh {
 	static void printFunctionDescription(Executor& exec, const std::string& name) {
 		std::printf("%s is a function\n", name.c_str());
 		const FunctionDef* def = exec.findFunction(name);
-		if (def != nullptr) std::printf("%s () \n%s\n", name.c_str(), def->body_text.c_str());
+		if (def != nullptr) std::printf("%s\n", functionDefinitionText(*def).c_str());
 	}
 
 	static void describeMatch(Executor& exec, const std::string& name,
@@ -1215,7 +1630,7 @@ namespace wbsh {
 		const std::vector<type_detail::Match> matches = commandMatches(exec, name, opts);
 		if (matches.empty()) {
 			const bool quiet = opts.type_only || opts.path_only || opts.force_path;
-			if (!quiet) std::fprintf(stderr, "wbsh: %s: %s: not found\n", builtin_name, name.c_str());
+			if (!quiet) shellErrorf("%s: %s: not found\n", builtin_name, name.c_str());
 			return false;
 		}
 
@@ -1246,7 +1661,7 @@ namespace wbsh {
 			for (std::size_t k = 1; k < arg.size(); ++k) {
 				if (applyTypeFlag(arg[k], opts)) continue;
 
-				std::fprintf(stderr, "wbsh: type: -%c: invalid option\n", arg[k]);
+				shellErrorf("type: -%c: invalid option\n", arg[k]);
 				std::fprintf(stderr, "type: usage: type [-afptP] name [name ...]\n");
 				return false;
 			}
@@ -1323,11 +1738,24 @@ namespace wbsh {
 		return i;
 	}
 
+	static bool usesDefaultPath(const std::vector<std::string>& args, std::size_t flag_count) {
+		for (std::size_t i = 0; i < flag_count; ++i) {
+			if (args[i] != "--" && args[i].find('p') != std::string::npos) return true;
+		}
+
+		return false;
+	}
+
 	// `command` skips functions and aliases: a builtin runs in place,
 	// anything else is looked up on PATH.
 	static int builtin_command(Executor& exec, const std::vector<std::string>& args) {
 		char mode = 0;
 		const std::size_t first = parseCommandFlags(args, mode);
+		if (exec.env().restricted() && usesDefaultPath(args, first)) {
+			shellErrorf("command: -p: restricted\n");
+			return 1;
+		}
+
 		if (first >= args.size()) return 0;
 
 		if (mode != 0) return describeForCommand(exec, args, first, mode);
@@ -1347,7 +1775,7 @@ namespace wbsh {
 	}
 
 	static void reportBuiltinInvalidOption(const std::string& arg) {
-		std::fprintf(stderr, "wbsh: builtin: %s: invalid option\n", arg.substr(0, 2).c_str());
+		shellErrorf("builtin: %s: invalid option\n", arg.substr(0, 2).c_str());
 		std::fprintf(stderr, "builtin: usage: builtin [shell-builtin [arg ...]]\n");
 	}
 
@@ -1363,7 +1791,7 @@ namespace wbsh {
 
 		const std::string& name = args[first];
 		if (!exec.isBuiltin(name)) {
-			std::fprintf(stderr, "wbsh: builtin: %s: not a shell builtin\n", name.c_str());
+			shellErrorf("builtin: %s: not a shell builtin\n", name.c_str());
 			return 1;
 		}
 
@@ -1372,29 +1800,59 @@ namespace wbsh {
 
 	namespace shopt_detail {
 		enum class Mode { ListAll, Set, Unset, Query };
+
+		/// Which flags a listing shows: `shopt -s` alone lists those on.
+		enum class Show { All, On, Off };
+
+		struct ShoptArgs {
+			Mode mode = Mode::ListAll;
+			bool reusable = false;
+			bool set_options = false;
+			std::vector<std::string> names;
+		};
 	}  // namespace shopt_detail
 
-	static void printShoptFlag(const Environment& env, const ShoptSpec& flag) {
-		const bool on = env.shopts().*(flag.flag);
-		std::printf("%-15s %s\n", flag.name, on ? "on" : "off");
+	using shopt_detail::ShoptArgs;
+
+	static bool shoptFlagOn(const Environment& env, const ShoptSpec& flag) {
+		return env.shopts().*(flag.flag);
 	}
 
-	static bool parseShoptArgs(const std::vector<std::string>& args, shopt_detail::Mode& mode,
-			std::vector<std::string>& names) {
+	static void printShoptFlag(const Environment& env, const ShoptSpec& flag, bool reusable) {
+		const bool on = shoptFlagOn(env, flag);
+		if (reusable) std::printf("shopt %s %s\n", on ? "-s" : "-u", flag.name);
+		else          std::printf("%-20s\t%s\n", flag.name, on ? "on" : "off");
+	}
+
+	static bool applyShoptOption(char letter, ShoptArgs& parsed) {
 		using shopt_detail::Mode;
+		switch (letter) {
+		case 's': parsed.mode = Mode::Set;     return true;
+		case 'u': parsed.mode = Mode::Unset;   return true;
+		case 'q': parsed.mode = Mode::Query;   return true;
+		case 'p': parsed.reusable = true;      return true;
+		case 'o': parsed.set_options = true;   return true;
+		default:  return false;
+		}
+	}
+
+	static bool parseShoptArgs(const std::vector<std::string>& args, ShoptArgs& parsed) {
 		for (const std::string& arg : args) {
-			if (arg == "-s") { mode = Mode::Set;   continue; }
-			if (arg == "-u") { mode = Mode::Unset; continue; }
-			if (arg == "-q") { mode = Mode::Query; continue; }
-			if (arg == "-p") continue;
 			if (arg == "--") continue;
 
-			if (!arg.empty() && arg[0] == '-') {
-				std::fprintf(stderr, "wbsh: shopt: unknown option: %s\n", arg.c_str());
-				return false;
+			const bool option = arg.size() > 1 && arg[0] == '-' && parsed.names.empty();
+			if (!option) {
+				parsed.names.push_back(arg);
+				continue;
 			}
 
-			names.push_back(arg);
+			for (std::size_t k = 1; k < arg.size(); ++k) {
+				if (applyShoptOption(arg[k], parsed)) continue;
+
+				shellErrorf("shopt: -%c: invalid option\n", arg[k]);
+				std::fprintf(stderr, "shopt: usage: shopt [-pqsu] [-o] [optname ...]\n");
+				return false;
+			}
 		}
 
 		return true;
@@ -1405,7 +1863,7 @@ namespace wbsh {
 		for (const std::string& name : names) {
 			const ShoptSpec* flag = findShopt(name);
 			if (flag == nullptr) {
-				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", name.c_str());
+				shellErrorf("shopt: %s: invalid option name\n", name.c_str());
 				status = 1;
 				continue;
 			}
@@ -1430,52 +1888,150 @@ namespace wbsh {
 		return 0;
 	}
 
-	static int shoptListMode(Executor& exec, const std::vector<std::string>& names) {
-		if (names.empty()) {
-			for (const ShoptSpec& flag : shoptTable()) {
-				printShoptFlag(exec.env(), flag);
-			}
+	static void listAllShopts(const Environment& env, shopt_detail::Show show, bool reusable) {
+		using shopt_detail::Show;
+		for (const ShoptSpec& flag : shoptTable()) {
+			const bool on = shoptFlagOn(env, flag);
+			if ((show == Show::On && !on) || (show == Show::Off && on)) continue;
 
-			return 0;
+			printShoptFlag(env, flag, reusable);
 		}
+	}
 
+	// As in bash, listing named flags fails when one of them is off.
+	static int shoptListNamed(Executor& exec, const std::vector<std::string>& names,
+			bool reusable) {
 		int status = 0;
 		for (const std::string& name : names) {
 			const ShoptSpec* flag = findShopt(name);
 			if (flag == nullptr) {
-				std::fprintf(stderr, "wbsh: shopt: %s: invalid option name\n", name.c_str());
+				shellErrorf("shopt: %s: invalid option name\n", name.c_str());
 				status = 1;
 				continue;
 			}
 
-			printShoptFlag(exec.env(), *flag);
+			printShoptFlag(exec.env(), *flag, reusable);
+			if (!shoptFlagOn(exec.env(), *flag)) status = 1;
 		}
 
 		return status;
 	}
 
-	static int builtin_shopt(Executor& exec, const std::vector<std::string>& args) {
-		using shopt_detail::Mode;
-		Mode mode = Mode::ListAll;
-		std::vector<std::string> names;
-		if (!parseShoptArgs(args, mode, names)) return 1;
+	static int shoptSetMode(Executor& exec, const ShoptArgs& parsed, bool on) {
+		using shopt_detail::Show;
+		if (!parsed.names.empty()) return shoptSetOrUnset(exec, parsed.names, on);
 
-		switch (mode) {
-		case Mode::Set:     return shoptSetOrUnset(exec, names, true);
-		case Mode::Unset:   return shoptSetOrUnset(exec, names, false);
-		case Mode::Query:   return shoptQuery(exec, names);
-		case Mode::ListAll: return shoptListMode(exec, names);
+		listAllShopts(exec.env(), on ? Show::On : Show::Off, parsed.reusable);
+		return 0;
+	}
+
+	// `shopt -o`: the same operations on the `set -o` options.
+	namespace shopt_detail {
+
+		static const SetOptionSpec* findNamedSetOption(const std::string& name) {
+			const SetOptionSpec* spec = findSetOption(name);
+			if (spec == nullptr) shellErrorf("shopt: %s: invalid shell option name\n", name.c_str());
+			return spec;
 		}
 
+		static bool setOptionOn(const Environment& env, const SetOptionSpec& spec) {
+			return env.options().*(spec.flag);
+		}
+
+		// bash pads a name to 20 columns when it was asked for by name and
+		// to 15 when every option is listed (set -o's format).
+		static void printSetOption(const Environment& env, const SetOptionSpec& spec,
+				bool reusable, int width) {
+			const bool on = setOptionOn(env, spec);
+			if (reusable) std::printf("set %co %s\n", on ? '-' : '+', spec.name);
+			else          std::printf("%-*s\t%s\n", width, spec.name, on ? "on" : "off");
+		}
+
+		static int changeSetOptions(Environment& env, const std::vector<std::string>& names,
+				bool on) {
+			int status = 0;
+			for (const std::string& name : names) {
+				const SetOptionSpec* spec = findNamedSetOption(name);
+				if (spec == nullptr) status = 1;
+				else applySetOption(env, *spec, on);
+			}
+
+			return status;
+		}
+
+		static int querySetOptions(const Environment& env, const std::vector<std::string>& names) {
+			for (const std::string& name : names) {
+				const SetOptionSpec* spec = findSetOption(name);
+				if (spec == nullptr || !setOptionOn(env, *spec)) return 1;
+			}
+
+			return 0;
+		}
+
+		static int listSetOptions(const Environment& env, const ShoptArgs& parsed, Show show) {
+			int status = 0;
+			for (const std::string& name : parsed.names) {
+				const SetOptionSpec* spec = findNamedSetOption(name);
+				if (spec == nullptr || !setOptionOn(env, *spec)) status = 1;
+				if (spec != nullptr) printSetOption(env, *spec, parsed.reusable, 20);
+			}
+
+			if (!parsed.names.empty()) return status;
+
+			for (const SetOptionSpec& spec : setOptionTable()) {
+				const bool on = setOptionOn(env, spec);
+				if ((show == Show::On && !on) || (show == Show::Off && on)) continue;
+
+				printSetOption(env, spec, parsed.reusable, 15);
+			}
+
+			return 0;
+		}
+
+		static int runOnSetOptions(Executor& exec, const ShoptArgs& parsed) {
+			Environment& env = exec.env();
+			const bool changes = parsed.mode == Mode::Set || parsed.mode == Mode::Unset;
+			if (changes && !parsed.names.empty()) {
+				return changeSetOptions(env, parsed.names, parsed.mode == Mode::Set);
+			}
+
+			if (parsed.mode == Mode::Query) return querySetOptions(env, parsed.names);
+			if (parsed.mode == Mode::Set) return listSetOptions(env, parsed, Show::On);
+			if (parsed.mode == Mode::Unset) return listSetOptions(env, parsed, Show::Off);
+			return listSetOptions(env, parsed, Show::All);
+		}
+
+	}  // namespace shopt_detail
+
+	static int builtin_shopt(Executor& exec, const std::vector<std::string>& args) {
+		using shopt_detail::Mode;
+		using shopt_detail::Show;
+		ShoptArgs parsed;
+		if (!parseShoptArgs(args, parsed)) return 2;
+		if (parsed.set_options) return shopt_detail::runOnSetOptions(exec, parsed);
+
+		switch (parsed.mode) {
+		case Mode::Set:     return shoptSetMode(exec, parsed, true);
+		case Mode::Unset:   return shoptSetMode(exec, parsed, false);
+		case Mode::Query:   return shoptQuery(exec, parsed.names);
+		case Mode::ListAll: break;
+		}
+
+		if (!parsed.names.empty()) return shoptListNamed(exec, parsed.names, parsed.reusable);
+
+		listAllShopts(exec.env(), Show::All, parsed.reusable);
 		return 0;
 	}
 
 	namespace mapfile_detail {
 		struct MapfileOptions {
-			bool strip_newline = false;
+			bool strip_delimiter = false;
+			char delimiter = '\n';
 			long long max_lines = -1;
 			long long origin = 0;
 			long long skip = 0;
+			long long quantum = 5000;
+			std::string callback;
 			std::string array_name = "MAPFILE";
 		};
 	}  // namespace mapfile_detail
@@ -1486,7 +2042,11 @@ namespace wbsh {
 			const std::string& arg = args[i];
 			const bool has_value = i + 1 < args.size();
 			if (arg == "-t") {
-				options.strip_newline = true;
+				options.strip_delimiter = true;
+			} else if (arg == "-d" && has_value) {
+				options.delimiter = args[++i].empty() ? '\0' : args[i][0];
+			} else if (arg.size() > 2 && arg.compare(0, 2, "-d") == 0) {
+				options.delimiter = arg[2];
 			} else if (arg == "-n" && has_value) {
 				parseLL(args[++i], options.max_lines);
 			} else if (arg == "-O" && has_value) {
@@ -1495,8 +2055,15 @@ namespace wbsh {
 				parseLL(args[++i], options.skip);
 			} else if (arg == "-u" && has_value) {
 				++i;
+			} else if (arg == "-C" && has_value) {
+				options.callback = args[++i];
+			} else if (arg == "-c" && has_value) {
+				if (!parseLL(args[++i], options.quantum) || options.quantum <= 0) {
+					shellErrorf("mapfile: %s: invalid callback quantum\n", args[i].c_str());
+					return false;
+				}
 			} else if (!arg.empty() && arg[0] == '-' && arg != "-" && arg != "--") {
-				std::fprintf(stderr, "wbsh: mapfile: unknown option: %s\n", arg.c_str());
+				shellErrorf("mapfile: unknown option: %s\n", arg.c_str());
 				return false;
 			} else {
 				options.array_name = arg;
@@ -1510,7 +2077,7 @@ namespace wbsh {
 		return options.max_lines <= 0 || static_cast<long long>(count) < options.max_lines;
 	}
 
-	// A last line with no newline still counts, unless it falls inside
+	// A last line with no delimiter still counts, unless it falls inside
 	// the skipped range.
 	static std::vector<std::string> readMapfileLines(
 			const mapfile_detail::MapfileOptions& options) {
@@ -1518,7 +2085,7 @@ namespace wbsh {
 		std::string current;
 		long long skipped = 0;
 		for (int ch = std::fgetc(stdin); ch != EOF; ch = std::fgetc(stdin)) {
-			if (ch != '\n') {
+			if (static_cast<char>(ch) != options.delimiter) {
 				current.push_back(static_cast<char>(ch));
 				continue;
 			}
@@ -1529,7 +2096,9 @@ namespace wbsh {
 				continue;
 			}
 
-			if (!options.strip_newline) current.push_back('\n');
+			if (!options.strip_delimiter && options.delimiter != '\0') {
+				current.push_back(options.delimiter);
+			}
 			lines.push_back(std::move(current));
 			current.clear();
 			if (!mapfileHasRoom(options, lines.size())) break;
@@ -1542,6 +2111,19 @@ namespace wbsh {
 		return lines;
 	}
 
+	static bool callbackDue(const mapfile_detail::MapfileOptions& options, std::size_t line) {
+		const long long count = static_cast<long long>(line) + 1;
+		return !options.callback.empty() && count % options.quantum == 0;
+	}
+
+	// -C: every quantum lines, `callback INDEX LINE` runs before the line
+	// is stored.
+	static void runMapfileCallback(Executor& exec, const mapfile_detail::MapfileOptions& options,
+			long long index, const std::string& line) {
+		exec.executeText(options.callback + " " + std::to_string(index) + " " + quoteSingle(line),
+			"mapfile");
+	}
+
 	static int builtin_mapfile(Executor& exec, const std::vector<std::string>& args) {
 		mapfile_detail::MapfileOptions options;
 		if (!parseMapfileArgs(args, options)) return 1;
@@ -1549,7 +2131,9 @@ namespace wbsh {
 		std::vector<std::string> lines = readMapfileLines(options);
 		std::map<long long, std::string> elements;
 		for (std::size_t i = 0; i < lines.size(); ++i) {
-			elements[options.origin + static_cast<long long>(i)] = std::move(lines[i]);
+			const long long index = options.origin + static_cast<long long>(i);
+			if (callbackDue(options, i)) runMapfileCallback(exec, options, index, lines[i]);
+			elements[index] = std::move(lines[i]);
 		}
 
 		exec.env().setIndexedArraySparse(options.array_name, std::move(elements));
@@ -1557,6 +2141,16 @@ namespace wbsh {
 	}
 
 	namespace getopts_detail {
+		static bool isVariableName(const std::string& name) {
+			if (name.empty() || std::isdigit(static_cast<unsigned char>(name[0]))) return false;
+
+			for (const char c : name) {
+				if (c != '_' && !std::isalnum(static_cast<unsigned char>(c))) return false;
+			}
+
+			return true;
+		}
+
 		struct GetoptsCtx {
 			Executor& exec;
 			std::string opts;
@@ -1566,8 +2160,13 @@ namespace wbsh {
 			int& sub;
 			int optind;
 
-			void setName(const std::string& value) const { exec.env().set(name, value); }
-			void storeOptind() const { exec.env().set("OPTIND", std::to_string(optind)); }
+			void setName(const std::string& value) const {
+				if (isVariableName(name)) exec.env().set(name, value);
+			}
+			void storeOptind() const {
+				exec.env().set("OPTIND", std::to_string(optind));
+				exec.noteGetoptsWroteOptind();
+			}
 		};
 
 		static int loadOptind(Executor& exec) {
@@ -1579,7 +2178,7 @@ namespace wbsh {
 
 		static int finishWithoutOption(GetoptsCtx& ctx) {
 			ctx.setName("?");
-			ctx.exec.env().unset("OPTARG");
+			ctx.exec.env().unsetNameref("OPTARG");
 			ctx.exec.resetGetopts();
 			ctx.storeOptind();
 			return 1;
@@ -1601,14 +2200,24 @@ namespace wbsh {
 			}
 		}
 
+		// OPTERR=0 silences the messages, as a leading `:` does.
+		static bool reportsErrors(const GetoptsCtx& ctx) {
+			int opterr = 1;
+			const std::string text = ctx.exec.env().get("OPTERR");
+			return text.empty() || !parseInt(text, opterr) || opterr != 0;
+		}
+
 		static int handleIllegalOption(GetoptsCtx& ctx, const std::string& current, char opt) {
 			if (ctx.silent) {
 				ctx.setName("?");
 				ctx.exec.env().set("OPTARG", std::string(1, opt));
 			} else {
-				std::fprintf(stderr, "getopts: illegal option -- %c\n", opt);
+				if (reportsErrors(ctx)) {
+					std::fprintf(stderr, "%sillegal option -- %c\n", scriptNamePrefix().c_str(), opt);
+				}
+
 				ctx.setName("?");
-				ctx.exec.env().unset("OPTARG");
+				ctx.exec.env().unsetNameref("OPTARG");
 			}
 
 			advanceOneOptionChar(ctx, current);
@@ -1621,9 +2230,13 @@ namespace wbsh {
 				ctx.setName(":");
 				ctx.exec.env().set("OPTARG", std::string(1, opt));
 			} else {
-				std::fprintf(stderr, "getopts: option requires an argument -- %c\n", opt);
+				if (reportsErrors(ctx)) {
+					std::fprintf(stderr, "%soption requires an argument -- %c\n",
+						scriptNamePrefix().c_str(), opt);
+				}
+
 				ctx.setName("?");
-				ctx.exec.env().unset("OPTARG");
+				ctx.exec.env().unsetNameref("OPTARG");
 			}
 
 			++ctx.optind;
@@ -1658,16 +2271,34 @@ namespace wbsh {
 
 		static int handleFlagOption(GetoptsCtx& ctx, const std::string& current, char opt) {
 			ctx.setName(std::string(1, opt));
-			ctx.exec.env().unset("OPTARG");
+			ctx.exec.env().unsetNameref("OPTARG");
 			advanceOneOptionChar(ctx, current);
 			ctx.storeOptind();
 			return 0;
 		}
 	}  // namespace getopts_detail
 
+	static int parseNextOption(Executor& exec, const std::vector<std::string>& args);
+
+	// As in bash, the option is consumed (OPTIND moves on) before a bad
+	// variable name is reported.
 	static int builtin_getopts(Executor& exec, const std::vector<std::string>& args) {
+		const int status = parseNextOption(exec, args);
+		if (status == 2 || getopts_detail::isVariableName(args[1])) return status;
+
+		shellErrorf("getopts: `%s': not a valid identifier\n", args[1].c_str());
+		return 1;
+	}
+
+	static int parseNextOption(Executor& exec, const std::vector<std::string>& args) {
+		if (!args.empty() && args[0].size() > 1 && args[0][0] == '-' && args[0] != "--") {
+			shellErrorf("getopts: %s: invalid option\n", args[0].substr(0, 2).c_str());
+			printUsage("getopts: usage: getopts optstring name [arg ...]");
+			return 2;
+		}
+
 		if (args.size() < 2) {
-			printerr("getopts: usage: getopts OPTSTRING NAME [ARG ...]");
+			printUsage("getopts: usage: getopts optstring name [arg ...]");
 			return 2;
 		}
 
@@ -1679,6 +2310,7 @@ namespace wbsh {
 			? std::vector<std::string>(args.begin() + 2, args.end())
 			: exec.env().positional();
 
+		exec.syncGetoptsWithOptind();
 		int& sub = exec.getoptsSubindex();
 		if (sub < 1) sub = 1;
 
@@ -1846,7 +2478,7 @@ namespace wbsh {
 		const Executor::Job* job = exec.findJob(spec);
 		if (job == nullptr) {
 			if (args.empty()) printerr("fg: current: no such job");
-			else std::fprintf(stderr, "wbsh: fg: %s: no such job\n", spec.c_str());
+			else shellErrorf("fg: %s: no such job\n", spec.c_str());
 			return 1;
 		}
 
@@ -1868,40 +2500,80 @@ namespace wbsh {
 		const std::string spec = args.empty() ? std::string("%+") : args[0];
 		const Executor::Job* job = exec.findJob(spec);
 		if (job == nullptr) {
-			std::fprintf(stderr, "wbsh: bg: %s: no such job\n", spec.c_str());
+			shellErrorf("bg: %s: no such job\n", spec.c_str());
 			return 1;
 		}
 
 		if (exec.continueJobInBackground(job->id)) return 0;
 
-		if (job->running) std::fprintf(stderr, "wbsh: bg: job %d already in background\n", job->id);
+		if (job->running) shellErrorf("bg: job %d already in background\n", job->id);
 		return 0;
+	}
+
+	// The form bash prints, which reads back as the same alias.
+	static void printAliasDefinition(Executor& exec, const std::string& name) {
+		const char* end_of_options = (!name.empty() && name[0] == '-') ? "-- " : "";
+		std::printf("alias %s%s=%s\n", end_of_options, name.c_str(),
+			quoteSingle(exec.aliasValue(name)).c_str());
 	}
 
 	static void printAllAliases(Executor& exec) {
 		for (const auto& entry : sortedEntries(exec.aliases())) {
-			std::printf("alias %s='%s'\n", entry.first.c_str(), entry.second.c_str());
+			printAliasDefinition(exec, entry.first);
 		}
 	}
 
 	static bool printAlias(Executor& exec, const std::string& name) {
 		if (!exec.isAlias(name)) {
-			std::fprintf(stderr, "wbsh: alias: %s: not found\n", name.c_str());
+			shellErrorf("alias: %s: not found\n", name.c_str());
 			return false;
 		}
 
-		std::printf("alias %s='%s'\n", name.c_str(), exec.aliasValue(name).c_str());
+		printAliasDefinition(exec, name);
 		return true;
 	}
 
-	static int builtin_alias(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) {
-			printAllAliases(exec);
-			return 0;
+	static bool parseAliasFlags(const std::string& arg, bool& print_all) {
+		for (std::size_t k = 1; k < arg.size(); ++k) {
+			if (arg[k] == 'p') {
+				print_all = true;
+				continue;
+			}
+
+			shellErrorf("alias: -%c: invalid option\n", arg[k]);
+			std::fprintf(stderr, "alias: usage: alias [-p] [name[=value] ... ]\n");
+			return false;
 		}
 
+		return true;
+	}
+
+	static bool parseAliasOptions(const std::vector<std::string>& args, std::size_t& first,
+			bool& print_all) {
+		for (; first < args.size(); ++first) {
+			const std::string& arg = args[first];
+			if (arg == "--") {
+				++first;
+				return true;
+			}
+
+			if (arg.size() < 2 || arg[0] != '-') return true;
+			if (!parseAliasFlags(arg, print_all)) return false;
+		}
+
+		return true;
+	}
+
+	// `-p` lists every alias before the named ones.
+	static int builtin_alias(Executor& exec, const std::vector<std::string>& args) {
+		std::size_t first = 0;
+		bool print_all = false;
+		if (!parseAliasOptions(args, first, print_all)) return 2;
+		if (print_all || first == args.size()) printAllAliases(exec);
+
 		int status = 0;
-		for (const std::string& arg : args) {
+		for (std::size_t i = first; i < args.size(); ++i) {
+			const std::string& arg = args[i];
 			std::string name;
 			std::string value;
 			if (splitAssignment(arg, name, value)) {
@@ -1915,14 +2587,34 @@ namespace wbsh {
 		return status;
 	}
 
+	// Options end at `--` or the first name; only -a is one.
+	static bool parseUnaliasArgs(const std::vector<std::string>& args, bool& all,
+			std::vector<std::string>& names) {
+		std::size_t i = 0;
+		for (; i < args.size() && args[i].size() > 1 && args[i][0] == '-'; ++i) {
+			if (args[i] == "--") {
+				++i;
+				break;
+			}
+
+			if (args[i] == "-a") {
+				all = true;
+				continue;
+			}
+
+			printerr("unalias: " + args[i].substr(0, 2) + ": invalid option");
+			printUsage("unalias: usage: unalias [-a] name [name ...]");
+			return false;
+		}
+
+		names.assign(args.begin() + static_cast<std::ptrdiff_t>(i), args.end());
+		return true;
+	}
+
 	static int builtin_unalias(Executor& exec, const std::vector<std::string>& args) {
 		bool all = false;
 		std::vector<std::string> names;
-		for (const std::string& arg : args) {
-			if (arg == "-a") all = true;
-			else if (!arg.empty() && arg[0] == '-') continue;
-			else names.push_back(arg);
-		}
+		if (!parseUnaliasArgs(args, all, names)) return 2;
 
 		if (all) {
 			for (const std::string& name : keysOf(exec.aliases())) exec.unsetAlias(name);
@@ -1932,7 +2624,7 @@ namespace wbsh {
 		int status = 0;
 		for (const std::string& name : names) {
 			if (!exec.isAlias(name)) {
-				std::fprintf(stderr, "wbsh: unalias: %s: not found\n", name.c_str());
+				shellErrorf("unalias: %s: not found\n", name.c_str());
 				status = 1;
 				continue;
 			}
@@ -2140,7 +2832,7 @@ namespace wbsh {
 	static int builtin_ctrlc(Executor&, const std::vector<std::string>& args) {
 		int milliseconds = 0;
 		if (args.size() != 1 || !parseInt(args[0], milliseconds) || milliseconds < 0) {
-			printerr("__ctrlc: usage: __ctrlc MILLISECONDS");
+			printUsage("__ctrlc: usage: __ctrlc MILLISECONDS");
 			return 2;
 		}
 
@@ -2152,7 +2844,7 @@ namespace wbsh {
 	// that has bound one would.
 	static int builtin_mksock(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) {
-			printerr("__mksock: usage: __mksock PATH...");
+			printUsage("__mksock: usage: __mksock PATH...");
 			return 2;
 		}
 
@@ -2170,7 +2862,7 @@ namespace wbsh {
 
 	static int builtin_histstat(Executor& exec, const std::vector<std::string>& args) {
 		if (args.size() != 2) {
-			printerr("__histstat: usage: __histstat INDEX STATUS");
+			printUsage("__histstat: usage: __histstat INDEX STATUS");
 			return 2;
 		}
 
@@ -2199,8 +2891,8 @@ namespace wbsh {
 		for (const std::string& expression : args) {
 			last = expander.evalArith(expression);
 			if (expander.failed()) {
-				const char* label = expander.fatalErrorPending() ? "" : "let: ";
-				std::fprintf(stderr, "wbsh: %s%s\n", label, expander.takeError().c_str());
+				const char* label = expander.errorLabel("let: ");
+				shellErrorf("%s%s\n", label, expander.takeError().c_str());
 				return 1;
 			}
 		}
@@ -2208,11 +2900,12 @@ namespace wbsh {
 		return last != 0 ? 0 : 1;
 	}
 
+	// bash lists only the permissions the mask lets through: `g=rx`.
 	static std::string umaskTriplet(int mask, int shift) {
 		std::string bits;
-		bits.push_back((mask & (0400 >> shift)) != 0 ? '-' : 'r');
-		bits.push_back((mask & (0200 >> shift)) != 0 ? '-' : 'w');
-		bits.push_back((mask & (0100 >> shift)) != 0 ? '-' : 'x');
+		if ((mask & (0400 >> shift)) == 0) bits.push_back('r');
+		if ((mask & (0200 >> shift)) == 0) bits.push_back('w');
+		if ((mask & (0100 >> shift)) == 0) bits.push_back('x');
 		return bits;
 	}
 
@@ -2253,18 +2946,146 @@ namespace wbsh {
 		return setUmask(exec, args[0]);
 	}
 
-	// Nothing is hashed, so every flag but -r is accepted and ignored.
-	static int builtin_hash(Executor& exec, const std::vector<std::string>& args) {
-		if (args.empty()) {
-			std::printf("hash: no commands hashed\n");
+	namespace hash_detail {
+
+		struct Request {
+			bool reset = false;
+			bool show_paths = false;
+			bool reusable = false;
+			bool forget = false;
+			bool has_path = false;
+			std::string path;
+			std::vector<std::string> names;
+		};
+
+		static bool reportUsage(const std::string& option) {
+			printerr("hash: " + option + ": invalid option");
+			printUsage("hash: usage: hash [-lr] [-p pathname] [-dt] [name ...]");
+			return false;
+		}
+
+		static bool applyLetter(const std::vector<std::string>& args, std::size_t& i,
+				std::size_t k, Request& request) {
+			switch (args[i][k]) {
+			case 'r': request.reset = true;      return true;
+			case 't': request.show_paths = true; return true;
+			case 'l': request.reusable = true;   return true;
+			case 'd': request.forget = true;     return true;
+			case 'p':
+				if (i + 1 >= args.size()) {
+					printerr("hash: -p: option requires an argument");
+					return false;
+				}
+
+				request.has_path = true;
+				request.path = args[++i];
+				return true;
+			default:
+				return reportUsage(std::string("-") + args[i][k]);
+			}
+		}
+
+		static bool parse(const std::vector<std::string>& args, Request& request) {
+			std::size_t i = 0;
+			for (; i < args.size() && args[i].size() > 1 && args[i][0] == '-'; ++i) {
+				if (args[i] == "--") {
+					++i;
+					break;
+				}
+
+				const std::size_t option_word = i;
+				for (std::size_t k = 1; k < args[option_word].size(); ++k) {
+					if (!applyLetter(args, i, k, request)) return false;
+				}
+			}
+
+			request.names.assign(args.begin() + static_cast<std::ptrdiff_t>(i), args.end());
+			return true;
+		}
+
+		static void list(const Executor& exec, bool reusable) {
+			const auto& hashed = exec.hashedCommands();
+			if (hashed.empty()) {
+				std::printf("hash: hash table empty\n");
+				return;
+			}
+
+			if (!reusable) std::printf("hits\tcommand\n");
+			for (const auto& entry : hashed) {
+				if (reusable) std::printf("builtin hash -p %s %s\n", entry.second.c_str(), entry.first.c_str());
+				else std::printf("   0\t%s\n", entry.second.c_str());
+			}
+		}
+
+		static int showPaths(const Executor& exec, const std::vector<std::string>& names) {
+			int status = 0;
+			for (const std::string& name : names) {
+				const auto found = exec.hashedCommands().find(name);
+				if (found == exec.hashedCommands().end()) {
+					printerr("hash: " + name + ": not found");
+					status = 1;
+					continue;
+				}
+
+				if (names.size() > 1) std::printf("%s\t", name.c_str());
+				std::printf("%s\n", found->second.c_str());
+			}
+
+			return status;
+		}
+
+		static int forget(Executor& exec, const std::vector<std::string>& names) {
+			int status = 0;
+			for (const std::string& name : names) {
+				if (exec.unhashCommand(name)) continue;
+
+				printerr("hash: " + name + ": not found");
+				status = 1;
+			}
+
+			return status;
+		}
+
+		static int remember(Executor& exec, const std::vector<std::string>& names) {
+			int status = 0;
+			for (const std::string& name : names) {
+				if (exec.isBuiltin(name) || exec.isFunction(name)) continue;
+
+				const std::string found = exec.findExecutable(name);
+				if (found.empty()) {
+					printerr("hash: " + name + ": not found");
+					status = 1;
+					continue;
+				}
+
+				exec.hashCommand(name, exec.pathConv().toPosix(found));
+			}
+
+			return status;
+		}
+
+	}  // namespace hash_detail
+
+	static int runHashRequest(Executor& exec, const hash_detail::Request& request) {
+		if (request.reset) exec.clearExecutablePathCache();
+		if (request.has_path && !exec.restrictedHashTargetAllowed(request.path, "hash: ")) return 1;
+
+		if (request.has_path) {
+			for (const std::string& name : request.names) exec.hashCommand(name, request.path);
 			return 0;
 		}
 
-		for (const std::string& arg : args) {
-			if (arg == "-r") exec.clearExecutablePathCache();
-		}
-
+		if (request.forget) return hash_detail::forget(exec, request.names);
+		if (request.show_paths) return hash_detail::showPaths(exec, request.names);
+		if (!request.names.empty()) return hash_detail::remember(exec, request.names);
+		if (!request.reset) hash_detail::list(exec, request.reusable);
 		return 0;
+	}
+
+	static int builtin_hash(Executor& exec, const std::vector<std::string>& args) {
+		hash_detail::Request request;
+		if (!hash_detail::parse(args, request)) return 2;
+		return runHashRequest(exec, request);
 	}
 
 #ifdef _WIN32
@@ -2301,11 +3122,47 @@ namespace wbsh {
 		return 0;
 	}
 
-	static int builtin_caller(Executor& exec, const std::vector<std::string>&) {
-		if (exec.funcDepth() == 0) return 1;
+	static const std::string* callStackElement(const Environment& env, const char* name,
+			long long index) {
+		const Environment::IndexedArray* array = env.getIndexedArray(name);
+		if (array == nullptr) return nullptr;
 
-		std::printf("%d %s\n", exec.env().currentLineno(), exec.env().shellName().c_str());
+		const auto found = array->find(index);
+		return found == array->end() ? nullptr : &found->second;
+	}
+
+	static int printCallerLine(const Environment& env) {
+		const std::string* line = callStackElement(env, "BASH_LINENO", 0);
+		if (line == nullptr) return 1;
+
+		const std::string* source = callStackElement(env, "BASH_SOURCE", 1);
+		std::printf("%s %s\n", line->c_str(), source != nullptr ? source->c_str() : "NULL");
 		return 0;
+	}
+
+	static int printCallerFrame(const Environment& env, long long level) {
+		const std::string* line = callStackElement(env, "BASH_LINENO", level);
+		const std::string* name = callStackElement(env, "FUNCNAME", level + 1);
+		const std::string* source = callStackElement(env, "BASH_SOURCE", level + 1);
+		if (line == nullptr || name == nullptr || source == nullptr) return 1;
+
+		std::printf("%s %s %s\n", line->c_str(), name->c_str(), source->c_str());
+		return 0;
+	}
+
+	// The frames come from the call-stack arrays, which a pipeline stage
+	// running in a child process inherits.
+	static int builtin_caller(Executor& exec, const std::vector<std::string>& args) {
+		if (args.empty()) return printCallerLine(exec.env());
+
+		bool ok = false;
+		const long long level = toIntSafe(args[0], ok);
+		if (!ok || level < 0) {
+			printerr("caller: " + args[0] + ": invalid number");
+			return 2;
+		}
+
+		return printCallerFrame(exec.env(), level);
 	}
 
 	static void printUtilCommandIndex(Executor& exec) {
@@ -2358,7 +3215,7 @@ namespace wbsh {
 		int status = 0;
 		for (const std::string& name : args) {
 			if (!exec.isBuiltin(name)) {
-				std::fprintf(stderr, "wbsh: help: no help topics match '%s'\n", name.c_str());
+				shellErrorf("help: no help topics match '%s'\n", name.c_str());
 				status = 1;
 				continue;
 			}
@@ -2388,7 +3245,7 @@ namespace wbsh {
 		exec.registerBuiltin("set",      builtin_set);
 		exec.registerBuiltin("eval",     builtin_eval);
 		exec.registerBuiltin("source",   builtin_source);
-		exec.registerBuiltin(".",        builtin_source);
+		exec.registerBuiltin(".",        builtin_dot);
 		exec.registerBuiltin("type",     builtin_type);
 		exec.registerBuiltin("command",  builtin_command);
 		exec.registerBuiltin("builtin",  builtin_builtin);

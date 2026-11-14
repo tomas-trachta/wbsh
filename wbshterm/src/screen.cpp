@@ -6,6 +6,7 @@
 #include "screen.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -1054,41 +1055,137 @@ namespace wbshterm {
 			&& blocks_.back().output_row < 0;
 	}
 
-	// OSC 633 and OSC 133 marks: A starts a prompt, C starts the command's
-	// output, and D reports how it ended. A shell may send both kinds, so
-	// a second A on the same prompt is the same prompt.
+	static std::uint64_t steadyMs() {
+		const auto since = std::chrono::steady_clock::now().time_since_epoch();
+		return static_cast<std::uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(since).count());
+	}
+
+	// OSC 633 and OSC 133 marks: A starts a prompt, B ends it, C starts the
+	// command's output, D reports how it ended, and 633's E carries the
+	// command line. A shell may send both kinds, so a second A on the same
+	// prompt is the same prompt.
 	// A prompt or a finished command means the program that opened a
 	// synchronized frame is gone, whether or not it closed the frame.
 	void Screen::noteShellMark(const std::string& body) {
 		if (body.empty()) return;
 		if (body[0] == 'A' || body[0] == 'D') synchronized_output_ = false;
 
-		if (body[0] == 'A') {
-			if (promptAlreadyMarked()) return;
-
-			CommandBlock block;
-			block.prompt_row = currentAbsoluteRow();
-			blocks_.push_back(block);
-			while (blocks_.size() > kMaxCommandBlocks) blocks_.erase(blocks_.begin());
+		switch (body[0]) {
+		case 'A':
+			notePromptStart();
+			return;
+		case 'B':
+			noteCommandStart();
+			return;
+		case 'C':
+			noteOutputStart();
+			return;
+		case 'D':
+			noteCommandEnd(body);
+			return;
+		case 'E':
+			noteCommandLine(body);
+			return;
+		default:
 			return;
 		}
+	}
 
+	void Screen::notePromptStart() {
+		if (promptAlreadyMarked()) return;
+
+		CommandBlock block;
+		block.prompt_row = currentAbsoluteRow();
+		blocks_.push_back(block);
+		while (blocks_.size() > kMaxCommandBlocks) blocks_.erase(blocks_.begin());
+	}
+
+	void Screen::noteCommandStart() {
+		if (blocks_.empty() || blocks_.back().output_row >= 0) return;
+
+		CommandBlock& block = blocks_.back();
+		block.command_offset = std::max(0, currentAbsoluteRow() - block.prompt_row);
+		block.command_column = cursor_.column;
+	}
+
+	void Screen::noteOutputStart() {
 		if (blocks_.empty()) return;
 
-		if (body[0] == 'C') {
-			blocks_.back().output_row = currentAbsoluteRow();
-			return;
-		}
+		blocks_.back().output_row = currentAbsoluteRow();
+		blocks_.back().started_ms = steadyMs();
+	}
 
-		if (body[0] != 'D') return;
+	void Screen::noteCommandEnd(const std::string& body) {
+		if (blocks_.empty()) return;
 
-		blocks_.back().end_row = currentAbsoluteRow();
-		blocks_.back().finished = true;
+		CommandBlock& block = blocks_.back();
+		block.end_row = currentAbsoluteRow();
+		block.ended_ms = steadyMs();
+		block.finished = true;
 
 		const std::size_t separator = body.find(';');
 		if (separator == std::string::npos) return;
 
-		blocks_.back().exit_status = std::atoi(body.substr(separator + 1).c_str());
+		block.exit_status = std::atoi(body.substr(separator + 1).c_str());
+	}
+
+	static int hexDigitValue(char letter) {
+		if (letter >= '0' && letter <= '9') return letter - '0';
+		if (letter >= 'a' && letter <= 'f') return letter - 'a' + 10;
+		if (letter >= 'A' && letter <= 'F') return letter - 'A' + 10;
+
+		return -1;
+	}
+
+	// VS Code's escaping: \\ is a backslash and \xHH any byte, so the
+	// text holds no `;` and the first one left ends it (a nonce follows).
+	static std::string decodedCommandLine(const std::string& text) {
+		std::string out;
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			if (text[i] == ';') break;
+
+			const bool escaped = text[i] == '\\' && i + 1 < text.size();
+			if (escaped && text[i + 1] == '\\') {
+				out.push_back('\\');
+				++i;
+				continue;
+			}
+
+			const bool hex = escaped && text[i + 1] == 'x' && i + 3 < text.size()
+				&& hexDigitValue(text[i + 2]) >= 0 && hexDigitValue(text[i + 3]) >= 0;
+			if (hex) {
+				out.push_back(static_cast<char>(hexDigitValue(text[i + 2]) * 16
+					+ hexDigitValue(text[i + 3])));
+				i += 3;
+				continue;
+			}
+
+			out.push_back(text[i]);
+		}
+
+		return out;
+	}
+
+	void Screen::noteCommandLine(const std::string& body) {
+		if (blocks_.empty() || body.size() < 2 || body[1] != ';') return;
+
+		blocks_.back().command = decodedCommandLine(body.substr(2));
+	}
+
+	const CommandBlock* Screen::blockAt(int absolute_row) const {
+		const CommandBlock* found = nullptr;
+		for (const CommandBlock& block : blocks_) {
+			if (block.prompt_row > absolute_row) break;
+
+			found = &block;
+		}
+
+		return found;
+	}
+
+	bool Screen::atPrompt() const {
+		return !blocks_.empty() && blocks_.back().output_row < 0 && !alt_screen_;
 	}
 
 	static std::string percentDecode(const std::string& text) {

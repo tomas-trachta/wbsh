@@ -487,6 +487,8 @@ namespace wbshterm {
 		"-- wbshterm.bind(\"ctrl+shift+l\", function() wbshterm.actions.send(\"ls -la\\r\") end)\n"
 		"\n"
 		"-- Other actions: copy(), paste(), copy_last_output(), scroll(lines),\n"
+		"-- copy_command_output() and rerun_command() (the command at the top\n"
+		"-- of the view, or the last one),\n"
 		"-- font_size(delta), search(), previous_command(), next_command(),\n"
 		"-- close_pane(), zoom(), focus(\"left\"|\"right\"|\"up\"|\"down\"|\"next\"), reload().\n"
 		"-- wbshterm.log(...) appends a line to init.log.\n";

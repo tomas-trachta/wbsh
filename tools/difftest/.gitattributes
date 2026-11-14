@@ -1,0 +1,3 @@
+# Cases run byte-for-byte under both shells; CRLF would change their output.
+*.sh    text eol=lf
+*.out   text eol=lf

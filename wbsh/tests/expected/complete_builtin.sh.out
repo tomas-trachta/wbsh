@@ -1,9 +1,9 @@
 === options are parsed, and complete -p reads back
+complete -o filenames -o nospace -b -u -A function -A signal -G '*.c' -W 'a b$x' -P 'pre' -S 'suf' -C 'cmd x' -F fn foo
+complete -c -I
+complete -d mycd
 complete -F dflt -D
 complete -W 'e' -E
-complete -c -I
-complete -o filenames -o nospace -b -u -A function -A signal -G '*.c' -W 'a b$x' -P 'pre' -S 'suf' -C 'cmd x' -F fn foo
-complete -d mycd
 complete -f -X '!*.txt' vim
 complete -o filenames -o nospace -b -u -A function -A signal -G '*.c' -W 'a b$x' -P 'pre' -S 'suf' -C 'cmd x' -F fn foo
 complete -f -X '!*.txt' vim
@@ -13,21 +13,21 @@ complete -c -I
 0
 6
 === errors
-wbsh: complete: -Z: invalid option
+complete_builtin.sh: line 30: complete: -Z: invalid option
 complete: usage: complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]
 status 2
-wbsh: complete: nosuch: invalid action name
+complete_builtin.sh: line 31: complete: nosuch: invalid action name
 status 2
-wbsh: complete: nosuch: invalid option name
+complete_builtin.sh: line 32: complete: nosuch: invalid option name
 status 2
-wbsh: complete: -W: option requires an argument
+complete_builtin.sh: line 33: complete: -W: option requires an argument
 complete: usage: complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]
 status 2
 complete: usage: complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]
 status 2
-wbsh: complete: nosuchcmd: no completion specification
+complete_builtin.sh: line 35: complete: nosuchcmd: no completion specification
 status 1
-wbsh: complete: nosuchcmd: no completion specification
+complete_builtin.sh: line 36: complete: nosuchcmd: no completion specification
 status 1
 wbsh: compopt: not currently executing completion function
 status 1

@@ -1,48 +1,56 @@
 === 1. missing done: only the line before runs
 before
-wbsh: _run_tmp/syntax_probe.sh: line 4: expected `done`
+_run_tmp/syntax_probe.sh: line 4: syntax error: unexpected end of file from `for' command on line 2
 rc=2
 === 2. stray tokens are errors
 a
-wbsh: _run_tmp/syntax_probe.sh: line 2: syntax error near unexpected token `)'
+_run_tmp/syntax_probe.sh: line 2: syntax error near unexpected token `)'
+_run_tmp/syntax_probe.sh: line 2: `)'
 rc=2
 a
-wbsh: _run_tmp/syntax_probe.sh: line 2: syntax error near unexpected token `fi'
+_run_tmp/syntax_probe.sh: line 2: syntax error near unexpected token `fi'
+_run_tmp/syntax_probe.sh: line 2: `fi'
 rc=2
 a
-wbsh: _run_tmp/syntax_probe.sh: line 2: syntax error near unexpected token `done'
+_run_tmp/syntax_probe.sh: line 2: syntax error near unexpected token `done'
+_run_tmp/syntax_probe.sh: line 2: `echo b; done; echo c'
 rc=2
 === 3. the whole line with the error is skipped
-wbsh: _run_tmp/syntax_probe.sh: line 2: expected `then`
-wbsh: _run_tmp/syntax_probe.sh: line 2: expected `fi`
+_run_tmp/syntax_probe.sh: line 2: syntax error: unexpected end of file from `if' command on line 1
 rc=2
 in f
-wbsh: _run_tmp/syntax_probe.sh: line 4: expected word after `case`
+_run_tmp/syntax_probe.sh: line 4: syntax error near unexpected token `newline'
+_run_tmp/syntax_probe.sh: line 4: `if true; then echo t; fi; case'
 rc=2
 === 4. lexer errors
 a
-wbsh: _run_tmp/syntax_probe.sh: line 2: unterminated double-quoted string
+_run_tmp/syntax_probe.sh: line 2: unexpected EOF while looking for matching `"'
 rc=2
 a
-wbsh: _run_tmp/syntax_probe.sh: line 2: unterminated $(...) substitution
+_run_tmp/syntax_probe.sh: line 2: unexpected EOF while looking for matching `)'
 rc=2
 === 5. exit before the error wins; the EXIT trap sees 2
 a
 rc=3
 a
-wbsh: _run_tmp/syntax_probe.sh: line 3: syntax error near unexpected token `fi'
+_run_tmp/syntax_probe.sh: line 3: syntax error near unexpected token `fi'
+_run_tmp/syntax_probe.sh: line 3: `fi'
 trap 2
 rc=2
 === 6. -c
 a
-wbsh: line 2: syntax error near unexpected token `fi'
+wbsh: -c: line 2: syntax error near unexpected token `fi'
+wbsh: -c: line 2: `fi'
 rc=2
 === 7. eval and source return 2 and the shell goes on
-wbsh: eval:56:9: syntax error near unexpected token `fi'
+syntax_errors.sh: eval: line 56: syntax error near unexpected token `fi'
+syntax_errors.sh: eval: line 56: `echo x; fi'
 eval rc=2
 y
-wbsh: eval:59:1: syntax error near unexpected token `fi'
+syntax_errors.sh: eval: line 61: syntax error near unexpected token `fi'
+syntax_errors.sh: eval: line 61: `fi'
 eval rc=2
 sourced
-wbsh: _run_tmp/syntax_probe.sh:2:1: syntax error near unexpected token `fi'
+_run_tmp/syntax_probe.sh: line 2: syntax error near unexpected token `fi'
+_run_tmp/syntax_probe.sh: line 2: `fi'
 source rc=2

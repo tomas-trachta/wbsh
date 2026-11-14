@@ -1,0 +1,39 @@
+=== status, stdout and stderr apart
+{"status":3,"stdout":"hi\n","stderr":"oops\n","duration_ms":N}
+exit 3
+{"status":0,"stdout":"","stderr":"","duration_ms":N}
+exit 0
+{"status":0,"stdout":"no newline","stderr":"","duration_ms":N}
+exit 0
+=== the command runs as a top-level script
+{"status":44,"stdout":"trap ran\n","stderr":"","duration_ms":N}
+exit 44
+{"status":1,"stdout":"","stderr":"","duration_ms":N}
+exit 1
+{"status":9,"stdout":"","stderr":"","duration_ms":N}
+exit 9
+{"status":0,"stdout":"0=name 1=one #=2\n","stderr":"","duration_ms":N}
+exit 0
+{"status":0,"stdout":"merged\n","stderr":"","duration_ms":N}
+exit 0
+=== escaping
+{"status":0,"stdout":"q\" b\\ t\t cr\r nl\n","stderr":"","duration_ms":N}
+exit 0
+{"status":0,"stdout":"\u0001\u001f\u007f","stderr":"","duration_ms":N}
+exit 0
+{"status":0,"stdout":"\u017e \u65e5 \ud83c\udf89","stderr":"","duration_ms":N}
+exit 0
+{"status":0,"stdout":"bad\ufffdbyte \ufffd\ufffd cut","stderr":"","duration_ms":N}
+exit 0
+{"status":0,"stdout":"nul\u0000inside","stderr":"","duration_ms":N}
+exit 0
+=== with --ec, a script file and a missing file
+{"status":0,"stdout":"hi arg\n","stderr":"err\n","duration_ms":N}
+exit 0
+{"status":5,"stdout":"from file one\n","stderr":"","duration_ms":N}
+exit 5
+{"status":127,"stdout":"","stderr":"wbsh: _run_tmp/json_run/missing.sh: No such file or directory\n","duration_ms":N}
+exit 127
+=== output of external commands is captured too
+{"status":0,"stdout":"child out\n","stderr":"child err\n","duration_ms":N}
+exit 0

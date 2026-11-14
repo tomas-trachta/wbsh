@@ -1,0 +1,36 @@
+{
+    "line_rules": [
+        {
+            "id": "umask-inherited",
+            "reason": "the umask is inherited from the parent process; bash's .right files were made under 002, Windows processes start with 022",
+            "pattern": "^(?:umask (?:-S )?)?(?:0?0[0-7]{2}|u=rwx,g=rwx?,o=rx)$"
+        },
+        {
+            "id": "missing-locale",
+            "reason": "the test suite's own warning that a locale (zh_TW.big5, de_DE, ...) is not installed; Windows has no POSIX locale database",
+            "pattern": "warning: (?:you do not have the \\S+ locale installed;|that may cause some of these tests to fail\\.)$"
+        },
+        {
+            "id": "windows-reserved-filename",
+            "reason": "Windows file systems reject : * ? \" < > | in file names, so creating such a file fails",
+            "pattern": "cannot (?:touch|create|open) '[^']*[:*?\"<>|][^']*'"
+        },
+        {
+            "id": "linux-signal-list",
+            "reason": "kill -l / trap -l print the host's signal table; Linux numbering (SIGSTKFLT, SIGPWR, real-time signals) does not exist on Windows",
+            "pattern": "(?:SIGSTKFLT|SIGPWR|SIGRTMIN|SIGRTMAX)"
+        }
+    ],
+    "suite_rules": [
+        {
+            "id": "rsh-no-bin-sh",
+            "reason": "read 2026-11-14: rsh1.sub/rsh2.sub start with `cp /bin/sh .` and `ln sh a`; Windows has no /bin/sh, so cp and ln print errors. Every restricted-shell message, line number and status matches the .right file; the only changed lines are those three cp/ln errors",
+            "suites": ["rsh"]
+        },
+        {
+            "id": "tilde-no-usr",
+            "reason": "read 2026-11-14: tilde.tests runs `cd /usr; cd /tmp; echo ~- ~+`; Windows has no /usr and wbsh maps /tmp to the user's temp directory, so ~- and ~+ print the directories actually reached instead of /usr and /tmp. The other 30 lines, all tilde-expansion cases, match",
+            "suites": ["tilde"]
+        }
+    ]
+}

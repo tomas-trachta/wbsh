@@ -1,0 +1,2 @@
+cat <<EOF
+never closed

@@ -12,7 +12,7 @@ command -v nosuch_cmd echo >/dev/null; echo "one found rc=$?"
 case "$(command -v cmd)" in /*cmd.exe|/*CMD.EXE|/*Cmd.exe) echo "cmd path is posix" ;; *) echo "cmd path: $(command -v cmd)" ;; esac
 command -V if
 command -V nosuch_cmd 2>&1; echo "rc=$?"
-alias zz='echo z'
+shopt -s expand_aliases; alias zz='echo z'
 command -v zz
 unalias zz
 echo() { builtin echo "function echo"; }
@@ -59,8 +59,8 @@ echo "=== 5. declare in a function is local, -g is global"
 d=out; fd() { declare d=in; typeset t=in; declare -g gd=in; }; t=out; fd
 echo "d=$d t=$t gd=$gd"
 x=global; fx() { local x; echo "[${x-unset}]"; x=changed; }; fx; echo "x=$x"
-fr() { local -r r=1; r=2; echo "r=$r"; }; fr 2>&1; r=5; echo "r after=$r"
-fi_() { local -i n=3+4; n+=1; echo "n=$n"; n=010; echo "n=$n"; }; fi_
+fr() { local -r r=1; r=2; echo "r=$r"; }; fr 2>&1
+r=5; echo "r after=$r"; fi_() { local -i n=3+4; n+=1; echo "n=$n"; n=010; echo "n=$n"; }; fi_
 fl() { local -l lo=ABC; local -u up=abc; lo+=XY; echo "$lo $up"; }; fl
 arr=(g1 g2); fa() { local -a arr=(l1 "l 2"); arr+=(l3); echo "${#arr[@]} ${arr[1]}"; }; fa
 echo "arr restored: ${arr[*]}"

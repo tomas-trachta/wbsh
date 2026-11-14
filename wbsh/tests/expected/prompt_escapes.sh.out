@@ -21,7 +21,7 @@ prompt_$HOME_dir
 a$b `c` "d" e\f
 === with promptvars off only the escapes are decoded
 $name $ A
-promptvars      off
+promptvars          	off
 === an interactive shell: PS1 expansion, \#, \!, PROMPT_COMMAND
 [1:1:2]$ one
 [2:2:2]$ two

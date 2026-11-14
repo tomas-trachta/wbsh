@@ -3,8 +3,7 @@
  * @brief `touch` and `stat`: reading and setting file metadata.
  *
  * Windows has no uid / gid or mode bits; like `ls -l` these report the
- * current user (1000) and permissions derived from the read-only
- * attribute and the executable extensions.
+ * current user (1000) and the permissions filemode.h derives.
  */
 
 #include "coreutils_internal.h"
@@ -28,6 +27,7 @@
 #include "filetimes.h"
 #include "optscan.h"
 #include "fifo.h"
+#include "filemode.h"
 #include "pathconv.h"
 #include "timefmt.h"
 
@@ -230,7 +230,7 @@ namespace wbsh::stat_detail {
 		bool is_socket = false;
 		bool is_fifo = false;
 		bool read_only = false;
-		bool executable = false;
+		unsigned permissions = 0;
 		unsigned long long size = 0;
 		unsigned long long device = 0;
 		unsigned long long inode = 0;
@@ -335,21 +335,19 @@ namespace wbsh::stat_detail {
 		info.is_dir = !info.is_link && fs::is_directory(status);
 		info.is_socket = !info.is_dir && !info.is_link && isUnixSocketFile(native);
 		info.is_fifo = !info.is_dir && !info.is_link && isFifoFile(native);
-		info.executable = info.is_dir || hasExecutableExtension(native);
 		const bool special = info.is_socket || info.is_fifo;
 		if (!info.is_dir && !info.is_link && !special) info.size = fs::file_size(native, ec);
 		if (info.is_link) readLinkTarget(exec, native, info);
 
 		readHandleInfo(native, follow, info);
+		if (!info.is_link) info.permissions = filePermissions(native, info.is_dir, info.read_only);
 		return true;
 	}
 
 	static unsigned modeBits(const Info& info) {
 		if (info.is_link) return 0777;
 
-		const unsigned execute = info.executable ? 0111 : 0;
-		const unsigned write = info.read_only ? 0 : 0200;
-		return 0444 | write | execute;
+		return info.permissions;
 	}
 
 	static unsigned typeBits(const Info& info) {

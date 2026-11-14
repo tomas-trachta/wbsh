@@ -1,0 +1,2 @@
+cat <<END | cat
+abc

@@ -6,7 +6,10 @@
 
 #include "executor.h"
 
+#include <array>
+#include <charconv>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -56,14 +59,125 @@ namespace wbsh {
 		}
 	}
 
+	// Every function call pushes and pops a frame, so while the three
+	// arrays still read as the stack they were published from, a call
+	// edits them in place instead of building them again.
+	namespace callstack_detail {
+
+		enum class Column {
+			Name,
+			Source,
+			Line,
+		};
+
+		static const Column kColumns[] = { Column::Name, Column::Source, Column::Line };
+		static const std::size_t kColumnCount = 3;
+
+		using Digits = std::array<char, 24>;
+		using PublishedArrays = std::array<Environment::IndexedArray*, kColumnCount>;
+
+		static const std::string& columnVar(Column column) {
+			static const std::string kNames[kColumnCount] = {
+				kFuncNameVar, kBashSourceVar, kBashLinenoVar,
+			};
+			return kNames[static_cast<std::size_t>(column)];
+		}
+
+		static std::string_view lineText(int line, Digits& digits) {
+			const std::to_chars_result end = std::to_chars(digits.data(),
+				digits.data() + digits.size(), line);
+			const auto length = static_cast<std::size_t>(end.ptr - digits.data());
+			return std::string_view(digits.data(), length);
+		}
+
+		template <typename Frame>
+		static std::string_view columnText(const Frame& frame, Column column, Digits& digits) {
+			switch (column) {
+			case Column::Name:
+				return frame.name;
+			case Column::Source:
+				return frame.source;
+			case Column::Line:
+			default:
+				return lineText(frame.line, digits);
+			}
+		}
+
+		template <typename Frame>
+		static bool publishedAs(const Environment::IndexedArray& array,
+		                        const std::vector<Frame>& frames, Column column) {
+			if (array.size() != frames.size()) return false;
+
+			Digits digits{};
+			long long index = 0;
+			auto element = array.begin();
+			for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame, ++element) {
+				if (element->first != index++) return false;
+				if (element->second != columnText(*frame, column, digits)) return false;
+			}
+
+			return true;
+		}
+
+		template <typename Frame>
+		static bool findPublished(Environment& env, const std::vector<Frame>& frames,
+		                          PublishedArrays& out_arrays) {
+			for (const Column column : kColumns) {
+				Environment::IndexedArray* array = env.plainIndexedArray(columnVar(column));
+				if (array == nullptr || !publishedAs(*array, frames, column)) return false;
+
+				out_arrays[static_cast<std::size_t>(column)] = array;
+			}
+
+			return true;
+		}
+
+		static void moveKey(Environment::IndexedArray& array, long long from, long long to) {
+			auto node = array.extract(from);
+			node.key() = to;
+			array.insert(std::move(node));
+		}
+
+		template <typename Frame>
+		static void publishPushed(const PublishedArrays& arrays, const Frame& frame) {
+			Digits digits{};
+			for (const Column column : kColumns) {
+				Environment::IndexedArray& array = *arrays[static_cast<std::size_t>(column)];
+				for (auto index = static_cast<long long>(array.size()); index-- > 0; ) {
+					moveKey(array, index, index + 1);
+				}
+
+				array.emplace(0, std::string(columnText(frame, column, digits)));
+			}
+		}
+
+		static void publishPopped(const PublishedArrays& arrays) {
+			for (Environment::IndexedArray* array : arrays) {
+				array->erase(0);
+				const auto count = static_cast<long long>(array->size());
+				for (long long index = 1; index <= count; ++index) {
+					moveKey(*array, index, index - 1);
+				}
+			}
+		}
+
+	}  // namespace callstack_detail
+
 	void Executor::pushCallFrame(CallFrame frame) {
+		callstack_detail::PublishedArrays arrays{};
+		const bool in_place = callstack_detail::findPublished(env_, call_stack_, arrays);
 		call_stack_.push_back(std::move(frame));
-		publishCallStack();
+		if (in_place) callstack_detail::publishPushed(arrays, call_stack_.back());
+		else publishCallStack();
 	}
 
 	void Executor::popCallFrame() {
+		callstack_detail::PublishedArrays arrays{};
+		const bool in_place = call_stack_.size() > 1
+			&& callstack_detail::findPublished(env_, call_stack_, arrays);
 		if (!call_stack_.empty()) call_stack_.pop_back();
-		publishCallStack();
+		if (in_place) callstack_detail::publishPopped(arrays);
+		else publishCallStack();
 	}
 
 	void Executor::publishCallStack() {

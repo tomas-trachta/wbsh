@@ -33,6 +33,13 @@ namespace wbsh {
 	/// program itself has ended; closes @p job.
 	void releaseExecJob(HANDLE job);
 
+	/// The job a command the shell does not leave behind starts in. A host
+	/// that kills the shell (TerminateProcess) closes it, which ends those
+	/// commands and everything they started; a shell that exits, or whose
+	/// console goes away, lets what they left running live on. Processes
+	/// may break away. Null when no job could be made.
+	HANDLE childLifetimeJob();
+
 	void suspendProcessGroup(HANDLE group);
 	void resumeProcessGroup(HANDLE group);
 

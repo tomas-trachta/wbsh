@@ -1,0 +1,12 @@
+/usr/xyz/bin:~/bin2:/bin:/usr/bin:.
+/usr/xyz
+~
+~
+~/x
+/usr/xyz/y
+/usr/xyz/a:~/b
+foo=bar:/usr/xyz
+foo=bar:~
+HOME=~
+/usr/xyz:/usr/xyz
+HOME=/usr/xyz

@@ -75,9 +75,6 @@ namespace wbsh {
 	/// The words of @p argv single-quoted for the shell parser, joined by spaces.
 	std::string quoteShellArgv(const std::vector<std::string>& argv);
 
-	/// .exe / .bat / .cmd / .com / .ps1: what `ls` and `find -perm` treat as executable.
-	bool hasExecutableExtension(const std::filesystem::path& full);
-
 	/// Remove a file, link or empty directory, clearing a read-only attribute if that is
 	/// what stands in the way. Links are removed, never followed.
 	bool removeFileOrEmptyDirectory(const std::filesystem::path& native, std::error_code& ec);
@@ -152,6 +149,13 @@ namespace wbsh {
 	};
 
 	WindowsVersion windowsVersion();
+
+	/// The MSYSTEM wbsh sets when the environment has none, as Git Bash does.
+	constexpr char kDefaultMsystem[] = "MINGW64";
+
+	/// `uname -s`: @p override_name (WBSH_UNAME_S) when not empty, else the
+	/// MSYS-style kernel name for @p msystem, e.g. `MINGW64_NT-10.0-19045`.
+	std::string unameSystemName(const std::string& msystem, const std::string& override_name);
 
 	/// True only for a real console: _isatty also says yes for NUL.
 	bool isConsoleStream(std::FILE* stream);
@@ -258,6 +262,8 @@ namespace wbsh {
 
 	void registerOwnerBuiltins(Executor& exec);
 
+	void registerChmodBuiltin(Executor& exec);
+
 	void registerInstallBuiltin(Executor& exec);
 
 	void registerFileTypeBuiltin(Executor& exec);
@@ -283,5 +289,7 @@ namespace wbsh {
 	void registerCronBuiltins(Executor& exec);
 	void registerScriptBuiltins(Executor& exec);
 	void registerFifoBuiltins(Executor& exec);
+	/// coreutils_gitbash.cpp: cygpath, start, winpty.
+	void registerGitBashBuiltins(Executor& exec);
 
 }  // namespace wbsh

@@ -626,40 +626,4 @@ namespace wbsh {
 		return out;
 	}
 
-	bool PathConv::argLooksTranslatable(const std::string& arg) const {
-		if (arg.empty()) return false;
-		if (arg == "/") return false;
-		if (arg.find("://") != std::string::npos) return false;
-		if (arg[0] == '-') return false;
-		if (arg[0] != '/') return false;
-
-		// Single-letter `/x` is almost always a Win32-style switch (`cmd /c`,
-		// `cmd /k`, `where /q`, etc.). Require a deeper path before we
-		// translate, OR an exact match against a known mount.
-		if (arg.size() < 3) return false;
-		if (arg.size() >= 4 && arg[2] == '/') return true;
-
-		// /dev/std{in,out,err} and /dev/tty: pass through verbatim. Mapping
-		// to CONIN$/CONOUT$/CON breaks cross-process uses like
-		// `docker exec ... -i /dev/stdin`, where the path is meant to be
-		// interpreted by the callee (here: sqlcmd inside a Linux container).
-		if (arg == "/dev/stdin" || arg == "/dev/stdout"
-		    || arg == "/dev/stderr" || arg == "/dev/tty") return false;
-
-		std::string mounted;
-		return applyMount(arg, mounted);
-	}
-
-	std::string PathConv::translateArg(const std::string& arg) const {
-		if (argLooksTranslatable(arg)) return toWin32(arg);
-		if (arg.empty() || arg[0] != '-') return arg;
-
-		const std::size_t equals = arg.find('=');
-		if (equals == std::string::npos || equals + 1 >= arg.size()) return arg;
-
-		const std::string value = arg.substr(equals + 1);
-		if (!argLooksTranslatable(value)) return arg;
-		return arg.substr(0, equals + 1) + toWin32(value);
-	}
-
 }  // namespace wbsh

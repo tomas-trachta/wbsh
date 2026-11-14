@@ -4,7 +4,7 @@ BASH_VERSINFO=5 2 37 1 release x86_64-pc-msys
 version check ok
 WBSH_VERSION looks like a version
 declare -ar BASH_VERSINFO=([0]="5" [1]="2" [2]="37" [3]="1" [4]="release" [5]="x86_64-pc-msys")
-wbsh: BASH_VERSINFO: readonly variable
+bash_standard_vars.sh: line 13: BASH_VERSINFO: readonly variable
 BASH_VERSINFO[0] still 5
 === platform
 OSTYPE=msys
@@ -18,7 +18,7 @@ declare -ir PPID=N
 subshell keeps PPID
 command substitution keeps PPID
 pipeline keeps PPID
-wbsh: PPID: readonly variable
+bash_standard_vars.sh: line 30: PPID: readonly variable
 PPID is readonly
 0
 === UID, EUID, HOSTNAME, SHLVL (#291)
@@ -38,6 +38,7 @@ pipeline keeps SHLVL
 EPOCHSECONDS ok
 EPOCHREALTIME ok
 EPOCHSECONDS matches date +%s
+assignment ignored
 === BASH_COMMAND
 failed: test -d /nonexistent_bash_standard_vars
 now: echo "now: $BASH_COMMAND"

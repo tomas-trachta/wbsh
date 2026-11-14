@@ -4,7 +4,7 @@ missing rc=1
 one found rc=0
 cmd path is posix
 if is a shell keyword
-wbsh: command: nosuch_cmd: not found
+declaration_builtins.sh: line 14: command: nosuch_cmd: not found
 rc=1
 alias zz='echo z'
 command skips the function
@@ -22,20 +22,20 @@ alias
 -P finds cmd on PATH
 -f hides functions rc=1
 f is a function
-wbsh: type: -z: invalid option
+declaration_builtins.sh: line 31: type: -z: invalid option
 type: usage: type [-afptP] name [name ...]
 rc=2
 builtin runs the builtin
-wbsh: builtin: nosuch_cmd: not a shell builtin
+declaration_builtins.sh: line 33: builtin: nosuch_cmd: not a shell builtin
 rc=1
 === 3. unset -f / -v, export -n
 function
 function
 unset falls back to the function rc=1
 unset -f rc=1
-wbsh: unset: RO: cannot unset: readonly variable
+declaration_builtins.sh: line 42: unset: RO: cannot unset: readonly variable
 rc=1
-wbsh: unset: `1x': not a valid identifier
+declaration_builtins.sh: line 43: unset: `1x': not a valid identifier
 rc=1
 XN=1 printenv=[]
 declare -x XE="a \"b\" \$c"
@@ -46,14 +46,13 @@ rc=3
 rc=4
 before
 function continues rc=3
-wbsh: return: can only `return' from a function or sourced script
+declaration_builtins.sh: line 56: return: can only `return' from a function or sourced script
 top level rc=1
 === 5. declare in a function is local, -g is global
 d=out t=out gd=in
 [unset]
 x=global
-wbsh: r: readonly variable
-r=1
+declaration_builtins.sh: line 62: r: readonly variable
 r after=5
 n=8
 n=8
@@ -64,12 +63,12 @@ c v
 m=[]
 /x
 Q rc=1
-wbsh: local: GR: readonly variable
+declaration_builtins.sh: line 69: local: GR: readonly variable
 rc=1 GR=1
 a=1
-wbsh: local: can only be used in a function
+declaration_builtins.sh: line 71: local: can only be used in a function
 local at top level rc=1
-wbsh: declare: -z: invalid option
+declaration_builtins.sh: line 72: declare: -z: invalid option
 declare: usage: declare [-aAfFgilnrtux] [-p] [name[=value] ...]
 rc=2
 === 6. declaration arguments do not word-split
@@ -84,11 +83,11 @@ rc=2
 declare -- v="it's a \"q\" \$x \`y\` \\z"
 [it's a "q" $x `y` \z]
 declare -a ia=([2]="x" [5]="y z")
-declare -A am=(["a b"]="c d" [k]="v" )
+declare -A am=([k]="v" ["a b"]="c d" )
 c d
 declare -ir nr="5"
 declare -xl xl="q"
-wbsh: declare: nosuch_var: not found
+declaration_builtins.sh: line 93: declare: nosuch_var: not found
 rc=1
 f
 f () 
@@ -96,7 +95,7 @@ pv='a b'
 === 8. cd -P / -L, pwd -P
 in cdp
 in _run_tmp
-wbsh: cd: -x: invalid option
+declaration_builtins.sh: line 101: cd: -x: invalid option
 cd: usage: cd [-L|[-P [-e]] [-@]] [dir]
 rc=2
 pwd -P agrees

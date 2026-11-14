@@ -97,6 +97,7 @@ namespace wbsh {
 		bool heredoc_strip_tabs = false;    ///< `<<-` form: strip leading tabs.
 		bool heredoc_quoted = false;        ///< Delimiter quoted -> body kept verbatim.
 		std::string heredoc_body;           ///< Slurped body (excludes terminator line).
+		std::size_t heredoc_eof_line = 0;   ///< Line the input ended on, the body unterminated.
 	};
 
 	struct LexError {
@@ -112,6 +113,10 @@ namespace wbsh {
 		/// Number lines from @p line: the text was cut out of a larger script.
 		void startAtLine(std::size_t line) { loc_.line = line; }
 
+		/// A script, as bash runs it, takes a here-document that the end of
+		/// the input cuts off as it is; interactive input waits for more.
+		void acceptHeredocAtEof() { heredoc_at_eof_ok_ = true; }
+
 		/// The result is always terminated with a TokKind::EndOfInput token.
 		std::vector<Token> tokenize();
 
@@ -124,6 +129,11 @@ namespace wbsh {
 		// resp. turns out not to be arithmetic.
 		static std::size_t commandSubstitutionEnd(const std::string& text, std::size_t body_start);
 		static std::size_t arithmeticEnd(const std::string& text, std::size_t body_start);
+
+		/// bash expands an arithmetic expression as if it were double-quoted
+		/// and drops the double quotes in it: `(( "i < 3" ))` is `(( i < 3 ))`.
+		/// Quotes inside substitutions and `${...}` are left alone.
+		static std::string withoutArithmeticDoubleQuotes(const std::string& text);
 
 	private:
 		char peek(std::size_t n = 0) const;
@@ -167,12 +177,13 @@ namespace wbsh {
 		bool readLiteralRun(std::vector<WordSegment>& out);
 		WordSegment readSingleQuoted();
 		WordSegment readDoubleQuoted();
+		WordSegment readDoubleQuotedBody();
 		void readDoubleQuotedEscape(WordSegment& seg);
 		void readDollar(std::vector<WordSegment>& out);
 		void readLocalizedString(std::vector<WordSegment>& out);
 		void readDollarSingleQuoted(SourceLoc start, std::vector<WordSegment>& out);
 		void readSimpleDollarVar(char n1, std::vector<WordSegment>& out);
-		WordSegment readBacktick();
+		WordSegment readBacktick(bool in_double_quotes);
 		void readDollarParen(std::vector<WordSegment>& out);
 
 		// `$((` and `((` are arithmetic only when the parenthesis that
@@ -184,11 +195,23 @@ namespace wbsh {
 		ArithScan tryArithmeticAfterParen(std::string& out);
 		void restorePosition(std::size_t pos, SourceLoc loc, std::size_t error_count);
 
+		// `a[key with blanks]=v` and `( [key with blanks]=v )`: where an
+		// assignment can stand, bash reads an array subscript as one unit
+		// (lexer_subscript.cpp).
+		bool atAssignmentSubscript(const std::vector<WordSegment>& out) const;
+		bool assignmentNameBeforeSubscript(const std::string& name) const;
+		bool inCompoundAssignment() const;
+		bool followsAssignmentWord() const;
+		bool readAssignmentSubscript(std::vector<WordSegment>& out);
+		void joinLiteralAfterSubscript(std::vector<WordSegment>& out);
+
 		// The readBalanced* family starts just past the opening
 		// delimiter and consumes through the matching closer, which
 		// is not part of the result. Quoted strings and nested forms
 		// of the same construct are respected.
 		std::string readBalancedBraces();
+		std::size_t bracketExpressionLength() const;
+		void copyBracketExpression(std::string& out);
 		// `$[...]` (legacy bash arithmetic); nested `[...]` is respected
 		// so array subscripts inside the expression don't end the form.
 		std::string readBalancedBrackets();
@@ -198,12 +221,18 @@ namespace wbsh {
 		// substitution) and appends the matched span to `out`.
 		void copyBackslashEscape(std::string& out);
 		void copySingleQuotedRun(std::string& out);
+		void copyDollarSingleQuotedRun(std::string& out);
+		void copyBraceSingleQuote(std::string& out);
+		void copyBraceDollarParen(std::string& out);
 		void copyDoubleQuotedRun(std::string& out);
 		void copyBackquotedRun  (std::string& out);
 		void copyDollarParenRun (std::string& out);
+		void copyArithmeticUnit(std::string& out);
+		void copyArithmeticDollar(std::string& out);
 
 		void collectHeredocBodies();
-		std::string readHeredocBody(const Token& delim);
+		std::string readHeredocBody(Token& delim);
+		std::size_t lastLineReached() const;
 		std::string readLineText();
 
 		std::string src_;
@@ -213,9 +242,11 @@ namespace wbsh {
 		std::vector<LexError> errors_;
 
 		bool at_line_start_ = true;
+		bool heredoc_at_eof_ok_ = false;
 		// Inside `[[ ... ]]` the word after `=~` is a regex in which
 		// `(`, `)` and `|` (and blanks inside parentheses) are word text.
 		bool in_dbracket_ = false;
+		bool in_double_quotes_ = false;
 
 		// Where the words of each open `case` stand, innermost last: a
 		// `!(` that leads a pattern is an extglob group, while one that
@@ -246,6 +277,7 @@ namespace wbsh {
 			bool bang_is_keyword = false;
 			std::vector<PendingHeredoc> pending_heredocs;
 			int paren_depth = 0;
+			bool in_double_quotes = false;
 		};
 		std::string readCommandSubstitutionBody();
 		bool scanToUnmatchedParen();

@@ -75,9 +75,12 @@ namespace wbsh {
 		return make_detail::parseMakeArgs(args, options);
 	}
 
+	// `_` is the shell's last argument here, any text at all; bash gives a
+	// program it runs the program's own path there instead, which make
+	// would expand harmlessly.
 	static bool isImportSkipped(const std::string& name) {
 		return name == "SHELL" || name == "MAKEFLAGS" || name == "MFLAGS" || name == "MAKELEVEL"
-			|| name == "MAKE_RESTARTS" || name == "CURDIR";
+			|| name == "MAKE_RESTARTS" || name == "CURDIR" || name == "_";
 	}
 
 	static void importEnvironment(Make& make) {

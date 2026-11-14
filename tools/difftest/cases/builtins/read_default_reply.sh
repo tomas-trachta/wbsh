@@ -1,0 +1,2 @@
+read <<< "  spaced  "
+echo "[$REPLY]"

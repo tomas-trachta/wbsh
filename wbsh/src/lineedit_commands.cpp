@@ -741,20 +741,36 @@ namespace wbsh {
 		runReverseSearch();
 	}
 
+	// COMP_TYPE: `?` for the second Tab that lists, `%` when the menu
+	// opens, `!` and `@` for the show-all-if-* listings, else TAB.
+	static char completeType(const std::string& last_command, bool menu) {
+		if (last_command == "complete") return '?';
+		if (menu) return '%';
+		if (shellKeymap().isOn("show-all-if-ambiguous")) return '!';
+		if (shellKeymap().isOn("show-all-if-unmodified")) return '@';
+
+		return '\t';
+	}
+
 	void LineEditor::complete() {
+		completion_type_ = completeType(last_command_, menuSelectWanted());
 		Tok tok = currentToken();
 		applyCompletion(tok, currentMatches(tok));
+		completion_type_ = '\t';
 	}
 
 	void LineEditor::possibleCompletions() {
+		completion_type_ = '?';
 		Tok tok = currentToken();
 		const std::vector<std::string> matches = currentMatches(tok);
 		if (matches.empty()) {
 			ding();
+			completion_type_ = '\t';
 			return;
 		}
 
 		printMatches(matches);
+		completion_type_ = '\t';
 	}
 
 	void LineEditor::clearScreen() {

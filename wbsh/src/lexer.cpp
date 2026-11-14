@@ -5,10 +5,14 @@
 
 #include "lexer.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <utility>
 
 namespace wbsh {
+
+	static const char* const kEofLookingForParen = "unexpected EOF while looking for matching `)'";
 
 	const char* tokKindName(TokKind k) {
 		switch (k) {
@@ -435,7 +439,7 @@ namespace wbsh {
 			return;
 		}
 
-		if (scan == ArithScan::Unterminated) error(start, "unterminated ((...)) command");
+		if (scan == ArithScan::Unterminated) error(start, kEofLookingForParen);
 
 		Token token;
 		token.kind = TokKind::DArithCmd;
@@ -521,6 +525,10 @@ namespace wbsh {
 		while (!eof()) {
 			skipLineContinuations();
 			if (eof()) break;
+			if (atAssignmentSubscript(word.segments) && readAssignmentSubscript(word.segments)) {
+				continue;
+			}
+
 			if (!readWordPart(word.segments, group_depth)) break;
 		}
 	}
@@ -665,7 +673,7 @@ namespace wbsh {
 			readDollar(out);
 			return true;
 		case '`':
-			out.push_back(readBacktick());
+			out.push_back(readBacktick(false));
 			return true;
 		default:
 			return readLiteralRun(out);
@@ -691,6 +699,7 @@ namespace wbsh {
 			const char c = peek();
 			const bool word_start = out.empty() && text.empty();
 			if (isSegmentStart(c) || endsWord(c) || atExtglobOpen(word_start)) break;
+			if (c == '[' && out.empty() && assignmentNameBeforeSubscript(text)) break;
 
 			text.push_back(advance());
 		}
@@ -710,7 +719,7 @@ namespace wbsh {
 		while (!eof() && peek() != '\'') segment.text.push_back(advance());
 
 		if (eof()) {
-			error(start, "unterminated single-quoted string");
+			error(start, "unexpected EOF while looking for matching `''");
 			return segment;
 		}
 
@@ -719,6 +728,14 @@ namespace wbsh {
 	}
 
 	WordSegment Lexer::readDoubleQuoted() {
+		const bool outer = in_double_quotes_;
+		in_double_quotes_ = true;
+		WordSegment segment = readDoubleQuotedBody();
+		in_double_quotes_ = outer;
+		return segment;
+	}
+
+	WordSegment Lexer::readDoubleQuotedBody() {
 		const SourceLoc start = loc_;
 		advance();
 
@@ -734,13 +751,13 @@ namespace wbsh {
 				continue;
 			}
 
-			if (c == '$') {
+			if (c == '$' && peek(1) != '\'') {
 				readDollar(segment.nested);
 				continue;
 			}
 
 			if (c == '`') {
-				segment.nested.push_back(readBacktick());
+				segment.nested.push_back(readBacktick(true));
 				continue;
 			}
 
@@ -752,7 +769,7 @@ namespace wbsh {
 		}
 
 		if (eof()) {
-			error(start, "unterminated double-quoted string");
+			error(start, "unexpected EOF while looking for matching `\"'");
 			return segment;
 		}
 
@@ -792,7 +809,7 @@ namespace wbsh {
 			segment.text.push_back(advance());
 		}
 
-		if (eof()) error(start, "unterminated $'...' string");
+		if (eof()) error(start, "unexpected EOF while looking for matching `''");
 		else advance();
 
 		out.push_back(std::move(segment));
@@ -865,7 +882,13 @@ namespace wbsh {
 		out.push_back(literalSegment("$"));
 	}
 
-	WordSegment Lexer::readBacktick() {
+	// Within backquotes a backslash quotes only `$`, a backquote and itself;
+	// inside double quotes it quotes `"` as well.
+	static bool backquoteEscapes(char c, bool in_double_quotes) {
+		return c == '$' || c == '`' || c == '\\' || (in_double_quotes && c == '"');
+	}
+
+	WordSegment Lexer::readBacktick(bool in_double_quotes) {
 		const SourceLoc start = loc_;
 		advance();
 
@@ -880,8 +903,7 @@ namespace wbsh {
 			advance();
 			if (eof()) break;
 
-			const char next = peek();
-			if (next == '$' || next == '`' || next == '\\') {
+			if (backquoteEscapes(peek(), in_double_quotes)) {
 				segment.text.push_back(advance());
 			} else {
 				segment.text.push_back('\\');
@@ -889,7 +911,7 @@ namespace wbsh {
 		}
 
 		if (eof()) {
-			error(start, "unterminated backquote command substitution");
+			error(start, "unexpected EOF while looking for matching ``'");
 			return segment;
 		}
 
@@ -908,7 +930,7 @@ namespace wbsh {
 			return;
 		}
 
-		if (scan == ArithScan::Unterminated) error(start, "unterminated $((...)) expansion");
+		if (scan == ArithScan::Unterminated) error(start, kEofLookingForParen);
 		out.push_back(segmentOf(WordSegment::Kind::ArithExp, std::move(body)));
 	}
 
@@ -981,7 +1003,7 @@ namespace wbsh {
 		leaveNestedScan(outer);
 
 		if (!closed) {
-			error(start, "unterminated $(...) substitution");
+			error(start, "unexpected EOF while looking for matching `)'");
 			return src_.substr(body_start);
 		}
 
@@ -1015,6 +1037,7 @@ namespace wbsh {
 		outer.bang_is_keyword = bang_is_keyword_;
 		outer.pending_heredocs = std::move(pending_heredocs_);
 		outer.paren_depth = nested_paren_depth_;
+		outer.in_double_quotes = in_double_quotes_;
 
 		tokens_.clear();
 		at_line_start_ = true;
@@ -1023,6 +1046,7 @@ namespace wbsh {
 		bang_is_keyword_ = false;
 		pending_heredocs_.clear();
 		nested_paren_depth_ = 0;
+		in_double_quotes_ = false;
 		return outer;
 	}
 
@@ -1034,6 +1058,7 @@ namespace wbsh {
 		bang_is_keyword_ = outer.bang_is_keyword;
 		pending_heredocs_ = std::move(outer.pending_heredocs);
 		nested_paren_depth_ = outer.paren_depth;
+		in_double_quotes_ = outer.in_double_quotes;
 	}
 
 	// A case pattern's optional `(` and its closing `)` are not grouping.
@@ -1063,6 +1088,50 @@ namespace wbsh {
 		return lexer.pos_ - 2;
 	}
 
+	std::string Lexer::withoutArithmeticDoubleQuotes(const std::string& text) {
+		Lexer lexer(text);
+		std::string out;
+		while (!lexer.eof()) lexer.copyArithmeticUnit(out);
+		return out;
+	}
+
+	void Lexer::copyArithmeticUnit(std::string& out) {
+		switch (peek()) {
+		case '"':
+			advance();
+			return;
+		case '\\':
+			copyBackslashEscape(out);
+			return;
+		case '\'':
+			copySingleQuotedRun(out);
+			return;
+		case '`':
+			copyBackquotedRun(out);
+			return;
+		case '$':
+			copyArithmeticDollar(out);
+			return;
+		default:
+			out.push_back(advance());
+			return;
+		}
+	}
+
+	void Lexer::copyArithmeticDollar(std::string& out) {
+		if (peek(1) == '(') {
+			copyDollarParenRun(out);
+			return;
+		}
+
+		out.push_back(advance());
+		if (peek() != '{') return;
+
+		out.push_back(advance());
+		out += readBalancedBraces();
+		out.push_back('}');
+	}
+
 	void Lexer::copyBackslashEscape(std::string& out) {
 		out.push_back(advance());
 		if (!eof()) out.push_back(advance());
@@ -1071,6 +1140,18 @@ namespace wbsh {
 	void Lexer::copySingleQuotedRun(std::string& out) {
 		out.push_back(advance());
 		while (!eof() && peek() != '\'') out.push_back(advance());
+		if (!eof()) out.push_back(advance());
+	}
+
+	// `$'...'`, where a backslash escapes the quote.
+	void Lexer::copyDollarSingleQuotedRun(std::string& out) {
+		out.push_back(advance());
+		out.push_back(advance());
+		while (!eof() && peek() != '\'') {
+			if (peek() == '\\') copyBackslashEscape(out);
+			else out.push_back(advance());
+		}
+
 		if (!eof()) out.push_back(advance());
 	}
 
@@ -1115,13 +1196,92 @@ namespace wbsh {
 		out += src_.substr(start, pos_ - start);
 	}
 
+	static bool endsBracketScan(char c) {
+		return c == '\0' || c == '\n' || c == '}' || c == '\'' || c == '"'
+		    || c == '\\' || c == '$' || c == '`';
+	}
+
+	// The length of the bracket expression that starts here, or 0 when a
+	// quote, an expansion or the closing brace comes before its `]` and the
+	// `[` is a plain character.
+	std::size_t Lexer::bracketExpressionLength() const {
+		std::size_t n = 1;
+		if (peek(n) == '!' || peek(n) == '^') ++n;
+		if (peek(n) == ']') ++n;
+
+		for (; !endsBracketScan(peek(n)); ++n) {
+			if (peek(n) == ']') return n + 1;
+		}
+
+		return 0;
+	}
+
+	// A `{` in a bracket expression of a pattern, as in `${o%%[<{(]*}`, is a
+	// character to match, not a brace that needs closing.
+	void Lexer::copyBracketExpression(std::string& out) {
+		std::size_t length = bracketExpressionLength();
+		if (length == 0) length = 1;
+
+		for (std::size_t i = 0; i < length; ++i) out.push_back(advance());
+	}
+
+	// Past the parameter (`name`, `name[sub]`, a special one) of a ${...}
+	// body, at a `-`, `+`, `=` or `?` operator, with or without `:`.
+	static std::size_t wordOperatorAt(const std::string& body) {
+		std::size_t k = (!body.empty() && (body[0] == '!' || body[0] == '#')) ? 1 : 0;
+		const bool named = k < body.size() && (isNameStart(body[k]) || isDigit(body[k]));
+		if (named) {
+			while (k < body.size() && isNameCont(body[k])) ++k;
+		} else {
+			++k;
+		}
+
+		if (k < body.size() && body[k] == '[') k = std::min(body.find(']', k), body.size() - 1) + 1;
+		if (k < body.size() && body[k] == ':') ++k;
+		const bool found = k < body.size() && std::strchr("-+=?", body[k]) != nullptr;
+		return found ? k : std::string::npos;
+	}
+
+	static bool atWordOperator(const std::string& body) {
+		return wordOperatorAt(body) != std::string::npos;
+	}
+
+	// After an odd number of the literal single quotes of such a word.
+	static bool insideLiteralQuote(const std::string& body) {
+		const std::size_t op = wordOperatorAt(body);
+		if (op == std::string::npos) return false;
+
+		std::size_t quotes = 0;
+		for (std::size_t k = op + 1; k < body.size(); ++k) {
+			if (body[k] == '\\') ++k;
+			else if (body[k] == '\'') ++quotes;
+		}
+
+		return quotes % 2 == 1;
+	}
+
+	// A `$(` between such literal quotes is plain text while the brace is
+	// looked for; bash 5.3 parses it only if the word is expanded.
+	void Lexer::copyBraceDollarParen(std::string& out) {
+		if (in_double_quotes_ && insideLiteralQuote(out)) out.push_back(advance());
+		else copyDollarParenRun(out);
+	}
+
+	// Inside double quotes bash 5.3 takes a single quote in the word of
+	// "${name-word}" (and +, =, ?) literally, so it cannot hide a closing
+	// brace; in a pattern ("${name#'x'}") it still quotes.
+	void Lexer::copyBraceSingleQuote(std::string& out) {
+		if (in_double_quotes_ && atWordOperator(out)) out.push_back(advance());
+		else copySingleQuotedRun(out);
+	}
+
 	std::string Lexer::readBalancedBraces() {
 		std::string out;
 		int depth = 1;
 		while (!eof() && depth > 0) {
 			switch (peek()) {
 			case '\\': copyBackslashEscape(out); continue;
-			case '\'': copySingleQuotedRun(out); continue;
+			case '\'': copyBraceSingleQuote(out); continue;
 			case '"':  copyDoubleQuotedRun(out); continue;
 			case '$':
 				if (peek(1) == '{') {
@@ -1132,15 +1292,19 @@ namespace wbsh {
 				}
 
 				if (peek(1) == '(') {
-					copyDollarParenRun(out);
+					copyBraceDollarParen(out);
+					continue;
+				}
+
+				if (peek(1) == '\'') {
+					copyDollarSingleQuotedRun(out);
 					continue;
 				}
 
 				out.push_back(advance());
 				continue;
-			case '{':
-				++depth;
-				out.push_back(advance());
+			case '[':
+				copyBracketExpression(out);
 				continue;
 			case '}':
 				--depth;
@@ -1157,7 +1321,7 @@ namespace wbsh {
 			}
 		}
 
-		error(loc_, "unterminated ${...} expansion");
+		error(loc_, "unexpected EOF while looking for matching `}'");
 		return out;
 	}
 
@@ -1188,7 +1352,7 @@ namespace wbsh {
 			}
 		}
 
-		error(loc_, "unterminated $[...] expansion");
+		error(loc_, "unexpected EOF while looking for matching `]'");
 		return out;
 	}
 
@@ -1202,20 +1366,41 @@ namespace wbsh {
 		}
 	}
 
-	std::string Lexer::readHeredocBody(const Token& delim) {
+	// In an unquoted body a backslash-newline joins the next line onto
+	// this one, so that next line can never be the delimiter.
+	static bool endsInLineContinuation(const std::string& line) {
+		std::size_t backslashes = 0;
+		while (backslashes < line.size() && line[line.size() - 1 - backslashes] == '\\') {
+			++backslashes;
+		}
+
+		return backslashes % 2 == 1;
+	}
+
+	std::string Lexer::readHeredocBody(Token& delim) {
 		const std::string terminator = flattenDelim(delim);
 		std::string body;
+		bool continued = false;
 		for (;;) {
 			std::string line = readLineText();
-			if (delim.heredoc_strip_tabs) stripLeadingTabs(line);
+			if (delim.heredoc_strip_tabs && !continued) stripLeadingTabs(line);
 
-			if (line == terminator) {
+			const bool is_terminator = !continued && line == terminator;
+			continued = !delim.heredoc_quoted && endsInLineContinuation(line);
+
+			if (is_terminator) {
 				if (!eof()) advance();
 				return body;
 			}
 
-			if (eof()) {
+			if (eof() && !heredoc_at_eof_ok_) {
 				error(delim.loc, "unterminated heredoc body");
+				return body;
+			}
+
+			if (eof()) {
+				if (!line.empty()) body += line + "\n";
+				delim.heredoc_eof_line = lastLineReached();
 				return body;
 			}
 
@@ -1223,6 +1408,13 @@ namespace wbsh {
 			body.push_back('\n');
 			advance();
 		}
+	}
+
+	// The line of the last character read: a final newline does not
+	// start a line of its own.
+	std::size_t Lexer::lastLineReached() const {
+		if (loc_.column == 1 && loc_.line > 1) return loc_.line - 1;
+		return loc_.line;
 	}
 
 	std::string Lexer::readLineText() {

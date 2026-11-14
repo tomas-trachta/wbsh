@@ -29,6 +29,7 @@ namespace wbsh {
 		std::string filter;                 ///< -X
 		std::string command;                ///< -C
 		std::string function;               ///< -F
+		unsigned long long defined_at = 0;  ///< When the name first got a spec.
 
 		bool hasOption(const std::string& name) const;
 	};
@@ -37,6 +38,9 @@ namespace wbsh {
 	extern const char* const kDefaultCompletionName;
 	extern const char* const kEmptyCompletionName;
 	extern const char* const kInitialCompletionName;
+
+	/** COMP_WORDBREAKS until a script changes it. */
+	extern const char* const kDefaultWordBreaks;
 
 	/** The command a completion is for, with the word before the one completed. */
 	struct CompletionRequest {

@@ -1,0 +1,60 @@
+name: Bug report
+description: wbsh crashes, hangs, or does something wrong that is not about matching GNU bash.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If wbsh prints something different from GNU bash for the same script, use the
+        **Compatibility divergence** template instead.
+  - type: input
+    id: version
+    attributes:
+      label: wbsh version
+      description: The output of `wbsh --version`.
+      placeholder: wbsh 1.1.1, commit 0d0f1b694c60 (2026-11-12)
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows build
+      description: From `winver` or `ver`.
+      placeholder: Windows 11 24H2, build 26100
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where does wbsh run?
+      options:
+        - wbshterm
+        - Windows Terminal
+        - conhost (classic console)
+        - VS Code terminal
+        - a coding agent / script (no console)
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Smallest reproducer
+      description: The shortest script or key sequence that shows the problem. Paste it inline.
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Output, error messages, exit status. For a crash, a stack trace from a Debug build helps a lot.
+      render: text
+    validations:
+      required: true

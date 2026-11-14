@@ -244,10 +244,45 @@ namespace wbsh {
 			}
 		}
 
-		static void loadEverything() {
-			for (const std::wstring& folder : pluginDirectories()) {
+		static bool isUtilCandidate(const WIN32_FIND_DATAW& found) {
+			if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return false;
+
+			return ::lstrcmpiW(found.cFileName, L"wbshsdk.dll") != 0;
+		}
+
+		// The same files wbshSdkLoadDirectory would pick up.
+		static bool folderHasUtil(const std::wstring& folder) {
+			WIN32_FIND_DATAW found{};
+			const HANDLE search = ::FindFirstFileW((folder + L"\\*.dll").c_str(), &found);
+			if (search == INVALID_HANDLE_VALUE) return false;
+
+			bool any = false;
+			do {
+				any = isUtilCandidate(found);
+			} while (!any && ::FindNextFileW(search, &found) != 0);
+
+			::FindClose(search);
+			return any;
+		}
+
+		// Loading the SDK costs every start a DLL; with no util to load
+		// that is all it would do.
+		static bool anyUtilToLoad(const std::vector<std::wstring>& folders) {
+			for (const std::wstring& folder : folders) {
+				if (folderHasUtil(folder)) return true;
+			}
+
+			return !g_loaded_by_hand.empty();
+		}
+
+		static void loadFolders(const std::vector<std::wstring>& folders) {
+			for (const std::wstring& folder : folders) {
 				g_sdk.load_directory(folder.c_str(), complain, nullptr);
 			}
+		}
+
+		static void loadEverything() {
+			loadFolders(pluginDirectories());
 
 			for (const std::wstring& file : g_loaded_by_hand) {
 				g_sdk.load_file(file.c_str(), complain, nullptr);
@@ -375,6 +410,7 @@ namespace wbsh {
 			return;
 		}
 
+		if (!utils_detail::anyUtilToLoad(utils_detail::pluginDirectories())) return;
 		if (!utils_detail::bindSdk(exec)) return;
 
 		utils_detail::loadEverything();

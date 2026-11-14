@@ -38,6 +38,7 @@ namespace wbsh {
 	namespace fs = std::filesystem;
 
 	static const std::size_t kDefaultConsoleWidth = 80;
+	static const std::size_t kDefaultConsoleLines = 24;
 	static const std::size_t kNoHistoryIndex = static_cast<std::size_t>(-1);
 	static const char* const kDimStyle = "\x1b[90m";
 	static const char* const kResetStyle = "\x1b[0m";
@@ -321,6 +322,7 @@ namespace wbsh {
 		pending_key_ = PendingKey::kNone;
 		menu_matches_.clear();
 		resetViState();
+		resetHighlightCaches();
 		setPrompt(prompt);
 		loadOperateNext();
 	}
@@ -388,6 +390,15 @@ namespace wbsh {
 		if (width <= 0) return kDefaultConsoleWidth;
 
 		return static_cast<std::size_t>(width);
+	}
+
+	static std::size_t consoleRows() {
+		CONSOLE_SCREEN_BUFFER_INFO info{};
+		const HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
+		if (!::GetConsoleScreenBufferInfo(out, &info)) return kDefaultConsoleLines;
+
+		const int rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+		return rows > 0 ? static_cast<std::size_t>(rows) : kDefaultConsoleLines;
 	}
 
 	// A resize reports the buffer, whose height is the scrollback; LINES
@@ -483,8 +494,8 @@ namespace wbsh {
 		return out;
 	}
 
-	void LineEditor::appendLineText(std::string& out) const {
-		out += withCrLf(buffer_);
+	void LineEditor::appendLineText(std::string& out) {
+		out += withCrLf(highlightedLine());
 		if (suggestion_.empty()) return;
 
 		out += kDimStyle;
@@ -497,6 +508,10 @@ namespace wbsh {
 	// where the layout counts it.
 	std::size_t LineEditor::screenColumns() const {
 		return forced_columns_ != 0 ? forced_columns_ : consoleWidth();
+	}
+
+	std::size_t LineEditor::screenRows() const {
+		return forced_rows_ != 0 ? forced_rows_ : consoleRows();
 	}
 
 	static ScreenPos promptEnd(const std::string& visible, std::size_t width) {
@@ -524,10 +539,12 @@ namespace wbsh {
 		out += kEraseToEnd;
 		out += prompt_raw_;
 		appendLineText(out);
-		if (end.col >= width) out += "\r\n";
+		const bool wrapped = end.col >= width;
+		if (wrapped) out += "\r\n";
 
+		const std::size_t below = appendMenuRows(out, wrapped, end.row + 1);
 		out += "\r";
-		appendCursorUp(out, settled(end, width).row - cursor.row);
+		appendCursorUp(out, settled(end, width).row + below - cursor.row);
 		appendCursorRight(out, cursor.col);
 
 		last_cursor_row_ = cursor.row;
@@ -561,7 +578,8 @@ namespace wbsh {
 
 	void LineEditor::refreshSuggestion() {
 		suggestion_.clear();
-		if (revsearch_active_ || buffer_.empty() || cursor_ != buffer_.size()) {
+		const bool elsewhere = revsearch_active_ || menu_grid_.active;
+		if (elsewhere || buffer_.empty() || cursor_ != buffer_.size()) {
 			suggestion_cache_idx_ = kNoHistoryIndex;
 			return;
 		}
@@ -932,6 +950,24 @@ namespace wbsh {
 
 	}  // namespace keys_detail
 
+	// Shift, Ctrl, Alt or a lock key pressed on its own, which the console
+	// reports as a key of its own -- AltGr among them.
+	bool isModifierOnlyKey(const KEY_EVENT_RECORD& key) {
+		switch (key.wVirtualKeyCode) {
+		case VK_SHIFT:
+		case VK_CONTROL:
+		case VK_MENU:
+		case VK_LWIN:
+		case VK_RWIN:
+		case VK_CAPITAL:
+		case VK_NUMLOCK:
+		case VK_SCROLL:
+			return true;
+		default:
+			return false;
+		}
+	}
+
 	static bool isPrintableAscii(WCHAR unit) {
 		return unit >= 0x20 && unit < 0x7F;
 	}
@@ -940,6 +976,8 @@ namespace wbsh {
 	// isearch-terminators do; Ctrl-G and Ctrl-C go back to the line the
 	// search started from.
 	bool LineEditor::revsearchHandleKey(const KEY_EVENT_RECORD& key, SearchState& search) {
+		if (isModifierOnlyKey(key)) return true;
+
 		const bool chord = !keys_detail::typesLayoutCharacter(key);
 		const bool is_ctrl = keys_detail::ctrlHeld(key) && chord;
 		const bool is_meta = keys_detail::altHeld(key) && chord;
@@ -1107,9 +1145,12 @@ namespace wbsh {
 			screenColumns()).row;
 	}
 
-	// The whole prompt is erased and written again, only when it changed.
+	// The whole prompt is erased and written again, only when it changed;
+	// the line alone when the PATH listing it waited for came in.
 	void LineEditor::refreshPrompt() {
-		if (!prompt_refresher_ || revsearch_active_ || headless_) return;
+		if (revsearch_active_ || headless_) return;
+		if (highlightSettled()) redraw();
+		if (!prompt_refresher_) return;
 
 		const std::string prompt = prompt_refresher_();
 		if (prompt == prompt_full_) return;
@@ -1174,6 +1215,7 @@ namespace wbsh {
 		const std::string saved_visible = prompt_visible_;
 		const UndoPoint saved = { buffer_, cursor_ };
 		revsearch_active_ = true;
+		minibuffer_active_ = true;
 		prompt_raw_ = prompt_visible_ = lead;
 		buffer_.clear();
 		cursor_ = 0;
@@ -1186,6 +1228,7 @@ namespace wbsh {
 		buffer_ = saved.buffer;
 		cursor_ = saved.cursor;
 		revsearch_active_ = false;
+		minibuffer_active_ = false;
 		return entered;
 	}
 
@@ -1308,6 +1351,7 @@ namespace wbsh {
 
 		enterRawMode();
 		typeahead_records_ = pendingInputRecords();
+		if (highlightWanted()) pathListing(false);
 		showPrompt();
 		if (!buffer_.empty()) redraw();
 		editUntilDone();
@@ -1337,6 +1381,9 @@ namespace wbsh {
 			{ "TAB",   VK_TAB,    0x09 },
 			{ "ENTER", VK_RETURN, 0x0D },
 			{ "ESC",   VK_ESCAPE, 0x1B },
+			{ "PGUP",  VK_PRIOR,  0 },
+			{ "PGDN",  VK_NEXT,   0 },
+			{ "SHIFT", VK_SHIFT,  0 },
 		};
 
 		static KEY_EVENT_RECORD pressOf(WORD vk, WCHAR ch, DWORD modifiers) {
@@ -1404,6 +1451,8 @@ namespace wbsh {
 					modifiers |= LEFT_CTRL_PRESSED;
 				} else if (name.size() > 2 && name.compare(0, 2, "M-") == 0) {
 					modifiers |= LEFT_ALT_PRESSED;
+				} else if (name.size() > 2 && name.compare(0, 2, "S-") == 0) {
+					modifiers |= SHIFT_PRESSED;
 				} else {
 					return modifiers;
 				}
@@ -1507,7 +1556,9 @@ namespace wbsh {
 		for (const std::string& token : keys) replay_detail::queueToken(token, replay_keys_);
 
 		forced_columns_ = options.columns;
+		forced_rows_ = options.lines;
 		capture_output_ = options.show_output;
+		replay_highlight_ = options.highlight;
 		captured_output_.clear();
 		headless_ = true;
 		showPrompt();
@@ -1524,7 +1575,9 @@ namespace wbsh {
 		if (options.show_output) report += "\n" + spelledOut(captured_output_);
 
 		forced_columns_ = 0;
+		forced_rows_ = 0;
 		capture_output_ = false;
+		replay_highlight_ = false;
 		return report;
 	}
 
@@ -1545,7 +1598,7 @@ namespace wbsh {
 	std::string LineEditor::readBracketedPaste() { return {}; }
 	void LineEditor::moveToLineEnd() {}
 	void LineEditor::showPrompt() {}
-	void LineEditor::appendLineText(std::string&) const {}
+	void LineEditor::appendLineText(std::string&) {}
 	bool LineEditor::editUntilDone() { return false; }
 	void LineEditor::leaveRawMode() {}
 	void LineEditor::enterRawMode() {}
@@ -1558,6 +1611,7 @@ namespace wbsh {
 	void LineEditor::refreshSuggestion() {}
 	bool LineEditor::acceptInlineSuggestion() { return false; }
 	std::size_t LineEditor::screenColumns() const { return 0; }
+	std::size_t LineEditor::screenRows() const { return 0; }
 	std::string LineEditor::describeCursorCell() const { return {}; }
 	std::string LineEditor::replayKeys(const std::vector<std::string>&, const ReplayOptions&) {
 		return {};
@@ -1565,7 +1619,13 @@ namespace wbsh {
 
 #endif /* _WIN32 */
 
-	// -c COLUMNS, -p PROMPT and -o come before the keys; `--` ends them.
+	static void takeReplaySize(const std::string& value, std::size_t& size) {
+		long long number = 0;
+		if (parseLL(value, number) && number > 0) size = static_cast<std::size_t>(number);
+	}
+
+	// -c COLUMNS, -l LINES, -p PROMPT, -o and -H come before the keys;
+	// `--` ends them.
 	static std::size_t takeReplayOptions(const std::vector<std::string>& args,
 	                                     LineEditor::ReplayOptions& options) {
 		std::size_t i = 0;
@@ -1573,16 +1633,14 @@ namespace wbsh {
 			const std::string& arg = args[i];
 			if (arg == "--") return i + 1;
 
-			const bool valued = (arg == "-c" || arg == "-p") && i + 1 < args.size();
-			if (!valued && arg != "-o") return i;
+			const bool valued = (arg == "-c" || arg == "-l" || arg == "-p") && i + 1 < args.size();
+			if (!valued && arg != "-o" && arg != "-H") return i;
 
-			long long columns = 0;
-			if (arg == "-c" && parseLL(args[i + 1], columns) && columns > 0) {
-				options.columns = static_cast<std::size_t>(columns);
-			}
-
+			if (arg == "-c") takeReplaySize(args[i + 1], options.columns);
+			if (arg == "-l") takeReplaySize(args[i + 1], options.lines);
 			if (arg == "-p") options.prompt = args[i + 1];
 			if (arg == "-o") options.show_output = true;
+			if (arg == "-H") options.highlight = true;
 			i += valued ? 2 : 1;
 		}
 

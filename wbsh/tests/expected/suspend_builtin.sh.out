@@ -1,8 +1,8 @@
-wbsh: suspend: cannot suspend: no job control
+suspend_builtin.sh: line 4: suspend: cannot suspend: no job control
 status 1
-wbsh: suspend: cannot suspend: no job control
+suspend_builtin.sh: line 5: suspend: cannot suspend: no job control
 status 1
-wbsh: suspend: -x: invalid option
+suspend_builtin.sh: line 6: suspend: -x: invalid option
 suspend: usage: suspend [-f]
 status 2
 builtin

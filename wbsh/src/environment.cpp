@@ -18,8 +18,10 @@ extern char** environ;
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <utility>
 
+#include "diagnostics.h"
 #include "numparse.h"
 #include "utf8.h"
 
@@ -97,24 +99,71 @@ namespace wbsh {
 		return nullptr;
 	}
 
-	const std::vector<ShoptSpec>& shoptTable() {
-		static const std::vector<ShoptSpec> table = {
-			{ "nullglob",       &ShoptFlags::nullglob },
-			{ "dotglob",        &ShoptFlags::dotglob },
-			{ "extglob",        &ShoptFlags::extglob },
-			{ "nocaseglob",     &ShoptFlags::nocaseglob },
-			{ "nocasematch",    &ShoptFlags::nocasematch },
-			{ "globstar",       &ShoptFlags::globstar },
-			{ "lastpipe",       &ShoptFlags::lastpipe },
-			{ "login_shell",    &ShoptFlags::login_shell },
-			{ "huponexit",      &ShoptFlags::huponexit },
-			{ "expand_aliases", &ShoptFlags::expand_aliases },
-			{ "autocd",         &ShoptFlags::autocd },
-			{ "checkwinsize",   &ShoptFlags::checkwinsize },
-			{ "promptvars",     &ShoptFlags::promptvars },
-			{ "patsub_replacement", &ShoptFlags::patsub_replacement },
-		};
+	static const ShoptSpec kShoptTable[] = {
+		{ "array_expand_once",       &ShoptFlags::array_expand_once },
+		{ "assoc_expand_once",       &ShoptFlags::array_expand_once },
+		{ "autocd",                  &ShoptFlags::autocd },
+		{ "bash_source_fullpath",    &ShoptFlags::bash_source_fullpath },
+		{ "cdable_vars",             &ShoptFlags::cdable_vars },
+		{ "cdspell",                 &ShoptFlags::cdspell },
+		{ "checkhash",               &ShoptFlags::checkhash },
+		{ "checkjobs",               &ShoptFlags::checkjobs },
+		{ "checkwinsize",            &ShoptFlags::checkwinsize },
+		{ "cmdhist",                 &ShoptFlags::cmdhist },
+		{ "compat31",                &ShoptFlags::compat31 },
+		{ "compat32",                &ShoptFlags::compat32 },
+		{ "compat40",                &ShoptFlags::compat40 },
+		{ "compat41",                &ShoptFlags::compat41 },
+		{ "compat42",                &ShoptFlags::compat42 },
+		{ "compat43",                &ShoptFlags::compat43 },
+		{ "compat44",                &ShoptFlags::compat44 },
+		{ "complete_fullquote",      &ShoptFlags::complete_fullquote },
+		{ "direxpand",               &ShoptFlags::direxpand },
+		{ "dirspell",                &ShoptFlags::dirspell },
+		{ "dotglob",                 &ShoptFlags::dotglob },
+		{ "execfail",                &ShoptFlags::execfail },
+		{ "expand_aliases",          &ShoptFlags::expand_aliases },
+		{ "extdebug",                &ShoptFlags::extdebug },
+		{ "extglob",                 &ShoptFlags::extglob },
+		{ "extquote",                &ShoptFlags::extquote },
+		{ "failglob",                &ShoptFlags::failglob },
+		{ "force_fignore",           &ShoptFlags::force_fignore },
+		{ "globasciiranges",         &ShoptFlags::globasciiranges },
+		{ "globskipdots",            &ShoptFlags::globskipdots },
+		{ "globstar",                &ShoptFlags::globstar },
+		{ "gnu_errfmt",              &ShoptFlags::gnu_errfmt },
+		{ "histappend",              &ShoptFlags::histappend },
+		{ "histreedit",              &ShoptFlags::histreedit },
+		{ "histverify",              &ShoptFlags::histverify },
+		{ "hostcomplete",            &ShoptFlags::hostcomplete },
+		{ "huponexit",               &ShoptFlags::huponexit },
+		{ "inherit_errexit",         &ShoptFlags::inherit_errexit },
+		{ "interactive_comments",    &ShoptFlags::interactive_comments },
+		{ "lastpipe",                &ShoptFlags::lastpipe },
+		{ "lithist",                 &ShoptFlags::lithist },
+		{ "localvar_inherit",        &ShoptFlags::localvar_inherit },
+		{ "localvar_unset",          &ShoptFlags::localvar_unset },
+		{ "login_shell",             &ShoptFlags::login_shell },
+		{ "mailwarn",                &ShoptFlags::mailwarn },
+		{ "no_empty_cmd_completion", &ShoptFlags::no_empty_cmd_completion },
+		{ "nocaseglob",              &ShoptFlags::nocaseglob },
+		{ "nocasematch",             &ShoptFlags::nocasematch },
+		{ "noexpand_translation",    &ShoptFlags::noexpand_translation },
+		{ "nullglob",                &ShoptFlags::nullglob },
+		{ "patsub_replacement",      &ShoptFlags::patsub_replacement },
+		{ "progcomp",                &ShoptFlags::progcomp },
+		{ "progcomp_alias",          &ShoptFlags::progcomp_alias },
+		{ "promptvars",              &ShoptFlags::promptvars },
+		{ "restricted_shell",        &ShoptFlags::restricted_shell },
+		{ "shift_verbose",           &ShoptFlags::shift_verbose },
+		{ "sourcepath",              &ShoptFlags::sourcepath },
+		{ "syslog_history",          &ShoptFlags::syslog_history },
+		{ "varredir_close",          &ShoptFlags::varredir_close },
+		{ "xpg_echo",                &ShoptFlags::xpg_echo },
+	};
 
+	const std::vector<ShoptSpec>& shoptTable() {
+		static const std::vector<ShoptSpec> table(std::begin(kShoptTable), std::end(kShoptTable));
 		return table;
 	}
 
@@ -127,7 +176,7 @@ namespace wbsh {
 	}
 
 	std::string Environment::shellOptions() const {
-		static const char* const kDollarDashOrder = "abefhikmnptuvxBCEHPT";
+		static const char* const kDollarDashOrder = "abefhikmnprtuvxBCEHPT";
 
 		std::string letters;
 		for (const char* c = kDollarDashOrder; *c != '\0'; ++c) {
@@ -136,11 +185,40 @@ namespace wbsh {
 				continue;
 			}
 
+			if (*c == 'r') {
+				if (shopt_.restricted_shell) letters += 'r';
+				continue;
+			}
+
 			const SetOptionSpec* spec = findSetFlag(*c);
 			if (spec != nullptr && options_.*(spec->flag)) letters += *c;
 		}
 
+		if (invocation_letter_ != 0) letters += invocation_letter_;
 		return letters;
+	}
+
+	static void appendColonSeparated(std::string& list, const char* name) {
+		if (!list.empty()) list.push_back(':');
+		list += name;
+	}
+
+	std::string Environment::enabledSetOptionNames() const {
+		std::string names;
+		for (const SetOptionSpec& spec : setOptionTable()) {
+			if (options_.*(spec.flag)) appendColonSeparated(names, spec.name);
+		}
+
+		return names;
+	}
+
+	std::string Environment::enabledShoptNames() const {
+		std::string names;
+		for (const ShoptSpec& spec : shoptTable()) {
+			if (shopt_.*(spec.flag)) appendColonSeparated(names, spec.name);
+		}
+
+		return names;
 	}
 
 	void Environment::setInteractive(bool b) {
@@ -148,12 +226,27 @@ namespace wbsh {
 		options_.emacs = b;
 		options_.history = b;
 		options_.histexpand = b;
+		shopt_.expand_aliases = b;
+	}
+
+	static bool namesUtf8(std::string locale) {
+		for (char& c : locale) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		return locale.find("utf-8") != std::string::npos || locale.find("utf8") != std::string::npos;
+	}
+
+	bool Environment::utf8Locale() const {
+		for (const char* name : { "LC_ALL", "LC_CTYPE", "LANG" }) {
+			const std::string value = get(name);
+			if (!value.empty()) return namesUtf8(value);
+		}
+
+		return true;
 	}
 
 	bool Environment::rejectIfReadonly(const std::string& name) const {
 		if (readonly_.count(name) == 0) return false;
 
-		std::fprintf(stderr, "wbsh: %s: readonly variable\n", name.c_str());
+		shellErrorf("%s: readonly variable\n", name.c_str());
 		return true;
 	}
 
@@ -249,7 +342,13 @@ namespace wbsh {
 
 	static bool isReadOnlyDynamicName(const std::string& name) {
 		return name == "LINENO" || name == "BASHPID" || name == "BASH_COMMAND"
-			|| name == "EPOCHSECONDS" || name == "EPOCHREALTIME";
+			|| name == "EPOCHSECONDS" || name == "EPOCHREALTIME" || name == "BASH_MONOSECONDS"
+			|| name == "BASHOPTS" || name == "SHELLOPTS";
+	}
+
+	// bash's noassign variables: the shell maintains them, scripts' writes vanish.
+	static bool isNoAssignName(const std::string& name) {
+		return name == "FUNCNAME" || name == "GROUPS";
 	}
 
 	void Environment::set(const std::string& name, std::string value) {
@@ -283,12 +382,18 @@ namespace wbsh {
 			return;
 		}
 
+		if (name == "BASH_ARGV0") {
+			shell_name_ = std::move(value);
+			return;
+		}
+
 		// Read-only dynamic params; writes are ignored silently.
-		if (isReadOnlyDynamicName(name)) return;
+		if (isReadOnlyDynamicName(name) || isNoAssignName(name)) return;
 
 		if (rejectIfReadonly(name)) return;
 		if (!applyAttributes(name, value)) return;
 
+		valueless_.erase(name);
 		auto indexed = indexed_.find(name);
 		if (indexed != indexed_.end()) {
 			indexed->second[0] = std::move(value);
@@ -298,6 +403,59 @@ namespace wbsh {
 		assoc_.erase(name);
 		vars_[name] = std::move(value);
 		if (options_.allexport) exported_.insert(name);
+		if (name == "GLOBIGNORE") noteGlobIgnore();
+		if (name == "POSIXLY_CORRECT") notePosixlyCorrect();
+		if (name == "OPTIND") ++optind_writes_;
+		if (name == "PWD") indexed_["DIRSTACK"][0] = vars_[name];
+	}
+
+	// `set -r`: for good; the variables that would lead out of the
+	// restriction become readonly, as in bash.
+	void Environment::enterRestrictedMode() {
+		static const char* const kRestrictedVariables[] = {
+			"PATH", "SHELL", "ENV", "BASH_ENV", "HISTFILE",
+		};
+
+		shopt_.restricted_shell = true;
+		for (const char* name : kRestrictedVariables) readonly_.insert(name);
+	}
+
+	void Environment::setPosixMode(bool on) {
+		if (on == options_.posix) return;
+
+		options_.posix = on;
+		if (on) {
+			posix_saved_ = { shopt_.expand_aliases, shopt_.inherit_errexit, shopt_.shift_verbose,
+				options_.interactive_comments };
+			shopt_.expand_aliases = shopt_.inherit_errexit = shopt_.shift_verbose = true;
+			options_.interactive_comments = true;
+			if (vars_.count("POSIXLY_CORRECT") == 0) set("POSIXLY_CORRECT", "y");
+			return;
+		}
+
+		shopt_.expand_aliases = posix_saved_.expand_aliases;
+		shopt_.inherit_errexit = posix_saved_.inherit_errexit;
+		shopt_.shift_verbose = posix_saved_.shift_verbose;
+		options_.interactive_comments = posix_saved_.interactive_comments;
+		unset("POSIXLY_CORRECT");
+	}
+
+	// As in bash, setting POSIXLY_CORRECT turns POSIX mode on and unsetting
+	// it turns it off.
+	void Environment::notePosixlyCorrect() {
+		setPosixMode(vars_.count("POSIXLY_CORRECT") != 0);
+	}
+
+	static bool hasGlobIgnorePattern(const std::string& value) {
+		return value.find_first_not_of(':') != std::string::npos;
+	}
+
+	// As in bash, a GLOBIGNORE with a pattern turns dotglob on and unsetting
+	// it turns dotglob off; an empty value leaves dotglob as it is.
+	void Environment::noteGlobIgnore() {
+		const auto value = vars_.find("GLOBIGNORE");
+		if (value == vars_.end()) shopt_.dotglob = false;
+		else if (hasGlobIgnorePattern(value->second)) shopt_.dotglob = true;
 	}
 
 	void Environment::setIndexedArrayFromList(const std::string& name,
@@ -307,6 +465,7 @@ namespace wbsh {
 
 		vars_.erase(target);
 		assoc_.erase(target);
+		valueless_.erase(target);
 
 		IndexedArray array;
 		for (std::size_t i = 0; i < values.size(); ++i) {
@@ -323,6 +482,7 @@ namespace wbsh {
 		if (rejectIfReadonly(target)) return;
 
 		for (auto& element : elems) applyAttributes(target, element.second);
+		valueless_.erase(target);
 		vars_.erase(target);
 		assoc_.erase(target);
 		indexed_[target] = std::move(elems);
@@ -330,7 +490,7 @@ namespace wbsh {
 
 	void Environment::setIndexedElement(const std::string& name, long long idx, std::string val) {
 		const std::string& target = resolveRef(name);
-		if (rejectIfReadonly(target)) return;
+		if (isNoAssignName(target) || rejectIfReadonly(target)) return;
 		if (!applyAttributes(target, val)) return;
 
 		if (assoc_.count(target) != 0) {
@@ -338,6 +498,9 @@ namespace wbsh {
 			return;
 		}
 
+		if (!resolveElementIndex(target, idx)) return;
+
+		valueless_.erase(target);
 		auto indexed = indexed_.find(target);
 		if (indexed != indexed_.end()) {
 			indexed->second[idx] = std::move(val);
@@ -361,6 +524,7 @@ namespace wbsh {
 
 		vars_.erase(target);
 		indexed_.erase(target);
+		valueless_.erase(target);
 		assoc_.emplace(target, AssocArray{});
 	}
 
@@ -369,6 +533,7 @@ namespace wbsh {
 		if (rejectIfReadonly(target)) return;
 		if (!applyAttributes(target, val)) return;
 
+		valueless_.erase(target);
 		auto assoc = assoc_.find(target);
 		if (assoc != assoc_.end()) {
 			assoc->second[std::move(key)] = std::move(val);
@@ -391,7 +556,27 @@ namespace wbsh {
 		}
 
 		auto indexed = indexed_.find(target);
-		if (indexed != indexed_.end()) indexed->second.erase(idx);
+		if (indexed == indexed_.end() || !resolveElementIndex(target, idx)) return;
+		indexed->second.erase(idx);
+	}
+
+	bool Environment::resolveElementIndex(const std::string& name, long long& idx) const {
+		if (idx >= 0) return true;
+
+		const std::string& target = resolveRef(name);
+		const auto indexed = indexed_.find(target);
+		long long end = vars_.count(target) != 0 ? 1 : 0;
+		if (indexed != indexed_.end() && !indexed->second.empty()) {
+			end = indexed->second.rbegin()->first + 1;
+		}
+
+		if (idx + end >= 0) {
+			idx += end;
+			return true;
+		}
+
+		shellErrorf("%s[%lld]: bad array subscript\n", target.c_str(), idx);
+		return false;
 	}
 
 	// Unsetting a nameref unsets the variable it names; one with no
@@ -411,6 +596,9 @@ namespace wbsh {
 		assoc_.erase(target);
 		exported_.erase(target);
 		attributes_.erase(target);
+		valueless_.erase(target);
+		if (target == "GLOBIGNORE") noteGlobIgnore();
+		if (target == "POSIXLY_CORRECT") notePosixlyCorrect();
 	}
 
 	bool Environment::has(const std::string& name) const {
@@ -484,6 +672,7 @@ namespace wbsh {
 		if (isExported(name))              letters += 'x';
 		if ((attrs & kAttrLowercase) != 0) letters += 'l';
 		if ((attrs & kAttrUppercase) != 0) letters += 'u';
+		if ((attrs & kAttrCapitalize) != 0) letters += 'c';
 		return letters;
 	}
 
@@ -499,7 +688,11 @@ namespace wbsh {
 
 	std::string Environment::appendedValue(const std::string& name,
 			const std::string& suffix) const {
-		const std::string current = get(name);
+		return appendedTo(name, get(name), suffix);
+	}
+
+	std::string Environment::appendedTo(const std::string& name, const std::string& current,
+			const std::string& suffix) const {
 		if ((attributes(name) & kAttrInteger) == 0) return current + suffix;
 		if (current.empty()) return suffix;
 
@@ -518,6 +711,19 @@ namespace wbsh {
 		value = std::move(converted);
 	}
 
+	// `declare -c`: the first character upper case, the rest lower case.
+	static void capitalize(std::string& value) {
+		if (value.empty()) return;
+
+		const Utf8Char first = decodeUtf8(value, 0);
+		std::string rest = value.substr(first.length);
+		transformCase(rest, false);
+
+		std::string converted;
+		appendUtf8(converted, upperCode(first.code));
+		value = converted + rest;
+	}
+
 	bool Environment::applyAttributes(const std::string& name, std::string& value) const {
 		const unsigned attrs = attributes(name);
 		if (attrs == 0) return true;
@@ -530,6 +736,7 @@ namespace wbsh {
 
 		if ((attrs & kAttrLowercase) != 0) transformCase(value, false);
 		if ((attrs & kAttrUppercase) != 0) transformCase(value, true);
+		if ((attrs & kAttrCapitalize) != 0) capitalize(value);
 		return true;
 	}
 
@@ -671,8 +878,10 @@ namespace wbsh {
 	}
 
 	void Environment::importProcessVariable(std::string name, std::string value) {
+		const bool posixly_correct = name == "POSIXLY_CORRECT";
 		vars_[name] = std::move(value);
 		exported_.insert(std::move(name));
+		if (posixly_correct) notePosixlyCorrect();
 	}
 
 #ifdef _WIN32

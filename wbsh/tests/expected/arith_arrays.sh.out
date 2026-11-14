@@ -2,7 +2,7 @@
 40
 40 20 20 10
 30 10 0 0 900
-wbsh: s: bad array subscript
+arith_arrays.sh: line 9: s: bad array subscript
 scalar: 4 0 0
 expression element: 10
 20 j=2
@@ -32,21 +32,21 @@ expression element: 10
 4 7
 1 4
 === 5. bad subscripts
-wbsh: a: bad array subscript
+arith_arrays.sh: line 45: a: bad array subscript
 0
 rc=0
-wbsh: a[-10]: bad array subscript
+arith_arrays.sh: line 46: a[-10]: bad array subscript
 rc=0 1 2 3
-wbsh: a[]: bad array subscript
+arith_arrays.sh: line 47: a[]: bad array subscript
 0
 rc=0
-wbsh: a[1: bad array subscript (error token is "a[1")
+arith_arrays.sh: line 48: a[1 : bad array subscript (error token is "a[1 ")
 rc=1
-wbsh: 1/0: division by 0 (error token is "0")
+arith_arrays.sh: line 49: 1/0: division by 0 (error token is "0")
 rc=1
-wbsh: 5 + a [1]: syntax error: invalid arithmetic operator (error token is "[1]")
+arith_arrays.sh: line 50: 5 + a [1] : arithmetic syntax error: invalid arithmetic operator (error token is "[1] ")
 rc=1
-wbsh: a[1]a: syntax error in expression (error token is "a")
+arith_arrays.sh: line 51: a[1]a : arithmetic syntax error in expression (error token is "a ")
 rc=1
-wbsh: a[0][0]: syntax error: invalid arithmetic operator (error token is "[0]")
+arith_arrays.sh: line 52: a[0][0] : arithmetic syntax error: invalid arithmetic operator (error token is "[0] ")
 rc=1

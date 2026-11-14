@@ -11,13 +11,13 @@ bar-123-foo
 === stat
 wbsh: stat: cannot stat 'tests/batch4.sh': No such file or directory
 === chmod / readonly attribute
-wbsh: /tmp/wbsh-cmod.t: Permission denied
+batch4.sh: line 18: /tmp/wbsh-cmod.t: Permission denied
 (write blocked as expected)
 OK
 === ln (hard link)
 content
 === readonly / declare
-wbsh: RX: readonly variable
+batch4.sh: line 32: RX: readonly variable
 RX=42
 declare -r RX="42"
 === getopts

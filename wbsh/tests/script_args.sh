@@ -29,8 +29,9 @@ $W -r -c 'echo "0=$0 n=$# all=[$*]"'
 $W -r -c 'echo "0=$0 n=$# all=[$*]"' name a 'b c'
 $W -r -c 'echo "0=$0 1=$1"' -x -y
 
-echo "=== 5. stdin with arguments: - and -s"
-echo 'echo "n=$# all=[$*]"' | $W -r - a b
+echo "=== 5. stdin with arguments: -s; a lone - ends the options, as in bash"
+echo 'echo "n=$# all=[$*]"' | $W -r -s a b
+echo 'echo "n=$# all=[$*]"' | $W -r - 2>&1
 echo 'echo "n=$# all=[$*]"' | $W -r -s c
 
 echo "=== 6. positionals reach pipeline elements"

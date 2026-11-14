@@ -1,0 +1,8 @@
+f () 
+{ 
+    for name in $(echo 1 2 3);
+    do
+        z=$(( 1 + 2 ));
+        echo '$( kept )' $( (sub) );
+    done
+}

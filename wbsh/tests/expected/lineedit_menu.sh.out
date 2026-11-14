@@ -1,0 +1,54 @@
+=== off by default: a second Tab lists
+alpha   alpine\r\n
+=== the grid, the first match taken at once
+[foo alpine ][] @0:11
+\r\e[Jf\r\e[1C\r\e[Jfo\r\e[2C\r\e[Jfoo\r\e[3C\r\e[Jfoo \r\e[4C\r\e[Jfoo a\r\e[5C\r\e[Jfoo al\r\e[6C\r\e[Jfoo alpha\r\n
+\e[7malpha \e[0m  alpine  \r\e[1A\e[9C\r\e[Jfoo alpine\r\n
+alpha   \e[7malpine\e[0m  \r\e[1A\e[10C\r\e[Jfoo alpine \r\e[11C\r\e[Jfoo alpine \r\e[11C
+=== moving and leaving
+[foo alpha ][]
+[foo alpine ][]
+[foo alpine ][]
+[foo alpha ][]
+[foo al][]
+[foo al][]
+[foo alpinex][]
+[foo alpin][]
+[foo beta ][]
+=== columns: Right and Left move across, wrapping a row
+[many w05 ][] @0:9
+[many w12 ][] @0:9
+[many w05 ][] @0:9
+=== a grid taller than the screen scrolls
+\e[2mrows 2-3 of\e[0m\r\e[3A\e[8C\r\e[Jmany w04\r\n
+w03  w09  \r\n
+\e[7mw04\e[0m  w10  \r\n
+\e[2mrows 3-4 of\e[0m\r\e[3A\e[8C\r\e[Jmany w04 \r\e[9C\r\e[Jmany w04 \r\e[9C
+=== wide characters
+中文字  日本語  \r\e[2A\e[7C\r\e[Jcjk 日本\r\n
+abc     \e[7m日本  \e[0m  \r\n
+中文字  日本語  \r\e[2A\e[8C\r\e[Jcjk 日本 \r\e[9C\r\e[Jcjk 日本 \r\e[9C
+=== descriptions
+--almost  \e[2mnearly all\e[0m\r\n
+--brief   \r\e[3A\e[10C\r\e[Jdesc --almost\r\n
+--all     \e[2mshow everything\e[0m\r\n
+\e[7m--almost\e[0m  \e[2mnearly all\e[0m\r\n
+--brief   \r\e[3A\e[13C\r\e[Jdesc --almost \r\e[14C\r\e[Jdesc --almost \r\e[14C
+=== command names carry their manual's summary
+\r\e[Jm\r\e[1C\r\e[Jmk\r\e[2C\r\e[Jmkdir\r\n
+\e[7mmkdir \e[0m  \e[2mmake directories\e[0m\r\n
+mkfifo  \e[2mmake FIFOs (named pipes)\e[0m\r\n
+mknod   \e[2mmake block or character special files\e[0m\r\n
+mktemp  \e[2mcreate a temporary file or directory\e[0m\r\e[4A\e[5C\r\e[Jmkdir \r\e[6C\r\e[Jmkdir \r\e[6C
+=== menu-complete-display-prefix: nothing chosen until the next Tab
+[many w][]
+[many w01 ][]
+=== vi insert mode
+[many w02 ][]
+[many w0x][]
+=== the menu-select command, whatever the option says
+[many w11 ][]
+=== menu-complete with display-prefix, without the grid
+[foo alp][]
+[foo alpha][]
+[foo alpha][]

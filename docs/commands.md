@@ -4,6 +4,7 @@ How wbsh's bundled commands behave, and where Windows makes them differ from
 Linux. The list of commands is in the [README](../README.md#commands).
 
 - [Shell behaviour on Windows](#shell-behaviour-on-windows)
+- [Git Bash helpers](#git-bash-helpers)
 - [Files](#files)
 - [Text and editors](#text-and-editors)
 - [Encoding and hashing](#encoding-and-hashing)
@@ -28,14 +29,13 @@ Tilde expansion covers `~`, `~+`, `~-` and `~name`.
 
 ### Identity: uname, OSTYPE, UID
 
-`uname -s` prints `wbsh`, but `OSTYPE` is `msys` and `MACHTYPE` ends in
-`-pc-msys`, as in Git Bash. The two answers differ on purpose:
-
-- `$OSTYPE` tells a script that it runs on Windows.
-- `uname -s` does not start with `MSYS` or `MINGW`. Launchers such as
-  `gradlew` and the npm shims run `cygpath` on that branch. wbsh converts POSIX
-  paths for native programs itself, so the generic POSIX branch works, and
-  `cygpath` is not bundled.
+wbsh answers the way Git Bash does: `uname -s` is `MINGW64_NT-<version>`,
+`OSTYPE` is `msys`, `MACHTYPE` ends in `-pc-msys` and `MSYSTEM` is `MINGW64`
+when the environment has none. Scripts that check
+`case $(uname -s) in MINGW*|MSYS*)` take their Windows branch. Launchers such
+as `gradlew` and the npm shims call `cygpath` on that branch, and `cygpath` is
+built in (see [Git Bash helpers](#git-bash-helpers)). `WBSH_UNAME_S=wbsh`
+brings back the old answer for a script that needs the generic POSIX branch.
 
 There is no uid model. `UID` and `EUID` are readonly and hold the id that
 `id -u` prints (1000), never 0, also in an elevated shell. `HOSTNAME` is the
@@ -57,6 +57,43 @@ file, the path gets the same extensions as a PATH lookup.
 
 A file test on a missing name also finds the name with `.exe` added, as in Git
 Bash: `[ -x "$JAVA_HOME/bin/java" ]` is true when `java.exe` exists.
+
+### Arguments for native programs
+
+A program that is not built on MSYS or Cygwin gets its POSIX path arguments in
+Win32 form, by the rules Git Bash's MSYS runtime uses:
+
+| Argument | Passed as |
+| --- | --- |
+| `/c/Users`, `/tmp/x`, `/dev/null` | `C:\Users`, `%TEMP%\x`, `nul` |
+| `--opt=/c/x`, `VAR=/c/x`, `-I/c/x`, `-Wl,-rpath,/c/x` | the path part converted |
+| `/c/x:/d/y`, `-I/c/x:/d/y` | `C:\x;D:\y` |
+| `//c`, `//F`, `//PID` | `/c`, `/F`, `/PID`, for `cmd //c`, `taskkill //F` |
+| `//server/share` | unchanged (UNC) |
+| URLs, `s/a/b/`, `a:b`, `file.cpp:12`, `./rel`, `~/x` | unchanged |
+| anything with `*`, `?`, `[`, `]`, quotes or `;` | unchanged |
+
+Where wbsh differs from Git Bash:
+
+- A two-character `/x` stays as it is, so `cmd /c`, `where /q` and other
+  Windows switches work without the `//` escape.
+- wbsh has no MSYS root, so a path no mount covers (`/`, `/usr/bin`, `/opt/x`)
+  goes out unchanged instead of under Git's install directory. A `:` list with
+  such an entry stays whole, so `docker run -v /c/src:/app` keeps its meaning.
+- Converted paths use backslashes.
+- `/dev/stdin`, `/dev/stdout`, `/dev/stderr` and `/dev/tty` stay as they are.
+- Environment variables other than `PATH` and `HOME` are not converted, so
+  `MSYS2_ENV_CONV_EXCL` has nothing to do.
+
+Turning it off:
+
+- `MSYS_NO_PATHCONV` or `WBSH_NO_PATHCONV`, set and not empty, turns it off
+  for every argument.
+- `MSYS2_ARG_CONV_EXCL` is `*` for every argument, or a `;`-separated list of
+  prefixes: `MSYS2_ARG_CONV_EXCL='--prefix=;/c/keep'` leaves the arguments
+  starting with either alone.
+- Programs from an MSYS2 or Cygwin install, or from Git's `usr\bin`,
+  `mingw32\bin` and `mingw64\bin`, get their arguments unchanged.
 
 ### exec
 
@@ -104,6 +141,47 @@ Some cases work differently:
 - A process that is no wbsh, or a wbsh in another logon session, is terminated
   with 128 + n.
 
+### time
+
+The `time` keyword reports elapsed, user and system time, as bash does.
+
+- User and system time are the shell's own, for builtins and functions, plus
+  that of every child process it waited for. A child's own children count only
+  when it waited for them itself, as with `getrusage`.
+- `TIMEFORMAT` takes bash's `%[p][l]R`, `%[p][l]U`, `%[p][l]S`, `%P` and `%%`.
+  Set but empty, it turns the report off.
+- `time -p` prints the POSIX format and ignores `TIMEFORMAT`.
+- `time` alone times a null command; in POSIX mode it reports the user and
+  system time of the shell and its children since the shell started.
+
+### POSIX mode
+
+`set -o posix`, `--posix`, a copy named `sh.exe`, or `POSIXLY_CORRECT` in the
+environment turn on these parts of bash's POSIX mode:
+
+- `POSIXLY_CORRECT` is set (unsetting it leaves POSIX mode), and
+  `expand_aliases`, `inherit_errexit`, `shift_verbose` and
+  `interactive_comments` go on; `set +o posix` puts them back.
+- Special builtins (`.`, `:`, `break`, `continue`, `eval`, `exec`, `exit`,
+  `export`, `readonly`, `return`, `set`, `shift`, `times`, `trap`, `unset`)
+  are found before functions, and a function cannot take their name.
+- Assignments before a special builtin stay in the shell (exported).
+- In a non-interactive shell these end the shell: an error from a special
+  builtin (a bad option, an invalid identifier, `shift` out of range, a
+  syntax error in `eval` or a sourced file, `.` not finding its file), an
+  expansion error such as `${x:?}` or a bad `$(( ))`, and an assignment
+  error without a command or before a special builtin. `command` takes the
+  special property away, as in bash.
+- A failed prefix assignment cancels the command (status 1).
+- `.` and `source` do not fall back to the current directory after `PATH`.
+- Redirection targets are neither split nor globbed in a non-interactive
+  shell.
+- `time` alone reports the shell's times (above).
+
+Not implemented: the `kill -l` and `trap` output formats, `echo` without
+options under `xpg_echo`, the `cd` and `pwd` differences, and the job-control
+message formats.
+
 ### /dev
 
 `/dev/zero`, `/dev/random`, `/dev/urandom` and `/dev/full` exist for
@@ -120,7 +198,7 @@ it.
 | `cpuinfo` | One block per logical processor, with CPUID flags under Linux's names |
 | `meminfo`, `uptime` | As on Linux |
 | `loadavg` | Reads 0.00, since Windows keeps no load average |
-| `version` | wbsh's own, so WSL checks stay false |
+| `version` | `uname -s` and wbsh's own version, never `Microsoft`, so WSL checks stay false |
 | `self` | The current process |
 | `<pid>/` | `cmdline`, `comm`, `status`, `exe` |
 | `<pid>/` of the shell itself | Also `cwd`, `environ`, `fd/<n>` |
@@ -164,12 +242,55 @@ bits, nor block devices.
 
 ---
 
+## Git Bash helpers
+
+Scripts written for Git Bash call these, so wbsh has them built in.
+
+**`cygpath`** converts paths with wbsh's own mounts, the ones every command
+uses: `/c/x` is `C:\x` and `/tmp` is `%TEMP%`. Git Bash maps `/` to its install
+directory, wbsh to the root of the current drive. Otherwise the output matches
+Git's `cygpath`:
+
+- `-u`, `-w`, `-m`, `-d` and `-t TYPE` pick the output form. `-a` makes a name
+  absolute, `-p` converts a PATH list, and `-s` / `-l` give the short or long
+  form.
+- `-f FILE` reads names from FILE, or from stdin for `-`. `-0` / `-z` / `--null`
+  ends each name with NUL.
+- `-D`, `-H`, `-O`, `-P`, `-S`, `-W`, `-A` and `-F ID` print special folders.
+- Windows names are normalised (`C:\x\..\y` is `/c/y`). POSIX names are printed
+  as given, even with `-a`.
+
+**`start`** opens a file, folder or URL with its associated program, or starts
+a program with arguments without waiting, through `ShellExecuteEx`. `/wait` (or
+`-w`) waits and returns the exit status, and `/min` / `/max` set the window
+size. Arguments that are POSIX paths go out in Win32 form.
+
+**`winpty`** runs its command as given. wbsh starts programs on a real console
+or pseudo console already, so there is nothing left for winpty to do. Builtins,
+functions and PATH programs all run, with their exit status. winpty's own
+options (`-Xallow-non-tty`, `-Xplain`, `--mouse`) are ignored.
+
+---
+
 ## Files
+
+**`cat`** has GNU's `-A`, `-b`, `-e`, `-E`, `-n`, `-s`, `-t`, `-T`, `-u` and `-v`
+and their long forms. `-v` writes `^X` and `M-` notation as GNU cat 8.32 does.
+That is the version Git ships, so with `-E` a CR before a newline stays a CR.
 
 **`chown` / `chgrp`** (`-R -h -H -L -P -v -c -f --from --reference`) set the
 NTFS owner and group. Asking for the current owner always succeeds. Giving a
 file to another account needs an elevated shell and otherwise fails with
 "Operation not permitted", as on Linux.
+
+**`chmod`** takes octal and symbolic modes (`u+x`, `go-w`, `a=rX`, `g=u`,
+comma lists; a clause without `u`/`g`/`o`/`a` honours the umask) and
+`-R -v -c -f --reference`. The owner write bit is the read-only attribute.
+Execute is on by default for directories, `.exe .com .bat .cmd .ps1 .sh` files
+and files starting with `#!` or `MZ`; any other mode chmod sets is kept in the
+file's `wbsh.mode` NTFS stream (which copies and renames carry along). `test
+-x`, `[[ -x ]]`, `ls -l`, `stat`, `find -perm` and `tar` all read the same
+bits.
 
 **`install`** follows GNU (`-d -D -t -T -m -o -g -p -C -b / -S -v -s`). A mode
 maps onto the read-only attribute as in `chmod`, and `-s` runs `strip` only
@@ -235,12 +356,29 @@ replacements, `g` / `v` / `G` / `V`, undo, marks and `r !` / `w !` / `e !`.
 - **`cpio`** handles newc, crc, odc, bin, ustar and tar, both ways.
 - **`ar`** can create, replace, append, delete and move, with GNU long names,
   and writes deterministic headers unless given `U`.
+- Extraction stays inside the target directory. `unzip` strips a leading `/`,
+  drive or UNC prefix with a warning and skips names that climb out through
+  `..` (exit status 1 either way, as Info-ZIP); `tar` and `cpio` refuse `..`
+  names, and create symbolic links whose target is absolute or contains `..`
+  only after every other member, so nothing is written through them.
 
 ---
 
 ## Processes and system
 
 `env` takes `-i`, `-u` and `NAME=value command`.
+
+**`uname`** answers as Git Bash does, so `case $(uname -s) in MINGW*|MSYS*)`
+finds Windows:
+
+- `-s` is `MINGW64_NT-10.0-<build>`, its prefix taken from `MSYSTEM` like
+  MSYS2's: `MSYS_NT` for `MSYS`, `MINGW32_NT` for a 32-bit environment.
+  `WBSH_UNAME_S`, when set, replaces it. `/proc/version` starts with the same
+  name.
+- `-o` is `Msys`, `-m` is `x86_64` or `aarch64`, `-r` and `-v` are the Windows
+  version and build, and `-p` / `-i` are `unknown`, left out of `-a`.
+- wbsh exports `MSYSTEM=MINGW64` when the environment has no `MSYSTEM`, and
+  sets `OSTYPE` to `msys`.
 
 ### Priorities
 
@@ -321,10 +459,10 @@ kill $(cat "$APPDATA/wbsh/crontabs/.crond.pid")
 ```
 
 wbsh registers nothing with Task Scheduler. To start crond at logon, put a
-shortcut to `wbsh.exe -r -c crond` in `shell:startup`, or run this from cmd:
+shortcut to `wbsh.exe -c crond` in `shell:startup`, or run this from cmd:
 
 ```bat
-schtasks /Create /SC ONLOGON /TN wbsh-crond /TR "\"C:\path\to\wbsh.exe\" -r -c crond"
+schtasks /Create /SC ONLOGON /TN wbsh-crond /TR "\"C:\path\to\wbsh.exe\" -c crond"
 ```
 
 ---

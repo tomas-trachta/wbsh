@@ -1,0 +1,3 @@
+case_pattern_error.sh: line 6: xx: readonly variable
+1.1
+after 1

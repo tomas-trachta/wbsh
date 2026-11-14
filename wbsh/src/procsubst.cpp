@@ -257,6 +257,14 @@ namespace wbsh::procsubst_detail {
 		}
 	}
 
+	// bash's `/dev/fd/63` can be opened again once it is drained and reads
+	// as empty; so does the pipe's name here, until the command is done.
+	static void answerLateReaders(Relay& relay) {
+		closeInstance(*relay.chosen);
+		relay.chosen.reset();
+		pickClient(relay, false);
+	}
+
 	static void runRelay(Relay& relay) {
 		listenOnAll(relay);
 		bool has_data = true;
@@ -270,9 +278,14 @@ namespace wbsh::procsubst_detail {
 
 		relay.delivered = true;
 		closeAll(relay.clients);
+		if (relay.outbound) {
+			streamToReader(relay);
+			answerLateReaders(relay);
+			return;
+		}
+
 		closeAll(relay.listening);
-		if (relay.outbound) streamToReader(relay);
-		else                streamToProcess(relay);
+		streamToProcess(relay);
 	}
 
 	static void closeRelay(Relay& relay) {

@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "diagnostics.h"
 #include "executor.h"
 #include "numparse.h"
 #include "stdinsync.h"
@@ -79,7 +80,7 @@ namespace wbsh::read_detail {
 		std::size_t ahead_pos = 0;
 	};
 
-	static const char kOptionLetters[] = "ersa:d:i:n:N:p:t:u:";
+	static const char kOptionLetters[] = "eErsa:d:i:n:N:p:t:u:";
 
 	static int reportUsage() {
 		std::fprintf(stderr, "read: usage: read [-ers] [-a array] [-d delim] [-i text] "
@@ -88,17 +89,17 @@ namespace wbsh::read_detail {
 	}
 
 	static int reportInvalidOption(char letter) {
-		std::fprintf(stderr, "wbsh: read: -%c: invalid option\n", letter);
+		shellErrorf("read: -%c: invalid option\n", letter);
 		return reportUsage();
 	}
 
 	static int reportMissingArgument(char letter) {
-		std::fprintf(stderr, "wbsh: read: -%c: option requires an argument\n", letter);
+		shellErrorf("read: -%c: option requires an argument\n", letter);
 		return reportUsage();
 	}
 
 	static int reportBadValue(const std::string& value, const char* what) {
-		std::fprintf(stderr, "wbsh: read: %s: %s\n", value.c_str(), what);
+		shellErrorf("read: %s: %s\n", value.c_str(), what);
 		return 1;
 	}
 
@@ -199,7 +200,7 @@ namespace wbsh::read_detail {
 		return 0;
 	}
 
-	static bool isValidName(const std::string& name) {
+	static bool isValidPlainName(const std::string& name) {
 		if (name.empty()) return false;
 		if (!std::isalpha(static_cast<unsigned char>(name[0])) && name[0] != '_') return false;
 
@@ -210,11 +211,20 @@ namespace wbsh::read_detail {
 		return true;
 	}
 
+	// An array element, `name[subscript]`, is a valid target too.
+	static bool isValidName(const std::string& name) {
+		const std::size_t bracket = name.find('[');
+		if (bracket == std::string::npos) return isValidPlainName(name);
+
+		return bracket + 2 < name.size() && name.back() == ']'
+			&& isValidPlainName(name.substr(0, bracket));
+	}
+
 	static bool validateNames(const std::vector<std::string>& names) {
 		for (const std::string& name : names) {
 			if (isValidName(name)) continue;
 
-			std::fprintf(stderr, "wbsh: read: `%s': not a valid identifier\n", name.c_str());
+			shellErrorf("read: `%s': not a valid identifier\n", name.c_str());
 			return false;
 		}
 
@@ -225,7 +235,7 @@ namespace wbsh::read_detail {
 		source.fd = opts.fd;
 		source.handle = reinterpret_cast<HANDLE>(_get_osfhandle(opts.fd));
 		if (source.handle == INVALID_HANDLE_VALUE) {
-			std::fprintf(stderr, "wbsh: read: %d: invalid file descriptor: Bad file descriptor\n",
+			shellErrorf("read: %d: invalid file descriptor: Bad file descriptor\n",
 				opts.fd);
 			return false;
 		}
@@ -514,7 +524,7 @@ namespace wbsh::read_detail {
 
 	static int assignArray(Environment& env, const Options& opts, const Input& input) {
 		if (env.isReadonly(opts.array_name)) {
-			std::fprintf(stderr, "wbsh: %s: readonly variable\n", opts.array_name.c_str());
+			shellErrorf("%s: readonly variable\n", opts.array_name.c_str());
 			return 1;
 		}
 

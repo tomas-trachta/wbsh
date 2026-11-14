@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "diagnostics.h"
 #include "executor.h"
 #include "numparse.h"
 
@@ -116,7 +117,7 @@ namespace wbsh::ulimit_detail {
 		for (std::size_t k = 1; k < word.size(); ++k) {
 			if (applyOptionLetter(word[k], request)) continue;
 
-			std::fprintf(stderr, "wbsh: ulimit: -%c: invalid option\n", word[k]);
+			shellErrorf("ulimit: -%c: invalid option\n", word[k]);
 			printUsage();
 			return false;
 		}
@@ -177,7 +178,7 @@ namespace wbsh::ulimit_detail {
 		else if (text == "hard") value = hardValue(limit);
 		else if (text == "soft") value = softValue(limit);
 		else if (!parseLL(text, value) || value < 0) {
-			std::fprintf(stderr, "wbsh: ulimit: %s: invalid number\n", text.c_str());
+			shellErrorf("ulimit: %s: invalid number\n", text.c_str());
 			return false;
 		}
 
@@ -190,7 +191,7 @@ namespace wbsh::ulimit_detail {
 	}
 
 	static int refuseChange(const Limit& limit, const char* reason) {
-		std::fprintf(stderr, "wbsh: ulimit: %s: cannot modify limit: %s\n",
+		shellErrorf("ulimit: %s: cannot modify limit: %s\n",
 			limit.description, reason);
 		return 1;
 	}

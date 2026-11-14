@@ -161,7 +161,7 @@ namespace wbshterm {
 
 	// OSC 7 reports a Windows path with its slashes the POSIX way round;
 	// CreateProcess wants them back.
-	static std::wstring nativeDirectory(const std::string& reported) {
+	std::wstring nativeDirectory(const std::string& reported) {
 		if (reported.empty()) return std::wstring();
 
 		const int needed = ::MultiByteToWideChar(CP_UTF8, 0, reported.c_str(),
@@ -880,6 +880,7 @@ namespace wbshterm {
 
 			const PaneCanvas canvas = canvasFor(*leaf);
 			renderer_.draw(canvas);
+			renderer_.drawCommandMarks(canvas);
 			renderer_.drawPicker(canvas, leaf->pane()->picker());
 			if (canvas.focused) renderer_.drawSearchBox(canvas, search_);
 			renderer_.drawScrollbar(canvas, scrollbarOf(*leaf), scrollbarLit(*leaf));
@@ -1077,12 +1078,17 @@ namespace wbshterm {
 		loadUtils();
 		if (config_.startup_fetch) announceStartupFetch();
 
+		SavedPane saved;
+		const bool restoring = loadLayout(saved);
+		if (restoring) directory_hint_ = nativeDirectory(firstSavedPane(saved).directory);
+
 		auto first = std::make_unique<Pane>();
 		Pane* only = first.get();
 		panes_.adopt(std::move(first));
 		layoutPanes();
 
 		if (!startPane(*only, out_error)) return false;
+		if (restoring) restoreSplits(saved);
 
 		applyWindowSettings();
 
@@ -1499,6 +1505,7 @@ namespace wbshterm {
 		case WM_DESTROY:
 			accessibility_.disconnect(window_);
 			disarmNewWindowHotkey();
+			saveLayout();
 			stopEveryPane();
 			::PostQuitMessage(0);
 			return 0;
@@ -1546,6 +1553,7 @@ namespace wbshterm {
 
 		const GridPoint point = pointInLeaf(*leaf, lparam);
 		if (openLinkAt(leaf->pane()->screen(), point)) return;
+		if (openPathAt(*leaf, point)) return;
 
 		const int clicks = clickCountAt(point);
 		TerminalView& view = leaf->pane()->view();
@@ -1712,6 +1720,9 @@ namespace wbshterm {
 		} else if (press.control && press.shift && !press.alt && press.virtual_key == 'C') {
 			copySelection();
 			return true;
+		} else if (press.control && press.shift && !press.alt && press.virtual_key == 'O') {
+			copyCommandOutput();
+			return true;
 		} else if (press.control && !press.alt && press.virtual_key == VK_INSERT) {
 			copySelection();
 			return true;
@@ -1782,8 +1793,16 @@ namespace wbshterm {
 		lists.themes = availableThemeNames(themesDirectory(config_path_));
 		lists.fonts  = menuFontFamilies(config_, installedMonospaceFamilies());
 
+		POINT client = where;
+		::ScreenToClient(window_, &client);
+		PaneNode* leaf = leafFromMouse(MAKELPARAM(client.x, client.y));
+		if (leaf != nullptr) panes_.focusOn(leaf);
+		menu_row_ = leaf == nullptr ? -1 : pointInLeaf(*leaf, MAKELPARAM(client.x, client.y)).row;
+
+		const CommandBlock* block = menuBlock();
 		HMENU menu = buildTerminalMenu(config_, lists, focused().view().hasSelection(),
-			!focused().screen().commandBlocks().empty());
+			!focused().screen().commandBlocks().empty(), block != nullptr,
+			block != nullptr && !block->command.empty() && focused().screen().atPrompt());
 		const int command = ::TrackPopupMenu(menu,
 			TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, where.x, where.y, 0, window_, nullptr);
 		::DestroyMenu(menu);
@@ -1826,6 +1845,8 @@ namespace wbshterm {
 			copyLastCommandOutput();
 			return;
 		}
+
+		if (runBlockChoice(choice)) return;
 
 		if (!applyMenuChoice(choice, themesDirectory(config_path_), config_)) return;
 
@@ -2386,6 +2407,31 @@ namespace wbshterm {
 
 	void TerminalWindow::copyLastOutput() {
 		copyLastCommandOutput();
+	}
+
+	// The command the menu was opened on, looked up again by its row:
+	// output that arrived while the menu was open may have moved the list.
+	const CommandBlock* TerminalWindow::menuBlock() const {
+		if (menu_row_ < 0) return nullptr;
+
+		const CommandBlock* block = focused().screen().blockAt(menu_row_);
+		return block != nullptr && block->output_row >= 0 ? block : nullptr;
+	}
+
+	bool TerminalWindow::runBlockChoice(const MenuChoice& choice) {
+		const bool for_block = choice.action == MenuAction::CopyBlockOutput
+			|| choice.action == MenuAction::SelectBlockOutput
+			|| choice.action == MenuAction::RerunBlock;
+		if (!for_block) return false;
+
+		const CommandBlock* block = menuBlock();
+		if (block == nullptr) return true;
+
+		const CommandBlock copy = *block;
+		if (choice.action == MenuAction::CopyBlockOutput) copyBlockOutput(copy);
+		if (choice.action == MenuAction::SelectBlockOutput) selectBlock(copy);
+		if (choice.action == MenuAction::RerunBlock) rerunBlock(copy);
+		return true;
 	}
 
 	void TerminalWindow::sendText(const std::string& text) {

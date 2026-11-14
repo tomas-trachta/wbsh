@@ -1,0 +1,20 @@
+=== side effects stay in the shell
+x=[captured] y=assigned
+first=1 second=2 counter=2
+=== forms
+newline-form
+tab-form
+quoted: a}b
+one
+two
+[x]
+=== exit status
+status 1
+status 0
+=== REPLY form
+r=inner REPLY=outer
+r=42 REPLY=unset
+printed, not captured
+r=[]
+=== inside functions
+in-function yes

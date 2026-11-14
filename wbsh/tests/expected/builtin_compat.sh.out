@@ -1,0 +1,75 @@
+=== 1. shopt
+extglob             	on
+nullglob            	off
+rc=1
+shopt -s extglob
+shopt -u nullglob
+1
+1
+=== 2. umask -S
+u=rwx,g=rx,o=rx
+u=rwx,g=,o=
+=== 3. $_ is the last argument of the previous command
+first arg last
+last
+two
+y
+=== 4. pushd and popd keep DIRSTACK
+b depth=3 top=b next=a
+ds depth=1
+=== 5. caller
+43 builtin_compat.sh
+43 d builtin_compat.sh
+44 main builtin_compat.sh
+rc=0
+43 d builtin_compat.sh
+top rc=1
+=== 6. local - restores the set options
+inside: u and f
+restored
+=== 7. declare -f and type print bash's layout
+g () 
+{ 
+    echo hi;
+    local x=1
+}
+h () 
+{ 
+    if [ -n "$1" ]; then
+        echo yes;
+    else
+        if true; then
+            :;
+        else
+            echo no;
+        fi;
+    fi;
+    for i in a "b c";
+    do
+        echo $i;
+    done;
+    while read -r l; do
+        echo "$l";
+    done < /dev/null;
+    case $1 in 
+        a | b)
+            echo ab
+        ;;
+        *)
+
+        ;;
+    esac;
+    a && b || c | d;
+    ( sub;
+    shell ) > /dev/null 2>&1;
+    { 
+        grp
+    };
+    (( n = 1 + 2 ));
+    bg & fg
+}
+k is a function
+k () 
+{ 
+    ( echo in a subshell )
+}

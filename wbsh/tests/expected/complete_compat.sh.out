@@ -1,0 +1,60 @@
+=== COMP_WORDBREAKS
+$' \t\n"\'><=;|&('
+=== COMP_WORDS is cut at the break characters, runs of them kept whole
+CWORD=3 WORDS=<cmd><--opt><=><va> cur=<va> prev=<=> TYPE=64 KEY=9
+[cmd --opt=va][]
+CWORD=2 WORDS=<cmd><--opt><=> cur=<> prev=<--opt> TYPE=64 KEY=9
+[cmd --opt=][]
+CWORD=4 WORDS=<cmd><a><>>><b><c> cur=<c> prev=<b> TYPE=64 KEY=9
+[cmd a>>b c][]
+CWORD=2 WORDS=<cmd><"x=y"><z> cur=<z> prev=<"x=y"> TYPE=64 KEY=9
+[cmd "x=y" z][]
+CWORD=4 WORDS=<cmd><2><>&><1><a> cur=<a> prev=<1> TYPE=64 KEY=9
+[cmd 2>&1 a][]
+=== without = in COMP_WORDBREAKS the word stays whole
+CWORD=1 WORDS=<cmd><--opt=va> cur=<--opt=va> prev=<cmd> TYPE=64 KEY=9
+[cmd --opt=va][]
+[cmd --opt=value ][]
+=== a reply goes in after the last break character
+[cmd --opt=value ][]
+=== COMP_TYPE: TAB-like, listing, menu, insert
+CWORD=1 WORDS=<cmd><x> cur=<x> prev=<cmd> TYPE=9 KEY=9
+[cmd x][]
+CWORD=1 WORDS=<cmd><x> cur=<x> prev=<cmd> TYPE=63 KEY=63
+[cmd x][]
+CWORD=1 WORDS=<cmd><x> cur=<x> prev=<cmd> TYPE=42 KEY=42
+[cmd x][]
+CWORD=1 WORDS=<cmd><x> cur=<x> prev=<cmd> TYPE=37 KEY=109
+[cmd x][]
+=== compopt changes the running completion
+[c1 word][]
+[c2 with\ space ][]
+[c3 with space ][]
+compopt +o bashdefault +o default +o dirnames +o filenames +o noquote +o nosort -o nospace +o plusdirs
+[c4 x][]
+=== -o options
+[o1 with\ space ][]
+dir1/  dir2/\r\n
+dir1/  dir2/  dzz\r\n
+[o4 with\ space ][]
+zeta   alpha  mid\r\n
+=== a -D loader that returns 124 has the real spec used
+[lazy loaded-word ][]
+complete -F lazy_complete lazy
+[other lo][]
+=== compgen -V fills an array
+declare -a found=([0]="apple" [1]="apricot")
+status 1
+declare -a found=()
+complete_compat.sh: line 106: complete: -V: invalid option
+complete: usage: complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]
+status 2
+=== complete -p quotes names that need it
+complete -F show ''
+complete -F show 'a b'
+3
+1
+=== a reply word<TAB>description inserts the word
+[d1 --all ][]
+\r\e[Jd1 --\r\e[5C\r\e[Jd1 --\r\e[5C\r\e[Jd1 --\r\e[5C\e[J\r\n
+--all    --brief\r\n

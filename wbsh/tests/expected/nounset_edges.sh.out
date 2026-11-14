@@ -1,0 +1,68 @@
+echo "${X:=v} $X"
+  => v v |   reached, status 0
+echo "[${X:-}] [${X-}] [${X:+a}] [${X+a}]"
+  => [] [] [] [] |   reached, status 0
+echo "${#X}"
+  => wbsh: line 1: X: unbound variable
+echo "${X:?custom message}"
+  => wbsh: line 1: X: custom message
+echo "${X?}"
+  => wbsh: line 1: X: parameter not set
+echo "${X@Q}"
+  => wbsh: line 1: X: unbound variable
+echo "${X/a/b}"
+  => wbsh: line 1: X: unbound variable
+echo "${X:0:1}"
+  => wbsh: line 1: X: unbound variable
+x=y; echo "${!x}"
+  => wbsh: line 1: !x: unbound variable
+x=y; echo "${!x:-dflt}"
+  => dflt |   reached, status 0
+a=(); echo "[${a[@]}] [${a[*]}] ${#a[@]} [${!a[@]}]"
+  => [] [] 0 [] |   reached, status 0
+a=(); echo "[${a[0]}]"
+  => wbsh: line 1: a[0]: unbound variable
+a=(); echo "[${a[@]:0}] [${a[@]/x/y}]"
+  => [] [] |   reached, status 0
+unset b; echo "[${b[@]}] [${b[*]}] ${#b[@]}"
+  => [] [] 0 |   reached, status 0
+declare -A m; echo "[${m[@]}] ${#m[@]}"
+  => [] 0 |   reached, status 0
+declare -A m; echo "[${m[k]}]"
+  => wbsh: line 1: m[k]: unbound variable
+declare -A m; echo "[${m[k]-d}]"
+  => [d] |   reached, status 0
+echo "[$@] [$*] $# [${@:1}] [${*:-d}]"
+  => [] [] 0 [] [d] |   reached, status 0
+echo "$1"
+  => wbsh: line 1: $1: unbound variable
+echo "${1-} ${1:-d}"
+  =>  d |   reached, status 0
+echo "${#@} ${#*}"
+  => 0 0 |   reached, status 0
+f() { echo "n=$#"; echo "$1"; }; f
+  => n=0 | wbsh: line 1: $1: unbound variable
+echo "$((X + 1))"
+  => wbsh: line 1: X: unbound variable
+(( X )); echo "status $?"
+  => wbsh: line 1: X: unbound variable
+let X=X+1; echo "$X"
+  => wbsh: line 1: X: unbound variable
+[[ -v X ]]; echo "status $?"
+  => status 1 |   reached, status 0
+for i in "${U[@]}"; do echo in; done; echo done
+  => done |   reached, status 0
+f() { local v; echo "[$v]"; }; f
+  => wbsh: line 1: v: unbound variable
+f() { local v; echo "[${v-unset}]"; }; f
+  => [unset] |   reached, status 0
+declare v; echo "[$v]"
+  => wbsh: line 1: v: unbound variable
+echo "[${!NO_SUCH_PREFIX*}] [${!NO_SUCH_PREFIX@}]"
+  => [] [] |   reached, status 0
+echo "${X:-$Y}"
+  => wbsh: line 1: Y: unbound variable
+: "${X=}"; echo "[$X]"
+  => [] |   reached, status 0
+[[ $BASH_MONOSECONDS$EPOCHSECONDS =~ ^[0-9]+$ ]] && echo dynamic variables are set
+  => dynamic variables are set |   reached, status 0

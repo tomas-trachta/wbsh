@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "collsyms.h"
 #include "utf8.h"
 
 namespace wbsh {
@@ -50,7 +51,7 @@ namespace wbsh {
 			if (k + 1 >= pend || p[k] != '[') return false;
 
 			const char kind = p[k + 1];
-			return kind == ':' || kind == '=' || kind == '.';
+			return kind == ':' || kind == '=';
 		}
 
 		// A backslash escapes the next bracket character.
@@ -75,7 +76,7 @@ namespace wbsh {
 			return item.length == name.size() && item.code == c;
 		}
 
-		// `[:class:]`, `[=c=]` or `[.c.]` at p[k]; false when it never closes.
+		// `[:class:]` or `[=c=]` at p[k]; false when it never closes.
 		static bool readNamedItem(Bracket& b, const std::string& p) {
 			const char kind = p[b.at + 1];
 			const char closer[] = { kind, ']', '\0' };
@@ -88,16 +89,38 @@ namespace wbsh {
 			return true;
 		}
 
+		struct Endpoint {
+			char32_t code;
+			bool valid;
+		};
+
+		// A range endpoint: a character or a collating symbol `[.x.]`. A
+		// symbol naming no single character matches nothing, and neither
+		// does a range it bounds.
+		static Endpoint readEndpoint(Bracket& b, const std::string& p) {
+			const bool symbol = b.at + 1 < b.pend && p[b.at] == '[' && p[b.at + 1] == '.';
+			const std::size_t close = symbol ? p.find(".]", b.at + 2) : std::string::npos;
+			if (close == std::string::npos || close + 2 > b.pend) {
+				return { readBracketChar(p, b.at, b.pend), true };
+			}
+
+			Endpoint endpoint{ 0, false };
+			endpoint.valid = collatingSymbolChar(p.substr(b.at + 2, close - b.at - 2), endpoint.code);
+			b.at = close + 2;
+			return endpoint;
+		}
+
 		static void readRangeOrChar(Bracket& b, const std::string& p) {
-			const char32_t low = readBracketChar(p, b.at, b.pend);
+			const Endpoint low = readEndpoint(b, p);
 			if (!atRangeDash(p, b.at, b.pend)) {
-				if (b.subject == low) b.matched = true;
+				if (low.valid && b.subject == low.code) b.matched = true;
 				return;
 			}
 
 			++b.at;
-			const char32_t high = readBracketChar(p, b.at, b.pend);
-			if (b.subject >= low && b.subject <= high) b.matched = true;
+			const Endpoint high = readEndpoint(b, p);
+			if (!low.valid || !high.valid) return;
+			if (b.subject >= low.code && b.subject <= high.code) b.matched = true;
 		}
 
 		// Matches the subject character against the `[...]` at p[pi] and

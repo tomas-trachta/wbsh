@@ -1,0 +1,18 @@
+before
+script: line 2: syntax error near unexpected token `&'
+script: line 2: `echo same; test=(first & second); echo dropped'
+after: 1
+status: 0
+script: line 3: syntax error near unexpected token `;'
+script: line 3: `  t2=(a ; b)'
+in-if-after
+next: 0
+status: 0
+wbsh: eval: line 1: syntax error near unexpected token `&'
+wbsh: eval: line 1: `a=(x & y)'
+after eval: 1
+s1
+source: line 2: syntax error near unexpected token `|'
+source: line 2: `a=(x | y)'
+s2: 1
+after source: 0

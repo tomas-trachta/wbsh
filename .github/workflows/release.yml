@@ -90,9 +90,15 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
+      # x64 first: its run also writes the SDK and agent-skill zips, which
+      # run the shell it built. ARM64 is cross-compiled on this x64 runner.
       - name: Build installers
         shell: pwsh
-        run: .\installer\build.ps1
+        run: |
+          foreach ($platform in 'x64', 'ARM64') {
+              .\installer\build.ps1 -Platform $platform
+              if (-not $?) { throw "installer\build.ps1 failed for $platform" }
+          }
 
       - name: Check the artifacts are all there
         shell: pwsh
@@ -101,12 +107,17 @@ jobs:
           # release that quietly ships half of what it promises.
           $version = "${{ steps.bump.outputs.version }}"
           $expected = @(
-              "installer\output\wbsh-setup-x64.exe",
-              "installer\output\wbshterm-setup-x64.exe",
-              "installer\output\wbsh-$version-portable-x64.zip",
-              "installer\output\wbshterm-$version-portable-x64.zip",
-              "installer\output\wbsh-sdk-$version.zip"
+              "installer\output\wbsh-sdk-$version.zip",
+              "installer\output\wbsh-skill-$version.zip"
           )
+          foreach ($arch in 'x64', 'arm64') {
+              $expected += @(
+                  "installer\output\wbsh-setup-$arch.exe",
+                  "installer\output\wbshterm-setup-$arch.exe",
+                  "installer\output\wbsh-$version-portable-$arch.zip",
+                  "installer\output\wbshterm-$version-portable-$arch.zip"
+              )
+          }
 
           $missing = $expected | Where-Object { -not (Test-Path $_) }
           if ($missing) { throw "Missing release artifacts: $($missing -join ', ')" }
@@ -115,13 +126,95 @@ jobs:
               "{0,-52} {1,8:N0} bytes" -f $path, (Get-Item $path).Length
           }
 
+      # Code signing through SignPath (free for open source; see
+      # docs/signing.md). Runs only when SIGNPATH_API_TOKEN and
+      # SIGNPATH_ORGANIZATION_ID are set; without them the release ships
+      # unsigned, as before. Signed before the checksums are written.
+      - name: Check for code signing
+        id: signing
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+        run: |
+          $enabled = [bool]$env:SIGNPATH_API_TOKEN -and [bool]$env:SIGNPATH_ORGANIZATION_ID
+          "enabled=$($enabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          if (-not $enabled) {
+              Write-Host "SIGNPATH_API_TOKEN / SIGNPATH_ORGANIZATION_ID not set -- the release ships unsigned."
+          }
+
+      - name: Upload the files to sign
+        id: unsigned
+        if: steps.signing.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-release
+          path: |
+            installer/output/*.exe
+            installer/output/*.zip
+          if-no-files-found: error
+
+      - name: Sign with SignPath
+        if: steps.signing.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'wbsh' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG || 'release' }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: installer/output-signed
+
+      - name: Use the signed files
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $signed = Get-ChildItem installer\output-signed -Recurse -File -Include *.exe, *.zip
+          if (-not $signed) { throw "SignPath returned no files." }
+          foreach ($file in $signed) {
+              Copy-Item $file.FullName (Join-Path installer\output $file.Name) -Force
+              "signed  $($file.Name)"
+          }
+
+      - name: Write checksums and package manifests
+        shell: pwsh
+        run: .\tools\packaging\write-manifests.ps1 -Version "${{ steps.bump.outputs.version }}"
+
       - name: Create GitHub release
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = "${{ steps.bump.outputs.version }}"
-          $assets = Get-ChildItem "installer\output" -Include *.exe, *.zip -Recurse
+          $assets = Get-ChildItem "installer\output" -Include *.exe, *.zip, SHA256SUMS.txt -Recurse
           gh release create "v$version" $assets.FullName `
             --title "wbsh $version" `
             --generate-notes
+
+      - name: Commit package manifests
+        shell: pwsh
+        run: |
+          git add packaging
+          git commit -m "chore: package manifests for ${{ steps.bump.outputs.version }} [skip ci]"
+          git push origin HEAD:main
+
+      # Opens a pull request on microsoft/winget-pkgs. Needs a classic PAT
+      # with public_repo scope in the WINGET_TOKEN secret; skipped without it.
+      - name: Submit to winget
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+              Write-Host "WINGET_TOKEN is not set -- skipping the winget submission."
+              exit 0
+          }
+
+          $version = "${{ steps.bump.outputs.version }}"
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          foreach ($package in @('wbsh', 'wbshterm')) {
+              $manifests = "packaging\winget\manifests\t\TomasTrachta\$package\$version"
+              .\wingetcreate.exe submit --token $env:WINGET_TOKEN $manifests
+          }

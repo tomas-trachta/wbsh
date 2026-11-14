@@ -1,0 +1,86 @@
+=== literal text is never split
+a:b
+[a:b][a][b]
+=== unquoted $* and ${a[*]} with an empty IFS
+3
+3
+a::b/bob:tom dick
+=== numeric operands
+bash: line 1: exit: abcde: numeric argument required
+after exit: 2
+bash: line 1: break: abcde: numeric argument required
+bash: line 1: continue: abcde: numeric argument required
+bash: line 1: shift: abcde: numeric argument required
+after shift: 2
+bash: line 1: return: abcde: numeric argument required
+after return: 2
+bash: line 1: exit: too many arguments
+after exit: 2
+bash: line 1: break: 0: loop count out of range
+after break 0: 1
+quiet: 1
+bash: line 1: shift: 2: shift count out of range
+verbose: 1
+bash: line 1: shift: -1: shift count out of range
+=== set -k
+a=5 b=b
+a=unset
+=== aliases with shell syntax
+declare -a m=([0]="x")
+b
+1
+=== mapfile -C
+cb 1 b
+3
+=== declare -p of declared-only arrays
+declare -A x
+declare -a y
+declare -a z=()
+declare -A w=()
+declare -a v=([1]="1")
+=== unalias, hash, shopt -o
+wbsh: line 1: unalias: -x: invalid option
+unalias: usage: unalias [-a] name [name ...]
+status 2
+/bin/true
+wbsh: line 1: hash: nope: not found
+status 1
+hash: hash table empty
+1
+0
+1
+set -o nounset
+pipefail            	off
+shopt -s interactive_comments
+shopt -u syslog_history
+=== BASH_ARGV0
+hello
+=== redirections
+wbsh: line 1: $z: ambiguous redirect
+status 1
+p q r
+s  t
+wbsh: line 1: g*: ambiguous redirect
+status 1
+piped
+=== set -r
+hrBc
+wbsh: line 1: cd: restricted
+cd 1
+wbsh: line 1: /dev/null: restricted: cannot redirect output
+redirect 1
+wbsh: line 1: ./x: restricted: cannot specify `/' in command names
+slash 1
+wbsh: line 1: PATH: readonly variable
+=== ${a[@]+"${a[@]}"} and upvars
+[a][b c]
+[x][y z]
+x
+global unset
+own local: [unset]
+after: g
+=== DIRSTACK
+1
+top is PWD
+=== relative symlinks
+linked

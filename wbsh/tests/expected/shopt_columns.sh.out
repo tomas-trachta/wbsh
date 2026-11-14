@@ -1,0 +1,8 @@
+extglob             	on
+nullglob            	off
+noglob              	off
+noglob         	off
+xtrace         	off
+shopt_columns.sh: line 11: shopt: -z: invalid option
+shopt: usage: shopt [-pqsu] [-o] [optname ...]
+status 2

@@ -30,7 +30,18 @@ namespace wbshterm {
 		int  output_row  = -1;
 		int  end_row     = -1;
 		int  exit_status = -1;
+		int  command_offset = 0;    ///< rows from the prompt's first to the one typed on (B)
+		int  command_column = -1;   ///< where typing starts on that row, once B came
+		std::string   command;      ///< the command line, when OSC 633;E carried it
+		std::uint64_t started_ms = 0;   ///< steady clock when its output began (C)
+		std::uint64_t ended_ms   = 0;   ///< and when it ended (D)
 		bool finished    = false;
+
+		/** How long it ran, or 0 when it has not both started and ended. */
+		std::uint64_t durationMs() const {
+			return finished && ended_ms >= started_ms && started_ms != 0
+				? ended_ms - started_ms : 0;
+		}
 	};
 
 	struct CursorState {
@@ -204,6 +215,12 @@ namespace wbshterm {
 		/** Commands the shell has marked, oldest first. */
 		const std::vector<CommandBlock>& commandBlocks() const { return blocks_; }
 
+		/** The marked command whose prompt or output holds @p absolute_row, or nullptr. */
+		const CommandBlock* blockAt(int absolute_row) const;
+
+		/** The shell is at a prompt with nothing running: its last block has no output yet. */
+		bool atPrompt() const;
+
 		/** Working directory as last reported by OSC 7, or empty. */
 		const std::string& workingDirectory() const { return working_directory_; }
 
@@ -359,6 +376,11 @@ namespace wbshterm {
 		void deleteLines(int count);
 		void pushToScrollback(int row);
 		void noteShellMark(const std::string& body);
+		void notePromptStart();
+		void noteCommandStart();
+		void noteOutputStart();
+		void noteCommandEnd(const std::string& body);
+		void noteCommandLine(const std::string& body);
 		bool promptAlreadyMarked() const;
 		void noteWorkingDirectory(const std::string& body);
 		void noteTerminalRequest(const std::string& body);

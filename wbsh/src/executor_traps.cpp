@@ -8,6 +8,7 @@
 #include "executor.h"
 
 #include <cstring>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -51,14 +52,52 @@ namespace wbsh {
 		return array == nullptr ? Environment::IndexedArray() : *array;
 	}
 
+	namespace trap_signal {
+		// bash numbers its pseudo-signals after the last real one (NSIG on Linux).
+		static const int kDebug = 65;
+		static const int kErr = 66;
+		static const int kReturn = 67;
+		static const char kVariable[] = "BASH_TRAPSIG";
+
+		struct Saved {
+			bool was_set;
+			std::string value;
+		};
+
+		static Saved publish(Environment& env, int trap_number) {
+			Saved saved{ env.has(kVariable), env.get(kVariable) };
+			env.set(kVariable, std::to_string(trap_number));
+			return saved;
+		}
+
+		static void restore(Environment& env, const Saved& saved) {
+			if (saved.was_set) env.set(kVariable, saved.value);
+			else env.unset(kVariable);
+		}
+	}
+
+	int Executor::runTrapPublishingSignal(const std::string& action, int trap_number) {
+		const trap_signal::Saved saved = trap_signal::publish(env_, trap_number);
+		const int status = runTrapAction(action);
+		trap_signal::restore(env_, saved);
+		return status;
+	}
+
+	int Executor::runExitTrapText(const std::string& action) {
+		const trap_signal::Saved saved = trap_signal::publish(env_, 0);
+		const int status = executeText(action, "<EXIT trap>");
+		trap_signal::restore(env_, saved);
+		return status;
+	}
+
 	// The command the trap interrupts sees `$?`, PIPESTATUS and its errexit
 	// judgement as they were before the trap ran.
-	void Executor::runTrapKeepingStatus(const std::string& action) {
+	void Executor::runTrapKeepingStatus(const std::string& action, int trap_number) {
 		const int status = last_status_;
 		const bool judged = status_judged_;
 		Environment::IndexedArray pipe_status = savedPipeStatus(env_);
 
-		runTrapAction(action);
+		runTrapPublishingSignal(action, trap_number);
 
 		status_judged_ = judged;
 		if (flowPending()) return;
@@ -117,7 +156,7 @@ namespace wbsh {
 
 		if (hasTrap(name)) {
 			const std::string action = trapAction(name);
-			if (!action.empty()) runTrapKeepingStatus(action);
+			if (!action.empty()) runTrapKeepingStatus(action, signum);
 			return;
 		}
 
@@ -150,7 +189,7 @@ namespace wbsh {
 
 		in_err_trap_ = true;
 		setLastStatus(status);
-		runTrapKeepingStatus(action);
+		runTrapKeepingStatus(action, trap_signal::kErr);
 		in_err_trap_ = false;
 	}
 
@@ -158,14 +197,14 @@ namespace wbsh {
 		std::string action;
 		if (trap_depth_ > 0 || flowPending() || !trapActionFor("DEBUG", action)) return;
 
-		runTrapKeepingStatus(action);
+		runTrapKeepingStatus(action, trap_signal::kDebug);
 	}
 
 	void Executor::fireReturnTrap() {
 		std::string action;
 		if (trap_depth_ > 0 || flowPending() || !trapActionFor("RETURN", action)) return;
 
-		runTrapKeepingStatus(action);
+		runTrapKeepingStatus(action, trap_signal::kReturn);
 	}
 
 	// BASH_COMMAND keeps naming the interrupted command while a trap runs.
@@ -201,6 +240,7 @@ namespace wbsh {
 
 	std::vector<Executor::SuspendedTrap> Executor::suspendTrapsForFunction() {
 		std::vector<SuspendedTrap> suspended;
+		suspended.reserve(std::size(kFunctionScopedTraps));
 		for (const char* name : kFunctionScopedTraps) suspended.push_back(suspendTrap(name));
 		return suspended;
 	}

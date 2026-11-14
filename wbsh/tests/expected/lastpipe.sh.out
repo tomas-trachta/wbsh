@@ -1,0 +1,18 @@
+=== 1. off: the last element is a subshell
+[]
+=== 2. on: read, a loop and a group set variables here
+[value]
+n=3
+a=x b=y
+=== 3. statuses
+rc=1 pipestatus=141 1
+pipestatus=1 0
+q=[] pipestatus=0 0 1
+=== 4. a reader that stops early, and stdin afterwards
+first=1
+after=restored
+=== 5. a subshell as the last element is still one
+inner z=z
+outer z=[]
+=== 6. inside a function
+fv=fv

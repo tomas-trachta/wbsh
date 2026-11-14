@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "archivepath.h"
 #include "bytestream.h"
 #include "executor.h"
 #include "deflate.h"
@@ -114,10 +115,13 @@ namespace wbsh {
 			std::uint32_t lfh_off;
 			std::string name;
 		};
+
+		enum class ZipName { Clean, Stripped, Escapes };
 	}  // namespace unzip_detail
 
 	using unzip_detail::UnzipOptions;
 	using unzip_detail::CentralEntry;
+	using unzip_detail::ZipName;
 
 	// -o (overwrite) is the default and -n (never overwrite) is not
 	// implemented, so both are accepted and ignored.
@@ -180,13 +184,13 @@ namespace wbsh {
 		return false;
 	}
 
-	static void writeZipEntryToDisk(Executor& exec, const std::string& outdir,
+	static bool writeZipEntryToDisk(Executor& exec, const std::string& outdir,
 			const std::string& name, const std::vector<std::uint8_t>& data) {
 		const std::string out_path = outdir.empty() ? name : (outdir + "/" + name);
 		std::error_code ec;
-		if (!name.empty() && name.back() == '/') {
+		if (name.back() == '/') {
 			fs::create_directories(toNative(exec, out_path), ec);
-			return;
+			return true;
 		}
 
 		const fs::path native = toNative(exec, out_path);
@@ -195,11 +199,41 @@ namespace wbsh {
 		FILE* out = openUtf8(pathToUtf8(native), "wb");
 		if (out == nullptr) {
 			perr("unzip", out_path, std::error_code(errno, std::system_category()));
-			return;
+			return false;
 		}
 
-		std::fwrite(data.data(), 1, data.size(), out);
-		std::fclose(out);
+		const bool written = std::fwrite(data.data(), 1, data.size(), out) == data.size();
+		return std::fclose(out) == 0 && written;
+	}
+
+	// As Info-ZIP does: a rooted or drive-qualified name loses its prefix
+	// with a warning, a name that climbs out through `..` is skipped, and
+	// either one makes the exit status 1.
+	static ZipName zipOutputName(const std::string& stored, std::string& name) {
+		name = stored;
+		const bool stripped = stripMemberRoot(name);
+		if (memberEscapes(name)) return ZipName::Escapes;
+		return stripped ? ZipName::Stripped : ZipName::Clean;
+	}
+
+	static bool extractZipEntry(Executor& exec, const UnzipOptions& options,
+			const CentralEntry& entry, const std::vector<std::uint8_t>& data) {
+		std::string name;
+		const ZipName verdict = zipOutputName(entry.name, name);
+		if (verdict == ZipName::Escapes) {
+			perr("unzip", "skipping: " + entry.name + ": path leads outside the destination");
+			return false;
+		}
+
+		if (verdict == ZipName::Stripped) {
+			perr("unzip", "warning: stripped absolute path spec from " + entry.name);
+		}
+
+		if (name.empty()) return false;
+
+		const bool written = writeZipEntryToDisk(exec, options.outdir, name, data);
+		std::printf("  inflating: %s\n", name.c_str());
+		return written && verdict == ZipName::Clean;
 	}
 
 	static bool entryIsSelected(const std::vector<std::string>& select, const std::string& name) {
@@ -224,30 +258,29 @@ namespace wbsh {
 		return true;
 	}
 
-	static void unzipHandleEntry(Executor& exec, const UnzipOptions& options,
+	static bool unzipHandleEntry(Executor& exec, const UnzipOptions& options,
 			const std::vector<std::uint8_t>& bytes, const CentralEntry& entry,
 			std::size_t& total_bytes) {
 		if (options.list_only) {
 			std::printf("%9u  ----------- ------  %s\n",
 				static_cast<unsigned>(entry.usize), entry.name.c_str());
 			total_bytes += entry.usize;
-			return;
+			return true;
 		}
 
 		std::vector<std::uint8_t> data;
 		if (!decompressZipEntry(bytes, entry, data)) {
 			std::fprintf(stderr,
 				"wbsh: unzip: inflate / unsupported-method on %s\n", entry.name.c_str());
-			return;
+			return false;
 		}
 
 		if (options.to_stdout) {
 			std::fwrite(data.data(), 1, data.size(), stdout);
-			return;
+			return true;
 		}
 
-		writeZipEntryToDisk(exec, options.outdir, entry.name, data);
-		std::printf("  inflating: %s\n", entry.name.c_str());
+		return extractZipEntry(exec, options, entry, data);
 	}
 
 	static void printUnzipListHeader(const std::string& archive) {
@@ -286,15 +319,16 @@ namespace wbsh {
 		if (options.list_only) printUnzipListHeader(options.archive);
 
 		std::size_t total_bytes = 0;
+		bool clean = true;
 		for (std::size_t k = 0; k < total; ++k) {
 			CentralEntry entry;
 			if (!readZipCentralEntry(bytes, pos, entry)) break;
 			if (!entryIsSelected(options.select, entry.name)) continue;
-			unzipHandleEntry(exec, options, bytes, entry, total_bytes);
+			if (!unzipHandleEntry(exec, options, bytes, entry, total_bytes)) clean = false;
 		}
 
 		if (options.list_only) printUnzipListFooter(total_bytes, total);
-		return 0;
+		return clean ? 0 : 1;
 	}
 
 	namespace zip_detail {

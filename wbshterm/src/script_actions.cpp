@@ -50,6 +50,16 @@ namespace wbshterm {
 			return 0;
 		}
 
+		static int actionCopyCommandOutput(lua_State* state) {
+			actionsOf(state).copyCommandOutput();
+			return 0;
+		}
+
+		static int actionRerunCommand(lua_State* state) {
+			actionsOf(state).rerunCommand();
+			return 0;
+		}
+
 		static int actionSend(lua_State* state) {
 			std::size_t length = 0;
 			const char* text = luaL_checklstring(state, 1, &length);
@@ -128,6 +138,8 @@ namespace wbshterm {
 			{ "copy",             actionCopy },
 			{ "paste",            actionPaste },
 			{ "copy_last_output", actionCopyLastOutput },
+			{ "copy_command_output", actionCopyCommandOutput },
+			{ "rerun_command",    actionRerunCommand },
 			{ "send",             actionSend },
 			{ "scroll",           actionScroll },
 			{ "font_size",        actionFontSize },

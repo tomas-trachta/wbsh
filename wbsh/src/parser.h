@@ -27,6 +27,7 @@ namespace wbsh {
 	struct ParseError {
 		SourceLoc loc;
 		std::string message;
+		bool discards_command = false;
 	};
 
 	/**
@@ -82,7 +83,28 @@ namespace wbsh {
 
 		void error(const Token& at, std::string msg);
 		void expect(TokKind k, const char* msg);
-		void expectReserved(const char* word, const char* msg);
+
+		// bash names the innermost compound command still open when the
+		// input ends: "unexpected end of file from `if' command on line 3".
+		struct Opener {
+			const char* keyword;
+			std::size_t line;
+		};
+
+		struct OpenerScope {
+			OpenerScope(Parser& parser, const char* keyword, std::size_t line);
+			~OpenerScope();
+			OpenerScope(const OpenerScope&) = delete;
+			OpenerScope& operator=(const OpenerScope&) = delete;
+
+			Parser& owner;
+		};
+
+		void expectClosing(const char* word);
+		void expectClosingParen();
+		void reportUnclosed();
+		void reportUnclosedArrayLiteral();
+		std::size_t endOfInputLine() const;
 
 		void skipNewlines();
 		bool atRedirOp() const;
@@ -108,6 +130,10 @@ namespace wbsh {
 		NodePtr parseAndOr();
 		NodePtr parsePipeline();
 		bool matchTimePrefix();
+		NodePtr makeNullCommand();
+		bool matchBangs(bool& out_saw_bang);
+		bool atBareListTerminator() const;
+		bool matchTimePosixOption();
 		NodePtr parseCommand();
 		NodePtr parseFunctionKeyword();
 		NodePtr parseCoproc();
@@ -121,10 +147,8 @@ namespace wbsh {
 		NodePtr parseFor();
 		NodePtr parseForArith(std::size_t start, SourceLoc loc);
 		NodePtr parseSelect();
-		NodePtr parseWordListLoop(std::size_t start, SourceLoc loc,
-		                          const char* keyword, bool is_select);
-		bool parseInWordListHeader(std::string& var, bool& has_in,
-		                          std::vector<Word>& items, const char* keyword);
+		NodePtr parseWordListLoop(std::size_t start, SourceLoc loc, bool is_select);
+		bool parseInWordListHeader(std::string& var, bool& has_in, std::vector<Word>& items);
 		void parseInWordList(std::vector<Word>& items);
 		NodePtr parseCase();
 		void parseCaseItem(CaseClause::Item& item);
@@ -162,6 +186,7 @@ namespace wbsh {
 		const std::string* source_ = nullptr;
 		std::size_t pos_ = 0;
 		std::vector<ParseError> errors_;
+		std::vector<Opener> openers_;
 
 		// Top-level newlines that end a complete line, with the number of
 		// top-level commands parsed by then, in source order.
@@ -178,6 +203,18 @@ namespace wbsh {
 	/// Offset of the earliest lexer or parser error, or npos when there is none.
 	std::size_t firstSyntaxErrorOffset(const std::vector<LexError>& lex_errors,
 	                                   const std::vector<ParseError>& parse_errors);
+
+	/// The earliest lexer or parser error, the only one bash reports; false
+	/// when there is none.
+	bool firstSyntaxError(const std::vector<LexError>& lex_errors,
+	                      const std::vector<ParseError>& parse_errors, ParseError& out_error);
+
+	/// Where bash reads on after the first syntax error when that error
+	/// only discards the command it sits in: the start of the next line.
+	/// npos when there is no such error.
+	std::size_t discardResumeOffset(const std::string& source,
+	                                const std::vector<LexError>& lex_errors,
+	                                const std::vector<ParseError>& parse_errors);
 
 	/// Keeps only the top-level commands bash runs before it reports a
 	/// syntax error at `error_offset` (all of them when it is npos).

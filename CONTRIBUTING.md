@@ -44,7 +44,7 @@ get the shape of the codebase:
 | Expand | `wbsh/src/expander.cpp/h` | Parameter / arithmetic / command / glob / brace / tilde expansion. Calls back into the executor via `CommandSubstitutor` for `$(...)`. |
 | Execute | `wbsh/src/executor.cpp/h` | Walks the AST. Owns the runtime registries (builtins, functions, aliases, jobs, traps, dirstack, completion specs). Spawns external processes via Win32 `CreateProcess`. Control flow (`break`, `continue`, `return`, `exit`) propagates as a value: a pending `FlowSignal` on the Executor that every frame checks after running a child and the owning frame consumes. |
 | Env | `wbsh/src/environment.cpp/h` | Variables, exports, scopes, array and assoc-array storage. |
-| Paths | `wbsh/src/pathconv.cpp/h` | `/c/Users/...` ↔ `C:\Users\...` translation; applied at the spawn boundary when invoking native Windows `.exe`. |
+| Paths | `wbsh/src/pathconv.cpp/h`, `pathconv_args.cpp` | `/c/Users/...` ↔ `C:\Users\...` translation; applied at the spawn boundary when invoking native Windows `.exe`, by MSYS2's argument rules. |
 | Builtins | `wbsh/src/builtins.cpp` | Shell builtins (`cd`, `export`, `declare`, `read`, `trap`, `getopts`, `complete`, …). |
 | Coreutils | `wbsh/src/coreutils.cpp` + `coreutils_*.cpp` | Bundled `ls`/`grep`/`sed`/`awk`/`tar`/… Split per family; see "The coreutils split pattern" below. |
 | Awk | `wbsh/src/awk.cpp/h`, `awk_lexer.cpp/h`, `awk_parser.cpp`, `awk_internal.h`, `awk_value.cpp`, `awk_regex.cpp/h`, `awk_interp.cpp/h`, `awk_fields.cpp`, `awk_builtins.cpp`, `awk_io.cpp` | Self-contained awk invoked by the `awk` coreutil: `awk.cpp` is the command line, then tokenizer, parser (syntax tree and values in `awk_internal.h`), number / printf formatting, regexes (literal fast path, LRU cache for dynamic ones), and the interpreter split into evaluation, records and fields, builtins, and I/O. |
@@ -66,10 +66,10 @@ get the shape of the codebase:
 | Pseudoconsole | `wbsh/src/pseudoconsole.cpp/h`, `pty_relay.cpp/h`, `coreutils_script.cpp` | A ConPTY and its pipes (the `conpty.dll` beside `wbsh.exe` first, Windows' own otherwise), started on through `SpawnPlacement::pseudo_console`; the relay that copies its output to stdout and the logs (answering the pseudoconsole's own terminal queries), feeds it console keys in VT input mode or piped lines from a thread, passes Ctrl+C on and follows the console's size; `script` and `unbuffer` on top of it. |
 | cron | `wbsh/src/coreutils_cron.cpp`, `cron_schedule.cpp/h`, `cron_time.cpp`, `cron_zone.cpp`, `cron_internal.h`, `cron_store.cpp`, `crond_internal.h`, `cron_daemon.cpp`, `cron_jobs.cpp`, `cron_log.cpp` | `crontab` (and its `--next-runs` test hook); crontab parsing (fields, @keywords, NAME=value, `%`); the pure next-run search over a `CronZone` with cronie's daylight-saving rules; Windows time zones; the crontab directory and atomic replacement; `crond`'s options, PID-file lock, minute loop, @reboot and detached start; job processes (environment, hidden start, output capture); the log. |
 | Process substitution | `wbsh/src/procsubst.cpp/h` | The named pipe behind `<(...)` / `>(...)`: a relay thread joins it to the substituted process's anonymous pipe once a client opens it. |
-| CLI | `wbsh/src/main.cpp`, `wbsh/src/script.cpp` | Entry point: UTF-8 argv decoding, flag dispatch, the non-interactive run / dump driver. |
+| CLI | `wbsh/src/main.cpp`, `wbsh/src/invocation.cpp/h`, `wbsh/src/startup.cpp/h`, `wbsh/src/script.cpp` | Entry point: UTF-8 argv decoding, bash's command-line grammar (option clusters, `-o`/`-O`, `--ec`), startup options and profile / rc files, the non-interactive run / dump driver. |
 | REPL | `wbsh/src/repl.cpp`, `wbsh/src/prompt.cpp/h`, `wbsh/src/lineedit.cpp` | Interactive loop: console / VT mode setup, prompt escapes and promptvars expansion, PROMPT_COMMAND, raw-mode line editor (history, completion, `Ctrl-R`, inline predictions). |
 | Setup | `wbsh/src/setup.cpp` | Startup environment seeding: registry PATH merge, git / docker install discovery, `WBSH_*` state inheritance from a parent wbsh. |
-| Debug | `wbsh/src/printer.cpp` | Token / AST pretty-printer for the `-t` and default (no-`-r`) dump modes. |
+| Debug | `wbsh/src/printer.cpp` | Token / AST pretty-printer for the `--tokens` and `--ast` dump modes. |
 | Support | `wbsh/src/fnmatch.h`, `wbsh/src/numparse.h`, `wbsh/src/optscan.h`, `wbsh/src/regexutil.h`, `wbsh/src/source.h` | Leaf headers: glob matcher, error-as-value numeric parsing, getopt_long-style option scanning, error-as-value regex adapters, source locations. |
 
 Two cross-cutting interfaces are worth knowing about up-front:
@@ -186,8 +186,47 @@ Run `WBSH_GOLDEN=1` before opening the PR. If you intentionally changed
 output, run `WBSH_RECORD=1`, inspect the diff against the prior goldens,
 and commit the updated `expected/*.out` files in the same PR.
 
-There is currently no CI. Until that lands, your local run is the only
-gate — so run it.
+CI (`.github/workflows/ci.yml`) builds everything and runs the golden suite
+and the SDK checks on every push and pull request, but run it locally first.
+The same workflow also runs the difftest comparison against GNU bash 5.3,
+bash's own upstream suites (report only) and the perf gate (`bench` job, see
+`tools/bench/README.md`).
+
+### Differential tests
+
+The easiest first contribution: add a case to `tools/difftest/cases/<area>/`
+that shows wbsh behaving differently from bash. A case is a few lines of bash
+that print deterministic output (no paths, PIDs, dates; builtins plus
+`cat`/`sort`/`tr`). Check it with
+`python -I tools/difftest/run.py --shell <bash> --record ref --filter 'area/name'`
+and `--compare ref --diff` under wbsh. See `tools/difftest/README.md`; the
+known divergences are in `tools/difftest/FINDINGS.md`. CI fails when the pass
+count drops below `tools/difftest/baseline.txt`; raise that number in the PR
+that fixes a case.
+
+Where to find divergences worth a case: the real failures listed in
+[`docs/compat-ledger.md`](docs/compat-ledger.md) (GNU bash's own test
+suites), the corpus snapshots in [`docs/corpus/`](docs/corpus/), and issues
+filed with the **Compatibility divergence** template, which already asks for
+the script, the wbsh output and the bash output. Turning any of those into a
+`tools/difftest/cases/` file is a complete pull request on its own, even
+without a fix.
+
+### Upstream suites and the real-world corpus
+
+`tools/bashtests/run.py` runs bash 5.3's `tests/run-*` suites under wbsh
+(it downloads and verifies the tarball itself) and `tools/corpus/run.py`
+sources oh-my-bash, bash-it, bash-completion, nvm and friends at pinned
+commits. Both are slow (10 to 40 minutes); run them before and after a change
+to the parser or expander and refresh `docs/compat-ledger.md` or add a
+`docs/corpus/<date>-local.md` snapshot when the numbers move. See their
+READMEs.
+
+### Benchmarks
+
+`python -I tools/bench/bench.py --shell wbsh=x64/Release/wbsh.exe --shell
+"git-bash=C:/Program Files/Git/bin/bash.exe" --runs 30` on an idle machine.
+Publish results under `docs/bench/` with the machine description.
 
 ---
 
@@ -299,16 +338,19 @@ PR description should call out:
 
 ## Reporting bugs
 
-Open an issue with:
+The issue templates ask for the right things: **Bug report** for crashes,
+hangs and wrong behaviour, **Compatibility divergence** when a script prints
+something different from GNU bash (paste the script, the wbsh output and the
+bash output). Either way, include:
 
-- wbsh version — the banner that prints from `wbsh --help`.
+- wbsh version — the output of `wbsh --version`.
 - Windows build (`winver`).
 - Minimal reproducer: the smallest shell snippet or script that triggers
   the bug. Inline it in the issue rather than attaching a file unless it's
   truly large.
 - Expected vs actual output. If the bug is a parse/expansion error, the
-  output of `wbsh -t <file>` (token dump) and `wbsh <file>` (AST dump,
-  default no-`-r` mode) is gold.
+  output of `wbsh --tokens <file>` (token dump) and `wbsh --ast <file>`
+  (AST dump) is gold.
 
 For crashes, a stack trace from a Debug build (`x64\Debug\wbsh.exe`) is
 worth several rounds of guessing.
@@ -320,8 +362,9 @@ worth several rounds of guessing.
 The roadmap in the README lists the major bets. Smaller things that would
 land cleanly today:
 
-- A real CI workflow — even just "build Release and run `WBSH_GOLDEN=1
-  run-all.sh`" on every push would be a meaningful upgrade.
+- Any real failure in [`docs/compat-ledger.md`](docs/compat-ledger.md): each
+  line names the suite and the first difference, and most come with a
+  one-line reproducer.
 - Test coverage for behavior that currently has none: bc's compound
   assignment / `&&` / `||` / `++`, awk's BEGIN-only no-stdin rule, traps,
   job control.

@@ -1,0 +1,37 @@
+=== kernel name
+MINGW64_NT-<ver>-<build>
+MINGW64_NT-<ver>-<build>
+MINGW64_NT-<ver>-<build>
+detected as Windows
+=== operating system, machine, processor, platform
+Msys
+machine ok
+unknown
+unknown
+unknown unknown
+=== -a
+fields: 6
+starts with uname -s
+then the node name
+then the machine
+ends with Msys
+=== WBSH_UNAME_S
+Linux
+Linux
+MINGW64_NT-<ver>-<build>
+=== MSYSTEM picks the prefix
+MINGW64_NT-<ver>-<build>
+MINGW64_NT-<ver>-<build>
+MINGW64_NT-<ver>-<build>
+MINGW32_NT-<ver>-<build>
+MSYS_NT-<ver>-<build>
+=== OSTYPE and MSYSTEM
+OSTYPE=msys
+default MSYSTEM=MINGW64
+1
+inherited MSYSTEM=UCRT64
+=== /proc/version
+MINGW64_NT-<ver>-<build> version
+Linux version
+0
+=== done

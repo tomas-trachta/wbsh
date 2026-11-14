@@ -24,7 +24,9 @@
 #include <utility>
 #include <vector>
 
+#include "diagnostics.h"
 #include "fnmatch.h"
+#include "globsort.h"
 #include "lexer.h"
 #include "numparse.h"
 #include "procfs.h"
@@ -104,7 +106,8 @@ namespace wbsh {
 	}
 
 	static const char* const kDynamicSpecials[] = {
-		"BASHPID", "BASH_COMMAND", "EPOCHREALTIME", "EPOCHSECONDS", "LINENO", "RANDOM", "SECONDS"
+		"BASHOPTS", "BASHPID", "BASH_ARGV0", "BASH_COMMAND", "BASH_MONOSECONDS", "EPOCHREALTIME", "EPOCHSECONDS",
+		"LINENO", "RANDOM", "SECONDS", "SHELLOPTS"
 	};
 
 	static long long epochMicroseconds() {
@@ -116,11 +119,32 @@ namespace wbsh {
 		return epochMicroseconds() / 1000000;
 	}
 
+	static long long monotonicSeconds() {
+		const auto since_boot = std::chrono::steady_clock::now().time_since_epoch();
+		return std::chrono::duration_cast<std::chrono::seconds>(since_boot).count();
+	}
+
 	static std::string epochRealtime() {
 		const long long micros = epochMicroseconds();
 		char text[32];
 		std::snprintf(text, sizeof(text), "%lld.%06lld", micros / 1000000, micros % 1000000);
 		return text;
+	}
+
+	static bool dynamicSpecialValue(Environment& env, const std::string& name, std::string& out) {
+		if (name == "RANDOM")  { out = std::to_string(env.randomNext());        return true; }
+		if (name == "SECONDS") { out = std::to_string(env.secondsSinceStart()); return true; }
+		if (name == "LINENO")  { out = std::to_string(env.currentLineno());     return true; }
+		if (name == "BASH_COMMAND") { out = env.currentCommand();             return true; }
+		if (name == "EPOCHSECONDS")  { out = std::to_string(epochSeconds()); return true; }
+		if (name == "EPOCHREALTIME") { out = epochRealtime();                return true; }
+		if (name == "BASH_MONOSECONDS") { out = std::to_string(monotonicSeconds()); return true; }
+		if (name == "BASHOPTS")      { out = env.enabledShoptNames();       return true; }
+		if (name == "SHELLOPTS")     { out = env.enabledSetOptionNames();   return true; }
+		if (name == "BASHPID") { out = std::to_string(env.bashPid());        return true; }
+		if (name == "BASH_ARGV0") { out = env.shellName();                   return true; }
+
+		return false;
 	}
 
 	static bool isDynamicSpecialName(const std::string& name) {
@@ -145,6 +169,32 @@ namespace wbsh {
 		return k;
 	}
 
+	// The brace closing the parameter expansion whose body starts at
+	// @p after_open: only a nested parameter expansion nests, a bare
+	// opening brace is an ordinary character (as in bash), and a backslash
+	// escapes the character after it.
+	static std::size_t scanParamClose(const std::string& body, std::size_t after_open) {
+		int depth = 1;
+		std::size_t k = after_open;
+		while (k < body.size()) {
+			if (body[k] == '\\') {
+				k += 2;
+				continue;
+			}
+
+			if (body[k] == '$' && k + 1 < body.size() && body[k + 1] == '{') {
+				++depth;
+				k += 2;
+				continue;
+			}
+
+			if (body[k] == '}' && --depth == 0) return k;
+			++k;
+		}
+
+		return body.size();
+	}
+
 	namespace arith_detail {
 
 		struct AssignOp {
@@ -167,7 +217,7 @@ namespace wbsh {
 		static const char* const kDivisionByZero = "division by 0";
 		static const char* const kTooGreatForBase = "value too great for base";
 		static const char* const kInvalidBase = "invalid arithmetic base";
-		static const char* const kOperandExpected = "syntax error: operand expected";
+		static const char* const kOperandExpected = "arithmetic syntax error: operand expected";
 		static const int kMaxBase = 64;
 
 		static bool isDivision(char op) {
@@ -305,7 +355,7 @@ namespace wbsh {
 		// Not an error in bash: the operand reads as 0 or the assignment
 		// is dropped, and evaluation goes on.
 		static void warnBadSubscript(const std::string& what) {
-			std::fprintf(stderr, "wbsh: %s: bad array subscript\n", what.c_str());
+			shellErrorf("%s: bad array subscript\n", what.c_str());
 		}
 
 		// A scalar has no negative indices in bash, so it counts as empty.
@@ -364,20 +414,45 @@ namespace wbsh {
 				return unbound_;
 			}
 
+			bool readonlyAssignment() const {
+				return readonly_;
+			}
+
 			const std::string& error() const {
 				return error_;
 			}
 
 		private:
 			// The first error wins; jumping to the end makes every parse
-			// level unwind without consuming anything further.
+			// level unwind without consuming anything further. bash keeps
+			// the trailing blanks of the expression and of the token.
 			void fail(const std::string& what, std::size_t token_at) {
+				failWithin(what, token_at, src_.size());
+			}
+
+			// A bad constant cuts the expression and the token off where the
+			// constant ends: bash has put a NUL there to convert it.
+			void failWithin(const std::string& what, std::size_t token_at, std::size_t end) {
 				if (failed()) return;
 
-				error_ = trimSpace(src_) + ": " + what;
-				const std::string token = trimSpace(src_.substr(std::min(token_at, src_.size())));
+				const std::string text = src_.substr(0, end);
+				error_ = trimLeadingSpace(text) + ": " + what;
+				const std::string token = trimLeadingSpace(text.substr(std::min(token_at, text.size())));
 				if (!token.empty()) error_ += " (error token is \"" + token + "\")";
 				pos_ = src_.size();
+			}
+
+			static std::string trimLeadingSpace(const std::string& text) {
+				std::size_t start = 0;
+				while (start < text.size() && isSpaceChar(text[start])) ++start;
+				return text.substr(start);
+			}
+
+			// bash names the token it was looking at, or the last one
+			// it read when the expression ended.
+			std::size_t lookaheadOr(std::size_t fallback) {
+				skipWs();
+				return eof() ? fallback : pos_;
 			}
 
 			// Runtime errors (not syntax errors) in an operand that is
@@ -412,6 +487,7 @@ namespace wbsh {
 
 				adoptError(inner.error());
 				unbound_ = inner.unbound();
+				readonly_ = inner.readonlyAssignment();
 			}
 
 			void failUnbound(const std::string& name) {
@@ -429,8 +505,8 @@ namespace wbsh {
 				}
 
 				const bool operand = isAlnumChar(c) || c == '_' || c == '$' || c == '(';
-				fail(operand ? "syntax error in expression"
-					: "syntax error: invalid arithmetic operator", pos_);
+				fail(operand ? "arithmetic syntax error in expression"
+					: "arithmetic syntax error: invalid arithmetic operator", pos_);
 			}
 
 			long long parseComma() {
@@ -483,7 +559,7 @@ namespace wbsh {
 				if (failed()) return 0;
 
 				const long long value = combineAssign(op.spelling[0], lhs, rhs);
-				if (resolved) storeSlot(env_, slot, value);
+				if (resolved) assignSlot(slot, value);
 				return value;
 			}
 
@@ -491,10 +567,21 @@ namespace wbsh {
 				const long long condition = parseLogOr();
 				if (!consume('?')) return condition;
 
+				failOnMissingBranch();
 				const long long when_true = parseOperand(condition == 0, &ArithEval::parseAssign);
-				if (!consume(':')) fail("`:' expected for conditional expression", pos_);
+				if (!consume(':')) {
+					fail("`:' expected for conditional expression", lookaheadOr(last_operand_at_));
+				}
+
+				failOnMissingBranch();
 				const long long when_false = parseOperand(condition != 0, &ArithEval::parseAssign);
 				return condition != 0 ? when_true : when_false;
+			}
+
+			// `1 ? : 2` and `1 ? 2 :` leave a branch out.
+			void failOnMissingBranch() {
+				const std::size_t at = lookaheadOr(last_operator_at_);
+				if (eof() || peek() == ':') fail("expression expected", at);
 			}
 
 			long long parseLogOr() {
@@ -642,10 +729,8 @@ namespace wbsh {
 				skipWs();
 				if (!consume("**")) return base;
 
-				skipWs();
-				const std::size_t exponent_at = pos_;
 				const long long exponent = parsePow();
-				if (exponent < 0) failEvaluation("exponent less than 0", exponent_at);
+				if (exponent < 0) failEvaluation("exponent less than 0", last_operand_at_);
 				return power(base, exponent);
 			}
 
@@ -666,7 +751,7 @@ namespace wbsh {
 				if (!resolveSlot(ref, /*for_write=*/true, slot)) return 0;
 
 				const long long value = slotValue(slot) + delta;
-				storeSlot(env_, slot, value);
+				assignSlot(slot, value);
 				return value;
 			}
 
@@ -675,7 +760,7 @@ namespace wbsh {
 				if (!resolveSlot(ref, /*for_write=*/true, slot)) return 0;
 
 				const long long value = slotValue(slot);
-				storeSlot(env_, slot, value + delta);
+				assignSlot(slot, value + delta);
 				return value;
 			}
 
@@ -687,6 +772,7 @@ namespace wbsh {
 					return value;
 				}
 
+				last_operand_at_ = pos_;
 				if (isDigit(peek())) return readNumber();
 				if (isNameStart(peek())) return parseVariable();
 				if (consume('$')) return parseDollar();
@@ -767,6 +853,17 @@ namespace wbsh {
 				return false;
 			}
 
+			// bash abandons the whole expression at a readonly variable.
+			void assignSlot(const Slot& slot, long long value) {
+				if (env_.isReadonly(slot.name)) {
+					adoptError(env_.resolveRef(slot.name) + ": readonly variable");
+					readonly_ = !skipping();
+					return;
+				}
+
+				storeSlot(env_, slot, value);
+			}
+
 			long long slotValue(const Slot& slot) {
 				if (!slot.element) return variableValue(slot.name);
 				return textValue(elementText(env_, slot), slot.name);
@@ -788,6 +885,8 @@ namespace wbsh {
 					return 0;
 				}
 
+				std::string dynamic;
+				if (dynamicSpecialValue(env_, name, dynamic)) return textValue(dynamic, name);
 				return textValue(env_.get(name), name);
 			}
 
@@ -822,7 +921,7 @@ namespace wbsh {
 
 				long long value = 0;
 				const char* problem = parseConstant(src_.substr(start, pos_ - start), value);
-				if (problem != nullptr) fail(problem, start);
+				if (problem != nullptr) failWithin(problem, start, pos_);
 				return value;
 			}
 
@@ -833,8 +932,14 @@ namespace wbsh {
 				return src_.substr(start, pos_ - start);
 			}
 
+			// The shell never sets a CRT locale, so this is isspace() without
+			// its per-call locale lookup, on the hottest path of arithmetic.
+			static bool isBlank(char c) {
+				return c == ' ' || (c >= '\t' && c <= '\r');
+			}
+
 			void skipWs() {
-				while (!eof() && std::isspace(static_cast<unsigned char>(peek()))) ++pos_;
+				while (!eof() && isBlank(peek())) ++pos_;
 			}
 
 			bool eof() const {
@@ -902,8 +1007,10 @@ namespace wbsh {
 			const std::string& src_;
 			std::size_t pos_ = 0;
 			std::size_t last_operator_at_ = 0;
+			std::size_t last_operand_at_ = 0;
 			std::string error_;
 			bool unbound_ = false;
+			bool readonly_ = false;
 			int skip_depth_ = 0;
 			Environment& env_;
 			int depth_;
@@ -918,9 +1025,11 @@ namespace wbsh {
 		const std::string expanded = expandHeredoc(body, /*quoted=*/false);
 		if (aborting()) return 0;
 
+		if (env_.xtrace()) last_arith_text_ = expanded;
 		arith_detail::ArithEval evaluator(expanded, env_, 0);
 		const long long value = evaluator.run();
 		if (evaluator.unbound()) failFatal(evaluator.error());
+		else if (evaluator.readonlyAssignment()) failUnlabeled(evaluator.error());
 		else if (evaluator.failed()) fail(evaluator.error());
 		return value;
 	}
@@ -988,7 +1097,7 @@ namespace wbsh {
 	void Expander::expandHeredocParamBraces(const std::string& body, std::size_t& i,
 			std::string& out) {
 		const std::size_t end = body.size();
-		const std::size_t k = scanBalanced(body, i + 2, '{', '}', 1);
+		const std::size_t k = scanParamClose(body, i + 2);
 		const std::string inner = body.substr(i + 2, k - (i + 2));
 
 		out += expandParam(inner, true);
@@ -1062,7 +1171,11 @@ namespace wbsh {
 	std::string Expander::expandHeredoc(const std::string& body, bool quoted) {
 		if (quoted) return body;
 
-		return expandInterpolated(body, heredocEscapes);
+		const bool outer = in_heredoc_;
+		in_heredoc_ = true;
+		std::string out = expandInterpolated(body, heredocEscapes);
+		in_heredoc_ = outer;
+		return out;
 	}
 
 	// As bash's promptvars: the decoded prompt is expanded as a
@@ -1129,7 +1242,7 @@ namespace wbsh {
 	void Expander::expandNestedParamQuoted(const std::string& body, std::size_t& i,
 			std::string& out, WordQuoting& quoting) {
 		const std::size_t body_end = body.size();
-		const std::size_t k = scanBalanced(body, i + 2, '{', '}', 1);
+		const std::size_t k = scanParamClose(body, i + 2);
 		const std::string inner = body.substr(i + 2, k - (i + 2));
 		i = (k < body_end) ? k + 1 : k;
 
@@ -1144,11 +1257,25 @@ namespace wbsh {
 		quoting.had_quote = quoting.had_quote || nested.had_quote;
 	}
 
+	// Inside "${name:+word}" a nested "..." pair switches back to unquoted
+	// rules (`"${v:+"\p"}"` is `p`), so a backslash follows double-quote
+	// rules when exactly one of the two quotings applies.
+	static bool quotedParamWordEscapes(char c) {
+		return doubleQuoteEscapes(c) || c == '}';
+	}
+
+	Expander::EscapeTest Expander::wordArgEscapes(bool records_quoting, bool in_dq) const {
+		if (param_quoted_ && !in_dq) return quotedParamWordEscapes;
+		if (param_quoted_ != in_dq) return doubleQuoteEscapes;
+		if (records_quoting || param_quoted_) return escapesAnything;
+		return unquotedWordEscapes;
+	}
+
 	// One piece of a word argument; true when the piece is quoted text.
 	bool Expander::expandParamWordStep(const std::string& body, std::size_t& i, bool& in_dq,
 			WordQuoting* quoting, std::string& out) {
 		const char c = body[i];
-		if (c == '\'') {
+		if (c == '\'' && !param_quoted_ && !in_dq) {
 			copySingleQuotedRun(body, i, out);
 			return true;
 		}
@@ -1161,9 +1288,7 @@ namespace wbsh {
 
 		const bool more = i + 1 < body.size();
 		if (c == '\\' && more) {
-			bool (*escapes)(char) = quoting != nullptr ? escapesAnything : unquotedWordEscapes;
-			if (param_quoted_ || in_dq) escapes = doubleQuoteEscapes;
-			expandBackslash(body, i, escapes, out);
+			expandBackslash(body, i, wordArgEscapes(quoting != nullptr, in_dq), out);
 			return true;
 		}
 
@@ -1172,16 +1297,45 @@ namespace wbsh {
 			return false;
 		}
 
+		if (c == '$' && more && body[i + 1] == '\'' && !in_dq && !in_heredoc_) {
+			out += takeAnsiCQuoted(body, i);
+			return true;
+		}
+
 		if (c == '$' && more) expandHeredocDollar(body, i, out);
 		else if (c == '`') expandHeredocBackquote(body, i, out);
 		else out.push_back(body[i++]);
 		return in_dq;
 	}
 
+	// Index of the quote closing the `$'...'` at body[dollar], or the end.
+	static std::size_t ansiCQuoteClose(const std::string& body, std::size_t dollar) {
+		std::size_t end = dollar + 2;
+		while (end < body.size() && body[end] != '\'') end += body[end] == '\\' ? 2 : 1;
+		return std::min(end, body.size());
+	}
+
+	// The `$'...'` at body[i], decoded; even inside double quotes bash
+	// decodes one in the word or pattern of a ${...}.
+	std::string Expander::takeAnsiCQuoted(const std::string& body, std::size_t& i) {
+		const std::size_t end = ansiCQuoteClose(body, i);
+		const std::string text = body.substr(i + 2, end - i - 2);
+		i = std::min(end + 1, body.size());
+		return interpretAnsiC(text);
+	}
+
+	static bool leadingTildeExpansion(const Environment& env, const PathConv& paths,
+	                                  const std::string& body, std::size_t& i, std::string& out);
+
+	// An unquoted `${name:-word}` expands a tilde prefix at the start of
+	// its word; the home directory is not split or globbed.
 	std::string Expander::expandParamWordArg(const std::string& body, WordQuoting* quoting) {
 		std::string out;
 		bool in_dq = false;
 		std::size_t i = 0;
+		const bool tilde = !param_quoted_ && leadingTildeExpansion(env_, path_conv_, body, i, out);
+		if (tilde && quoting != nullptr) quoting->quoted.resize(out.size(), 1);
+
 		while (i < body.size() && !aborting()) {
 			const bool quoted = expandParamWordStep(body, i, in_dq, quoting, out);
 			if (quoting == nullptr) continue;
@@ -1254,6 +1408,11 @@ namespace wbsh {
 				continue;
 			}
 
+			if (c == '$' && i + 1 < body.size() && body[i + 1] == '\'' && !in_dq) {
+				appendFnmatchLiteral(out, takeAnsiCQuoted(body, i));
+				continue;
+			}
+
 			if (c == '\\' && i + 1 < body.size()) {
 				appendPatternBackslash(body, i, in_dq, out);
 				continue;
@@ -1275,21 +1434,58 @@ namespace wbsh {
 		if (nul == output.end()) return output;
 
 		output.erase(nul, output.end());
-		std::fprintf(stderr, "wbsh: warning: command substitution: ignored null byte in input\n");
+		shellErrorf("warning: command substitution: ignored null byte in input\n");
 		return output;
 	}
 
-	static void ansicHexEscape(const std::string& body, std::size_t& i, std::string& out) {
+	static bool isNoForkSubstBody(const std::string& body) {
+		const char first = body[0];
+		return first == ' ' || first == '\t' || first == '\n' || first == '|';
+	}
+
+	std::string Expander::runNoForkSubst(const std::string& body) {
+		if (sub_ == nullptr) return {};
+		if (body[0] == '|') return sub_->runForReply(body.substr(1));
+
+		return sub_->runInCurrentShell(body);
+	}
+
+	// bash 5.3's `\x{HHH}` takes any number of digits and keeps the low
+	// byte; the closing brace is optional.
+	static void ansicBracedHexEscape(const std::string& body, std::size_t& i, std::string& out) {
+		unsigned value = 0;
+		while (i < body.size() && std::isxdigit(static_cast<unsigned char>(body[i]))) {
+			value = value * 16 + static_cast<unsigned>(hexDigitValue(body[i]));
+			++i;
+		}
+
+		if (i < body.size() && body[i] == '}') ++i;
+		out.push_back(static_cast<char>(value & 0xff));
+	}
+
+	// @p i is at the backslash; `\x` without a hex digit stays literal.
+	static bool ansicHexEscape(const std::string& body, std::size_t& i, std::string& out) {
+		std::size_t at = i + 2;
+		if (at < body.size() && body[at] == '{') {
+			i = at + 1;
+			ansicBracedHexEscape(body, i, out);
+			return true;
+		}
+
 		int value = 0;
 		int digits = 0;
-		while (digits < kAnsicHexDigits && i < body.size()
-				&& std::isxdigit(static_cast<unsigned char>(body[i]))) {
-			value = value * 16 + hexDigitValue(body[i]);
-			++i;
+		while (digits < kAnsicHexDigits && at < body.size()
+				&& std::isxdigit(static_cast<unsigned char>(body[at]))) {
+			value = value * 16 + hexDigitValue(body[at]);
+			++at;
 			++digits;
 		}
 
+		if (digits == 0) return false;
+
 		out.push_back(static_cast<char>(value));
+		i = at;
+		return true;
 	}
 
 	static void ansicOctalEscape(const std::string& body, std::size_t& i, std::string& out) {
@@ -1323,17 +1519,60 @@ namespace wbsh {
 		}
 	}
 
-	// `\cX` is the control character of X; a trailing `\c` with nothing
-	// after it is kept as a literal backslash.
+	// `\cX` is the control character of X (`\c?` is DEL, and `\c\\` is
+	// FS); a trailing `\c` with nothing after it is kept as a literal
+	// backslash.
 	static void ansicControlEscape(const std::string& body, std::size_t& i, std::string& out) {
 		if (i + 2 < body.size()) {
-			out.push_back(static_cast<char>(body[i + 2] & 0x1f));
-			i += 3;
+			const char target = body[i + 2];
+			const bool doubled = target == '\\' && i + 3 < body.size() && body[i + 3] == '\\';
+			out.push_back(target == '?' ? '\x7f' : static_cast<char>(target & 0x1f));
+			i += doubled ? 4 : 3;
 			return;
 		}
 
 		out.push_back('\\');
 		++i;
+	}
+
+	static bool ansicUnicodeEscape(const std::string& body, std::size_t& i, std::string& out,
+			bool utf8_locale) {
+		std::size_t at = i + 2;
+		char32_t code = 0;
+		if (!readUnicodeEscape(body, at, body[i + 1], code)) return false;
+
+		appendUnicodeEscape(out, code, utf8_locale);
+		i = at;
+		return true;
+	}
+
+	// `\x`, octal, `\c`, `\u` and `\U` with @p i at the backslash; false
+	// when the escape is none of them.
+	static bool ansicCodedEscape(const std::string& body, std::size_t& i, std::string& out,
+			bool utf8_locale) {
+		const char escape = body[i + 1];
+		if (escape == 'x') return ansicHexEscape(body, i, out);
+
+		if (escape >= '0' && escape <= '7') {
+			++i;
+			ansicOctalEscape(body, i, out);
+			return true;
+		}
+
+		if (escape == 'c') {
+			ansicControlEscape(body, i, out);
+			return true;
+		}
+
+		if (escape == 'u' || escape == 'U') return ansicUnicodeEscape(body, i, out, utf8_locale);
+		return false;
+	}
+
+	// bash keeps `$'...'` as a C string: a NUL ends it.
+	static std::string truncatedAtNul(std::string text) {
+		const std::size_t nul = text.find('\0');
+		if (nul != std::string::npos) text.resize(nul);
+		return text;
 	}
 
 	std::string Expander::interpretAnsiC(const std::string& body) {
@@ -1356,29 +1595,14 @@ namespace wbsh {
 				continue;
 			}
 
-			if (escape == 'x') {
-				i += 2;
-				ansicHexEscape(body, i, out);
-				continue;
-			}
-
-			if (escape >= '0' && escape <= '7') {
-				++i;
-				ansicOctalEscape(body, i, out);
-				continue;
-			}
-
-			if (escape == 'c') {
-				ansicControlEscape(body, i, out);
-				continue;
-			}
+			if (ansicCodedEscape(body, i, out, env_.utf8Locale())) continue;
 
 			out.push_back('\\');
 			out.push_back(escape);
 			i += 2;
 		}
 
-		return out;
+		return truncatedAtNul(std::move(out));
 	}
 
 	// Where tilde prefixes may start. A command word only expands a
@@ -1446,6 +1670,19 @@ namespace wbsh {
 		if (!env.has(variable)) return false;
 
 		out = env.get(variable);
+		return true;
+	}
+
+	static bool leadingTildeExpansion(const Environment& env, const PathConv& paths,
+	                                  const std::string& body, std::size_t& i, std::string& out) {
+		if (body.empty() || body[0] != '~') return false;
+
+		const std::size_t end = std::min(body.find_first_of("/:", 1), body.size());
+		const std::string name = body.substr(1, end - 1);
+		if (name.find_first_of("'\"\\$`") != std::string::npos) return false;
+		if (!tildeReplacement(env, paths, name, out)) return false;
+
+		i = end;
 		return true;
 	}
 
@@ -1541,9 +1778,11 @@ namespace wbsh {
 		return 0;
 	}
 
+	// POSIX mode expands only a leading tilde in a word that merely looks
+	// like an assignment (`echo a=~`, `export a=~`).
 	Word Expander::applyTildeExpansion(const Word& w) {
 		TildeScope scope;
-		scope.start = assignmentWordValueStart(w);
+		if (!env_.options().posix) scope.start = assignmentWordValueStart(w);
 		scope.after_colons = scope.start != 0;
 		return expandTildePrefixes(env_, path_conv_, w, scope);
 	}
@@ -1583,15 +1822,7 @@ namespace wbsh {
 	}
 
 	bool Expander::lookupDynamicSpecial(const std::string& name, std::string& out) const {
-		if (name == "RANDOM")  { out = std::to_string(env_.randomNext());        return true; }
-		if (name == "SECONDS") { out = std::to_string(env_.secondsSinceStart()); return true; }
-		if (name == "LINENO")  { out = std::to_string(env_.currentLineno());     return true; }
-		if (name == "BASH_COMMAND") { out = env_.currentCommand();             return true; }
-		if (name == "EPOCHSECONDS")  { out = std::to_string(epochSeconds()); return true; }
-		if (name == "EPOCHREALTIME") { out = epochRealtime();                return true; }
-		if (name == "BASHPID") { out = std::to_string(env_.bashPid());        return true; }
-
-		return false;
+		return dynamicSpecialValue(env_, name, out);
 	}
 
 	bool Expander::isParamSet(const std::string& name) const {
@@ -1714,11 +1945,10 @@ namespace wbsh {
 			const std::string& subscript_in, bool star_join_ifs, ElementSlot* slot) {
 		ElementSlot local;
 		ElementSlot& out = (slot != nullptr) ? *slot : local;
-		const std::string subscript = resolveSubscript(subscript_in);
-		const bool whole_array = (subscript == "@" || subscript == "*");
-		if (!whole_array) return lookupElement(name, subscript, out);
+		const bool whole_array = (subscript_in == "@" || subscript_in == "*");
+		if (!whole_array) return lookupElement(name, resolveSubscript(subscript_in), out);
 
-		const std::string sep = (subscript == "*") ? starSeparator(star_join_ifs)
+		const std::string sep = (subscript_in == "*") ? starSeparator(star_join_ifs)
 			: std::string(" ");
 		out.is_set = arrayLength(name) != 0;
 		return joinWholeArray(name, sep);
@@ -1810,6 +2040,10 @@ namespace wbsh {
 		return end;
 	}
 
+	static std::string missingParameterMessage(bool colon) {
+		return colon ? "parameter null or not set" : "parameter not set";
+	}
+
 	static bool isDefaultOp(char op) {
 		return op == '-' || op == '+' || op == '=' || op == '?';
 	}
@@ -1839,7 +2073,7 @@ namespace wbsh {
 			if (!empty_or_unset) return cur;
 
 			WordQuoting removed;
-			const std::string message = arg.empty() ? std::string("parameter null or not set")
+			const std::string message = arg.empty() ? missingParameterMessage(colon)
 				: expandParamWordArg(arg, param_quoted_ ? nullptr : &removed);
 			failFatal(ctx.label + ": " + message);
 			return {};
@@ -1920,6 +2154,8 @@ namespace wbsh {
 				++i;
 			} else if (c == '\'' || c == '"' || c == '`') {
 				i = skipQuoted(body, i);
+			} else if (c == '$' && i + 1 < body.size() && body[i + 1] == '\'') {
+				i = ansiCQuoteClose(body, i);
 			} else if (c == '$' && i + 1 < body.size()
 					&& (body[i + 1] == '{' || body[i + 1] == '(')) {
 				i = skipNested(body, i);
@@ -1954,6 +2190,8 @@ namespace wbsh {
 			} else if (c == '"') {
 				in_dq = !in_dq;
 				++i;
+			} else if (c == '$' && i + 1 < raw.size() && raw[i + 1] == '\'' && !in_dq) {
+				appendQuotedReplacement(takeAnsiCQuoted(raw, i), out);
 			} else if (c == '$' || c == '`') {
 				std::string value;
 				if (c == '$') expandHeredocDollar(raw, i, value);
@@ -2004,6 +2242,10 @@ namespace wbsh {
 		return op == '#' || op == '%' || op == '/' || op == '^' || op == ',' || op == '~';
 	}
 
+	bool Expander::isOperandUnset(const ParamOpCtx& ctx) const {
+		return ctx.has_subscript ? !ctx.slot.is_set : !isParamSet(ctx.name);
+	}
+
 	std::string Expander::expandParamApplyOp(char op, bool colon, std::size_t op_pos,
 			ParamOpCtx& ctx) {
 		const bool doubled = isDoublingOp(op)
@@ -2016,16 +2258,15 @@ namespace wbsh {
 		case '=':
 		case '?':
 			return evalParamDefaultOp(op, colon, ctx, argument);
-		case ':': {
+		case ':':
 			// An unset parameter gives nothing, without the offset checks.
-			const bool unset = ctx.has_subscript ? !ctx.slot.is_set : !isParamSet(ctx.name);
-			return unset ? std::string() : substringExpand(ctx.named_value, argument);
-		}
+			return isOperandUnset(ctx) ? std::string() : substringExpand(ctx.named_value, argument);
 		case '#':
 			return stripPrefix(ctx.named_value, expandPatternArg(argument), doubled);
 		case '%':
 			return stripSuffix(ctx.named_value, expandPatternArg(argument), doubled);
 		case '/':
+			if (isOperandUnset(ctx)) return std::string();
 			return evalParamReplace(ctx.named_value, argument, doubled);
 		case '^':
 		case ',':
@@ -2331,7 +2572,7 @@ namespace wbsh {
 		case '?':
 			if (!missing) return elems;
 
-			failFatal(subject + ": " + (arg.empty() ? std::string("parameter null or not set")
+			failFatal(subject + ": " + (arg.empty() ? missingParameterMessage(colon)
 				: expandParamWordArg(arg)));
 			return {};
 		default:
@@ -2393,11 +2634,35 @@ namespace wbsh {
 		return isDefaultOp(op);
 	}
 
+	static std::size_t skipQuotedRun(const std::string& text, std::size_t i) {
+		const char quote = text[i];
+		for (++i; i < text.size() && text[i] != quote; ++i) {
+			if (quote == '"' && text[i] == '\\') ++i;
+		}
+
+		return i;
+	}
+
+	// The `]` closing the `[` at @p open; brackets nest, as in
+	// `${a[ ${#a[@]} - 1 ]}`, and quoted text is skipped.
+	static std::size_t subscriptClose(const std::string& text, std::size_t open) {
+		int depth = 0;
+		for (std::size_t i = open; i < text.size(); ++i) {
+			const char c = text[i];
+			if (c == '\\') ++i;
+			else if (c == '\'' || c == '"') i = skipQuotedRun(text, i);
+			else if (c == '[') ++depth;
+			else if (c == ']' && --depth == 0) return i;
+		}
+
+		return std::string::npos;
+	}
+
 	// Takes a `[subscript]` at body[i], advancing i past the `]`.
 	static bool takeSubscript(const std::string& body, std::size_t& i, std::string& subscript) {
 		if (i >= body.size() || body[i] != '[') return false;
 
-		const std::size_t close = body.find(']', i + 1);
+		const std::size_t close = subscriptClose(body, i);
 		if (close == std::string::npos) return false;
 
 		subscript = body.substr(i + 1, close - i - 1);
@@ -2555,6 +2820,7 @@ namespace wbsh {
 	std::string Expander::expandParam(const std::string& body, bool quoted_ctx,
 			WordQuoting* quoting, const std::string& label) {
 		if (body.empty()) return {};
+		if (isNoForkSubstBody(body)) return runNoForkSubst(body);
 
 		const bool saved = param_quoted_;
 		WordQuoting* const saved_quoting = param_quoting_;
@@ -2882,12 +3148,20 @@ namespace wbsh {
 		return out;
 	}
 
+	// An empty pattern matches only at an anchor: `${x/#/p}` prefixes p.
+	static std::string insertAtAnchor(const std::string& val, const Replacement& rep,
+			bool anchor_start, bool anchor_end) {
+		if (anchor_start) return replacementFor(rep, std::string()) + val;
+		if (anchor_end)   return val + replacementFor(rep, std::string());
+		return val;
+	}
+
 	std::string Expander::replacePattern(const std::string& val, const std::string& pat,
 			const std::string& rep, bool all, bool anchor_start, bool anchor_end) {
-		if (pat.empty())  return val;
+		const Replacement replacement{ rep, env_.shopts().patsub_replacement };
+		if (pat.empty()) return insertAtAnchor(val, replacement, anchor_start, anchor_end);
 
 		const PatternRef ref = makePatternRef(pat, env_.extglob());
-		const Replacement replacement{ rep, env_.shopts().patsub_replacement };
 		if (anchor_start) return replaceAnchoredPrefix(val, ref, replacement);
 		if (anchor_end)   return replaceAnchoredSuffix(val, ref, replacement);
 		return replaceUnanchored(val, ref, replacement, all);
@@ -2929,10 +3203,12 @@ namespace wbsh {
 			bool inside_dq, Tagged& out) {
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
 		const std::string sep = starSeparator(true);
+		const bool joins = star && inside_dq;
+		const char shown = star && !sep.empty() ? sep[0] : ' ';
 
 		for (std::size_t k = 0; k < elems.size(); ++k) {
-			if (k != 0 && star) pushText(out, sep, mark);
-			if (k != 0 && !star) out.endField(inside_dq);
+			if (k != 0 && joins) pushText(out, sep, mark);
+			if (k != 0 && !joins) out.endField(inside_dq, shown);
 			pushText(out, elems[k], mark);
 		}
 
@@ -2984,6 +3260,63 @@ namespace wbsh {
 		return elems;
 	}
 
+	static bool lexSingleWord(const std::string& text, Word& out) {
+		Lexer lexer(text);
+		std::vector<Token> tokens = lexer.tokenize();
+		if (!lexer.errors().empty() || tokens.empty() || tokens[0].kind != TokKind::Word) return false;
+		if (tokens.size() > 1 && tokens[1].kind != TokKind::EndOfInput) return false;
+
+		out.segments = std::move(tokens[0].segments);
+		out.raw = std::move(tokens[0].text);
+		return true;
+	}
+
+	struct ListAlternative {
+		char op = 0;
+		bool colon = false;
+		std::string word;
+	};
+
+	static bool parseListAlternative(const std::string& body, std::size_t op_pos,
+			ListAlternative& out) {
+		std::size_t i = op_pos;
+		out.colon = i < body.size() && body[i] == ':';
+		if (out.colon) ++i;
+		if (i >= body.size() || (body[i] != '+' && body[i] != '-')) return false;
+
+		out.op = body[i];
+		out.word = body.substr(i + 1);
+		return out.word.find('@') != std::string::npos;
+	}
+
+	// `${a[@]+"${a[@]}"}`: an unquoted alternative word holding a quoted
+	// list expands in place, so the elements stay separate words as in bash.
+	bool Expander::renderListAlternative(const ListParam& list, const std::string& body,
+			bool inside_dq, Tagged& out, bool& rendered) {
+		rendered = false;
+		ListAlternative alternative;
+		if (inside_dq || !parseListAlternative(body, list.op_pos, alternative)) return false;
+
+		const std::vector<std::string> values = listParamValues(list);
+		const bool unset = values.empty();
+		const bool missing = alternative.colon ? unset || (values.size() == 1 && values[0].empty())
+			: unset;
+		const bool uses_word = alternative.op == '+' ? !missing : missing;
+		rendered = alternative.op == '+' && !uses_word;
+		if (!uses_word) return false;
+
+		Word word;
+		if (!lexSingleWord(alternative.word, word)) return false;
+
+		rendered = true;
+		bool removed_null = false;
+		for (const WordSegment& segment : word.segments) {
+			if (renderSegment(segment, out, false)) removed_null = true;
+		}
+
+		return removed_null;
+	}
+
 	// A body reached through `${!ref}` has a label and is never read as
 	// another `!` or `#` form.
 	bool Expander::renderParamBody(const std::string& body, const std::string& label,
@@ -2995,6 +3328,10 @@ namespace wbsh {
 		ListParam list;
 		if (parseListParam(body, list)) {
 			list.label = label;
+			bool rendered = false;
+			const bool removed_null = renderListAlternative(list, body, inside_dq, out, rendered);
+			if (rendered) return removed_null;
+
 			WordQuoting quoting;
 			const std::vector<std::string> elems
 				= expandListParamQuoted(list, body, inside_dq, quoting);
@@ -3039,7 +3376,7 @@ namespace wbsh {
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
 		switch (s.kind) {
 		case K::Literal:
-			pushText(out, s.text, mark);
+			pushText(out, s.text, mark | F_NOSPLIT);
 			break;
 		case K::Escaped:
 		case K::SingleQuoted:
@@ -3058,6 +3395,12 @@ namespace wbsh {
 				return renderArrayFields(env_.positional(), /*star=*/false, inside_dq, out);
 			}
 
+			// Unquoted, `$*` gives one field per parameter like `$@`; only
+			// inside quotes does it join them with IFS.
+			if (s.text == "*" && !inside_dq) {
+				return renderArrayFields(env_.positional(), /*star=*/true, inside_dq, out);
+			}
+
 			if (env_.nounset() && isUnsetPositional(s.text)) {
 				failFatal("$" + s.text + ": unbound variable");
 				break;
@@ -3074,7 +3417,7 @@ namespace wbsh {
 			break;
 		}
 		case K::ArithExp:
-			pushText(out, std::to_string(evalArith(s.text)), mark);
+			pushText(out, std::to_string(evalArith(Lexer::withoutArithmeticDoubleQuotes(s.text))), mark);
 			break;
 		case K::ProcSubst:
 			renderProcSubstSegment(s, out);
@@ -3097,13 +3440,18 @@ namespace wbsh {
 		return (t.flags[i] & Expander::F_QUOTED) != 0;
 	}
 
+	static bool splitsAt(const Expander::Tagged& t, std::size_t i, const std::string& ifs) {
+		const std::uint8_t protection = Expander::F_QUOTED | Expander::F_NOSPLIT;
+		return (t.flags[i] & protection) == 0 && isIfsChar(ifs, t.text[i]);
+	}
+
 	static Expander::Tagged takeField(const Expander::Tagged& t, const std::string& ifs,
 			std::size_t& i) {
 		Expander::Tagged field;
 		while (i < t.size()) {
 			const char c = t.text[i];
 			const bool quoted = quotedAt(t, i);
-			if (!quoted && isIfsChar(ifs, c)) break;
+			if (splitsAt(t, i, ifs)) break;
 
 			field.push(c, t.flags[i]);
 			field.had_quote = field.had_quote || quoted;
@@ -3121,7 +3469,7 @@ namespace wbsh {
 		bool saw_nonws = false;
 		while (i < t.size()) {
 			const char c = t.text[i];
-			if (quotedAt(t, i) || !isIfsChar(ifs, c)) break;
+			if (!splitsAt(t, i, ifs)) break;
 			if (!isIfsWhitespace(ifs, c)) {
 				if (saw_nonws) break;
 				saw_nonws = true;
@@ -3137,7 +3485,7 @@ namespace wbsh {
 			std::vector<Expander::Tagged>& out) {
 		const std::size_t first = out.size();
 		std::size_t i = 0;
-		while (!ifs.empty() && i < t.size() && !quotedAt(t, i) && isIfsWhitespace(ifs, t.text[i])) {
+		while (!ifs.empty() && i < t.size() && splitsAt(t, i, ifs) && isIfsWhitespace(ifs, t.text[i])) {
 			++i;
 		}
 
@@ -3257,10 +3605,17 @@ namespace wbsh {
 			bool dotglob    = false;
 			bool nocaseglob = false;
 			bool extglob    = false;
+			bool globstar   = false;
+		};
+
+		struct GlobPlan {
+			std::vector<GlobComp> comps;
+			bool absolute = false;
+			bool trailing_slash = false;
 		};
 
 		static std::string joinDir(const std::string& dir, const std::string& name) {
-			if (dir == "." || dir.empty()) return name;
+			if (dir.empty()) return name;
 			if (dir == "/") return "/" + name;
 			if (dir.back() == '/') return dir + name;
 			return dir + "/" + name;
@@ -3276,40 +3631,59 @@ namespace wbsh {
 		return false;
 	}
 
-	static std::vector<glob_detail::GlobComp> splitTaggedIntoGlobComps(
-			const Expander::Tagged& t, bool& absolute) {
-		std::vector<glob_detail::GlobComp> comps;
+	static glob_detail::GlobPlan splitTaggedIntoGlobPlan(const Expander::Tagged& t) {
+		glob_detail::GlobPlan plan;
 		glob_detail::GlobComp cur;
-		bool first = true;
-		absolute = false;
 		for (std::size_t i = 0; i < t.size(); ++i) {
 			const char c = t.text[i];
 			const bool quoted = quotedAt(t, i);
-			if (!quoted && c == '/') {
-				if (first) absolute = true;
+			if (c == '/') {
+				if (i == 0) plan.absolute = true;
 				if (!cur.text.empty()) {
-					comps.push_back(std::move(cur));
+					plan.comps.push_back(std::move(cur));
 					cur = {};
 				}
 
-				first = false;
 				continue;
 			}
 
 			cur.text.push_back(c);
 			cur.quoted.push_back(quoted ? Expander::F_QUOTED : 0);
-			first = false;
 		}
 
-		if (!cur.text.empty()) comps.push_back(std::move(cur));
-		return comps;
+		if (!cur.text.empty()) plan.comps.push_back(std::move(cur));
+		else plan.trailing_slash = !plan.comps.empty();
+		return plan;
 	}
 
-	static void collectGlobstarUnder(const std::string& dir, bool last, const PathConv& pc,
-			std::set<std::string>& found) {
+	static bool isGlobstarComp(const glob_detail::GlobComp& comp,
+			const glob_detail::GlobMatchOptions& options) {
+		return options.globstar && comp.text == "**" && comp.hasMeta(false);
+	}
+
+	// The walker's paths all start with the listed directory, so the
+	// relative part is a plain suffix; fs::relative would hit the disk.
+	static std::string globstarRelative(const std::filesystem::path& full,
+			const std::wstring& prefix) {
+		const std::wstring& text = full.native();
+		std::string rel = pathToUtf8(text.compare(0, prefix.size(), prefix) == 0
+			? std::filesystem::path(text.substr(prefix.size())) : full.filename());
+		std::replace(rel.begin(), rel.end(), '\\', '/');
+		return rel;
+	}
+
+	static std::wstring globstarPrefix(const std::filesystem::path& list_dir) {
+		std::wstring prefix = list_dir.native();
+		if (!prefix.empty() && prefix.back() != L'\\' && prefix.back() != L'/') prefix += L'\\';
+		return prefix;
+	}
+
+	// Dot names are neither listed nor entered unless dotglob is on.
+	static void collectGlobstarUnder(const std::string& dir, bool dirs_only, bool dotglob,
+			const PathConv& pc, std::set<std::string>& found) {
 		namespace fs = std::filesystem;
-		const std::string posix_dir = dir.empty() ? "." : dir;
-		const fs::path list_dir = utf8ToPath(pc.toWin32(posix_dir));
+		const fs::path list_dir = utf8ToPath(pc.toWin32(dir.empty() ? "." : dir));
+		const std::wstring prefix = globstarPrefix(list_dir);
 
 		std::error_code ec;
 		fs::recursive_directory_iterator walker(list_dir,
@@ -3319,35 +3693,32 @@ namespace wbsh {
 		for (; walker != fs::recursive_directory_iterator(); walker.increment(ec)) {
 			if (ec) break;
 
-			const std::string name = pathToUtf8(walker->path().filename());
-			// Skip dotfiles AND don't descend into them — bash behaviour.
-			if (!name.empty() && name[0] == '.') {
+			const std::wstring name = walker->path().filename().native();
+			if (!dotglob && !name.empty() && name[0] == L'.') {
 				walker.disable_recursion_pending();
 				continue;
 			}
 
 			std::error_code entry_ec;
-			std::string rel = pathToUtf8(fs::relative(walker->path(), list_dir, entry_ec));
-			std::replace(rel.begin(), rel.end(), '\\', '/');
-			if (last || walker->is_directory(entry_ec)) {
-				found.insert(glob_detail::joinDir(dir, rel));
-			}
+			if (dirs_only && !walker->is_directory(entry_ec)) continue;
+			found.insert(glob_detail::joinDir(dir, globstarRelative(walker->path(), prefix)));
 		}
 	}
 
-	// `**` matches the directory itself plus everything below it; only
-	// as the last component does it also yield files.
+	// As the last component `**` yields the directory itself as `dir/`
+	// (none for the implicit current directory) and everything below it;
+	// elsewhere it yields the directory and the directories below it.
 	static std::vector<std::string> expandGlobstarStep(const std::vector<std::string>& current,
-			bool last, const PathConv& pc) {
+			bool last, bool dirs_only, const glob_detail::GlobMatchOptions& options,
+			const PathConv& pc) {
 		std::set<std::string> found;
 		for (const std::string& dir : current) {
-			found.insert(dir);
-			collectGlobstarUnder(dir, last, pc, found);
+			if (!last) found.insert(dir);
+			else if (!dir.empty()) found.insert(dir.back() == '/' ? dir : dir + "/");
+			collectGlobstarUnder(dir, dirs_only, options.dotglob, pc, found);
 		}
 
-		std::vector<std::string> out(found.begin(), found.end());
-		std::sort(out.begin(), out.end());
-		return out;
+		return std::vector<std::string>(found.begin(), found.end());
 	}
 
 	static std::string lowerAscii(std::string text) {
@@ -3361,36 +3732,71 @@ namespace wbsh {
 		return fnmatchFull(lowerAscii(pat), lowerAscii(name), options.extglob);
 	}
 
-	static std::vector<std::string> directoryNames(const std::string& posix_dir, const PathConv& pc) {
-		namespace fs = std::filesystem;
-		if (isProcPath(posix_dir)) return listProcDirectory(pc, posix_dir);
+	static bool globNameWanted(const std::string& name, const std::string& pat,
+			const glob_detail::GlobMatchOptions& options) {
+		if (name.empty()) return false;
+		if (name[0] == '.' && pat[0] != '.' && !options.dotglob) return false;
+		return globNameMatches(pat, name, options);
+	}
+
+	// A link out of /proc, such as cwd, counts by what it leads to.
+	static bool isProcDirectory(const std::string& posix_path, const PathConv& pc) {
+		const ProcNode node = lookupProcPath(pc, posix_path, true);
+		if (node.type != ProcType::Outside) return node.type == ProcType::Directory;
 
 		std::error_code ec;
-		fs::directory_iterator it(utf8ToPath(pc.toWin32(posix_dir)), ec);
+		return std::filesystem::is_directory(utf8ToPath(pc.toWin32(node.target)), ec);
+	}
+
+	static std::vector<std::string> matchingProcEntries(const std::string& dir,
+			const std::string& pat, const PathConv& pc,
+			const glob_detail::GlobMatchOptions& options, bool dirs_only) {
+		std::vector<std::string> matches;
+		for (const std::string& name : listProcDirectory(pc, dir)) {
+			if (!globNameWanted(name, pat, options)) continue;
+			if (dirs_only && !isProcDirectory(glob_detail::joinDir(dir, name), pc)) continue;
+			matches.push_back(name);
+		}
+
+		return matches;
+	}
+
+	// The entry's type comes from the directory listing itself, so the
+	// directory test costs no extra call except on links.
+	static std::vector<std::string> matchingDiskEntries(const std::string& dir,
+			const std::string& pat, const PathConv& pc,
+			const glob_detail::GlobMatchOptions& options, bool dirs_only) {
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		fs::directory_iterator it(utf8ToPath(pc.toWin32(dir)), ec);
 		if (ec) return {};
 
-		std::vector<std::string> names;
-		for (const fs::directory_entry& entry : it) names.push_back(pathToUtf8(entry.path().filename()));
-		return names;
+		std::vector<std::string> matches;
+		for (const fs::directory_entry& entry : it) {
+			std::string name = pathToUtf8(entry.path().filename());
+			if (!globNameWanted(name, pat, options)) continue;
+
+			std::error_code type_ec;
+			if (dirs_only && !entry.is_directory(type_ec)) continue;
+			matches.push_back(std::move(name));
+		}
+
+		return matches;
 	}
 
 	static std::vector<std::string> matchingEntries(const std::string& dir, const std::string& pat,
-			const PathConv& pc, const glob_detail::GlobMatchOptions& options) {
-		const bool pat_starts_dot = !pat.empty() && pat[0] == '.';
-		std::vector<std::string> matches;
-		for (const std::string& name : directoryNames(dir.empty() ? "." : dir, pc)) {
-			if (name.empty()) continue;
-			if (name[0] == '.' && !pat_starts_dot && !options.dotglob) continue;
-			if (globNameMatches(pat, name, options)) matches.push_back(name);
+			const PathConv& pc, const glob_detail::GlobMatchOptions& options, bool dirs_only) {
+		const std::string posix_dir = dir.empty() ? "." : dir;
+		if (isProcPath(posix_dir)) {
+			return matchingProcEntries(posix_dir, pat, pc, options, dirs_only);
 		}
 
-		std::sort(matches.begin(), matches.end());
-		return matches;
+		return matchingDiskEntries(posix_dir, pat, pc, options, dirs_only);
 	}
 
 	static std::vector<std::string> expandGlobOneStep(const std::vector<std::string>& current,
 			const glob_detail::GlobComp& comp, const PathConv& pc,
-			const glob_detail::GlobMatchOptions& options) {
+			const glob_detail::GlobMatchOptions& options, bool dirs_only) {
 		std::vector<std::string> next;
 		if (!comp.hasMeta(options.extglob)) {
 			for (const std::string& dir : current) {
@@ -3402,7 +3808,7 @@ namespace wbsh {
 
 		const std::string pat = comp.asPattern();
 		for (const std::string& dir : current) {
-			for (const std::string& name : matchingEntries(dir, pat, pc, options)) {
+			for (const std::string& name : matchingEntries(dir, pat, pc, options, dirs_only)) {
 				next.push_back(glob_detail::joinDir(dir, name));
 			}
 		}
@@ -3410,38 +3816,114 @@ namespace wbsh {
 		return next;
 	}
 
+	static bool globPathExists(const std::string& path, bool want_dir, const PathConv& pc) {
+		namespace fs = std::filesystem;
+		if (isProcPath(path)) {
+			if (want_dir) return isProcDirectory(path, pc);
+			return lookupProcPath(pc, path, true).type != ProcType::Missing;
+		}
+
+		std::error_code ec;
+		const fs::file_status status = fs::status(utf8ToPath(pc.toWin32(path)), ec);
+		return want_dir ? fs::is_directory(status) : fs::exists(status);
+	}
+
+	// Literal components after the last pattern were joined on blindly;
+	// only paths that exist count as matches.
+	static void keepExistingPaths(std::vector<std::string>& paths, bool want_dir,
+			const PathConv& pc) {
+		const auto missing = [&](const std::string& path) {
+			return !globPathExists(path, want_dir, pc);
+		};
+		paths.erase(std::remove_if(paths.begin(), paths.end(), missing), paths.end());
+	}
+
+	static void appendTrailingSlashes(std::vector<std::string>& paths) {
+		for (std::string& path : paths) {
+			if (path.empty() || path.back() != '/') path.push_back('/');
+		}
+	}
+
+	// A component that is not the last only ever names directories.
+	static std::vector<std::string> expandGlobPlan(const glob_detail::GlobPlan& plan,
+			const glob_detail::GlobMatchOptions& options, const PathConv& pc) {
+		std::vector<std::string> current{ plan.absolute ? std::string("/") : std::string() };
+		std::size_t literal_tail = 0;
+		for (std::size_t ci = 0; ci < plan.comps.size(); ++ci) {
+			const glob_detail::GlobComp& comp = plan.comps[ci];
+			const bool last = ci + 1 == plan.comps.size();
+			const bool dirs_only = !last || plan.trailing_slash;
+			if (isGlobstarComp(comp, options)) {
+				current = expandGlobstarStep(current, last, dirs_only, options, pc);
+			} else {
+				current = expandGlobOneStep(current, comp, pc, options, dirs_only);
+			}
+
+			literal_tail = comp.hasMeta(options.extglob) ? 0 : literal_tail + 1;
+		}
+
+		if (literal_tail != 0) keepExistingPaths(current, plan.trailing_slash, pc);
+		if (plan.trailing_slash) appendTrailingSlashes(current);
+		return current;
+	}
+
+	static std::vector<std::string> globIgnorePatterns(const Environment& env) {
+		std::vector<std::string> patterns;
+		if (!env.has("GLOBIGNORE")) return patterns;
+
+		const std::string value = env.get("GLOBIGNORE");
+		std::size_t from = 0;
+		while (from <= value.size()) {
+			const std::size_t colon = std::min(value.find(':', from), value.size());
+			if (colon > from) patterns.push_back(value.substr(from, colon - from));
+			from = colon + 1;
+		}
+
+		return patterns;
+	}
+
+	static void dropIgnoredPaths(std::vector<std::string>& paths,
+			const std::vector<std::string>& patterns, bool extglob) {
+		const auto ignored = [&](const std::string& path) {
+			for (const std::string& pattern : patterns) {
+				if (fnmatchFull(pattern, path, extglob)) return true;
+			}
+
+			return false;
+		};
+		paths.erase(std::remove_if(paths.begin(), paths.end(), ignored), paths.end());
+	}
+
+	static glob_detail::GlobMatchOptions globMatchOptions(const Environment& env) {
+		glob_detail::GlobMatchOptions options;
+		options.dotglob    = env.dotglob();
+		options.nocaseglob = env.nocaseglob();
+		options.extglob    = env.extglob();
+		options.globstar   = env.globstar();
+		return options;
+	}
+
+	// bash sorts the whole result, not each directory's share of it.
 	std::vector<std::string> Expander::globExpand(const Tagged& t) {
 		if (env_.noglob()) return { quoteRemove(t) };
 		if (!taggedHasUnquotedGlobMeta(t, env_.extglob())) return { quoteRemove(t) };
 
-		bool absolute = false;
-		const std::vector<glob_detail::GlobComp> comps = splitTaggedIntoGlobComps(t, absolute);
-		if (comps.empty()) return { quoteRemove(t) };
+		const glob_detail::GlobPlan plan = splitTaggedIntoGlobPlan(t);
+		if (plan.comps.empty()) return { quoteRemove(t) };
 
-		std::vector<std::string> current;
-		current.push_back(absolute ? std::string("/") : std::string("."));
+		const std::vector<std::string> ignore = globIgnorePatterns(env_);
+		std::vector<std::string> matches = expandGlobPlan(plan,
+			globMatchOptions(env_), path_conv_);
+		if (!ignore.empty()) dropIgnoredPaths(matches, ignore, env_.extglob());
 
-		glob_detail::GlobMatchOptions options;
-		options.dotglob    = env_.dotglob();
-		options.nocaseglob = env_.nocaseglob();
-		options.extglob    = env_.extglob();
-		const bool globstar = env_.globstar();
-
-		for (std::size_t ci = 0; ci < comps.size(); ++ci) {
-			const glob_detail::GlobComp& comp = comps[ci];
-			if (globstar && comp.text == "**") {
-				current = expandGlobstarStep(current, /*last=*/ci + 1 == comps.size(), path_conv_);
-			} else {
-				current = expandGlobOneStep(current, comp, path_conv_, options);
-			}
+		if (!matches.empty()) {
+			sortGlobMatches(matches, env_.get("GLOBSORT"), path_conv_);
+			return matches;
 		}
 
-		if (current.empty()) {
-			if (env_.nullglob()) return {};
-			return { quoteRemove(t) };
-		}
-
-		return current;
+		if (env_.shopts().failglob) fail("no match: " + quoteRemove(t));
+		if (env_.shopts().failglob || env_.nullglob()) return {};
+		return { quoteRemove(t) };
 	}
 
 	std::string Expander::quoteRemove(const Tagged& t) {
@@ -3694,11 +4176,22 @@ namespace wbsh {
 		return out;
 	}
 
+	// Unquoted source text with nothing a brace, tilde or pathname
+	// expansion could act on, and literal text is never split: the word
+	// is its own single field.
+	static bool isPlainLiteralWord(const Word& w) {
+		if (w.segments.size() != 1 || w.segments[0].kind != WordSegment::Kind::Literal) return false;
+
+		const std::string& text = w.segments[0].text;
+		return !text.empty() && text == w.raw && text.find_first_of("*?[{~(") == std::string::npos;
+	}
+
 	std::vector<std::string> Expander::expandWord(const Word& w) {
+		if (isPlainLiteralWord(w) && !aborting()) return { w.segments[0].text };
 		if (!env_.braceexpand()) return expandWordPostBrace(w);
 
 		const std::vector<std::string> braced = braceExpandAll(w.raw);
-		if (braced.size() <= 1) return expandWordPostBrace(w);
+		if (braced.size() == 1 && braced.front() == w.raw) return expandWordPostBrace(w);
 
 		std::vector<std::string> out;
 		for (const std::string& alt : braced) {

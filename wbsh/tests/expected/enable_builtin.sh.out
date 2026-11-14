@@ -11,7 +11,7 @@ nothing disabled: 0
 === disabling
 enable -n cd
 function cd
-wbsh: builtin: cd: not a shell builtin
+enable_builtin.sh: line 18: builtin: cd: not a shell builtin
 builtin cd: 1
 command -v cd: 1
 enable -n cd
@@ -24,11 +24,11 @@ file
 file
 builtin
 === errors
-wbsh: enable: nosuch: not a shell builtin
+enable_builtin.sh: line 36: enable: nosuch: not a shell builtin
 status 1
-wbsh: enable: nosuch: not a shell builtin
+enable_builtin.sh: line 37: enable: nosuch: not a shell builtin
 status 1
 enable -n echo
-wbsh: enable: -z: invalid option
+enable_builtin.sh: line 40: enable: -z: invalid option
 enable: usage: enable [-a] [-dnps] [-f filename] [name ...]
 status 2

@@ -12,12 +12,15 @@
 #  include <io.h>
 #endif /* _WIN32 */
 
+#include <algorithm>
+#include <cstddef>
 #include <iostream>
 #include <ostream>
 #include <string>
 #include <vector>
 
 #include "ast.h"
+#include "diagnostics.h"
 #include "environment.h"
 #include "executor.h"
 #include "expander.h"
@@ -25,6 +28,7 @@
 #include "parser.h"
 #include "printer.h"
 #include "setup.h"
+#include "startup.h"
 
 namespace wbsh {
 
@@ -42,10 +46,31 @@ namespace wbsh {
 			const char* reset;
 		};
 
+		// A script read from standard input, as bash reads it: a pipe one
+		// byte at a time, a file a buffer at a time with the descriptor put
+		// back just past each command before it runs. Either way a command
+		// that reads standard input gets the script's next line.
+		struct StdinScript {
+			bool        seekable = false;
+			bool        at_start = true;
+			long long   base = 0;
+			std::string buffer;
+			std::size_t consumed = 0;
+		};
+
+		enum class Completeness {
+			Incomplete,
+			Complete,
+			Fatal,
+			EndOfInput,
+		};
+
 	}  // namespace script_detail
 
+	using script_detail::Completeness;
 	using script_detail::ErrorColors;
 	using script_detail::ExpandDump;
+	using script_detail::StdinScript;
 
 	static bool stdoutIsTty() {
 #ifdef _WIN32
@@ -359,50 +384,243 @@ namespace wbsh {
 		for (const auto& e : parser.errors()) printDiagnostic(colors, "parse error", e.loc, e.message);
 	}
 
-	// A script that runs reports its syntax errors as bash does, by script
-	// name and line; the dump modes keep line:column for whoever reads them.
+	// A script that runs reports its first syntax error as bash does, by
+	// script name and line; the dump modes keep line:column and every error
+	// for whoever reads them.
 	static void printRunSyntaxErrors(const Lexer& lex, const Parser& parser,
 	                                 const ScriptRun& run) {
-		const std::string where = run.from_file ? run.script_name + ": " : std::string();
-		const auto report = [&where](const SourceLoc& loc, const std::string& message) {
-			std::cerr << "wbsh: " << where << "line " << loc.line << ": " << message << "\n";
-		};
+		ParseError error;
+		if (!firstSyntaxError(lex.errors(), parser.errors(), error)) return;
 
-		for (const auto& e : lex.errors()) report(e.loc, e.message);
-		for (const auto& e : parser.errors()) report(e.loc, e.message);
+		const std::string input = run.command_string ? "-c" : std::string();
+		std::cerr << syntaxErrorReport(input, run.source, run.first_line, error.loc.line,
+			error.message);
 	}
 
 	static bool hasSyntaxErrors(const Lexer& lex, const Parser& parser) {
 		return !lex.errors().empty() || !parser.errors().empty();
 	}
 
+	// False when a startup file already ended the shell with `exit`.
+	static bool runStartup(Executor& exec, const ScriptRun& run, int& out_status) {
+		applyStartupOptions(exec, run.startup);
+		sourceLoginProfile(exec, run.startup);
+		if (run.read_rc) sourceRcFile(exec, run.startup);
+
+		return !exec.consumeFlow(FlowSignal::Kind::Exit, &out_status);
+	}
+
+	// bash reads on after an error that only discards the command it sits
+	// in; that command fails.
+	static int resumeScript(Executor& exec, const ScriptRun& run, std::size_t resume) {
+		exec.setLastStatus(1);
+		if (resume >= run.source.size()) return 1;
+
+		const auto skipped_lines = std::count(run.source.begin(),
+			run.source.begin() + static_cast<std::ptrdiff_t>(resume), '\n');
+		const std::size_t line = run.first_line + static_cast<std::size_t>(skipped_lines);
+		const std::string input = run.command_string ? "-c" : std::string();
+		return exec.executeInputText(run.source.substr(resume), input, line);
+	}
+
 	// Like bash, the commands on the lines before a syntax error run
 	// first; the error is reported, and the script ends with status 2,
 	// only when execution reaches it.
+	static int runParsedScript(Executor& exec, NodePtr root, const ScriptRun& run,
+	                           const Lexer& lex, const Parser& parser) {
+		truncateAtSyntaxError(*root, parser, firstSyntaxErrorOffset(lex.errors(), parser.errors()));
+		const int status = exec.executeInput(*root, run.source);
+		if (exec.flowPending() || !hasSyntaxErrors(lex, parser)) return status;
+
+		printRunSyntaxErrors(lex, parser, run);
+		const std::size_t resume = discardResumeOffset(run.source, lex.errors(), parser.errors());
+		if (resume == std::string::npos || exec.env().options().posix) return kSyntaxErrorStatus;
+
+		return resumeScript(exec, run, resume);
+	}
+
+	static bool stdinIsSeekableFile() {
+		const HANDLE input = ::GetStdHandle(STD_INPUT_HANDLE);
+		if (input == INVALID_HANDLE_VALUE || ::GetFileType(input) != FILE_TYPE_DISK) return false;
+
+		return _lseeki64(0, 0, SEEK_CUR) >= 0;
+	}
+
+	static void refillFromStdinPosition(StdinScript& script) {
+		script.base = _lseeki64(0, 0, SEEK_CUR);
+		script.buffer.clear();
+		script.consumed = 0;
+
+		char chunk[65536];
+		int got = 0;
+		while ((got = _read(0, chunk, sizeof chunk)) > 0) {
+			script.buffer.append(chunk, static_cast<std::size_t>(got));
+		}
+	}
+
+	static StdinScript openStdinScript() {
+		StdinScript script;
+		script.seekable = stdinIsSeekableFile();
+		if (script.seekable) refillFromStdinPosition(script);
+		return script;
+	}
+
+	static bool readBufferedLine(StdinScript& script, std::string& out_line) {
+		if (script.consumed >= script.buffer.size()) return false;
+
+		const std::size_t newline = script.buffer.find('\n', script.consumed);
+		const std::size_t end = newline == std::string::npos ? script.buffer.size() : newline + 1;
+		out_line.assign(script.buffer, script.consumed, end - script.consumed);
+		script.consumed = end;
+		return true;
+	}
+
+	static bool readPipeLine(std::string& out_line) {
+		out_line.clear();
+		char byte = 0;
+		while (_read(0, &byte, 1) == 1) {
+			out_line.push_back(byte);
+			if (byte == '\n') return true;
+		}
+
+		return !out_line.empty();
+	}
+
+	static bool readScriptLine(StdinScript& script, std::string& out_line) {
+		const bool got = script.seekable
+			? readBufferedLine(script, out_line)
+			: readPipeLine(out_line);
+		if (!got) return false;
+
+		if (script.at_start) stripUtf8Bom(out_line);
+		script.at_start = false;
+		normalizeCrlf(out_line);
+		return true;
+	}
+
+	static bool endsInLineContinuation(const std::string& text) {
+		std::size_t end = text.size();
+		if (end > 0 && text[end - 1] == '\n') --end;
+
+		std::size_t backslashes = 0;
+		while (backslashes < end && text[end - 1 - backslashes] == '\\') ++backslashes;
+		return backslashes % 2 == 1;
+	}
+
+	static bool lexerWantsMoreInput(const Lexer& lexer) {
+		for (const LexError& error : lexer.errors()) {
+			if (error.message.find("unexpected EOF") != std::string::npos) return true;
+			if (error.message.find("unterminated") != std::string::npos) return true;
+		}
+
+		return false;
+	}
+
+	// More input can mend only an error at the very end of the text; any
+	// other one ends the script once the commands before it have run.
+	static Completeness judgeCommandText(const std::string& text) {
+		if (endsInLineContinuation(text)) return Completeness::Incomplete;
+
+		Lexer lexer(text);
+		std::vector<Token> tokens = lexer.tokenize();
+		if (lexerWantsMoreInput(lexer)) return Completeness::Incomplete;
+
+		Parser parser(std::move(tokens), text);
+		parser.parseProgram();
+		ParseError error;
+		const bool has_error = firstSyntaxError(lexer.errors(), parser.errors(), error);
+		if (!has_error) return Completeness::Complete;
+		if (error.loc.offset >= text.size()) return Completeness::Incomplete;
+
+		return error.discards_command ? Completeness::Complete : Completeness::Fatal;
+	}
+
+	static const std::size_t kLineByLineLimit = 64;
+
+	// Past kLineByLineLimit lines a command is judged at doubling lengths
+	// only, so a long function costs a few parses rather than one per line.
+	static Completeness readCommandText(StdinScript& script, std::string& out_text) {
+		out_text.clear();
+		std::size_t lines = 0;
+		std::size_t next_judgement = 1;
+		std::string line;
+		while (readScriptLine(script, line)) {
+			out_text += line;
+			if (++lines < next_judgement) continue;
+
+			const Completeness completeness = judgeCommandText(out_text);
+			if (completeness != Completeness::Incomplete) return completeness;
+			next_judgement = lines < kLineByLineLimit ? lines + 1 : lines * 2;
+		}
+
+		return out_text.empty() ? Completeness::EndOfInput : Completeness::Fatal;
+	}
+
+	static long long stdinScriptPosition(const StdinScript& script) {
+		return script.base + static_cast<long long>(script.consumed);
+	}
+
+	static void syncStdinBeforeCommand(const StdinScript& script) {
+		if (script.seekable) _lseeki64(0, stdinScriptPosition(script), SEEK_SET);
+	}
+
+	// A command that read standard input moved the descriptor; the script
+	// goes on from wherever it left it.
+	static void followStdinAfterCommand(StdinScript& script) {
+		if (!script.seekable) return;
+
+		const bool moved = _lseeki64(0, 0, SEEK_CUR) != stdinScriptPosition(script);
+		if (moved) refillFromStdinPosition(script);
+	}
+
+	static int runStdinScript(Executor& exec, const ScriptRun& run) {
+		StdinScript script = openStdinScript();
+		std::size_t line = run.first_line;
+		int status = 0;
+		std::string text;
+		for (;;) {
+			const Completeness completeness = readCommandText(script, text);
+			if (completeness == Completeness::EndOfInput) return status;
+
+			syncStdinBeforeCommand(script);
+			status = exec.executeInputText(text, std::string(), line);
+			if (exec.flowPending() || completeness == Completeness::Fatal) return status;
+
+			line += static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
+			followStdinAfterCommand(script);
+		}
+	}
+
+	// read_rc is `-i`, which makes even a script or `-c` shell interactive
+	// as in bash: `$-` holds `i` and aliases expand, while the commands still
+	// come from the script. bash leaves history expansion off for a script.
+	static void applyInteractiveFlag(Environment& env, const ScriptRun& run) {
+		env.setInteractive(run.read_rc);
+		if (run.from_file) env.options().histexpand = false;
+	}
+
 	static int executeProgram(NodePtr root, const ScriptRun& run, const Lexer& lex,
 	                          const Parser& parser) {
 		Environment env;
 		prepareEnv(env);
 		applyScriptArguments(env, run);
+		applyInteractiveFlag(env, run);
+		const DiagnosticsBinding diagnostics(env);
 
 		Executor exec(env);
 		exec.setSourceText(run.source);
+		const bool child_shell = isChildShell(env);
 		absorbInheritedState(env, exec);
-		if (run.login) {
-			startLoginShell(exec);
-			int status = 0;
-			if (exec.consumeFlow(FlowSignal::Kind::Exit, &status)) return exec.fireExitTrap(status);
-		}
+		if (!child_shell) env.setInvocationLetter(run.invocation_letter);
+
+		int status = 0;
+		if (!runStartup(exec, run, status)) return exec.fireExitTrap(status);
 
 		if (run.from_file) exec.beginScriptFrame(run.script_name);
 
-		const std::size_t error_offset = firstSyntaxErrorOffset(lex.errors(), parser.errors());
-		truncateAtSyntaxError(*root, parser, error_offset);
-		int status = exec.executeInput(*root, run.source);
-		if (!exec.consumeFlow(FlowSignal::Kind::Exit, &status) && hasSyntaxErrors(lex, parser)) {
-			printRunSyntaxErrors(lex, parser, run);
-			status = kSyntaxErrorStatus;
-		}
+		status = run.stream_stdin ? runStdinScript(exec, run)
+			: runParsedScript(exec, root, run, lex, parser);
+		exec.consumeFlow(FlowSignal::Kind::Exit, &status);
 
 		exec.endStoppedJobs();
 		return exec.fireExitTrap(status);
@@ -427,6 +645,7 @@ namespace wbsh {
 	int runScript(const ScriptRun& run) {
 		Lexer lex(run.source);
 		lex.startAtLine(run.first_line);
+		lex.acceptHeredocAtEof();
 		auto tokens = lex.tokenize();
 		const std::vector<Token> dumped_tokens = run.show_tokens ? tokens : std::vector<Token>{};
 

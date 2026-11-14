@@ -8,16 +8,22 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "assocmap.h"
+#include "diagnostics.h"
 #include "environment.h"
 #include "executor.h"
 #include "fnmatch.h"
 #include "keymap.h"
+#include "man_pages.h"
 #include "pathconv.h"
 
 namespace wbsh {
@@ -99,8 +105,9 @@ namespace wbsh {
 			"[-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] "
 			"[name ...]";
 		static const char* const kCompgenUsage =
-			"compgen [-abcdefgjksuv] [-o option] [-A action] [-G globpat] [-W wordlist] "
-			"[-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [word]";
+			"compgen [-V varname] [-abcdefgjksuv] [-o option] [-A action] [-G globpat] "
+			"[-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] "
+			"[word]";
 		static const char* const kCompoptUsage = "compopt [-o|+o option] [-DEI] [name ...]";
 
 		// The -F function running now, whose options `compopt` without a
@@ -328,6 +335,30 @@ namespace wbsh {
 
 	namespace completion_detail {
 
+		// bash's builtins only: wbsh's utilities (ls, grep, ...) are programs
+		// to bash, so `compgen -b` does not list them.
+		static std::vector<std::string> shellBuiltinNames(Executor& exec) {
+			std::vector<std::string> names;
+			for (const std::string& name : exec.builtinNames()) {
+				const ManPage* page = findManPage(name);
+				if (page != nullptr && page->kind == ManKind::Shell) names.push_back(name);
+			}
+
+			return names;
+		}
+
+		static std::vector<std::string> helpTopics(Executor& exec) {
+			static const char* const kKeywordTopics[] = {
+				"!", "%", "(( ... ))", "[[ ... ]]", "case", "coproc", "for", "for ((",
+				"function", "if", "select", "time", "until", "variables", "while", "{ ... }",
+			};
+
+			std::vector<std::string> topics = shellBuiltinNames(exec);
+			topics.insert(topics.end(), std::begin(kKeywordTopics), std::end(kKeywordTopics));
+			std::sort(topics.begin(), topics.end());
+			return topics;
+		}
+
 		static std::vector<std::string> actionCandidates(Executor& exec, const std::string& action,
 		                                                 const std::string& word) {
 			const Environment& env = exec.env();
@@ -353,9 +384,9 @@ namespace wbsh {
 				return { exec.disabledBuiltins().begin(), exec.disabledBuiltins().end() };
 			}
 
-			const bool builtins = action == "builtin" || action == "enabled"
-				|| action == "helptopic";
-			return builtins ? exec.builtinNames() : std::vector<std::string>();
+			if (action == "helptopic") return helpTopics(exec);
+			const bool builtins = action == "builtin" || action == "enabled";
+			return builtins ? shellBuiltinNames(exec) : std::vector<std::string>();
 		}
 
 		static std::vector<std::string> splitLines(const std::string& text) {
@@ -402,6 +433,19 @@ namespace wbsh {
 			}
 
 			return quoted + "'";
+		}
+
+		static bool isPlainNameByte(char letter) {
+			return std::isalnum(static_cast<unsigned char>(letter)) != 0
+				|| std::strchr("_-+.,/:@%^", letter) != nullptr;
+		}
+
+		// A name `complete` reads back as the same single word: '' for the
+		// empty command, quoted when it holds anything the shell would split.
+		static std::string nameAsWord(const std::string& name) {
+			const bool plain = !name.empty()
+				&& std::all_of(name.begin(), name.end(), isPlainNameByte);
+			return plain ? name : singleQuoted(name);
 		}
 
 		// The word list is expanded as bash does -- parameters, command
@@ -600,13 +644,26 @@ namespace wbsh {
 		if (name == kEmptyCompletionName) return text + " -E";
 		if (name == kInitialCompletionName) return text + " -I";
 
-		return text + " " + name;
+		return text + " " + completion_detail::nameAsWord(name);
+	}
+
+	// `complete -p` lists the specs in the order of bash's table: 512
+	// buckets, walked in order, the newest name first within a bucket.
+	static void sortInBashTableOrder(const Executor& exec, std::vector<std::string>& names) {
+		static const std::uint32_t kBuckets = 512;
+		const auto rank = [&exec](const std::string& name) {
+			const std::uint32_t bucket = assocmap_detail::bashHashString(name) & (kBuckets - 1);
+			return std::make_pair(bucket, ~exec.completionSpec(name)->defined_at);
+		};
+		std::sort(names.begin(), names.end(), [&rank](const std::string& a, const std::string& b) {
+			return rank(a) < rank(b);
+		});
 	}
 
 	std::string serializeCompletionSpecs(const Executor& exec) {
 		std::vector<std::string> names;
 		for (const auto& entry : exec.completionSpecs()) names.push_back(entry.first);
-		std::sort(names.begin(), names.end());
+		sortInBashTableOrder(exec, names);
 
 		std::string text;
 		for (const std::string& name : names) {
@@ -629,6 +686,7 @@ namespace wbsh {
 			bool default_spec = false;
 			bool empty_spec = false;
 			bool initial_spec = false;
+			std::string variable;   ///< compgen -V: the array the matches go to
 		};
 
 		static const char* builtinName(Builtin builtin) {
@@ -653,23 +711,24 @@ namespace wbsh {
 		}
 
 		static int invalidName(Builtin builtin, const std::string& name, const char* kind) {
-			std::fprintf(stderr, "wbsh: %s: %s: invalid %s name\n", builtinName(builtin),
+			shellErrorf("%s: %s: invalid %s name\n", builtinName(builtin),
 				name.c_str(), kind);
 			return 2;
 		}
 
 		static int fail(Builtin builtin, const std::string& message, bool usage) {
-			std::fprintf(stderr, "wbsh: %s: %s\n", builtinName(builtin), message.c_str());
+			shellErrorf("%s: %s\n", builtinName(builtin), message.c_str());
 			if (usage) usageError(builtin);
 			return 2;
 		}
 
 		static bool takesValue(char letter) {
-			return std::strchr("oAGWFCXPS", letter) != nullptr;
+			return std::strchr("oAGWFCXPSV", letter) != nullptr;
 		}
 
 		static bool allowedFlag(Builtin builtin, char letter) {
 			if (builtin == Builtin::kCompopt) return std::strchr("oDEI", letter) != nullptr;
+			if (letter == 'V') return builtin == Builtin::kCompgen;
 			if (std::strchr("pr", letter) != nullptr) return builtin == Builtin::kComplete;
 			if (std::strchr("DEI", letter) != nullptr) return builtin == Builtin::kComplete;
 
@@ -695,6 +754,7 @@ namespace wbsh {
 			case 'X': spec.filter = value;   return 0;
 			case 'P': spec.prefix = value;   return 0;
 			case 'S': spec.suffix = value;   return 0;
+			case 'V': parsed.variable = value; return 0;
 			default:  return 0;
 			}
 		}
@@ -791,7 +851,7 @@ namespace wbsh {
 	namespace completion_detail {
 
 		static int noSpec(Builtin builtin, const std::string& name) {
-			std::fprintf(stderr, "wbsh: %s: %s: no completion specification\n",
+			shellErrorf("%s: %s: no completion specification\n",
 				builtinName(builtin), name.c_str());
 			return 1;
 		}
@@ -856,16 +916,35 @@ namespace wbsh {
 			return 0;
 		}
 
+		static bool isShellName(const std::string& name) {
+			if (name.empty() || std::isdigit(static_cast<unsigned char>(name[0]))) return false;
+
+			for (const char c : name) {
+				if (c != '_' && !std::isalnum(static_cast<unsigned char>(c))) return false;
+			}
+
+			return true;
+		}
+
 		static int compgenBuiltin(Executor& exec, const std::vector<std::string>& args) {
 			ParsedArgs parsed;
 			const int status = parseArgs(Builtin::kCompgen, args, parsed);
 			if (status != 0) return status;
+			if (!parsed.variable.empty() && !isShellName(parsed.variable)) {
+				shellErrorf("compgen: `%s': not a valid identifier\n", parsed.variable.c_str());
+				return 1;
+			}
 
 			CompletionRequest request;
 			if (!parsed.names.empty()) request.word = parsed.names.back();
 
 			const CompletionResult result = generateCompletions(exec, parsed.spec, request);
-			for (const std::string& match : result.matches) std::printf("%s\n", match.c_str());
+			if (!parsed.variable.empty()) {
+				exec.env().setIndexedArrayFromList(parsed.variable, result.matches);
+			} else {
+				for (const std::string& match : result.matches) std::printf("%s\n", match.c_str());
+			}
+
 			return result.matches.empty() ? 1 : 0;
 		}
 
@@ -929,7 +1008,16 @@ namespace wbsh {
 
 	}  // namespace completion_detail
 
+	// bash's default without `:` and `@`, which drive letters and
+	// user@host arguments contain: a completion then replaces the whole
+	// word, and scripts that consult the variable see that.
+	const char* const kDefaultWordBreaks = " \t\n\"'><=;|&(";
+
 	void registerCompletionBuiltins(Executor& exec) {
+		if (!exec.env().has("COMP_WORDBREAKS")) {
+			exec.env().set("COMP_WORDBREAKS", kDefaultWordBreaks);
+		}
+
 		exec.registerBuiltin("complete", completion_detail::completeBuiltin);
 		exec.registerBuiltin("compgen",  completion_detail::compgenBuiltin);
 		exec.registerBuiltin("compopt",  completion_detail::compoptBuiltin);

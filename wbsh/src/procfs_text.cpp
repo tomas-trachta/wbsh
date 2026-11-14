@@ -100,8 +100,15 @@ namespace wbsh::procfs_detail {
 		{ 7, kEcx, 14, "avx512_vpopcntdq" }, { 7, kEcx, 22, "rdpid" },
 	};
 
+	// ARM64 has no CPUID: every leaf reads as empty there, so the vendor,
+	// signature and flags are blank and the name comes from the registry.
 	static void cpuid(unsigned leaf, int registers[4]) {
+#if defined(_M_X64) || defined(_M_IX86)
 		__cpuidex(registers, static_cast<int>(leaf), 0);
+#else
+		(void)leaf;
+		std::fill(registers, registers + 4, 0);
+#endif
 	}
 
 	static unsigned highestLeaf(unsigned base) {
@@ -171,10 +178,19 @@ namespace wbsh::procfs_detail {
 		return flags;
 	}
 
+	static std::string registryProcessorName() {
+		char name[256] = {};
+		DWORD size = sizeof(name);
+		::RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+			"ProcessorNameString", RRF_RT_REG_SZ, nullptr, name, &size);
+		return trimmed(name);
+	}
+
 	static CpuIdentity identifyCpu() {
 		CpuIdentity cpu;
 		readSignature(cpu);
 		cpu.model_name = brandString();
+		if (cpu.model_name.empty()) cpu.model_name = registryProcessorName();
 		cpu.flags = cpuFlags();
 		return cpu;
 	}
@@ -384,6 +400,25 @@ namespace wbsh::procfs_detail {
 		return formatted("0.00 0.00 0.00 1/%lu %lu\n", threads, newest);
 	}
 
+	static std::string processVariable(const wchar_t* name) {
+		const DWORD needed = ::GetEnvironmentVariableW(name, nullptr, 0);
+		if (needed == 0) return {};
+
+		std::wstring value(needed, L'\0');
+		const DWORD length = ::GetEnvironmentVariableW(name, value.data(), needed);
+		value.resize(length < needed ? length : 0);
+		return wideToUtf8(value);
+	}
+
+	// /proc has no shell at hand, so the kernel name comes from the
+	// environment wbsh started with, MSYSTEM defaulting as the shell's does.
+	static std::string startupKernelName() {
+		std::string msystem = processVariable(L"MSYSTEM");
+		if (msystem.empty()) msystem = kDefaultMsystem;
+
+		return unameSystemName(msystem, processVariable(L"WBSH_UNAME_S"));
+	}
+
 	// Never "Microsoft": scripts take that in /proc/version to mean WSL.
 	std::string versionText() {
 		const WindowsVersion os = windowsVersion();
@@ -392,7 +427,7 @@ namespace wbsh::procfs_detail {
 			WBSH_VERSION_MINOR, WBSH_VERSION_PATCH);
 		const std::string windows = formatted("Windows NT %lu.%lu build %lu", os.major, os.minor,
 			os.build);
-		return "wbsh version " + release + " " + shell + " " + windows + "\n";
+		return startupKernelName() + " version " + release + " " + shell + " " + windows + "\n";
 	}
 
 	static bool findProcess(unsigned long pid, ProcessInfo& found) {

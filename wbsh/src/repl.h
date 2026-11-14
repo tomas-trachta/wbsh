@@ -9,9 +9,13 @@
  * mode, signal handling) is also performed here.
  */
 
+#include <string>
+
 namespace wbsh {
 
-	/// @p login: started as `wbsh -l`; read `~/.wbsh_profile` first.
-	int runInteractive(bool login);
+	struct ShellStartup;
+
+	/** @p shell_name is `$0` and the error prefix: argv[0]'s base name. */
+	int runInteractive(const ShellStartup& startup, const std::string& shell_name);
 
 }  // namespace wbsh

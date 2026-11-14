@@ -3371,6 +3371,7 @@ namespace wbshterm {
 
 		runGridChecks(report);
 		runVtChecks(report);
+		runMarkChecks(report);
 		runPickerChecks(report, directory);
 		runViewChecks(report);
 		runLayoutChecks(report);

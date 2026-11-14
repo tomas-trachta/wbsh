@@ -48,6 +48,17 @@ namespace wbsh {
 		 */
 		virtual std::string runRaw(const std::string& body) { return run(body); }
 		/**
+		 * @brief bash 5.3's `${ body; }`: run() in the current shell
+		 * instead of a subshell, so assignments and `cd` stay.
+		 */
+		virtual std::string runInCurrentShell(const std::string& body) { return run(body); }
+		/**
+		 * @brief bash 5.3's `${| body; }`: run @p body in the current
+		 * shell without capturing anything; the value is what it left
+		 * in `REPLY`, which is local to the substitution.
+		 */
+		virtual std::string runForReply(const std::string& /*body*/) { return {}; }
+		/**
 		 * @brief Start `<(body)` / `>(body)` and return the path that
 		 * names it, or an empty string when it could not be started.
 		 */
@@ -141,6 +152,11 @@ namespace wbsh {
 		std::string expandPromptText(const std::string& text);
 
 		long long evalArith(const std::string& body);
+		/// With xtrace on: the expression the last evalArith evaluated,
+		/// after its expansions, as `set -x` shows it.
+		const std::string& lastArithText() const { return last_arith_text_; }
+		/// The value of a `$'...'` body.
+		std::string ansiCText(const std::string& body) { return interpretAnsiC(body); }
 
 		/**
 		 * @brief Is a fatal expansion error pending?
@@ -155,7 +171,14 @@ namespace wbsh {
 		std::string takeError() {
 			std::string message = std::move(pending_error_);
 			pending_error_.clear();
+			unlabeled_error_ = false;
 			return message;
+		}
+
+		/// The command name bash puts before an arithmetic error message:
+		/// none for a fatal error or an assignment to a readonly variable.
+		const char* errorLabel(const char* command_label) const {
+			return fatal_error_ || unlabeled_error_ ? "" : command_label;
 		}
 
 		/**
@@ -221,6 +244,9 @@ namespace wbsh {
 		// On an F_FIELD_END marker: the field that ends here had a
 		// quoted part, so it survives even when empty.
 		static constexpr std::uint8_t F_QUOTED_FIELD = 1u << 2;
+		// Text written in the word itself: globbed, but never split, since
+		// only the results of expansions are (`IFS=:; echo a:b`).
+		static constexpr std::uint8_t F_NOSPLIT = 1u << 3;
 
 		struct Tagged {
 			std::string text;
@@ -233,12 +259,13 @@ namespace wbsh {
 				text.push_back(c);
 				flags.push_back(f);
 			}
-			// Close the current field with an F_FIELD_END marker.
-			void endField(bool quoted) {
+			// Close the current field with an F_FIELD_END marker; where no
+			// splitting happens the marker reads as @p shown.
+			void endField(bool quoted, char shown = ' ') {
 				std::uint8_t f = F_FIELD_END;
 				if (quoted) f |= F_QUOTED;
 				if (had_quote || quoted) f |= F_QUOTED_FIELD;
-				push(' ', f);
+				push(shown, f);
 				had_quote = quoted;
 			}
 			// Pre-size both parallel buffers; rendered output is usually
@@ -284,6 +311,13 @@ namespace wbsh {
 			fatal_error_ = true;
 			pending_error_ = std::move(msg);
 		}
+
+		void failUnlabeled(std::string msg) {
+			if (!pending_error_.empty()) return;
+
+			unlabeled_error_ = true;
+			pending_error_ = std::move(msg);
+		}
 		// True when expansion should stop early: an error is pending or
 		// a command substitution raised shell control flow.
 		bool aborting() const {
@@ -294,11 +328,15 @@ namespace wbsh {
 		CommandSubstitutor* sub_;
 		PathConv path_conv_;
 		std::string pending_error_;
+		std::string last_arith_text_;
 		bool fatal_error_ = false;
+		bool unlabeled_error_ = false;
 		bool drop_line_ = false;
 		// Whether the ${...} being expanded is inside double quotes, which
 		// decides what a backslash in its word argument escapes.
 		bool param_quoted_ = true;
+		// A here-document body keeps `$'...'` in a ${name:-word} word literal.
+		bool in_heredoc_ = false;
 		// Where the word of an unquoted `-` or `+` form records its quoting;
 		// null in all other contexts.
 		WordQuoting* param_quoting_ = nullptr;
@@ -377,6 +415,8 @@ namespace wbsh {
 		std::vector<std::string> listParamValues(const ListParam& p) const;
 		KeyedList sliceCandidates(const ListParam& p) const;
 		std::vector<std::string> expandListParam(const ListParam& p, const std::string& body);
+		bool renderListAlternative(const ListParam& list, const std::string& body, bool inside_dq,
+		                           Tagged& out, bool& rendered);
 		std::vector<std::string> sliceListParam(const ListParam& p, const std::string& args);
 		std::vector<std::string> evalListDefaultOp(char op, bool colon,
 		                                           const std::string& subject,
@@ -405,10 +445,12 @@ namespace wbsh {
 			ElementSlot slot;              // the element named by the subscript
 		};
 		void assignParamDefault(const ParamOpCtx& ctx, const std::string& value);
+		bool isOperandUnset(const ParamOpCtx& ctx) const;
 		std::string expandParamApplyOp(char op, bool colon, std::size_t op_pos,
 		                               ParamOpCtx& ctx);
 
 		std::string runCmdSubst(const std::string& body);
+		std::string runNoForkSubst(const std::string& body);
 		std::string interpretAnsiC(const std::string& body);
 
 		// `$` and backquote expansion of a heredoc body or a prompt;
@@ -461,6 +503,9 @@ namespace wbsh {
 		std::vector<std::string> expandListParamQuoted(const ListParam& list,
 		                                               const std::string& body, bool inside_dq,
 		                                               WordQuoting& quoting);
+		using EscapeTest = bool (*)(char);
+		EscapeTest wordArgEscapes(bool records_quoting, bool in_dq) const;
+		std::string takeAnsiCQuoted(const std::string& body, std::size_t& i);
 		bool expandParamWordStep(const std::string& body, std::size_t& i, bool& in_dq,
 		                         WordQuoting* quoting, std::string& out);
 		void expandNestedParamQuoted(const std::string& body, std::size_t& i, std::string& out,
