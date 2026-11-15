@@ -16,6 +16,8 @@ site is built from its `docs/` directory.
 
 ## Using wbsh
 
+- [Differences from POSIX environments](posix-differences.md): no fork,
+  signals, permissions, file system, terminals
 - [Command reference](commands.md)
 - [Running wbsh under coding agents](agents.md)
 - [wbsh in editors and terminals](editors.md): VS Code, Cursor, JetBrains, Windows Terminal, shims, `SHELL`
