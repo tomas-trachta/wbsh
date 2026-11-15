@@ -5,11 +5,11 @@
 
 echo "=== version"
 echo "BASH_VERSION=$BASH_VERSION"
-echo "BASH_VERSINFO=${BASH_VERSINFO[*]}"
+echo "BASH_VERSINFO=${BASH_VERSINFO[*]/#$MACHTYPE/MACHTYPE}"
 [ -n "$BASH_VERSION" ] || { echo "needs bash"; exit 1; }
 (( BASH_VERSINFO[0] >= 4 )) && echo "version check ok"
 [[ $WBSH_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "WBSH_VERSION looks like a version"
-declare -p BASH_VERSINFO
+declare -p BASH_VERSINFO | sed "s/\"$MACHTYPE\"/\"MACHTYPE\"/"
 BASH_VERSINFO[0]=9 2>/dev/null
 echo "BASH_VERSINFO[0] still ${BASH_VERSINFO[0]}"
 

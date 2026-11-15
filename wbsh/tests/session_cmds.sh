@@ -174,11 +174,15 @@ top -b -n 1 -d 0 -o -PID | awk 'NR > 8 && $1 < prev { bad = 1 } NR > 7 { prev = 
 	END { print bad ? "unsorted" : "PID ascending" }'
 top -b -n 1 -d 0 -o PID | awk 'NR > 8 && $1 > prev { bad = 1 } NR > 7 { prev = $1 }
 	END { print bad ? "unsorted" : "PID descending" }'
-top -b -n 1 -d 0 -o %MEM | awk 'NR > 8 && $9 > prev { bad = 1 } NR > 7 { prev = $9 }
+top -b -n 1 -d 0 -o %MEM | awk 'NR == 7 { end = index($0, "%MEM") + 3 }
+	NR > 7 { mem = substr($0, end - 5, 6) + 0 }
+	NR > 8 && mem > prev { bad = 1 } NR > 7 { prev = mem }
 	END { print bad ? "unsorted" : "%MEM descending" }'
 me=$(ps -o user= -p $$)
-top -b -n 1 -d 0 -u "$me" | awk 'NR > 7 && $2 != user { bad = 1 }
-	END { print bad ? "other users" : "only the user" }' user="$me"
+shown=$me
+[ ${#me} -gt 8 ] && shown="${me:0:7}+"
+top -b -n 1 -d 0 -u "$me" | awk 'NR > 7 && substr($0, 9, 8) != sprintf("%-8s", user) { bad = 1 }
+	END { print bad ? "other users" : "only the user" }' user="$shown"
 top -b -n 3 -d 0.1 | grep -c '^top - '
 top -n 1 -d 0 | head -1 | cut -c1-5
 

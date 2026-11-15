@@ -199,11 +199,11 @@ echo
 echo
 TIMEFORMAT=%3R
 real=$({ time sleep 0.2; } 2>&1)
-[ $(( 10#${real/./} >= 190 )) = 1 ] && echo "real covers the sleep"
+if [ $(( 10#${real/./} >= 190 )) = 1 ]; then echo "real covers the sleep"; else echo "real=$real"; fi
 TIMEFORMAT='%3U %3S'
-child=$({ time "$W" -c 'i=0; while [ $i -lt 3000 ]; do i=$((i+1)); done'; } 2>&1)
+child=$({ time "$W" -c 'i=0; while [ $i -lt 100000 ]; do i=$((i+1)); done'; } 2>&1)
 set -- $child
-[ $(( 10#${1/./} + 10#${2/./} > 0 )) = 1 ] && echo "user+sys counts the child"
+if [ $(( 10#${1/./} + 10#${2/./} > 0 )) = 1 ]; then echo "user+sys counts the child"; else echo "child=$child"; fi
 own=$({ time for ((i = 0; i < 30000; i++)); do :; done; } 2>&1)
 set -- $own
 [ $(( 10#${1/./} + 10#${2/./} > 0 )) = 1 ] && echo "user+sys counts builtin work"

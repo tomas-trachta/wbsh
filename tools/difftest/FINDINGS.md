@@ -28,6 +28,12 @@ not set" (paramexp/error_if_unset, 5.3).
 - `$LINENO` inside a multi-line `$( )` is one lower than bash's.
 - A procsubst path (`\\.\pipe\...`) handed to `eval` loses its backslashes
   (bash passes `/dev/fd/63`).
+- `echo a | nosuchcmd` can give PIPESTATUS `141 127` where bash usually
+  gives `0 127`: the first element runs in this shell after the later ones
+  are started, so a reader that fails to start may be gone before it
+  writes. bash has the same race but its writer is almost always first.
+- `TZ` is ignored: `%(...)T`, `date` and friends always use the system
+  time zone.
 
 ## Fixed on 2026-11-14
 

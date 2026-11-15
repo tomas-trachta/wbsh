@@ -1,9 +1,9 @@
 === version
 BASH_VERSION=5.2.37(1)-release
-BASH_VERSINFO=5 2 37 1 release x86_64-pc-msys
+BASH_VERSINFO=5 2 37 1 release MACHTYPE
 version check ok
 WBSH_VERSION looks like a version
-declare -ar BASH_VERSINFO=([0]="5" [1]="2" [2]="37" [3]="1" [4]="release" [5]="x86_64-pc-msys")
+declare -ar BASH_VERSINFO=([0]="5" [1]="2" [2]="37" [3]="1" [4]="release" [5]="MACHTYPE")
 bash_standard_vars.sh: line 13: BASH_VERSINFO: readonly variable
 BASH_VERSINFO[0] still 5
 === platform
