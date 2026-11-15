@@ -652,8 +652,17 @@ def make_snapshot(box: Sandbox) -> Optional[str]:
     return None
 
 
+def long_path(path: Path) -> Path:
+    buffer = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.GetLongPathNameW(str(path), buffer, len(buffer)):
+        return path
+    return Path(buffer.value)
+
+
+# TEMP can be an 8.3 path (C:\Users\RUNNER~1 on CI), and wbsh's pwd answers
+# with the long name, which is what the cwd checks expect.
 def make_sandbox(wbsh: Path) -> Sandbox:
-    root = Path(tempfile.mkdtemp(prefix="wbsh-agents-"))
+    root = long_path(Path(tempfile.mkdtemp(prefix="wbsh-agents-")))
     bin_dir = root / "Program Files" / "Git" / "bin"
     work = root / "work dir \u017e \u65e5\u672c"
     helpers = root / "helpers"
@@ -705,6 +714,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    sys.stdout.reconfigure(errors="backslashreplace")
     args = parse_args()
     if not args.wbsh.is_file():
         print(f"no wbsh at {args.wbsh}", file=sys.stderr)

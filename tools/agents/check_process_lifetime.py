@@ -397,6 +397,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    sys.stdout.reconfigure(errors="backslashreplace")
     args = parse_args()
     if not args.wbsh.is_file():
         print(f"no wbsh at {args.wbsh}", file=sys.stderr)
