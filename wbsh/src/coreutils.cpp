@@ -2095,16 +2095,26 @@ namespace wbsh {
 
 	static const unsigned long kSignalCheckMs = 50;
 
+	using SleepClock = std::chrono::steady_clock;
+
+	// Rounded up, so that the last slice cannot end before the deadline.
+	static unsigned long long millisecondsLeft(SleepClock::time_point end) {
+		const auto left = std::chrono::ceil<std::chrono::milliseconds>(end - SleepClock::now());
+		return left.count() > 0 ? static_cast<unsigned long long>(left.count()) : 0;
+	}
+
 	// A posted signal with a trap has it run at once and the sleep goes on,
 	// as an external sleep would finish while the trap waited; one that ends
-	// the shell, or Ctrl+C, ends the sleep early.
+	// the shell, or Ctrl+C, ends the sleep early. The deadline is on
+	// steady_clock: GetTickCount64 moves in steps of about 16 ms, which let
+	// `sleep 0.2` end after 185 ms.
 	static int sleepUnlessSignalled(Executor& exec, unsigned long milliseconds) {
-		const unsigned long long end = ::GetTickCount64() + milliseconds;
+		const SleepClock::time_point end = SleepClock::now()
+			+ std::chrono::milliseconds(milliseconds);
 		for (;;) {
-			const unsigned long long now = ::GetTickCount64();
-			if (now >= end) return 0;
+			const unsigned long long left = millisecondsLeft(end);
+			if (left == 0) return 0;
 
-			const unsigned long long left = end - now;
 			const unsigned long long bounded = std::min<unsigned long long>(left, kSignalCheckMs);
 			const unsigned long slice = static_cast<unsigned long>(bounded);
 			if (!sleepUnlessCtrlC(slice)) return kStatusInterruptedSleep;
