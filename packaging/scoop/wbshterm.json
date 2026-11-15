@@ -1,12 +1,16 @@
 {
-  "version": "1.1.1",
+  "version": "1.1.3",
   "description": "A terminal for wbsh with themes, panes, scrollback and Lua scripting.",
   "homepage": "https://github.com/tomas-trachta/wbsh",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/tomas-trachta/wbsh/releases/download/v1.1.1/wbshterm-1.1.1-portable-x64.zip",
-      "hash": "2f2a6b8889ff4cba43059515374e44ccd6e79dfced6ee8687e1dc6c4e2bf01ac"
+      "url": "https://github.com/tomas-trachta/wbsh/releases/download/v1.1.3/wbshterm-1.1.3-portable-x64.zip",
+      "hash": "bf6861082452dfa1d69fa4ed20de55f05d9f384899da102ca3a54db3cd7b9168"
+    },
+    "arm64": {
+      "url": "https://github.com/tomas-trachta/wbsh/releases/download/v1.1.3/wbshterm-1.1.3-portable-arm64.zip",
+      "hash": "090904ab190e10d23aba4c6f0a01886bcc065a6ee4c8b260c626408170eed5ac"
     }
   },
   "bin": [
@@ -18,6 +22,9 @@
     "architecture": {
       "64bit": {
         "url": "https://github.com/tomas-trachta/wbsh/releases/download/v$version/wbshterm-$version-portable-x64.zip"
+      },
+      "arm64": {
+        "url": "https://github.com/tomas-trachta/wbsh/releases/download/v$version/wbshterm-$version-portable-arm64.zip"
       }
     },
     "hash": {

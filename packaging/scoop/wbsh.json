@@ -1,12 +1,16 @@
 {
-  "version": "1.1.1",
+  "version": "1.1.3",
   "description": "A Bash-compatible shell for Windows: a drop-in replacement for Git Bash.",
   "homepage": "https://github.com/tomas-trachta/wbsh",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/tomas-trachta/wbsh/releases/download/v1.1.1/wbsh-1.1.1-portable-x64.zip",
-      "hash": "e23ce8b173b96f56aefa806b322d82cc17ba1340ee85b3e383e391ea5d05ca86"
+      "url": "https://github.com/tomas-trachta/wbsh/releases/download/v1.1.3/wbsh-1.1.3-portable-x64.zip",
+      "hash": "183e4a1ebfb8e3b41524fc2a97887f4ac7fcbc4f0003764cbbc93290c1a022de"
+    },
+    "arm64": {
+      "url": "https://github.com/tomas-trachta/wbsh/releases/download/v1.1.3/wbsh-1.1.3-portable-arm64.zip",
+      "hash": "305ccf422bb1d603720d5f45bd22228a55f71176b9927c871df8450288e17d7d"
     }
   },
   "bin": [
@@ -17,6 +21,9 @@
     "architecture": {
       "64bit": {
         "url": "https://github.com/tomas-trachta/wbsh/releases/download/v$version/wbsh-$version-portable-x64.zip"
+      },
+      "arm64": {
+        "url": "https://github.com/tomas-trachta/wbsh/releases/download/v$version/wbsh-$version-portable-arm64.zip"
       }
     },
     "hash": {
