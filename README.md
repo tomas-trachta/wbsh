@@ -568,9 +568,19 @@ than 20 % slower relative to Git Bash on the same runner (see
 | Modern console (VT mode) | **yes**      | MinTTY        | MinTTY         | MinTTY       | n/a              |
 | `fork()` emulation       | spawn-only   | full (slow)   | full (slow)    | full (slow)  | n/a              |
 | Real Linux syscalls      | no           | no            | no             | no           | yes              |
+| Signals to programs      | wbsh only¹   | MSYS only     | MSYS only      | Cygwin only  | yes              |
+| pty for child programs   | console²     | MSYS pty      | MSYS pty       | Cygwin pty   | yes              |
+| Permission bits          | emulated³    | `noacl`       | `noacl`        | NTFS ACLs    | yes              |
+
+¹ A wbsh can trap what another wbsh sends; any other program is terminated
+with exit code 128 + n. ² `script` and `unbuffer` give a command a ConPTY.
+³ Read-only attribute plus mode bits kept in an NTFS stream, read only by
+wbsh and its commands.
 
 wbsh trades full POSIX behavior for being small, fast to start, and clean to
-integrate. If you need a real Linux environment, use WSL. A sourced, dated
+integrate. If you need a real Linux environment, use WSL. What that trade
+means in practice is listed in
+[docs/posix-differences.md](docs/posix-differences.md); a sourced, dated
 comparison with the other ways to get bash on Windows is in
 [docs/comparison.md](docs/comparison.md).
 
@@ -579,7 +589,9 @@ comparison with the other ways to get bash on Windows is in
 ## Limitations
 
 What wbsh does not do, or does differently, today. The compatibility
-numbers above are the authoritative list; this is the summary.
+numbers above are the authoritative list; this is the summary. The
+process, signal, permission, file-system and terminal differences are
+detailed in [docs/posix-differences.md](docs/posix-differences.md).
 
 - **Not GNU bash.** wbsh is its own implementation. It passes 11 of bash 5.3's
   86 upstream suites byte for byte; the other 75 fail on real differences
@@ -593,15 +605,21 @@ numbers above are the authoritative list; this is the summary.
   `eval -- ...`) stop them early. nvm, sdkman, asdf, git-prompt and 263 of
   bash-it's 303 plugins, themes and completions load cleanly. See the
   [corpus snapshot](docs/corpus/2026-11-13-local.md).
-- **No `fork()`.** Subshells, command substitutions and pipelines of
-  built-ins run in-process; external programs start with `CreateProcess`.
-  Scripts that depend on fork semantics (sharing file offsets with a forked
-  child, `$BASHPID` of a forked copy of the shell) can behave differently.
-- **Windows file system.** No `/usr`, `/bin` or `/proc` beyond what wbsh
-  emulates; file names cannot contain `: * ? " < > |`; permissions, owners,
-  setuid/setgid and sticky bits are approximations of NTFS ACLs.
-- **Signals.** Only the signals Windows can deliver; `kill -l` and traps on
-  Linux-only signals do not behave like Linux.
+- **No `fork()`.** Subshells and command substitutions run in-process,
+  pipeline stages of shell code in a child wbsh, and external programs
+  start with `CreateProcess`. Scripts that depend on fork semantics
+  (sharing file offsets with a forked child, `$BASHPID` of a forked copy of
+  the shell) can behave differently.
+- **Windows file system.** Case-insensitive names; no `/usr`, `/bin` or
+  `/etc`; `/dev`, `/proc` and FIFOs are emulated and visible only to wbsh
+  and its commands; file names cannot contain `: * ? " < > |`; symlinks
+  need Developer Mode or administrator rights.
+- **Permissions.** No uid/gid model and no setuid, setgid or sticky bits.
+  `chmod` bits are kept in an NTFS stream that only wbsh and its commands
+  read; NTFS ACLs decide who may open a file.
+- **Signals.** Only another wbsh can trap a signal; any other program is
+  terminated with exit code 128 + n (`STOP` and `CONT` suspend and resume
+  it).
 - **Bytes vs characters.** Strings are UTF-8; bytes that are not valid UTF-8
   (for example from `$'ÿ'`) are not always kept byte for byte.
 - **Distribution.** Releases are not code-signed yet (prepared, see
