@@ -868,6 +868,7 @@ namespace wbsh {
 		};
 		bool applyRedirections(const std::vector<Redirection>& rs, RedirState& out);
 		bool applyRedirection(const Redirection& redir, int target, RedirState& state);
+		bool installRedirection(const Redirection& redir, int target, RedirState& state);
 		bool applyFdVariableRedir(const Redirection& redir, RedirState& state);
 		bool closeFdVariable(const std::string& variable);
 		void assignFdVariable(const std::string& variable, int fd);

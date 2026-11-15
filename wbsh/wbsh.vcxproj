@@ -306,6 +306,7 @@
     <ClInclude Include="src\pseudoconsole.h" />
     <ClInclude Include="src\pty_relay.h" />
     <ClInclude Include="src\procfs.h" />
+    <ClInclude Include="src\fdinherit.h" />
     <ClInclude Include="src\fifo.h" />
     <ClInclude Include="src\userhome.h" />
     <ClInclude Include="src\signals.h" />
@@ -488,6 +489,7 @@
     <ClCompile Include="src\pty_relay.cpp" />
     <ClCompile Include="src\coreutils_script.cpp" />
     <ClCompile Include="src\procfs.cpp" />
+    <ClCompile Include="src\fdinherit.cpp" />
     <ClCompile Include="src\fifo.cpp" />
     <ClCompile Include="src\userhome.cpp" />
     <ClCompile Include="src\signals.cpp" />

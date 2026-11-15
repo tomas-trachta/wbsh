@@ -20,6 +20,11 @@ Checked against wbsh on Windows 10 22H2 on 2026-11-15.
   and `/proc/self` are its own, as in bash.
 - External programs start with `CreateProcess`. `$$`, `$!` and `ps` show
   real Windows process IDs.
+- Descriptors above 2 that you open (`exec 3>file`, `{fd}<file`) reach
+  every child, as in bash. A child wbsh, or any program built on the
+  Microsoft C runtime, finds them under the same numbers; other programs
+  get the handles without knowing about them. The shell's own copies
+  (saved descriptors, coproc ends) reach no child.
 - `exec COMMAND` cannot replace the process. It starts the command, waits
   for it, and the shell then exits with the command's exit status; the PID
   the parent knew is the shell's, not the command's. Processes the command

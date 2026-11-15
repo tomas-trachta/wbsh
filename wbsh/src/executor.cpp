@@ -45,6 +45,7 @@
 #include "devices.h"
 #include "diagnostics.h"
 #include "exitstatus.h"
+#include "fdinherit.h"
 #include "fifo.h"
 #include "fnmatch.h"
 #include "jobcontrol.h"
@@ -613,28 +614,29 @@ namespace wbsh {
 		::HeapFree(::GetProcessHeap(), 0, attr_list);
 	}
 
-	static void addInheritHandle(HANDLE inherits[3], DWORD& count, HANDLE handle) {
+	static void addInheritHandle(std::vector<HANDLE>& inherits, HANDLE handle) {
 		if (handle == nullptr || handle == INVALID_HANDLE_VALUE) return;
-		for (DWORD i = 0; i < count; ++i) {
-			if (inherits[i] == handle) return;
-		}
+		if (std::find(inherits.begin(), inherits.end(), handle) != inherits.end()) return;
 
-		inherits[count++] = handle;
+		inherits.push_back(handle);
 		::SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
 	}
 
-	static DWORD collectInheritHandles(HANDLE inherits[3], const StdioHandles& stdio) {
-		DWORD count = 0;
-		addInheritHandle(inherits, count, stdio.in);
-		addInheritHandle(inherits, count, stdio.out);
-		addInheritHandle(inherits, count, stdio.err);
-		return count;
+	static std::vector<HANDLE> collectInheritHandles(const StdioHandles& stdio,
+	                                                 const ChildFds& fds) {
+		std::vector<HANDLE> inherits;
+		addInheritHandle(inherits, stdio.in);
+		addInheritHandle(inherits, stdio.out);
+		addInheritHandle(inherits, stdio.err);
+
+		for (void* handle : fds.handles) addInheritHandle(inherits, static_cast<HANDLE>(handle));
+		return inherits;
 	}
 
 	static bool attachInheritList(LPPROC_THREAD_ATTRIBUTE_LIST attr_list,
-	                              HANDLE inherits[3], DWORD count) {
+	                              std::vector<HANDLE>& inherits) {
 		return ::UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-			inherits, count * sizeof(HANDLE), nullptr, nullptr) != 0;
+			inherits.data(), inherits.size() * sizeof(HANDLE), nullptr, nullptr) != 0;
 	}
 
 	static bool attachPseudoConsole(LPPROC_THREAD_ATTRIBUTE_LIST attr_list, HPCON console) {
@@ -653,7 +655,7 @@ namespace wbsh {
 		return stdio;
 	}
 
-	static STARTUPINFOEXW makeStartupInfo(const StdioHandles& stdio,
+	static STARTUPINFOEXW makeStartupInfo(const StdioHandles& stdio, ChildFds& fds,
 	                                      LPPROC_THREAD_ATTRIBUTE_LIST attr_list) {
 		STARTUPINFOEXW info{};
 		info.StartupInfo.cb = sizeof(STARTUPINFOEXW);
@@ -662,6 +664,12 @@ namespace wbsh {
 		info.StartupInfo.hStdOutput = stdio.out;
 		info.StartupInfo.hStdError  = stdio.err;
 		info.lpAttributeList = attr_list;
+
+		if (!fds.block.empty()) {
+			info.StartupInfo.cbReserved2 = static_cast<WORD>(fds.block.size());
+			info.StartupInfo.lpReserved2 = fds.block.data();
+		}
+
 		return info;
 	}
 
@@ -703,12 +711,14 @@ namespace wbsh {
 		::ResumeThread(process.hThread);
 	}
 
-	// Only the three stdio handles are inherited: anything else the shell
-	// holds open (saved fds, pipe ends of other stages) would otherwise
-	// leak into the child and keep pipes alive after it is gone.
-	// The inherits[] buffer is referenced by attr_list until
-	// DeleteProcThreadAttributeList runs, so it must live in this frame
-	// (not in a helper) — per the Win32 attribute-list ownership rules.
+	// Only the stdio handles and the descriptors the user opened
+	// (fdinherit.h) are inherited: anything else the shell holds open
+	// (saved fds, pipe ends of other stages) would otherwise leak into the
+	// child and keep pipes alive after it is gone.
+	// The inherit list and the fd block are referenced by attr_list and
+	// the startup info until CreateProcess returns, so they must live in
+	// this frame (not in a helper) — per the Win32 attribute-list
+	// ownership rules.
 	// On failure GetLastError() still holds CreateProcess's error.
 	static HANDLE createWithHandleList(SpawnCommand& command, const StdioHandles& stdio,
 	                                   const SpawnPlacement& placement) {
@@ -718,21 +728,21 @@ namespace wbsh {
 
 		const bool on_pseudo_console = placement.pseudo_console != nullptr;
 		const StdioHandles child_stdio = on_pseudo_console ? pseudoConsoleStdio() : stdio;
-		HANDLE inherits[3];
-		const DWORD count = collectInheritHandles(inherits, child_stdio);
+		ChildFds child_fds = on_pseudo_console ? ChildFds() : collectChildFds();
+		std::vector<HANDLE> inherits = collectInheritHandles(child_stdio, child_fds);
 		const bool attached = on_pseudo_console
 			? attachPseudoConsole(attr_list, placement.pseudo_console)
-			: count == 0 || attachInheritList(attr_list, inherits, count);
+			: inherits.empty() || attachInheritList(attr_list, inherits);
 		if (!attached) {
 			freeAttrList(attr_list);
 			return INVALID_HANDLE_VALUE;
 		}
 
-		STARTUPINFOEXW info = makeStartupInfo(child_stdio, attr_list);
+		STARTUPINFOEXW info = makeStartupInfo(child_stdio, child_fds, attr_list);
 		const std::wstring directory = childCurrentDirectory();
 		PROCESS_INFORMATION process{};
 		const BOOL created = ::CreateProcessW(command.exe.c_str(), command.cmdline.data(),
-			nullptr, nullptr, count > 0 ? TRUE : FALSE,
+			nullptr, nullptr, inherits.empty() ? FALSE : TRUE,
 			EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | placementFlags(placement),
 			command.envblock.data(), optionalDirectory(directory), &info.StartupInfo, &process);
 		const DWORD error = ::GetLastError();
@@ -2238,7 +2248,8 @@ namespace wbsh {
 	static const int kFirstSavedFd = 10;
 
 	// Saved copies live at fd 10 and up, as in bash, so a command's own
-	// `>&3` cannot reach one and write past a redirection.
+	// `>&3` cannot reach one and write past a redirection, and no child
+	// gets one.
 	static int dupAboveUserFds(int fd) {
 		std::vector<int> low_copies;
 		int copy = _dup(fd);
@@ -2248,6 +2259,7 @@ namespace wbsh {
 		}
 
 		for (const int low : low_copies) _close(low);
+		keepFdFromChildren(copy);
 		return copy;
 	}
 
@@ -2641,6 +2653,13 @@ namespace wbsh {
 			return false;
 		}
 
+		if (!installRedirection(redir, target, state)) return false;
+
+		passFdToChildren(target);
+		return true;
+	}
+
+	bool Executor::installRedirection(const Redirection& redir, int target, RedirState& state) {
 		switch (redir.op) {
 		case RedirOp::Less:        return applyLessRedir       (redir, target, state);
 		case RedirOp::Great:
