@@ -15,7 +15,10 @@ permissions:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
-    runs-on: windows-latest
+    # windows-2022 carries Visual Studio 2022 with the v143 toolset for x64
+    # and ARM64, which every .vcxproj asks for; windows-latest moved to
+    # Visual Studio 2026, which has no ARM64 v143 tools.
+    runs-on: windows-2022
 
     steps:
       - name: Checkout
