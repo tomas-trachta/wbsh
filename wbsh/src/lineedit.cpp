@@ -1166,13 +1166,13 @@ namespace wbsh {
 	}
 
 	// Alt-code input (Alt + numpad digits) is delivered as a key-UP event
-	// for VK_MENU carrying the resolved Unicode char.
+	// for VK_MENU carrying the resolved Unicode char; past the BMP, one
+	// such release per half.
 	void LineEditor::handleAltKeyUp(const KEY_EVENT_RECORD& key) {
 		if (key.wVirtualKeyCode != VK_MENU) return;
 		if (key.uChar.UnicodeChar < 0x20) return;
 
-		const WCHAR unit = key.uChar.UnicodeChar;
-		const std::string utf8 = utf16ToUtf8(&unit, 1);
+		const std::string utf8 = wideCharacter(key.uChar.UnicodeChar);
 		if (!utf8.empty()) dispatchKeys(utf8);
 	}
 

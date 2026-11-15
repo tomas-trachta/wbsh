@@ -14,9 +14,11 @@ namespace wbsh {
 	/**
 	 * @brief @p first as UTF-8; a high surrogate takes its low half from @p input.
 	 *
-	 * The low half is the next key-down that carries one. A pseudoconsole
-	 * sends each half as a press and a release of its own, so key-ups and
-	 * focus or menu events on the way are passed over. Anything else is
+	 * The low half is the next key-down that carries one, or the release of
+	 * Alt that carries it. A pseudoconsole sends each half as a press and a
+	 * release of its own, or as an Alt code (Alt and numpad presses, then
+	 * the release of Alt), so key-ups, those presses and focus or menu
+	 * events on the way are passed over. Anything else is
 	 * left in the queue for the caller, and the high half then stands alone
 	 * and comes out as U+FFFD, as it does when nothing follows in time.
 	 * @p input is the console input HANDLE.

@@ -35,16 +35,32 @@ namespace wbsh {
 			return unit >= 0xDC00 && unit <= 0xDFFF;
 		}
 
+		static bool isAltCodeKey(WORD virtual_key) {
+			return virtual_key == VK_MENU
+				|| (virtual_key >= VK_NUMPAD0 && virtual_key <= VK_NUMPAD9);
+		}
+
+		// The console host built into Windows 10 types each half as an Alt
+		// code: Alt and numpad presses carrying nothing, then the release of
+		// Alt carrying the half.
+		static PairStep keyStep(const KEY_EVENT_RECORD& key) {
+			const bool low = isLowSurrogate(key.uChar.UnicodeChar);
+			if (!key.bKeyDown) {
+				return low && key.wVirtualKeyCode == VK_MENU ? PairStep::kTake : PairStep::kSkip;
+			}
+
+			if (low) return PairStep::kTake;
+			if (key.uChar.UnicodeChar == 0 && isAltCodeKey(key.wVirtualKeyCode)) return PairStep::kSkip;
+			return PairStep::kStop;
+		}
+
 		static PairStep stepFor(const INPUT_RECORD& record) {
 			if (record.EventType == FOCUS_EVENT || record.EventType == MENU_EVENT) {
 				return PairStep::kSkip;
 			}
 
 			if (record.EventType != KEY_EVENT) return PairStep::kStop;
-
-			const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
-			if (!key.bKeyDown) return PairStep::kSkip;
-			return isLowSurrogate(key.uChar.UnicodeChar) ? PairStep::kTake : PairStep::kStop;
+			return keyStep(record.Event.KeyEvent);
 		}
 
 		static bool peekRecord(HANDLE input, INPUT_RECORD& record) {

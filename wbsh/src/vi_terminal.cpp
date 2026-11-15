@@ -293,12 +293,13 @@ namespace wbsh {
 			for (WORD k = 1; k < record.wRepeatCount; ++k) ed.pending.push_back(key);
 		}
 
-		// Alt plus numpad digits delivers its character with the Alt release.
-		static bool altCodeKey(const KEY_EVENT_RECORD& record, Key& key) {
+		// Alt plus numpad digits delivers its character with the Alt release;
+		// past the BMP, one such release per half.
+		static bool altCodeKey(const Editor& ed, const KEY_EVENT_RECORD& record, Key& key) {
 			if (record.wVirtualKeyCode != VK_MENU || record.uChar.UnicodeChar < 0x20) return false;
 
-			key = static_cast<Key>(record.uChar.UnicodeChar);
-			return true;
+			key = characterKey(ed, record.uChar.UnicodeChar);
+			return key != 0;
 		}
 
 		static bool readConsoleKey(Editor& ed, Key& key) {
@@ -318,7 +319,7 @@ namespace wbsh {
 
 				const KEY_EVENT_RECORD& event = record.Event.KeyEvent;
 				if (!event.bKeyDown) {
-					if (altCodeKey(event, key)) return true;
+					if (altCodeKey(ed, event, key)) return true;
 					continue;
 				}
 

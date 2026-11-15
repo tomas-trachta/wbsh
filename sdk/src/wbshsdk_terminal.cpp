@@ -150,18 +150,33 @@ namespace wbshsdk_terminal_detail {
 		kStop,
 	};
 
+	static bool isAltCodeKey(WORD virtual_key) {
+		return virtual_key == VK_MENU
+			|| (virtual_key >= VK_NUMPAD0 && virtual_key <= VK_NUMPAD9);
+	}
+
+	// The console host built into Windows 10 types each half as an Alt code:
+	// Alt and numpad presses carrying nothing, then the release of Alt
+	// carrying the half.
+	static PairStep lowSurrogateKeyStep(const KEY_EVENT_RECORD& key) {
+		const WCHAR unit = key.uChar.UnicodeChar;
+		const bool low = unit >= 0xDC00 && unit <= 0xDFFF;
+		if (!key.bKeyDown) {
+			return low && key.wVirtualKeyCode == VK_MENU ? PairStep::kTake : PairStep::kSkip;
+		}
+
+		if (low) return PairStep::kTake;
+		if (unit == 0 && isAltCodeKey(key.wVirtualKeyCode)) return PairStep::kSkip;
+		return PairStep::kStop;
+	}
+
 	static PairStep lowSurrogateStep(const INPUT_RECORD& record) {
 		if (record.EventType == FOCUS_EVENT || record.EventType == MENU_EVENT) {
 			return PairStep::kSkip;
 		}
 
 		if (record.EventType != KEY_EVENT) return PairStep::kStop;
-
-		const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
-		if (!key.bKeyDown) return PairStep::kSkip;
-
-		const WCHAR unit = key.uChar.UnicodeChar;
-		return unit >= 0xDC00 && unit <= 0xDFFF ? PairStep::kTake : PairStep::kStop;
+		return lowSurrogateKeyStep(record.Event.KeyEvent);
 	}
 
 	static bool peekRecord(HANDLE input, INPUT_RECORD& record) {
@@ -179,8 +194,9 @@ namespace wbshsdk_terminal_detail {
 	}
 
 	// A pseudoconsole sends each half of a pair as a press and a release
-	// of its own, so the low half is the next key-down that carries one.
-	// Releases and focus or menu noise on the way are passed over; a resize,
+	// of its own, or as an Alt code, so the low half is the next key-down
+	// or Alt release that carries one. Other releases, Alt-code presses and
+	// focus or menu noise on the way are passed over; a resize,
 	// the mouse or another key is left queued for the next read, and the
 	// high half then stands alone.
 	static bool readLowSurrogate(HANDLE input, WCHAR& out_low) {
@@ -247,13 +263,13 @@ namespace wbshsdk_terminal_detail {
 	}
 
 	// Alt+numpad input arrives as a key-up of the Alt key itself, carrying
-	// the character it composed; every other key-up is silence.
-	static void translateKeyUp(const KEY_EVENT_RECORD& event, WbshKey& out_key) {
+	// the character it composed (past the BMP, one such key-up per half);
+	// every other key-up is silence.
+	static void translateKeyUp(HANDLE input, const KEY_EVENT_RECORD& event, WbshKey& out_key) {
 		if (event.wVirtualKeyCode != VK_MENU) return;
 		if (event.uChar.UnicodeChar < 0x20) return;
 
-		const WCHAR unit = event.uChar.UnicodeChar;
-		encodeUtf8(&unit, 1, out_key);
+		readCharacter(input, event.uChar.UnicodeChar, out_key);
 	}
 
 	static void translateRecord(HANDLE input, const INPUT_RECORD& record, WbshKey& out_key) {
@@ -270,7 +286,7 @@ namespace wbshsdk_terminal_detail {
 		if (event.bKeyDown) {
 			translateKeyDown(input, event, out_key);
 		} else {
-			translateKeyUp(event, out_key);
+			translateKeyUp(input, event, out_key);
 		}
 	}
 
