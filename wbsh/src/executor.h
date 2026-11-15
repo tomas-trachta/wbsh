@@ -880,6 +880,13 @@ namespace wbsh {
 		void beginExecRedirJournal() { exec_redir_journal_.emplace_back(); }
 		void endExecRedirJournal();
 		void keepExecRedirs(const RedirState& state);
+		// The copies this shell saves while setting up what bash would run
+		// in a forked child (a subshell's redirections, `$(...)`, a pipeline
+		// stage run here) are closed fds in that child, so `>&N` there
+		// cannot reach them. The mark undoes the hiding, innermost first.
+		std::size_t hideSavedFds(const RedirState& state);
+		void showHiddenFds(std::size_t mark) { hidden_fds_.resize(mark); }
+		bool savedFdHidden(int fd) const;
 		// applyRedirections, but a failure also undoes whatever was
 		// installed so the caller can return at once.
 		bool applyRedirectionsOrUndo(const std::vector<Redirection>& rs, RedirState& out);
@@ -1178,6 +1185,7 @@ namespace wbsh {
 		std::unordered_map<std::string, ParsedText> trap_asts_;
 		const std::string* frozen_lineno_source_ = nullptr;
 		std::vector<RedirState> exec_redir_journal_;
+		std::vector<int> hidden_fds_;
 		bool in_exit_trap_ = false;
 		int  exit_trap_status_ = 0;
 		std::unordered_map<std::string, CompletionSpec> completion_specs_;
