@@ -50,8 +50,8 @@ namespace wbsh {
 			}
 
 			if (low) return PairStep::kTake;
-			if (key.uChar.UnicodeChar == 0 && isAltCodeKey(key.wVirtualKeyCode)) return PairStep::kSkip;
-			return PairStep::kStop;
+			const bool alt_code = key.uChar.UnicodeChar == 0 && isAltCodeKey(key.wVirtualKeyCode);
+			return alt_code ? PairStep::kSkip : PairStep::kStop;
 		}
 
 		static PairStep stepFor(const INPUT_RECORD& record) {
