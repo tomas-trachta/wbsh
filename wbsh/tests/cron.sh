@@ -7,6 +7,7 @@
 export USER=tester
 tmp=$(mktemp -d)
 cd "$tmp" || exit 1
+tmp=$(pwd -P)
 mkdir home
 export TMPDIR=$tmp
 

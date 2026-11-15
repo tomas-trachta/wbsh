@@ -1,6 +1,8 @@
 #!/bin/bash
 # Smoke test for the expander stage.
 
+HOME=/c/Users/tester
+
 # 1. Basic and quoting
 echo plain "double $HOME" 'single $HOME' \$lit
 

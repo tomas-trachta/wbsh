@@ -34,10 +34,13 @@ rm -rf "$d"
 
 echo "=== command names include aliases and keywords"
 alias zzmyalias='echo hi'
+saved_path=$PATH
+PATH=/nonexistent
 __lineedit 'zzmya' '<TAB>'
 __lineedit 'whil' '<TAB>'
 __lineedit 'func' '<TAB>'
 __lineedit 'sel' '<TAB>'
+PATH=$saved_path
 
 echo "=== CRLF lines piped into an interactive shell lose the CR"
 WBSH=../../x64/Release/wbsh.exe

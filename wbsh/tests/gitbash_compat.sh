@@ -175,7 +175,7 @@ cat -bs blanks
 echo "--"
 cat --squeeze-blank --number-nonblank blanks
 echo "--"
-cat -n blanks ctl | head -7
+cat -n blanks ctl | head -7 | tr -d '\r'
 echo "--"
 cat -u blanks | wc -l
 cat -nq blanks 2>&1; echo "[$?]"

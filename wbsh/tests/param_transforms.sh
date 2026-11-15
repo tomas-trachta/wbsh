@@ -1,6 +1,8 @@
 #!/bin/bash
 # Probe: ${x@X} transformations, ${x~}, $"...", declare -i and declare -n (bash 5.2 semantics).
 
+. ./helpers/prompt.sh
+
 echo "=== 1. \${x@Q} \${x@E} \${x@P}"
 x="it's"
 echo "${x@Q}"
@@ -11,7 +13,7 @@ echo "[${e@Q}] [${unset_var@Q}]"
 q='a\x41\tb'
 echo "${q@E}"
 p='\$ \\'
-echo "${p@P}"
+echo "${p@P}" | as_unelevated
 
 echo "=== 2. \${x@U} \${x@u} \${x@L} \${x~} \${x~~}"
 z=hello

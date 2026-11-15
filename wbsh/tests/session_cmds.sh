@@ -20,6 +20,8 @@ wait_for() {
 }
 
 echo "=== nice prints and sets the niceness (priority class)"
+# CI runners start every process below normal priority.
+renice 0 -p $$ > /dev/null
 nice
 nice nice
 nice -n 5 nice

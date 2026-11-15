@@ -342,6 +342,13 @@ jobs:
       - name: Version
         run: ARM64\Release\wbsh.exe --version
 
+      # The tests find the shell at x64\Release, relative to wbsh\tests.
+      - name: Point x64\Release at the ARM64 build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force x64 | Out-Null
+          New-Item -ItemType Junction -Path x64\Release -Target "$PWD\ARM64\Release" | Out-Null
+
       - name: Golden test suite
         working-directory: wbsh/tests
         env:

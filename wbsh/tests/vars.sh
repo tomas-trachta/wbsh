@@ -18,11 +18,11 @@ echo "=== 3. Externals do NOT see shell-local vars"
 shell_only=visible-in-shell
 echo "in-shell: $shell_only"
 # cmd.exe prints %VAR% literally when VAR is undefined.
-cmd /c "echo cmd-sees=%shell_only%"
+cmd /c "echo cmd-sees=%shell_only%" | tr -d '\r'
 
 echo "=== 4. Externals DO see exported vars"
 export shared=in-env
-cmd /c "echo cmd-shared=%shared%"
+cmd /c "echo cmd-shared=%shared%" | tr -d '\r'
 
 echo "=== 5. Export status survives a self-spawn round-trip"
 report() {

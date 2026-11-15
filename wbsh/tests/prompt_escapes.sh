@@ -4,6 +4,8 @@
 # PROMPT_COMMAND before each primary prompt. `${x@P}` decodes a value the
 # way PS1 is decoded.
 
+. ./helpers/prompt.sh
+
 echo "=== counters and fixed text"
 x='[\j] [\!] [\#] [\s]'
 echo "${x@P}"
@@ -49,12 +51,12 @@ rm -rf "$T"
 
 echo "=== a backslash quotes \$ \` \" and itself in the expansion"
 x='a\$b \`c\` \"d\" e\\f'
-echo "${x@P}"
+echo "${x@P}" | as_unelevated
 
 echo "=== with promptvars off only the escapes are decoded"
 shopt -u promptvars
 x='$name \$ \101'
-echo "${x@P}"
+echo "${x@P}" | as_unelevated
 shopt promptvars
 shopt -s promptvars
 
@@ -67,7 +69,7 @@ session() {
         env -u WBSH_INIT_COMMAND -u PROMPT_COMMAND HOME="$D" HISTFILE="$D/hist" PS2='> ' \
             "$@" "$WBSH" -i 2>&1
         echo "(exit $?)"
-    ) | sed -n '/^\[/,$p'
+    ) | sed -n '/^\[/,$p' | as_unelevated
 }
 
 session PS1='[\#:\!:$(echo $((1+1)))]\$ ' <<'EOF'
