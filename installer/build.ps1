@@ -151,31 +151,33 @@ Copy-Item $sdkPath                                     $stage
 
 # Copy VC++ runtime DLLs app-local. Required because the projects link the
 # dynamic CRT (/MD); without these the binaries fail to start on machines
-# that don't already have the matching VC redistributable.
+# that don't already have the matching VC redistributable. Every toolset
+# since VS 2015 ships the same 140 DLLs, newer ones backward compatible,
+# so the CRT folder is found whatever its VC1xx suffix. A missing DLL fails
+# the build: a payload without them does not start on a clean machine.
+function Find-CrtDir {
+    $redistRoot = Join-Path $vsRoot 'VC\Redist\MSVC'
+    if (-not (Test-Path $redistRoot)) { throw "VC redist root not found: $redistRoot" }
+
+    $crtDir = Get-ChildItem $redistRoot -Directory |
+        Where-Object { $_.Name -match '^\d' } |
+        Sort-Object { [version]$_.Name } -Descending |
+        ForEach-Object { Get-ChildItem (Join-Path $_.FullName $Platform) -Directory -Filter 'Microsoft.VC*.CRT' -ErrorAction SilentlyContinue } |
+        Select-Object -First 1
+    if (-not $crtDir) { throw "No Microsoft.VC*.CRT directory for $Platform under $redistRoot" }
+
+    return $crtDir.FullName
+}
+
 function Copy-CrtDlls {
     param([string]$Destination)
 
-    $redistRoot = Join-Path $vsRoot 'VC\Redist\MSVC'
-    if (-not (Test-Path $redistRoot)) {
-        Write-Warning "VC redist root not found: $redistRoot"
-        return
-    }
-
-    $latestVer = Get-ChildItem $redistRoot -Directory |
-        Where-Object { $_.Name -match '^\d' } |
-        Sort-Object Name -Descending | Select-Object -First 1
-    if (-not $latestVer) { return }
-
-    $crtDir = Join-Path $latestVer.FullName "$Platform\Microsoft.VC143.CRT"
-    if (-not (Test-Path $crtDir)) {
-        Write-Warning "VC redist CRT directory not found: $crtDir"
-        return
-    }
+    $crtDir = Find-CrtDir
 
     foreach ($dll in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
         $src = Join-Path $crtDir $dll
-        if (Test-Path $src) { Copy-Item $src $Destination }
-        else { Write-Warning "Missing runtime DLL: $src" }
+        if (-not (Test-Path $src)) { throw "Missing runtime DLL: $src" }
+        Copy-Item $src $Destination
     }
 }
 
