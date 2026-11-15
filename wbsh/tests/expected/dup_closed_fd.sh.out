@@ -1,0 +1,30 @@
+=== closed sources
+dup_closed_fd.sh: line 11: 10: Bad file descriptor
+cmdsubst [1]
+dup_closed_fd.sh: line 12: 10: Bad file descriptor
+direct 1
+dup_closed_fd.sh: line 13: 10: Bad file descriptor
+input 1
+dup_closed_fd.sh: line 14: 10: Bad file descriptor
+stderr 1
+dup_closed_fd.sh: line 15: 10: Bad file descriptor
+fd variable 1 v=unset
+same
+same 0
+=== copies saved for forked contexts
+dup_closed_fd.sh: line 19: 10: Bad file descriptor
+nested [[1]]
+dup_closed_fd.sh: line 20: 10: Bad file descriptor
+first stage 1
+dup_closed_fd.sh: line 21: 10: Bad file descriptor
+subshell 1 []
+dup_closed_fd.sh: line 22: 11: Bad file descriptor
+inner 1 []
+group
+group 0 []
+=== descriptors the user opened still work
+w=10 [0]
+inside
+from-subshell
+from-stage
+coproc got hello

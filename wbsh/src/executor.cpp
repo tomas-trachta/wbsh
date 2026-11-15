@@ -1501,9 +1501,11 @@ namespace wbsh {
 		const bool started_as_pipe = std::exchange(stdout_started_as_pipe_, true);
 		const int sigpipe_depth = std::exchange(sigpipe_redirects_, stdout_redirects_);
 		HistoryList history = history_;
+		const std::size_t hidden = hideSavedFds(state);
 		SubshellScope snap = enterSubshell();
 		const int status = endSubshell(execNode(stage));
 		leaveSubshell(snap);
+		showHiddenFds(hidden);
 		history_ = std::move(history);
 		sigpipe_redirects_ = sigpipe_depth;
 		stdout_started_as_pipe_ = started_as_pipe;
@@ -2527,6 +2529,10 @@ namespace wbsh {
 		return redirectFdFromPath(path, _O_RDWR | _O_CREAT, target, state);
 	}
 
+	static bool fdIsOpen(int fd) {
+		return _get_osfhandle(fd) != -1;
+	}
+
 	bool Executor::applyDupRedir(const Redirection& redir, int target, RedirState& state) {
 		std::string spec;
 		if (!expandRedirTarget(redir.target, spec)) return false;
@@ -2544,8 +2550,17 @@ namespace wbsh {
 			return false;
 		}
 
-		// bash treats `N>&N` as a no-op, even when N is closed.
-		if (from_fd == target) return true;
+		// bash treats `N>&N` as a no-op, even when N is closed. `{v}>&N` only
+		// looks like one when N is closed, because then N is the free fd
+		// picked for v.
+		if (from_fd == target && redir.fd_variable.empty()) return true;
+
+		// Checked before the save, which could otherwise land on a closed
+		// from_fd and be duplicated in its place.
+		if (!fdIsOpen(from_fd) || savedFdHidden(from_fd)) {
+			shellErrorf("%d: Bad file descriptor\n", from_fd);
+			return false;
+		}
 
 		saveFd(state, target);
 		beforeRepointing(target);
@@ -2988,6 +3003,19 @@ namespace wbsh {
 		RedirState& journal = exec_redir_journal_.back();
 		journal.saved.insert(journal.saved.end(), state.saved.begin(), state.saved.end());
 		journal.temps.insert(journal.temps.end(), state.temps.begin(), state.temps.end());
+	}
+
+	std::size_t Executor::hideSavedFds(const RedirState& state) {
+		const std::size_t mark = hidden_fds_.size();
+		for (const auto& saved : state.saved) {
+			if (saved.second >= 0) hidden_fds_.push_back(saved.second);
+		}
+
+		return mark;
+	}
+
+	bool Executor::savedFdHidden(int fd) const {
+		return std::find(hidden_fds_.begin(), hidden_fds_.end(), fd) != hidden_fds_.end();
 	}
 
 	void Executor::endExecRedirJournal() {
@@ -4496,11 +4524,13 @@ namespace wbsh {
 		RedirState state;
 		if (!applyRedirectionsOrUndo(subshell.redirs, state)) return 1;
 
+		const std::size_t hidden = hideSavedFds(state);
 		SubshellScope snap = enterSubshell();
 		int status = 0;
 		if (subshell.body != nullptr) status = execNode(*subshell.body);
 		status = endSubshell(status);
 		leaveSubshell(snap);
+		showHiddenFds(hidden);
 
 		undoRedirections(state);
 		return status;
@@ -6251,10 +6281,13 @@ namespace wbsh {
 
 		std::fflush(stdout);
 		const int saved_stdout = dupAboveUserFds(1);
+		const std::size_t hidden = hidden_fds_.size();
+		if (!in_current_shell) hidden_fds_.push_back(saved_stdout);
 		_dup2(capture_fd, 1);
 		_close(capture_fd);
 		status = runSubstitutionBody(body, in_current_shell);
 		std::fflush(stdout);
+		showHiddenFds(hidden);
 		_dup2(saved_stdout, 1);
 		_close(saved_stdout);
 
