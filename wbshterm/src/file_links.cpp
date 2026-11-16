@@ -57,12 +57,22 @@ namespace wbshterm {
 			return true;
 		}
 
+		static bool closesOwnParenthesis(const std::string& word) {
+			return word.back() == ')' && word.find('(') != std::string::npos;
+		}
+
+		static bool endsInJunk(const std::string& word) {
+			if (word.empty() || closesOwnParenthesis(word)) return false;
+
+			return std::strchr(kTrailingJunk, word.back()) != nullptr;
+		}
+
 		static void trimJunk(std::string& word) {
 			while (!word.empty() && std::strchr(kLeadingJunk, word.front()) != nullptr) {
 				word.erase(0, 1);
 			}
 
-			while (!word.empty() && std::strchr(kTrailingJunk, word.back()) != nullptr) {
+			while (endsInJunk(word)) {
 				word.pop_back();
 			}
 		}
