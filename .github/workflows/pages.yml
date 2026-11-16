@@ -34,13 +34,13 @@ jobs:
       # Jekyll would drop its underscore-prefixed files.
       - name: Stage markdown
         run: |
-          mkdir -p "$RUNNER_TEMP/site-src"
-          rsync -a --exclude html/ --exclude Doxyfile docs/ "$RUNNER_TEMP/site-src/"
+          mkdir -p site-src
+          rsync -a --exclude html/ --exclude Doxyfile docs/ site-src/
 
       - name: Render markdown
         uses: actions/jekyll-build-pages@v1
         with:
-          source: ${{ runner.temp }}/site-src
+          source: ./site-src
           destination: ./_site
 
       - name: Add the API reference
