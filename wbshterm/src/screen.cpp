@@ -1050,6 +1050,32 @@ namespace wbshterm {
 		}
 	}
 
+	// A command whose prompt was erased has nothing left on screen to mark.
+	// The prompt still being typed at stays, moved to the cursor, where a
+	// shell clearing the screen under it (Ctrl+L) draws it again.
+	void Screen::forgetErasedBlocks(int first_row, int last_row) {
+		if (alt_screen_ || blocks_.empty() || first_row > last_row) return;
+
+		const int first = scrollbackRows() + first_row;
+		const int last  = scrollbackRows() + last_row;
+		const auto erased = [first, last](const CommandBlock& block) {
+			return block.prompt_row >= first && block.prompt_row <= last;
+		};
+
+		const bool prompt_erased = atPrompt() && erased(blocks_.back());
+		const CommandBlock prompt = blocks_.back();
+		blocks_.erase(std::remove_if(blocks_.begin(), blocks_.end(), erased), blocks_.end());
+
+		if (prompt_erased) keepPromptAtCursor(prompt);
+	}
+
+	void Screen::keepPromptAtCursor(CommandBlock block) {
+		block.prompt_row     = currentAbsoluteRow();
+		block.command_offset = 0;
+		block.command_column = -1;
+		blocks_.push_back(block);
+	}
+
 	bool Screen::promptAlreadyMarked() const {
 		return !blocks_.empty() && blocks_.back().prompt_row == currentAbsoluteRow()
 			&& blocks_.back().output_row < 0;
@@ -1116,8 +1142,10 @@ namespace wbshterm {
 		blocks_.back().started_ms = steadyMs();
 	}
 
+	// The command an erase forgot still reports how it ended; that is no
+	// reason to rewrite the one before it.
 	void Screen::noteCommandEnd(const std::string& body) {
-		if (blocks_.empty()) return;
+		if (blocks_.empty() || blocks_.back().finished) return;
 
 		CommandBlock& block = blocks_.back();
 		block.end_row = currentAbsoluteRow();
@@ -1414,6 +1442,7 @@ namespace wbshterm {
 		case 0:
 			clearRow(cursor_.row, cursor_.column, columns_ - 1);
 			for (int row = cursor_.row + 1; row < rows_; ++row) clearRow(row, 0, columns_ - 1);
+			forgetErasedBlocks(cursor_.column == 0 ? cursor_.row : cursor_.row + 1, rows_ - 1);
 			break;
 		case 1:
 			clearRow(cursor_.row, 0, cursor_.column);
@@ -1421,6 +1450,7 @@ namespace wbshterm {
 			break;
 		case 2:
 			for (int row = 0; row < rows_; ++row) clearRow(row, 0, columns_ - 1);
+			forgetErasedBlocks(0, rows_ - 1);
 			break;
 		case 3:
 			clearScrollback();

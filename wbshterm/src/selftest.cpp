@@ -253,7 +253,7 @@ namespace wbshterm {
 				&& screen.totalRows() == screen.rows();
 			const bool blocks_follow = blocks_before == 2
 				&& screen.commandBlocks().size() == 1
-				&& screen.commandBlocks().front().prompt_row == 1;
+				&& screen.commandBlocks().front().prompt_row == 0;
 
 			report.check("ED 3 forgets the scrollback", forgotten,
 				std::to_string(screen.scrollbackRows()));

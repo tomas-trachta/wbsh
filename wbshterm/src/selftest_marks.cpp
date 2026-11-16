@@ -46,6 +46,53 @@ namespace wbshterm {
 				screen.blockAt(blocks.empty() ? 0 : blocks[0].prompt_row) == &blocks[0], "");
 		}
 
+		static const char* kFinishedCommand =
+			"\x1b]133;A\a$ \x1b]133;B\aecho a\r\n\x1b]133;C\aa\r\n\x1b]133;D;0\a";
+
+		static bool anyBlockDrawn(const Screen& screen) {
+			for (const CommandBlock& block : screen.commandBlocks()) {
+				if (block.output_row >= 0) return true;
+			}
+
+			return false;
+		}
+
+		static void checkClearForgetsMarks(Report& report) {
+			Screen screen(40, 8);
+			feedToScreen(screen, std::string(kFinishedCommand) + kFinishedCommand
+				+ "\x1b]133;A\a$ \x1b]133;B\aclear\r\n\x1b]133;C\a"
+				"\x1b[H\x1b[2J\x1b[3J\x1b]133;D;0\a\x1b]133;A\a$ \x1b]133;B\a");
+
+			const std::vector<CommandBlock>& blocks = screen.commandBlocks();
+			report.check("clear leaves no command marks behind", !anyBlockDrawn(screen),
+				std::to_string(blocks.size()) + " blocks");
+			report.check("the prompt after clear is still marked",
+				blocks.size() == 1 && blocks[0].prompt_row == 0, "");
+		}
+
+		static void checkCtrlLKeepsThePrompt(Report& report) {
+			Screen screen(40, 8);
+			feedToScreen(screen, std::string(kFinishedCommand)
+				+ "\x1b]133;A\a$ \x1b]133;B\a\x1b[H\x1b[2J\x1b[3J$ \x1b]133;B\a");
+
+			const std::vector<CommandBlock>& blocks = screen.commandBlocks();
+			const bool one = blocks.size() == 1;
+			report.check("a screen cleared at the prompt keeps the prompt's mark",
+				one && blocks[0].prompt_row == 0 && blocks[0].output_row < 0
+				&& blocks[0].command_column == 2, std::to_string(blocks.size()) + " blocks");
+		}
+
+		static void checkErasedCommandEndsAlone(Report& report) {
+			Screen screen(40, 3);
+			feedToScreen(screen, std::string(kFinishedCommand) + "\r\n\r\n\r\n"
+				+ "\x1b]133;A\a$ \x1b]133;B\ax\r\n\x1b]133;C\a\x1b[2J\x1b]133;D;5\a");
+
+			const std::vector<CommandBlock>& blocks = screen.commandBlocks();
+			report.check("an erased command's end does not rewrite the one before",
+				blocks.size() == 1 && blocks[0].exit_status == 0,
+				blocks.empty() ? "" : std::to_string(blocks[0].exit_status));
+		}
+
 		static void checkFileLinksAreFound(Report& report) {
 			const FileLink grep = linkIn("src/main.cpp:42:7: error: x", 3);
 			const FileLink msvc = linkIn("x main.cpp(12,4): warning", 4);
@@ -106,6 +153,9 @@ namespace wbshterm {
 
 	void runMarkChecks(test::Report& report) {
 		test::checkMarksCarryCommandLine(report);
+		test::checkClearForgetsMarks(report);
+		test::checkCtrlLKeepsThePrompt(report);
+		test::checkErasedCommandEndsAlone(report);
 		test::checkFileLinksAreFound(report);
 		test::checkLinkPathsResolve(report);
 		test::checkSavedLayoutReadsBack(report);

@@ -382,6 +382,8 @@ namespace wbshterm {
 		void noteCommandEnd(const std::string& body);
 		void noteCommandLine(const std::string& body);
 		bool promptAlreadyMarked() const;
+		void forgetErasedBlocks(int first_row, int last_row);
+		void keepPromptAtCursor(CommandBlock block);
 		void noteWorkingDirectory(const std::string& body);
 		void noteTerminalRequest(const std::string& body);
 		void notePickRequest(const std::string& body);
