@@ -126,7 +126,7 @@ input makes it crash or hang.
   traps and exit status.
 - `corpus/`: hostile parser inputs; all replay on every run.
 - `fuzz-parse`: mutations of the test scripts go through the parser only
-  (`wbsh --no-ast`). Nothing executes. Only crashes and hangs count.
+  (`wbsh -n`). Nothing executes. Only crashes and hangs count.
 - `fuzz-exec`: a grammar generates random but valid programs from the
   subset of bash that both shells support. Each program runs in wbsh and
   in bash in an empty folder. Differences go to triage.

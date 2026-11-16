@@ -74,7 +74,7 @@ processes**:
 | memory | `suites/memory/*.sh` | One operation repeated `$STRESS_ITERS` times. | Run at N and 10×N: root peak memory must not grow more than `tolerance` MB or 15 % of the peak at N (the larger value); handle count must not grow more than `handles`. |
 | bugs | `suites/bugs/robust/*.sh` | Assertions on edge cases (deep nesting, huge data, closed descriptors). | No `not ok` line, no crash, no hang. |
 | | `suites/bugs/diff/*.sh` | A script that must give the same output as bash. | Same stdout+stderr and exit code as bash, or the same text as `<name>.accept`. |
-| | `suites/bugs/corpus/*` | Hostile parser inputs. | `wbsh --no-ast` does not crash or hang. |
+| | `suites/bugs/corpus/*` | Hostile parser inputs. | `wbsh -n` does not crash or hang. |
 | | (generated) | `fuzz-parse`: mutated scripts through the parser only. `fuzz-exec`: random well-formed programs, run in wbsh and bash. | No crash, no hang. Output differences are `review` findings. |
 | security | `suites/security/*.sh`, `*.ps1` | Assertions on security properties; `static_scan.ps1` reviews the sources and the PE header. | No `not ok` line. |
 | ux | `suites/ux/*.sh` | Assertions on messages, exit codes, help, start-up time, Unicode, Windows programs. | No `not ok` line. |

@@ -9,7 +9,7 @@
 #                    in wbsh and in the reference bash and compares stdout + exit code.
 #
 #   New-ParseMutant  A broken mutation of real scripts (wbsh/tests/*.sh plus the
-#                    corpus). The driver feeds it to `wbsh --no-ast`, which only
+#                    corpus). The driver feeds it to `wbsh -n`, which only
 #                    lexes and parses, so nothing in it can run. Only crashes
 #                    and hangs count.
 
