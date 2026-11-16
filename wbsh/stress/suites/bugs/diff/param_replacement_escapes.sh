@@ -1,7 +1,8 @@
 #!/bin/bash
 # The replacement of ${var/pattern/replacement}: bash 5.2 removes
 # backslashes and, with patsub_replacement (on by default), puts the
-# matched text in place of an unquoted &.
+# matched text in place of an unquoted &. Git Bash is 4.4, which has no
+# patsub_replacement, so the .accept file holds bash 5.2.21's output.
 x=foo
 echo "1 ${x/o/\z}"
 echo "2 ${x/o/a\/b}"

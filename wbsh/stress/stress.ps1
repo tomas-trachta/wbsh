@@ -354,7 +354,7 @@ function Invoke-CorpusReplay {
 	$bad = 0
 	foreach ($f in $files) {
 		$log = Join-Path $OutDir "logs\corpus-$($f.Name).log"
-		$r = [WbshStress.ProcessProbe]::RunArgs(@($WbshExe, '--no-ast', $f.FullName), $OutDir, $log, 15000, $null)
+		$r = [WbshStress.ProcessProbe]::RunArgs(@($WbshExe, '-n', $f.FullName), $OutDir, $log, 15000, $null)
 		if (-not (Test-ProbeHealth $r 'bugs' "corpus/$($f.Name)" $log)) { $bad++ } else { Remove-Item $log -ErrorAction SilentlyContinue }
 	}
 	$status = if ($bad) { 'fail' } else { 'pass' }
@@ -379,7 +379,7 @@ function Invoke-ParseFuzz {
 
 	$exe = $WbshExe
 	$results = $inputs | ForEach-Object -ThrottleLimit $Jobs -Parallel {
-		$r = [WbshStress.ProcessProbe]::RunArgs(@($using:exe, '--no-ast', $_), (Split-Path $_), "$_.out", 15000, $null)
+		$r = [WbshStress.ProcessProbe]::RunArgs(@($using:exe, '-n', $_), (Split-Path $_), "$_.out", 15000, $null)
 		[pscustomobject]@{ Path = $_; Crashed = $r.Crashed; TimedOut = $r.TimedOut; Crash = $r.CrashName; Exit = $r.ExitCode }
 	}
 
