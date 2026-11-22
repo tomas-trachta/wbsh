@@ -31,6 +31,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <set>
 #include <sstream>
 #include <string>
@@ -48,6 +49,7 @@
 #include "fdinherit.h"
 #include "fifo.h"
 #include "fnmatch.h"
+#include "funcprint.h"
 #include "jobcontrol.h"
 #include "keymap.h"
 #include "lexer.h"
@@ -61,12 +63,14 @@
 #include "stdinsync.h"
 #include "testops.h"
 #include "timereport.h"
+#include "utf8.h"
 
 namespace wbsh {
 
 	using NameValueList = std::vector<std::pair<std::string, std::string>>;
 
 	static const int kStatusCommandNotFound = 127;
+	static const int kStatusBadUsage = 2;
 	static const int kStatusCannotExecute = 126;
 	static const std::size_t kStackReserveMargin = 1024 * 1024;
 	static const int kStatusInterrupted = 130;
@@ -143,7 +147,11 @@ namespace wbsh {
 	// execNode); arithmetic that a command evaluates itself, as (( )) does,
 	// only fails that command.
 	static void reportExpanderError(Expander& expander, bool drops_line = true) {
-		shellErrorf("%s\n", expander.takeError().c_str());
+		const bool located = expander.errorIsLocated();
+		const std::string message = expander.takeError();
+		if (located) std::fprintf(stderr, "%s\n", message.c_str());
+		else shellErrorf("%s\n", message.c_str());
+
 		if (drops_line) expander.dropRestOfLine();
 	}
 
@@ -152,7 +160,7 @@ namespace wbsh {
 	}
 
 	static void reportCommandNotFound(const std::string& name) {
-		shellErrorf("%s: command not found\n", name.c_str());
+		shellErrorf("%s: command not found\n", printableName(name).c_str());
 	}
 
 	static std::string asciiLower(std::string text) {
@@ -193,6 +201,12 @@ namespace wbsh {
 		return code < 0x20 || code == 0x7f;
 	}
 
+	static void appendOctalByte(std::string& out, char c) {
+		char octal[8];
+		std::snprintf(octal, sizeof octal, "\\%03o", static_cast<unsigned char>(c));
+		out += octal;
+	}
+
 	static void appendAnsiCEscape(std::string& out, char c) {
 		static const char kLetters[] = "\aa\bb\x1b" "E\ff\nn\rr\tt\vv\\\\''";
 		for (std::size_t k = 0; kLetters[k] != '\0'; k += 2) {
@@ -203,38 +217,52 @@ namespace wbsh {
 			return;
 		}
 
-		if (!isControlChar(c)) {
-			out.push_back(c);
-			return;
-		}
+		if (isControlChar(c)) appendOctalByte(out, c);
+		else                  out.push_back(c);
+	}
 
-		char octal[8];
-		std::snprintf(octal, sizeof octal, "\\%03o", static_cast<unsigned char>(c));
-		out += octal;
+	static bool isStrayByte(const std::string& word, std::size_t i) {
+		if (static_cast<unsigned char>(word[i]) < 0x80) return false;
+
+		const Utf8Char decoded = decodeUtf8(word, i);
+		return decoded.length == 1 && decoded.code >= 0xDC80 && decoded.code <= 0xDCFF;
 	}
 
 	static std::string ansiCQuote(const std::string& word) {
 		std::string quoted = "$'";
-		for (const char c : word) appendAnsiCEscape(quoted, c);
+		for (std::size_t i = 0; i < word.size(); ++i) {
+			if (isStrayByte(word, i)) appendOctalByte(quoted, word[i]);
+			else                      appendAnsiCEscape(quoted, word[i]);
+		}
+
 		quoted.push_back('\'');
 		return quoted;
 	}
 
-	std::string shellQuoteAlways(const std::string& word) {
-		for (const char c : word) {
-			if (isControlChar(c)) return ansiCQuote(word);
+	bool needsAnsiCQuote(const std::string& word) {
+		for (std::size_t i = 0; i < word.size(); ++i) {
+			if (isControlChar(word[i]) || isStrayByte(word, i)) return true;
 		}
 
-		return shellQuoteSingle(word);
+		return false;
+	}
+
+	std::string shellQuoteAlways(const std::string& word) {
+		return needsAnsiCQuote(word) ? ansiCQuote(word) : shellQuoteSingle(word);
+	}
+
+	std::string printableName(const std::string& name) {
+		return needsAnsiCQuote(name) ? ansiCQuote(name) : name;
 	}
 
 	std::string shellQuoteForReuse(const std::string& word) {
 		if (word.empty()) return "''";
 		if (word == "'") return "\\'";
 
+		if (needsAnsiCQuote(word)) return ansiCQuote(word);
+
 		bool needs_quotes = false;
 		for (std::size_t i = 0; i < word.size(); ++i) {
-			if (isControlChar(word[i])) return ansiCQuote(word);
 			if (isQuotedShellChar(word, i)) needs_quotes = true;
 		}
 
@@ -408,15 +436,37 @@ namespace wbsh {
 		return true;
 	}
 
+	static bool isComputedExport(const std::string& name) {
+		return name == "BASHOPTS" || name == "SHELLOPTS" || name == "BASH_ARGV0";
+	}
+
+	// An exported SHELLOPTS, BASHOPTS or BASH_ARGV0 carries its value as
+	// the shell computes it now.
+	static void appendComputedExports(const Environment& env, std::vector<EnvEntry>& entries) {
+		if (env.isExported("BASH_ARGV0")) {
+			entries.push_back(EnvEntry{ utf8ToWide("BASH_ARGV0=" + env.shellName()), true });
+		}
+
+		if (env.isExported("SHELLOPTS")) {
+			entries.push_back(EnvEntry{ utf8ToWide("SHELLOPTS=" + env.enabledSetOptionNames()), true });
+		}
+
+		if (env.isExported("BASHOPTS")) {
+			entries.push_back(EnvEntry{ utf8ToWide("BASHOPTS=" + env.enabledShoptNames()), true });
+		}
+	}
+
 	static std::vector<EnvEntry> envEntries(const Environment& env, bool include_unexported) {
 		std::vector<EnvEntry> entries;
 		for (const auto& var : env.vars()) {
 			const bool exported = env.isExported(var.first);
+			if (isComputedExport(var.first)) continue;
 			if (!include_unexported && !exported) continue;
 
 			entries.push_back(EnvEntry{ utf8ToWide(var.first + "=" + var.second), exported });
 		}
 
+		appendComputedExports(env, entries);
 		return entries;
 	}
 
@@ -793,15 +843,32 @@ namespace wbsh {
 	}
 #endif  // _WIN32
 
-	static bool evalIntegerAttribute(void* context, const std::string& expr, long long& out) {
-		Expander& expander = *static_cast<Expander*>(context);
-		if (expander.failed()) return false;
-
-		out = expander.evalArith(expr);
+	static bool finishedOrReported(Expander& expander) {
 		if (!expander.failed()) return true;
 
 		if (!expander.fatalErrorPending()) reportExpanderError(expander);
 		return false;
+	}
+
+	// The value was expanded when it was assigned; bash expands nothing in
+	// it again, so `$(...)` there is an error rather than a command.
+	static bool evalIntegerAttribute(void* context, const std::string& expr, long long& out) {
+		Expander& expander = *static_cast<Expander*>(context);
+		if (expander.failed()) return false;
+
+		out = expander.evalArithLiteral(expr);
+		return finishedOrReported(expander);
+	}
+
+	// `printf -v 'a[$i]'` and the like: bash expands such a subscript again
+	// unless array_expand_once says not to.
+	static bool evalElementSubscript(void* context, const std::string& expr, long long& out) {
+		Expander& expander = *static_cast<Expander*>(context);
+		if (expander.failed()) return false;
+
+		const bool once = expander.environment().shopts().array_expand_once;
+		out = once ? expander.evalArithLiteral(expr) : expander.evalArith(expr);
+		return finishedOrReported(expander);
 	}
 
 	static std::atomic<bool> g_exec_exit_known{ false };
@@ -834,6 +901,7 @@ namespace wbsh {
 		: env_(env), expander_(env, this) {
 		stdout_started_as_pipe_ = fdIsPipe(1);
 		env_.setArithEvaluator(evalIntegerAttribute, &expander_);
+		env_.setSubscriptEvaluator(evalElementSubscript);
 		builtins_.reserve(kBuiltinTableSize);
 		registerCoreBuiltins(*this);
 		registerCoreutils(*this);
@@ -845,25 +913,62 @@ namespace wbsh {
 		return execNode(root);
 	}
 
+	// A command substitution's commands take their lines from the body
+	// as bash reprints it.
+	int Executor::nodeLine(const Node& node) const {
+		if (line_overrides_.empty()) return static_cast<int>(node.loc.line);
+
+		const auto found = line_overrides_.find(&node);
+		return found != line_overrides_.end() ? found->second : static_cast<int>(node.loc.line);
+	}
+
+	// Where the command's first word ends, the line bash gives the first
+	// command of a substitution in it.
+	int Executor::firstWordEndLine(const SimpleCommand& sc) const {
+		const std::string* first = nullptr;
+		if (!sc.assignments.empty()) first = &sc.assignments[0].value.raw;
+		else if (!sc.words.empty()) first = &sc.words[0].raw;
+
+		const int newlines = first == nullptr ? 0
+			: static_cast<int>(std::count(first->begin(), first->end(), '\n'));
+		return nodeLine(sc) + newlines;
+	}
+
+	// The body's parse errors and warnings count from the command's line.
+	int Executor::parseBaseLine() const {
+		const int lineno = env_.currentLineno();
+		return lineno > 0 ? lineno : 1;
+	}
+
+	int Executor::substitutionBaseLine() const {
+		return command_first_line_ > 0 ? command_first_line_ : parseBaseLine();
+	}
+
 	// A function, `eval` or `source` moves `$LINENO` into its own text;
 	// once it returns, the line is the caller's again, as an ERR trap
 	// for the call itself sees it.
 	int Executor::execNode(const Node& node) {
 		if (env_.noexec() && !env_.interactive()) return 0;
 		const bool tracks_line = nodeTracksLineno(node);
-		if (tracks_line) env_.setCurrentLineno(static_cast<int>(node.loc.line));
+		if (tracks_line) env_.setCurrentLineno(nodeLine(node));
 
+		const int outer_first_line = std::exchange(command_first_line_, 0);
 		const std::size_t proc_substs = procSubstWatermark();
 		const int status = dispatchNode(node);
 		releaseProcessSubstitutionsSince(proc_substs);
-		if (tracks_line) env_.setCurrentLineno(static_cast<int>(node.loc.line));
+		command_first_line_ = outer_first_line;
+		if (tracks_line) env_.setCurrentLineno(nodeLine(node));
 		exitOnFatalExpansionError();
 		discardAfterExpansionError();
 		return status;
 	}
 
+	// Inside a function bash leaves the line where it was for `select`.
 	bool Executor::nodeTracksLineno(const Node& node) const {
 		if (node.loc.line == 0) return false;
+		const bool select = node.kind == Node::Kind::ForClause
+			&& static_cast<const ForClause&>(node).is_select;
+		if (select && func_depth_ > 0) return false;
 
 		return frozen_lineno_source_ == nullptr || node.source_text != frozen_lineno_source_;
 	}
@@ -909,7 +1014,9 @@ namespace wbsh {
 			if (!announceLeaf(node)) return last_status_;
 			return finishLeafCommand(execDBracket(static_cast<const DBracketCond&>(node)));
 		case Node::Kind::ArithCommand:
-			announceCommand("((" + static_cast<const ArithCommand&>(node).expr + "))");
+			if (!announceCommand("((" + static_cast<const ArithCommand&>(node).expr + "))")) {
+				return last_status_;
+			}
 			if (flowPending()) return last_status_;
 			return finishLeafCommand(execArithCommand(static_cast<const ArithCommand&>(node)));
 		case Node::Kind::Coproc:
@@ -929,21 +1036,49 @@ namespace wbsh {
 		return source->substr(node.src_start, node.src_end - node.src_start);
 	}
 
-	void Executor::announceNode(const Node& node) {
-		if (trap_depth_ > 0) return;
-
-		announceCommand(nodeSourceSlice(node, source_text_));
+	// bash shows a job as it reprints the command.
+	static std::string backgroundJobText(const Node& node) {
+		const std::string printed = commandText(node);
+		return printed.empty() ? nodeSourceSlice(node, std::string()) : printed;
 	}
 
-	// False when the DEBUG trap left a flow signal and the command must not run.
+	bool Executor::announceNode(const Node& node) {
+		return announceCommand(nodeSourceSlice(node, source_text_));
+	}
+
+	// False when the DEBUG trap skipped the command or left a flow signal.
 	bool Executor::announceLeaf(const Node& node) {
-		announceNode(node);
-		return !flowPending();
+		return announceNode(node) && !flowPending();
 	}
 
 	int Executor::negateBangStatus(int status) {
 		status_judged_ = true;
 		return (status == 0) ? 1 : 0;
+	}
+
+	// Besides external programs, wbsh's built-in utilities (cat, sort,
+	// ...) are programs that bash forks.
+	bool Executor::runsAsProgram(const std::string& name) const {
+		if (isFunction(name)) return false;
+
+		const ManPage* page = findManPage(name);
+		return !isBuiltin(name) || page == nullptr || page->kind != ManKind::Shell;
+	}
+
+	// A compound command sets no line number of its own: as in bash, its
+	// redirection errors name the line the input was read through.
+	bool Executor::applyCompoundRedirections(const std::vector<Redirection>& redirs,
+			RedirState& state) {
+		if (redirs.empty()) return true;
+
+		const int line = env_.currentLineno();
+		if (func_depth_ == 0 && input_command_end_line_ > 0) {
+			env_.setCurrentLineno(input_command_end_line_);
+		}
+
+		const bool applied = applyRedirectionsOrUndo(redirs, state);
+		if (applied) env_.setCurrentLineno(line);
+		return applied;
 	}
 
 	bool Executor::applyRedirectionsOrUndo(const std::vector<Redirection>& redirs,
@@ -955,7 +1090,9 @@ namespace wbsh {
 
 	void Executor::runBody(const Node* body, int& status) {
 		const int result = (body != nullptr) ? execNode(*body) : 0;
-		if (!flowPending()) status = result;
+		const bool carries_status = flow_.kind == FlowSignal::Kind::Break
+			|| flow_.kind == FlowSignal::Kind::Continue || flow_.kind == FlowSignal::Kind::Discard;
+		if (!flowPending() || carries_status) status = result;
 	}
 
 #ifdef _WIN32
@@ -977,28 +1114,55 @@ namespace wbsh {
 		return false;
 	}
 
-	// The shell's ends become descriptors above the ones scripts use for
-	// themselves, as bash's do.
-	static int shellFdFor(HANDLE handle, int flags) {
+	// bash moves all four pipe ends to the highest free descriptors below
+	// 64 and keeps the first (the read end) and the last (the write end).
+	static std::vector<int> highestFreeFds(std::size_t count) {
+		static const int kHighFdLimit = 64;
+
+		std::vector<int> fds;
+		for (int fd = kHighFdLimit - 1; fd >= 0 && fds.size() < count; --fd) {
+			if (_get_osfhandle(fd) == -1) fds.push_back(fd);
+		}
+
+		return fds;
+	}
+
+	static int shellFdFor(HANDLE handle, int flags, int target) {
 		const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(handle), flags | _O_BINARY);
 		if (fd < 0) {
 			::CloseHandle(handle);
 			return -1;
 		}
 
-		const int high = dupAboveUserFds(fd);
+		const int high = target >= 0 && _dup2(fd, target) == 0 ? target : dupAboveUserFds(fd);
 		_close(fd);
+		if (high >= 0) keepFdFromChildren(high);
 		return high;
+	}
+
+	void Executor::publishCoprocArray(const std::string& name, int read_fd, int write_fd) {
+		if (env_.isReadonly(name)) {
+			shellErrorf("%s: readonly variable\n", name.c_str());
+			return;
+		}
+
+		env_.dropUnboundNameref(name);
+		env_.setIndexedArrayFromList(name, { std::to_string(read_fd), std::to_string(write_fd) });
 	}
 
 	void Executor::publishCoproc(const std::string& name, const CoprocPipes& pipes,
 	                             HANDLE process) {
-		const int read_fd = shellFdFor(pipes.shell_read, _O_RDONLY);
-		const int write_fd = shellFdFor(pipes.shell_write, _O_WRONLY);
-		env_.setIndexedArrayFromList(name, { std::to_string(read_fd), std::to_string(write_fd) });
+		static const std::size_t kPipeEnds = 4;
+
+		const std::vector<int> high = highestFreeFds(kPipeEnds);
+		const bool fits = high.size() == kPipeEnds;
+		const int read_fd = shellFdFor(pipes.shell_read, _O_RDONLY, fits ? high.front() : -1);
+		const int write_fd = shellFdFor(pipes.shell_write, _O_WRONLY, fits ? high.back() : -1);
+		publishCoprocArray(name, read_fd, write_fd);
 
 		const long long pid = static_cast<long long>(::GetProcessId(process));
-		env_.set(name + "_PID", std::to_string(pid));
+		coproc_ = { name, read_fd, write_fd, pid };
+		if (env_.readonlySet().count(name + "_PID") == 0) env_.set(name + "_PID", std::to_string(pid));
 		env_.setLastBgPid(pid);
 
 		const int job_id = registerJob(process, pid, "coproc " + name);
@@ -1007,7 +1171,14 @@ namespace wbsh {
 
 	// The coprocess reads what the shell writes to NAME[1] and writes what
 	// the shell reads from NAME[0]; it runs asynchronously, like `&`.
+	static bool isLoopVariableName(const std::string& name);
+
 	int Executor::execCoproc(const CoprocCommand& coproc) {
+		if (!isLoopVariableName(coproc.name)) {
+			shellErrorf("`%s': not a valid identifier\n", coproc.name.c_str());
+			return 1;
+		}
+
 		CoprocPipes pipes;
 		if (coproc.command == nullptr || !createCoprocPipes(pipes)) {
 			shellErrorf("coproc: cannot create pipes\n");
@@ -1051,7 +1222,7 @@ namespace wbsh {
 		}
 
 		const long long pid = static_cast<long long>(::GetProcessId(process));
-		const int job_id = registerJob(process, pid, nodeSourceSlice(cmd, std::string()));
+		const int job_id = registerJob(process, pid, backgroundJobText(cmd));
 		jobs_.back().group = group;
 		env_.setLastBgPid(pid);
 		if (env_.interactive()) std::fprintf(stderr, "[%d] %lld\n", job_id, pid);
@@ -1066,13 +1237,18 @@ namespace wbsh {
 		return true;
 	}
 
+	static int lastLineOf(const Node& node);
+
 	int Executor::execList(const List& list) {
 		int status = 0;
 		for (std::size_t index = 0; index < list.items.size(); ++index) {
 			if (stopForCtrlC(status)) return status;
 
 			const ListItem& item = list.items[index];
-			if (&list == input_echo_.list) echoInputBefore(list, index);
+			if (&list == input_echo_.list) {
+				echoInputBefore(list, index);
+				input_command_end_line_ = lastLineOf(*item.command);
+			}
 
 			status_judged_ = false;
 #ifdef _WIN32
@@ -1082,15 +1258,17 @@ namespace wbsh {
 			status = execNode(*item.command);
 #endif
 			// As in bash, a line dropped after an expansion error neither
-			// fires the ERR trap nor ends the shell under set -e.
+			// fires the ERR trap nor ends the shell under set -e, and fails
+			// with the status its error set, else 1.
 			const bool dropped = dropRestOfInputLine(list, index);
-			if (dropped) status = 1;
+			if (dropped && status == 0) status = 1;
 			if (flowPending()) return status;
 			setLastStatus(status);
 			handlePendingSignals();
 			if (flowPending()) return status;
 
 			if (!dropped && !item.background && handleCommandFailure(status)) return status;
+			if (stopToRelex(list, index)) return status;
 		}
 
 		return status;
@@ -1098,6 +1276,7 @@ namespace wbsh {
 
 	static std::size_t inputReadThrough(const List& list, std::size_t index,
 			const std::string& text);
+	static std::size_t commandLineEnd(const Node& command, const std::string& text);
 
 	// The input list takes a Discard: it skips the other items that start
 	// before the end of the line, as bash had read them with this one.
@@ -1110,6 +1289,26 @@ namespace wbsh {
 			++index;
 		}
 
+		return true;
+	}
+
+	// bash reads a line at a time, so the posix option and aliases a line
+	// changes count from the next line on: the rest of the input is lexed
+	// again.
+	bool Executor::stopToRelex(const List& list, std::size_t index) {
+		if (&list != input_echo_.list) return false;
+
+		const bool posix_changed = env_.options().posix != input_echo_.lexed_posix;
+		if (!posix_changed && aliasState() == input_echo_.lexed_aliases) return false;
+
+		const bool more_items = index + 1 < list.items.size();
+		const std::size_t line_end = more_items
+			? inputReadThrough(list, index, *input_echo_.text)
+			: commandLineEnd(*list.items[index].command, *input_echo_.text);
+		if (more_items && list.items[index + 1].command->loc.offset < line_end) return false;
+		if (line_end >= input_echo_.text->size()) return false;
+
+		relex_offset_ = line_end;
 		return true;
 	}
 
@@ -1503,7 +1702,10 @@ namespace wbsh {
 		HistoryList history = history_;
 		const std::size_t hidden = hideSavedFds(state);
 		SubshellScope snap = enterSubshell();
+		env_.setSubshellLevel(env_.subshellLevel() - 1);
+		enterInheritedStage(stage);
 		const int status = endSubshell(execNode(stage));
+		stage_function_bump_ = false;
 		leaveSubshell(snap);
 		showHiddenFds(hidden);
 		history_ = std::move(history);
@@ -1801,6 +2003,7 @@ namespace wbsh {
 		if (last_status != 0) overrides.emplace_back("WBSH_STATUS", std::to_string(last_status));
 		overrides.emplace_back("WBSH_SHELL_PID", std::to_string(env.shellPid()));
 		overrides.emplace_back("WBSH_PPID", env.get("PPID"));
+		overrides.emplace_back("WBSH_SUBSHELL_LEVEL", std::to_string(env.subshellLevel()));
 		const char letter = env.invocationLetter();
 		if (letter != 0) overrides.emplace_back("WBSH_INVOCATION", std::string(1, letter));
 	}
@@ -1878,6 +2081,7 @@ namespace wbsh {
 
 		const std::string functions = serializeFunctions();
 		if (!functions.empty()) overrides.emplace_back("WBSH_FUNCTIONS", functions);
+		appendExportedFunctions(overrides);
 		const std::string function_files = serializeFunctionFiles();
 		if (!function_files.empty()) overrides.emplace_back("WBSH_FUNCTION_FILES", function_files);
 		overrides.emplace_back("WBSH_LINENO", std::to_string(env_.currentLineno()));
@@ -1897,6 +2101,7 @@ namespace wbsh {
 		if (!traps.empty()) overrides.emplace_back("WBSH_TRAPS", traps);
 		const std::string dir_stack = joinLines(dir_stack_);
 		if (!dir_stack.empty()) overrides.emplace_back("WBSH_DIRSTACK", dir_stack);
+		if (canReturn()) overrides.emplace_back("WBSH_RETURNABLE", "1");
 
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
@@ -2141,8 +2346,9 @@ namespace wbsh {
 		}
 
 		const NameValueList no_assignments;
-		SpawnCommand command = makeSpawnCommand(
-			prepareExternalArgv(argv, exec_path, no_assignments), exec_path,
+		std::vector<std::string> child_argv = prepareExternalArgv(argv, exec_path, no_assignments);
+		if (!placement.argv0.empty()) child_argv[0] = placement.argv0;
+		SpawnCommand command = makeSpawnCommand(std::move(child_argv), exec_path,
 			buildEnvBlock(env_, prepareExternalEnvOverrides(no_assignments)));
 		if (reportSpawnCommandError(command, argv[0])) return INVALID_HANDLE_VALUE;
 
@@ -2305,7 +2511,33 @@ namespace wbsh {
 
 	void Executor::saveFd(RedirState& state, int fd) const {
 		if (fd == 1) ++stdout_redirects_;
-		state.saved.push_back({ fd, dupAboveUserFds(fd) });
+		evacuateSavedCopy(fd);
+		const int copy = dupAboveUserFds(fd);
+		if (copy >= 0) saved_copies_.insert(copy);
+		state.saved.push_back({ fd, copy });
+	}
+
+	void Executor::evacuateSavedCopy(int fd) const {
+		if (saved_copies_.erase(fd) == 0) return;
+
+		const int moved = dupAboveUserFds(fd);
+		saved_copies_.insert(moved);
+		moved_saved_copies_[fd] = moved;
+	}
+
+	// Where the copy saved as @p copy is now; it is no longer tracked. The
+	// numbers it left go into @p vacated: as in bash, undoing the
+	// redirection closes them too.
+	int Executor::takeSavedCopy(int copy, std::vector<int>* vacated) const {
+		for (auto moved = moved_saved_copies_.find(copy); moved != moved_saved_copies_.end();
+				moved = moved_saved_copies_.find(copy)) {
+			if (vacated != nullptr) vacated->push_back(copy);
+			copy = moved->second;
+			moved_saved_copies_.erase(moved);
+		}
+
+		saved_copies_.erase(copy);
+		return copy;
 	}
 
 	int Executor::dupSpecialDevFd(const std::string& path) {
@@ -2406,15 +2638,91 @@ namespace wbsh {
 		return fd;
 	}
 
+	static DWORD redirAccess(int flags) {
+		if ((flags & _O_RDWR) != 0) return GENERIC_READ | GENERIC_WRITE;
+		if ((flags & _O_WRONLY) != 0) return GENERIC_WRITE;
+		return GENERIC_READ;
+	}
+
+	static DWORD redirDisposition(int flags) {
+		const bool create = (flags & _O_CREAT) != 0;
+		const bool truncate = (flags & _O_TRUNC) != 0;
+		if (create && (flags & _O_EXCL) != 0) return CREATE_NEW;
+		if (create && truncate) return CREATE_ALWAYS;
+		if (create) return OPEN_ALWAYS;
+		if (truncate) return TRUNCATE_EXISTING;
+		return OPEN_EXISTING;
+	}
+
+	// The same errno values _wopen derives from these Win32 errors.
+	static int errnoOfOpenError(DWORD error) {
+		switch (error) {
+			case ERROR_FILE_NOT_FOUND:
+			case ERROR_PATH_NOT_FOUND:
+			case ERROR_INVALID_NAME:
+			case ERROR_INVALID_DRIVE:
+			case ERROR_BAD_NETPATH:
+				return ENOENT;
+			case ERROR_FILE_EXISTS:
+			case ERROR_ALREADY_EXISTS:
+				return EEXIST;
+			case ERROR_ACCESS_DENIED:
+			case ERROR_SHARING_VIOLATION:
+			case ERROR_LOCK_VIOLATION:
+			case ERROR_WRITE_PROTECT:
+				return EACCES;
+			case ERROR_TOO_MANY_OPEN_FILES:
+				return EMFILE;
+			default:
+				return EINVAL;
+		}
+	}
+
+	static bool isDirectoryPath(const std::wstring& path) {
+		const DWORD attributes = ::GetFileAttributesW(path.c_str());
+		return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+	}
+
+	// _wopen leaves out FILE_SHARE_DELETE, so a script could not remove a
+	// file it still has open, as it can on POSIX (`exec 3<f; rm f`).
+	static int openSharingDelete(const std::wstring& path, int flags) {
+		SECURITY_ATTRIBUTES inherit = { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+		const HANDLE file = ::CreateFileW(path.c_str(), redirAccess(flags),
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			(flags & _O_NOINHERIT) != 0 ? nullptr : &inherit, redirDisposition(flags),
+			FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE) {
+			const DWORD error = ::GetLastError();
+			errno = isDirectoryPath(path) ? EISDIR : errnoOfOpenError(error);
+			return -1;
+		}
+
+		const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(file),
+			(flags & (_O_WRONLY | _O_RDWR)) | _O_BINARY);
+		if (fd < 0) ::CloseHandle(file);
+		return fd;
+	}
+
 	int Executor::openProcRedirSource(const std::string& path, int flags) const {
 		const ProcNode node = lookupProcPath(path_conv_, path, true);
 		if (node.type == ProcType::Outside) return openRedirSourceFd(node.target, flags);
 		return openProcNode(path_conv_, node, flags);
 	}
 
+	// Without a console there is no terminal to open, which Linux reports
+	// as ENXIO.
+	static int openTerminal(int flags) {
+		const bool read_only = (flags & (_O_WRONLY | _O_RDWR)) == 0;
+		const int fd = openSharingDelete(read_only ? L"CONIN$" : L"CONOUT$", flags);
+		if (fd < 0) errno = ENXIO;
+		return fd;
+	}
+
 	int Executor::openRedirSourceFd(const std::string& path, int flags) const {
 		int fd = dupSpecialDevFd(path);
 		if (fd >= 0) return fd;
+
+		if (path == "/dev/tty") return openTerminal(flags);
 
 		if (isGeneratorDevice(path) && !opensForWriting(flags)) return openGeneratorDevice(path);
 		if (isGeneratorDevice(path)) return _wopen(L"NUL", flags | _O_BINARY, _S_IREAD | _S_IWRITE);
@@ -2428,7 +2736,7 @@ namespace wbsh {
 
 		const std::wstring win_path = utf8ToFileWide(win32);
 		if ((flags & _O_APPEND) != 0) return openAppendOnly(win_path);
-		return _wopen(win_path.c_str(), flags | _O_BINARY, _S_IREAD | _S_IWRITE);
+		return openSharingDelete(win_path, flags);
 	}
 
 	bool Executor::redirectFdFromPath(const std::string& path, int flags,
@@ -2507,6 +2815,23 @@ namespace wbsh {
 	bool Executor::applyAmpRedir(const Redirection& redir, int extra_flags, RedirState& state) {
 		std::string path;
 		if (!expandRedirTarget(redir.target, path)) return false;
+		return redirectOutputAndErrors(path, extra_flags, state);
+	}
+
+	// As bash: `>&word` with no fd in front and no number in the word is
+	// `&>word`; any other word that names no descriptor is ambiguous.
+	bool Executor::applyDupWord(const Redirection& redir, const std::string& word,
+			RedirState& state) {
+		const bool output_and_errors = redir.op == RedirOp::GreatAnd && redir.fd < 0
+			&& redir.fd_variable.empty() && !word.empty();
+		if (output_and_errors) return redirectOutputAndErrors(word, _O_TRUNC, state);
+
+		shellErrorf("%s: ambiguous redirect\n", word.empty() ? redir.target.raw.c_str() : word.c_str());
+		return false;
+	}
+
+	bool Executor::redirectOutputAndErrors(const std::string& path, int extra_flags,
+			RedirState& state) {
 		if ((extra_flags & _O_TRUNC) != 0 && refusesClobber(path)) return false;
 
 		saveFd(state, 1);
@@ -2538,17 +2863,16 @@ namespace wbsh {
 		if (!expandRedirTarget(redir.target, spec)) return false;
 
 		if (spec == "-") {
-			saveFd(state, target);
-			beforeRepointing(target);
-			_close(target);
+			closeRedirFd(target, state);
 			return true;
 		}
 
+		const bool moves = spec.size() > 1 && spec.back() == '-';
+		if (moves) spec.pop_back();
+
 		int from_fd = 0;
-		if (!parseInt(spec, from_fd)) {
-			shellErrorf("%s: bad fd\n", spec.c_str());
-			return false;
-		}
+		const bool number = !spec.empty() && spec.find_first_not_of("0123456789") == std::string::npos;
+		if (!number || !parseInt(spec, from_fd)) return applyDupWord(redir, spec, state);
 
 		// bash treats `N>&N` as a no-op, even when N is closed. `{v}>&N` only
 		// looks like one when N is closed, because then N is the free fd
@@ -2558,19 +2882,89 @@ namespace wbsh {
 		// Checked before the save, which could otherwise land on a closed
 		// from_fd and be duplicated in its place.
 		if (!fdIsOpen(from_fd) || savedFdHidden(from_fd)) {
-			shellErrorf("%d: Bad file descriptor\n", from_fd);
+			reportBadDupSource(redir, target);
 			return false;
 		}
 
 		saveFd(state, target);
 		beforeRepointing(target);
-		if (_dup2(from_fd, target) == 0) {
-			afterRepointing(target);
-			return true;
+		if (_dup2(from_fd, target) != 0) {
+			reportBadDupSource(redir, target);
+			return false;
 		}
 
-		shellErrorf("%d: Bad file descriptor\n", from_fd);
-		return false;
+		afterRepointing(target);
+		if (moves) closeRedirFd(from_fd, state);
+		return true;
+	}
+
+	void Executor::closeRedirFd(int fd, RedirState& state) {
+		saveFd(state, fd);
+		beforeRepointing(fd);
+		_close(fd);
+		forgetCoprocFd(fd);
+	}
+
+	void Executor::noteJobEnded(long long pid) {
+		noteChildExited();
+		if (pid != 0 && pid == coproc_.pid) disposeCoproc();
+	}
+
+	// bash closes a coproc's descriptors and unsets NAME and NAME_PID once
+	// it has reaped the coproc.
+	void Executor::disposeCoproc() {
+		for (const int fd : { coproc_.read_fd, coproc_.write_fd }) {
+			if (fd < 0) continue;
+
+			beforeRepointing(fd);
+			_close(fd);
+		}
+
+		if (env_.isReadonly(coproc_.name)) {
+			shellErrorf("%s: cannot unset: readonly variable\n", coproc_.name.c_str());
+		} else {
+			env_.unset(coproc_.name);
+		}
+
+		env_.clearReadonly(coproc_.name + "_PID");
+		env_.unset(coproc_.name + "_PID");
+		coproc_ = CoprocFds();
+	}
+
+	// As in bash, NAME[0] or NAME[1] of the last coproc turns -1 once a
+	// redirection closes or moves that descriptor.
+	void Executor::forgetCoprocFd(int fd) {
+		if (coproc_.name.empty()) return;
+
+		if (fd == coproc_.read_fd) {
+			coproc_.read_fd = -1;
+			env_.setIndexedElement(coproc_.name, 0, "-1");
+		}
+
+		if (fd == coproc_.write_fd) {
+			coproc_.write_fd = -1;
+			env_.setIndexedElement(coproc_.name, 1, "-1");
+		}
+	}
+
+	static bool isDigits(const std::string& text) {
+		return !text.empty() && std::all_of(text.begin(), text.end(), [](char c) {
+			return std::isdigit(static_cast<unsigned char>(c)) != 0;
+		});
+	}
+
+	// bash names a literal fd, else the word as written when it duplicates
+	// onto the default fd, else the fd it duplicates onto.
+	static std::string badDupSourceName(const Redirection& redir, int target) {
+		if (isDigits(redir.target.raw)) return redir.target.raw;
+
+		const int default_fd = redir.op == RedirOp::LessAnd ? 0 : 1;
+		if (target == default_fd && redir.fd_variable.empty()) return redir.target.raw;
+		return std::to_string(target);
+	}
+
+	void Executor::reportBadDupSource(const Redirection& redir, int target) {
+		shellErrorf("%s: Bad file descriptor\n", badDupSourceName(redir, target).c_str());
 	}
 
 	bool Executor::installRedirFromTempBody(std::string body, int target, RedirState& state) {
@@ -2606,7 +3000,7 @@ namespace wbsh {
 
 	bool Executor::applyHeredocRedir(const Redirection& redir, int target, RedirState& state) {
 		warnHeredocAtEof(redir);
-		std::string body = expander_.expandHeredoc(redir.heredoc_body, redir.heredoc_quoted);
+		std::string body = expander_.expandHeredocBody(redir.heredoc_body, redir.heredoc_quoted);
 		if (expander_.failed()) {
 			reportExpanderError(expander_);
 			return false;
@@ -2703,18 +3097,43 @@ namespace wbsh {
 		}
 
 		const int fd = lowestFreeFdFrom(kFirstSavedFd);
+		if (refusesFdAtLimit(fd, redir)) return false;
 		if (!applyRedirection(redir, fd, state)) return false;
 
+		if (!env_.shopts().varredir_close) forgetSavedFd(state.saved, fd);
+		if (assignFdVariable(redir.fd_variable, fd)) return true;
+
 		forgetSavedFd(state.saved, fd);
-		assignFdVariable(redir.fd_variable, fd);
+		beforeRepointing(fd);
+		_close(fd);
+		shellErrorf("%s: cannot assign fd to variable\n", redir.fd_variable.c_str());
+		return false;
+	}
+
+	// bash opens the file and then fails to move it up to @p fd.
+	bool Executor::refusesFdAtLimit(int fd, const Redirection& redir) {
+		if (open_file_limit_ < 0 || fd < open_file_limit_) return false;
+
+		std::string target;
+		if (!expandRedirTarget(redir.target, target)) return true;
+
+		shellErrorWithoutLine("redirection error: cannot duplicate fd: Invalid argument");
+		shellErrorf("%s: Invalid argument\n", target.c_str());
 		return true;
 	}
 
+	// Read without expansion, so `set -u` does not stop at an unset name.
+	std::string Executor::fdVariableValue(const std::string& variable) {
+		if (variable.find('[') == std::string::npos) return env_.get(variable);
+
+		return expander_.expandHeredoc("${" + variable + "}", false);
+	}
+
 	bool Executor::closeFdVariable(const std::string& variable) {
-		const std::string value = expander_.expandHeredoc("${" + variable + "}", false);
+		const std::string value = fdVariableValue(variable);
 		int fd = -1;
 		if (!parseInt(value, fd) || fd < 0) {
-			shellErrorf("%s: invalid file descriptor\n", variable.c_str());
+			shellErrorf("%s: ambiguous redirect\n", variable.c_str());
 			return false;
 		}
 
@@ -2723,11 +3142,14 @@ namespace wbsh {
 		return true;
 	}
 
-	void Executor::assignFdVariable(const std::string& variable, int fd) {
+	bool Executor::assignFdVariable(const std::string& variable, int fd) {
 		const std::size_t open = variable.find('[');
 		if (open == std::string::npos) {
-			env_.set(variable, std::to_string(fd));
-			return;
+			const std::string text = std::to_string(fd);
+			if (env_.rejectsRefTarget(variable, text)) return false;
+
+			env_.set(variable, text);
+			return !env_.isReadonly(variable);
 		}
 
 		const std::string name = variable.substr(0, open);
@@ -2735,10 +3157,11 @@ namespace wbsh {
 		if (env_.isAssocArray(name)) {
 			env_.setAssocElement(name, expander_.expandHeredoc(subscript, false),
 				std::to_string(fd));
-			return;
+		} else {
+			env_.setIndexedElement(name, expander_.evalArith(subscript), std::to_string(fd));
 		}
 
-		env_.setIndexedElement(name, expander_.evalArith(subscript), std::to_string(fd));
+		return !env_.isReadonly(name);
 	}
 
 	static void restoreSavedFd(int fd, int backup) {
@@ -2756,27 +3179,46 @@ namespace wbsh {
 	void Executor::undoRedirections(RedirState& state) {
 		std::fflush(stdout);
 		std::fflush(stderr);
+		std::vector<int> vacated;
 		for (auto it = state.saved.rbegin(); it != state.saved.rend(); ++it) {
-			restoreSavedFd(it->first, it->second);
+			const int copy = it->second < 0 ? it->second : takeSavedCopy(it->second, &vacated);
+			restoreSavedFd(it->first, copy);
 			if (it->first == 1) --stdout_redirects_;
 		}
+
+		for (const int fd : vacated) _close(fd);
 
 		state.saved.clear();
 		for (const auto& temp_path : state.temps) removeFile(temp_path);
 		state.temps.clear();
 	}
 
+	// An unquoted word that expands to nothing is dropped, as in bash.
+	static void appendAssocListWord(Expander& expander, const Word& word,
+			Executor::ArrayAssign& array) {
+		std::string value = expander.expandAssignmentValue(word);
+		const bool quoted = word.raw.find_first_of("'\"") != std::string::npos;
+		if (value.empty() && !quoted) return;
+
+		array.items.push_back({ false, std::string(), std::move(value), false, word.raw });
+	}
+
+	// An associative array's key-value list is expanded word by word,
+	// without splitting, as bash does.
 	static Executor::ArrayAssign expandArrayAssign(Expander& expander,
 	                                               const Assignment& assignment) {
 		Executor::ArrayAssign array;
 		array.name = assignment.name;
 		array.append = assignment.append;
+		const bool assoc = expander.environment().isAssocArray(assignment.name);
 		for (const auto& item : assignment.keyed_items) {
 			if (item.has_key) {
 				array.sparse = true;
 				std::string key = expander.expandStringValue(item.key);
 				std::string value = expander.expandAssignmentValue(item.value);
 				array.items.push_back({ true, std::move(key), std::move(value), item.append });
+			} else if (assoc) {
+				appendAssocListWord(expander, item.value, array);
 			} else {
 				for (std::string& field : expander.expandWord(item.value)) {
 					array.items.push_back({ false, std::string(), std::move(field) });
@@ -2807,7 +3249,32 @@ namespace wbsh {
 		return scalar;
 	}
 
+	static std::string expandedArrayItem(Expander& expander, const Assignment::Keyed& item) {
+		const std::string value = expander.expandStringValue(item.value);
+		if (!item.has_key) return value;
+
+		const std::string op = item.append ? "+=" : "=";
+		return "[" + expander.expandStringValue(item.key) + "]" + op + value;
+	}
+
+	// `eval a=(x "$y")` hands eval the text with each item expanded but not
+	// split, as bash does.
+	static std::string expandedCompoundText(Expander& expander, const Assignment& assignment) {
+		std::string text = assignment.name + (assignment.append ? "+=(" : "=(");
+		for (std::size_t k = 0; k < assignment.keyed_items.size(); ++k) {
+			if (k != 0) text.push_back(' ');
+			text += expandedArrayItem(expander, assignment.keyed_items[k]);
+		}
+
+		return text + ")";
+	}
+
 	std::string Executor::expandDeclarationArg(const DeclarationArg& arg) {
+		if (arg.expands_items) {
+			return expandedCompoundText(expander_, arg.assignment)
+				+ expander_.expandStringValue(arg.trailing);
+		}
+
 		if (!arg.compound_text.empty()) return arg.compound_text;
 
 		const Assignment& assignment = arg.assignment;
@@ -2828,8 +3295,24 @@ namespace wbsh {
 		return &sc.declaration_args[cursor++];
 	}
 
+	// A word typed as `name[...]`, unquoted: bash's W_ARRAYREF, which lets
+	// read, printf -v and wait -p take an associative key as it comes.
+	static bool typedAsArrayReference(const std::string& raw) {
+		if (raw.empty() || !(std::isalpha(static_cast<unsigned char>(raw[0])) || raw[0] == '_')) {
+			return false;
+		}
+
+		std::size_t i = 1;
+		while (i < raw.size() && (std::isalnum(static_cast<unsigned char>(raw[i])) || raw[i] == '_')) {
+			++i;
+		}
+
+		return i < raw.size() && raw[i] == '[' && raw.back() == ']';
+	}
+
 	bool Executor::expandSimpleCmdArgv(const SimpleCommand& sc, std::vector<std::string>& argv,
 	                                   std::vector<bool>& compound) {
+		array_ref_words_.clear();
 		std::size_t cursor = 0;
 		for (std::size_t i = 0; i < sc.words.size(); ++i) {
 			const DeclarationArg* declaration = declarationArgAt(sc, i, cursor);
@@ -2842,6 +3325,10 @@ namespace wbsh {
 			}
 
 			if (flowPending()) return false;
+			if (typedAsArrayReference(sc.words[i].raw) && fields.size() == 1) {
+				array_ref_words_.push_back(fields[0]);
+			}
+
 			appendFields(argv, fields);
 
 			compound.resize(argv.size(), false);
@@ -2849,34 +3336,6 @@ namespace wbsh {
 		}
 
 		return true;
-	}
-
-	static std::vector<std::string> aliasReplacementWords(Expander& expander,
-	                                                      const std::string& alias_value) {
-		Lexer lexer(alias_value);
-		std::vector<Token> tokens = lexer.tokenize();
-
-		std::vector<std::string> replacement;
-		for (auto& token : tokens) {
-			if (token.kind != TokKind::Word) continue;
-
-			// Tokens are local and visited once — steal instead of
-			// deep-copying the segment list.
-			Word word;
-			word.segments = std::move(token.segments);
-			word.raw = std::move(token.text);
-
-			std::vector<std::string> fields = expander.expandWord(word);
-			if (expander.failed()) {
-				expander.takeError();
-				replacement.push_back(word.raw);   // token.text was moved into word.raw
-				continue;
-			}
-
-			appendFields(replacement, fields);
-		}
-
-		return replacement;
 	}
 
 	static bool isAssignmentWord(const std::string& word) {
@@ -2893,98 +3352,18 @@ namespace wbsh {
 		});
 	}
 
-	static bool isReservedWordName(const std::string& word) {
-		static const char* const kReserved[] = {
-			"!", "case", "coproc", "for", "function", "if", "select", "time", "until", "while",
-			"{", "[[",
-		};
-
-		for (const char* reserved : kReserved) {
-			if (word == reserved) return true;
-		}
-
-		return false;
-	}
-
-	static bool isTokenWordOnly(const Token& token) {
-		return token.kind == TokKind::Word || token.kind == TokKind::EndOfInput;
-	}
-
-	// An alias value that is more than a list of plain words: an operator,
-	// a newline, an assignment or a reserved word up front.
-	static bool aliasNeedsParsing(const std::string& alias_value) {
-		Lexer lexer(alias_value);
-		const std::vector<Token> tokens = lexer.tokenize();
-		if (!std::all_of(tokens.begin(), tokens.end(), isTokenWordOnly)) return true;
-		if (tokens.empty() || tokens[0].kind != TokKind::Word) return false;
-
-		const std::string& first = tokens[0].text;
-		return isAssignmentWord(first) || isReservedWordName(first);
-	}
-
-	static bool endsInBlank(const std::string& text) {
-		return !text.empty() && (text.back() == ' ' || text.back() == '\t');
-	}
-
-	// Only a word typed as the alias name expands: not `\ls`, `'ls'` or `$cmd`.
-	bool Executor::isAliasCandidate(const Word& word, const std::string& field) const {
-		return word.raw == field && isAlias(field);
-	}
-
-	// bash reads an alias value as input again, so its first word can be an
-	// alias in turn. When the outermost value ends in a blank, or nothing is
-	// left of it, the word after it is a candidate too.
-	bool Executor::expandAliasAt(std::vector<std::string>& argv, std::size_t& pos) {
-		const bool trailing_blank = endsInBlank(aliasValue(argv[pos]));
-		std::size_t words = 1;
-		std::unordered_set<std::string> seen;
-		while (words > 0 && isAlias(argv[pos]) && seen.insert(argv[pos]).second) {
-			const std::vector<std::string> replacement =
-				aliasReplacementWords(expander_, aliasValue(argv[pos]));
-
-			const auto first = argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(pos));
-			argv.insert(first, replacement.begin(), replacement.end());
-			words = words - 1 + replacement.size();
-		}
-
-		pos += words;
-		return trailing_blank || words == 0;
-	}
-
-	// bash reads an alias value as input again; one with shell syntax in it
-	// (`m=(x)`, `a | b`, `x=1; y`) is parsed with the rest of the command.
-	bool Executor::runParsedAlias(const SimpleCommand& sc, const std::vector<std::string>& argv,
-	                              int& status) {
-		if (!env_.expand_aliases() || !sc.assignments.empty() || sc.words.empty()) return false;
-		if (argv.empty() || !isAliasCandidate(sc.words[0], argv[0])) return false;
-
-		const std::string value = aliasValue(argv[0]);
-		if (!aliasNeedsParsing(value)) return false;
-
-		const std::string text = nodeSourceSlice(sc, source_text_);
-		const std::size_t name_at = text.find(argv[0]);
-		if (name_at == std::string::npos) return false;
-
-		const std::string rest = text.substr(name_at + argv[0].size());
-		status = executeText(value + rest, "alias", sc.loc.line);
-		return true;
-	}
-
-	void Executor::aliasExpandArgvHead(const SimpleCommand& sc, std::vector<std::string>& argv) {
-		if (!env_.expand_aliases()) return;
-
-		std::size_t pos = 0;
-		for (const Word& word : sc.words) {
-			if (pos >= argv.size() || !isAliasCandidate(word, argv[pos])) return;
-			if (!expandAliasAt(argv, pos)) return;
-		}
-	}
-
 	int Executor::execBareRedirsForExec(const std::vector<Redirection>& redirs) {
 		traceText("exec");
 		const std::size_t proc_substs = procSubstWatermark();
 		RedirState state;
-		if (!applyRedirectionsOrUndo(redirs, state)) return 1;
+		const std::string outer = env_.assigningCommand();
+		env_.setAssigningCommand("exec");
+		const bool applied = applyRedirectionsOrUndo(redirs, state);
+		env_.setAssigningCommand(outer);
+		if (!applied) {
+			if (posixErrorsExit()) raiseExit(1);
+			return 1;
+		}
 
 		keepExecRedirs(state);
 		keepProcessSubstitutionsSince(proc_substs);
@@ -2994,7 +3373,7 @@ namespace wbsh {
 	void Executor::keepExecRedirs(const RedirState& state) {
 		if (exec_redir_journal_.empty()) {
 			for (const auto& saved : state.saved) {
-				if (saved.second >= 0) _close(saved.second);
+				if (saved.second >= 0) _close(takeSavedCopy(saved.second));
 			}
 
 			return;
@@ -3055,7 +3434,7 @@ namespace wbsh {
 	// drops the rest of the line.
 	static bool evalSubscriptOrReport(Expander& expander, const std::string& subscript,
 	                                  long long& index) {
-		index = expander.evalArith(subscript);
+		index = expander.evalArithLiteral(subscript);
 		if (!expander.failed()) return true;
 
 		reportExpanderError(expander);
@@ -3068,12 +3447,15 @@ namespace wbsh {
 		return item.append ? env.appendedTo(name, current, item.value) : item.value;
 	}
 
+	static bool evalItemIndex(Expander& expander, const Executor::ArrayItem& item,
+	                          long long& index);
+
 	static void appendToIndexedArray(Environment& env, Expander& expander,
 	                                 const Executor::ArrayAssign& array) {
 		long long next_index = nextIndexedAppendSlot(env, array.name);
 		for (const auto& item : array.items) {
 			long long index = next_index;
-			if (item.has_key && !evalSubscriptOrReport(expander, item.key, index)) return;
+			if (item.has_key && !evalItemIndex(expander, item, index)) return;
 
 			const std::string current = item.append
 				? readElementValue(env, array.name, index, std::string(), false)
@@ -3083,13 +3465,70 @@ namespace wbsh {
 		}
 	}
 
+	static bool rejectsWholeArrayKey(Expander& expander, const Executor::ArrayItem& item) {
+		if (item.key != "@" && item.key != "*") return false;
+
+		shellErrorf("[%s]=%s: cannot assign to non-numeric index\n", item.key.c_str(),
+			item.value.c_str());
+		expander.dropRestOfLine();
+		return true;
+	}
+
+	// bash quote-removes an indexed key of a compound assignment once more,
+	// so a \001 in it escapes the byte after it and disappears.
+	static std::string withoutCtlEscapes(const std::string& key) {
+		static const char kCtlEsc = '\001';
+
+		std::string out;
+		for (std::size_t i = 0; i < key.size(); ++i) {
+			if (key[i] != kCtlEsc) {
+				out.push_back(key[i]);
+				continue;
+			}
+
+			if (i + 1 < key.size()) out.push_back(key[++i]);
+		}
+
+		return out;
+	}
+
+	static bool evalItemIndex(Expander& expander, const Executor::ArrayItem& item,
+	                          long long& index) {
+		if (!item.has_key) return true;
+		if (rejectsWholeArrayKey(expander, item)) return false;
+		if (item.key.empty()) {
+			shellErrorf("[]=%s: bad array subscript\n", item.value.c_str());
+			expander.dropRestOfLine();
+			return false;
+		}
+
+		const std::string key = withoutCtlEscapes(item.key);
+		if (expander.environment().shopts().array_expand_once) {
+			return evalSubscriptOrReport(expander, key, index);
+		}
+
+		index = expander.evalArith(key);
+		if (!expander.failed()) return true;
+
+		reportExpanderError(expander);
+		return false;
+	}
+
+	// The elements before a bad subscript stay assigned, as in bash.
 	static void assignSparseIndexedArray(Environment& env, Expander& expander,
 	                                     const Executor::ArrayAssign& array) {
 		std::map<long long, std::string> sparse;
 		long long next_index = 0;
 		for (const auto& item : array.items) {
 			long long index = next_index;
-			if (item.has_key && !evalSubscriptOrReport(expander, item.key, index)) return;
+			if (!evalItemIndex(expander, item, index)) break;
+			if (index < 0 && !sparse.empty()) index += sparse.rbegin()->first + 1;
+			if (index < 0) {
+				shellErrorf("[%s]=%s: bad array subscript\n", item.key.c_str(), item.value.c_str());
+				expander.dropRestOfLine();
+				break;
+			}
+
 			sparse[index] = keyedItemValue(env, array.name, item, sparse[index]);
 			next_index = index + 1;
 		}
@@ -3119,19 +3558,24 @@ namespace wbsh {
 			return;
 		}
 
-		const std::string* pending_key = nullptr;
+		const Executor::ArrayItem* pending_key = nullptr;
 		for (const auto& item : array.items) {
 			if (item.has_key) {
 				env.setAssocElement(array.name, item.key, item.value);
+			} else if (pending_key == nullptr && item.value.empty()) {
+				shellErrorf("%s: bad array subscript\n", item.word.c_str());
+				return;
 			} else if (pending_key == nullptr) {
-				pending_key = &item.value;
+				pending_key = &item;
 			} else {
-				env.setAssocElement(array.name, *pending_key, item.value);
+				env.setAssocElement(array.name, pending_key->value, item.value);
 				pending_key = nullptr;
 			}
 		}
 
-		if (pending_key != nullptr) env.setAssocElement(array.name, *pending_key, std::string());
+		if (pending_key != nullptr) {
+			env.setAssocElement(array.name, pending_key->value, std::string());
+		}
 	}
 
 	static std::vector<std::string> itemValues(const Executor::ArrayAssign& array) {
@@ -3141,10 +3585,12 @@ namespace wbsh {
 		return values;
 	}
 
+	// Even `a+=()` gives a declared array a value.
 	static void applyArrayAssignToEnv(Environment& env, Expander& expander,
 	                                  const Executor::ArrayAssign& array) {
+		env.markValued(array.name);
 		if (env.isAssocArray(array.name)) {
-			if (!array.append) env.declareAssocArray(array.name);
+			if (!array.append) env.resetAssocArray(array.name);
 			assignAssocItems(env, array);
 			return;
 		}
@@ -3181,10 +3627,12 @@ namespace wbsh {
 		return only.kind == WordSegment::Kind::Literal && (only.text == "@" || only.text == "*");
 	}
 
+	// `a[@]=x`, `a[*]=x` and `a[]=x` assign nothing and drop the line.
 	static bool rejectWholeArraySubscript(Expander& expander, const Executor::ElemAssign& elem) {
-		if (!isWholeArraySubscript(elem.subscript)) return false;
+		const bool empty = elem.subscript.segments.empty();
+		if (!empty && !isWholeArraySubscript(elem.subscript)) return false;
 
-		const std::string& subscript = elem.subscript.segments[0].text;
+		const std::string subscript = empty ? std::string() : elem.subscript.segments[0].text;
 
 		shellErrorf("%s[%s]: bad array subscript\n", elem.name.c_str(), subscript.c_str());
 		expander.dropRestOfLine();
@@ -3193,7 +3641,7 @@ namespace wbsh {
 
 	static void applyElemAssignToEnv(Environment& env, Expander& expander,
 	                                 const Executor::ElemAssign& elem) {
-		if (rejectWholeArraySubscript(expander, elem)) return;
+		if (!env.isAssocArray(elem.name) && rejectWholeArraySubscript(expander, elem)) return;
 
 		std::string subscript = expander.expandStringValue(elem.subscript);
 		if (expander.failed()) {
@@ -3280,15 +3728,49 @@ namespace wbsh {
 		}
 	}
 
+	// bash evaluates an integer variable's old value on its own before
+	// adding to it: a bad one is the error, and the line is dropped.
+	static bool integerBaseFails(Environment& env, Expander& expander,
+			const Executor::ScalarAssign& scalar) {
+		if (!scalar.append || (env.attributes(scalar.name) & kAttrInteger) == 0) {
+			return false;
+		}
+
+		const std::string current = env.get(scalar.name);
+		if (current.empty()) return false;
+
+		expander.evalArithLiteral(current);
+		if (!expander.failed()) return false;
+
+		reportExpanderError(expander);
+		return true;
+	}
+
 	static void applyAssignNow(Environment& env, Expander& expander,
 			Executor::SimpleCmdAssigns& expanded) {
-		for (const auto& scalar : expanded.scalar) applyScalarAssignToEnv(env, scalar);
+		for (const auto& scalar : expanded.scalar) {
+			if (integerBaseFails(env, expander, scalar)) return;
+			applyScalarAssignToEnv(env, scalar);
+		}
+
 		for (const auto& elem : expanded.elem)     applyElemAssignToEnv(env, expander, elem);
 		for (const auto& array : expanded.array)   applyArrayAssignToEnv(env, expander, array);
 	}
 
+	// `a[1]=(x)` parses, but bash refuses it and drops the rest of the line.
+	static void rejectListToElement(Expander& expander, const Assignment& assignment) {
+		shellErrorf("%s[%s]: cannot assign list to array member\n", assignment.name.c_str(),
+			assignment.subscript.raw.c_str());
+		expander.dropRestOfLine();
+	}
+
 	static void expandAssignInto(Expander& expander, const Assignment& assignment,
 			Executor::SimpleCmdAssigns& out) {
+		if (assignment.is_array && assignment.has_subscript) {
+			rejectListToElement(expander, assignment);
+			return;
+		}
+
 		if (assignment.is_array) {
 			out.array.push_back(expandArrayAssign(expander, assignment));
 			return;
@@ -3344,7 +3826,7 @@ namespace wbsh {
 			const bool readonly = assignsReadonly(env_, one);
 			applyAssignNow(env_, expander_, one);
 			if (readonly) expander_.dropRestOfLine();
-			return !readonly;
+			return !readonly && !expander_.dropLinePending();
 		}
 
 		if (dropReadonlyPrefix(env_, one)) prefix_assign_failed_ = true;
@@ -3375,6 +3857,45 @@ namespace wbsh {
 		for (const auto& scalar : assigns.scalar) applyScalarAssignToEnv(env_, scalar);
 		for (const auto& elem : assigns.elem)     applyElemAssignToEnv(env_, expander_, elem);
 		for (const auto& array : assigns.array)   applyArrayAssignToEnv(env_, expander_, array);
+		adoptShellTableArrays();
+	}
+
+	template <typename Table>
+	static void copyAssocInto(const Environment& env, const char* name, Table& table) {
+		const Environment::AssocArray* array = env.getAssocArray(name);
+		if (array == nullptr) return;
+
+		table.clear();
+		for (const auto& entry : *array) table[entry.first] = entry.second;
+	}
+
+	static bool isLegalAliasName(const std::string& name) {
+		return name.find_first_of(" \t\n()<>;&|\"'\\`$/") == std::string::npos;
+	}
+
+	// A name no alias can have is reported and taken out of BASH_ALIASES.
+	void Executor::adoptAliasArray() {
+		const Environment::AssocArray* array = env_.getAssocArray("BASH_ALIASES");
+		if (array == nullptr) return;
+
+		std::vector<std::string> illegal;
+		for (const auto& entry : *array) {
+			if (!isLegalAliasName(entry.first)) illegal.push_back(entry.first);
+		}
+
+		for (const std::string& name : illegal) {
+			shellErrorf("`%s': invalid alias name\n", name.c_str());
+			env_.unsetElement("BASH_ALIASES", 0, name);
+		}
+
+		const auto before = aliases_;
+		copyAssocInto(env_, "BASH_ALIASES", aliases_);
+		if (aliases_ != before) ++alias_generation_;
+	}
+
+	void Executor::adoptShellTableArrays() {
+		adoptAliasArray();
+		copyAssocInto(env_, "BASH_CMDS", hashed_);
 	}
 
 	void Executor::traceXtrace(const std::vector<std::string>& argv) {
@@ -3420,8 +3941,21 @@ namespace wbsh {
 				}
 			}
 
+			// A declaration builtin makes these temporary values the shell's own;
+			// what they replaced is returned.
+			std::vector<PriorValue> keep(const std::set<std::string>& names) {
+				const auto kept = std::stable_partition(prior.begin(), prior.end(),
+					[&names](const PriorValue& value) { return names.count(value.name) == 0; });
+				std::vector<PriorValue> replaced(kept, prior.end());
+				prior.erase(kept, prior.end());
+				return replaced;
+			}
+
+			// A temporary value made readonly was bash's temporary variable;
+			// the one it hid comes back as it was.
 			~EnvAssignsGuard() {
 				for (auto it = prior.rbegin(); it != prior.rend(); ++it) {
+					env.clearReadonly(env.resolveRef(it->name));
 					if (!it->existed) {
 						env.unset(it->name);
 						continue;
@@ -3434,12 +3968,53 @@ namespace wbsh {
 		};
 	}
 
+	static bool isDeclarationBuiltin(const std::string& name) {
+		return name == "declare" || name == "typeset" || name == "readonly" || name == "export"
+			|| name == "local";
+	}
+
+	// `declare -p NAME` only shows the temporary value.
+	static bool printsDeclarations(const std::vector<std::string>& args) {
+		for (const std::string& arg : args) {
+			if (arg == "--" || arg.empty() || arg[0] != '-') return false;
+			if (arg.find('p') != std::string::npos) return true;
+		}
+
+		return false;
+	}
+
+	static std::set<std::string> operandNames(const std::vector<std::string>& args) {
+		std::set<std::string> names;
+		for (const std::string& arg : args) {
+			if (arg.empty() || arg[0] == '-' || arg[0] == '+') continue;
+
+			names.insert(arg.substr(0, arg.find_first_of("=[+")));
+		}
+
+		return names;
+	}
+
+	// At the top level the temporary value stays; in a function the local
+	// keeps it and hides the variable as it was before.
+	static void keepDeclaredTemporaries(Executor& exec, executor_detail::EnvAssignsGuard& guard,
+			const std::vector<std::string>& args) {
+		for (const auto& replaced : guard.keep(operandNames(args))) {
+			if (exec.funcDepth() == 0) continue;
+
+			exec.hideBehindLocal(replaced.name, replaced.existed, replaced.value, replaced.exported);
+		}
+	}
+
 	static int callFunctionWithAssigns(Executor& exec,
 	                                   const std::string& cmd,
 	                                   const std::vector<std::string>& args,
 	                                   const NameValueList& assigns) {
 		executor_detail::EnvAssignsGuard guard(exec.env(), assigns);
-		return exec.callFunction(cmd, args);
+		const std::size_t outer = exec.pushTempEnvNames(assigns);
+		const int status = exec.callFunction(cmd, args);
+		exec.popTempEnvNames(outer);
+		guard.keep(exec.takePersistedTempNames());
+		return status;
 	}
 
 	static int callBuiltinWithAssigns(Executor& exec,
@@ -3447,7 +4022,14 @@ namespace wbsh {
 	                                  const std::vector<std::string>& args,
 	                                  const NameValueList& assigns) {
 		executor_detail::EnvAssignsGuard guard(exec.env(), assigns);
-		return exec.callBuiltin(cmd, args);
+		const std::size_t outer = exec.pushTempEnvNames(assigns);
+		const int status = exec.callBuiltin(cmd, args);
+		exec.popTempEnvNames(outer);
+		if (isDeclarationBuiltin(cmd) && !printsDeclarations(args)) {
+			keepDeclaredTemporaries(exec, guard, args);
+		}
+
+		return status;
 	}
 
 	int Executor::execSimpleCommandNoArgv(const SimpleCommand& sc, SimpleCmdAssigns& assigns_data) {
@@ -3465,12 +4047,14 @@ namespace wbsh {
 
 	// The special builtins whose every non-zero status is an error; `eval`,
 	// `.` and `source` report theirs through markSpecialBuiltinFailure().
+	// For `trap` only a usage error is one: a bad signal is not.
 	static bool failureIsError(const std::string& name, int status) {
 		static const char* const kErrorOnFailure[] = {
-			"break", "continue", "export", "readonly", "set", "shift", "trap", "unset",
+			"break", "continue", "export", "readonly", "set", "shift", "unset",
 		};
 
 		if (status == 0) return false;
+		if (name == "trap") return status == kStatusBadUsage;
 		for (const char* builtin : kErrorOnFailure) {
 			if (name == builtin) return true;
 		}
@@ -3486,6 +4070,9 @@ namespace wbsh {
 		for (const auto& assign : assigns) {
 			env_.set(assign.first, assign.second);
 			env_.exportVar(assign.first);
+			if (isTempEnvName(assign.first) && !isLocalHere(assign.first)) {
+				persisted_temp_names_.insert(assign.first);
+			}
 		}
 
 		special_builtin_failed_ = false;
@@ -3519,12 +4106,48 @@ namespace wbsh {
 		}
 
 		const std::string name = systemBinCommand(cmd);
+		int hashed_status = 0;
+		if (runsHashedPath(argv, assigns, hashed_status)) return hashed_status;
 		if (isBuiltin(name)) {
 			const std::vector<std::string> args(argv.begin() + 1, argv.end());
 			return callBuiltinWithAssigns(*this, name, args, assigns);
 		}
 
+		// As in bash, a job spec alone is `fg` for that job.
+		if (argv.size() == 1 && cmd.rfind('%', 0) == 0 && findExecutable(cmd).empty()) {
+			return callBuiltinWithAssigns(*this, "fg", argv, assigns);
+		}
+
 		return runExternal(argv, assigns);
+	}
+
+	// A path `hash -p` gave one of the utilities runs instead of it, as for
+	// any program in bash. A path that is gone fails, or under checkhash
+	// is forgotten and looked up again.
+	bool Executor::runsHashedPath(const std::vector<std::string>& argv,
+			const NameValueList& assigns, int& status) {
+		const auto found = hashed_.find(argv[0]);
+		if (found == hashed_.end() || !isBuiltin(argv[0]) || !runsAsProgram(argv[0])) return false;
+
+		const std::string path = found->second;
+		std::error_code ec;
+		if (std::filesystem::is_regular_file(utf8ToPath(path_conv_.toWin32(path)), ec)) {
+			std::vector<std::string> direct = argv;
+			direct[0] = path;
+			status = runExternal(direct, assigns);
+			return true;
+		}
+
+		if (!env_.shopts().checkhash) {
+			shellErrorf("%s: No such file or directory\n", path.c_str());
+			status = kStatusCommandNotFound;
+			return true;
+		}
+
+		unhashCommand(argv[0]);
+		const std::string external = findExecutable(argv[0]);
+		if (!external.empty()) hashCommand(argv[0], path_conv_.toPosix(external));
+		return false;
 	}
 
 	static int lastLineOf(const Node& node) {
@@ -3551,38 +4174,89 @@ namespace wbsh {
 		return true;
 	}
 
-	static std::string assignmentName(const std::string& word) {
-		return isAssignmentWord(word) ? word.substr(0, word.find('=')) : std::string();
+	static std::size_t assignmentNameEnd(const std::string& raw) {
+		const std::size_t eq = raw.find('=');
+		return raw[eq - 1] == '+' ? eq - 1 : eq;
 	}
 
-	static bool takeArgvAssignment(const std::string& name, std::vector<std::string>& argv,
-			NameValueList& assigns) {
-		const std::string prefix = name + "=";
-		for (std::size_t i = 1; i < argv.size(); ++i) {
-			if (argv[i].compare(0, prefix.size(), prefix) != 0) continue;
+	static bool isKeywordAssignment(const Word& word) {
+		if (!isAssignmentWord(word.raw)) return false;
 
-			assigns.emplace_back(name, argv[i].substr(prefix.size()));
-			argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(i));
-			return true;
+		const std::size_t bracket = word.raw.find('[');
+		const std::size_t name_end = assignmentNameEnd(word.raw);
+		return bracket > name_end || word.raw[name_end - 1] == ']';
+	}
+
+	static Word lexedWord(const std::string& raw, const SourceLoc& loc) {
+		Word word;
+		word.raw = raw;
+		word.loc = loc;
+
+		Lexer lexer(raw);
+		std::vector<Token> tokens = lexer.tokenize();
+		if (!tokens.empty() && tokens[0].kind == TokKind::Word) {
+			word.segments = std::move(tokens[0].segments);
 		}
 
-		return false;
+		return word;
 	}
 
-	// `set -k`: an assignment word anywhere on the line goes into the
-	// command's environment, not into its arguments.
-	void Executor::takeKeywordAssignments(const SimpleCommand& sc, std::vector<std::string>& argv,
-	                                      NameValueList& assigns) {
-		for (std::size_t i = 1; i < sc.words.size(); ++i) {
-			const std::string name = assignmentName(sc.words[i].raw);
-			if (!name.empty() && name.find('[') == std::string::npos) {
-				takeArgvAssignment(name, argv, assigns);
+	static bool hasKeywordAssignments(const SimpleCommand& sc) {
+		return std::any_of(sc.words.begin() + (sc.words.empty() ? 0 : 1), sc.words.end(),
+			isKeywordAssignment);
+	}
+
+	static Assignment keywordAssignment(const Word& word) {
+		const std::string& raw = word.raw;
+		const std::size_t name_end = assignmentNameEnd(raw);
+		const std::size_t bracket = raw.find('[');
+		Assignment assignment;
+		assignment.append = raw[name_end] == '+';
+		assignment.has_subscript = bracket < name_end;
+		assignment.name = raw.substr(0, (std::min)(bracket, name_end));
+		assignment.value = lexedWord(raw.substr(raw.find('=') + 1), word.loc);
+		if (assignment.has_subscript) {
+			const std::string subscript = raw.substr(bracket + 1, name_end - bracket - 2);
+			assignment.subscript = lexedWord(subscript, word.loc);
+		}
+
+		return assignment;
+	}
+
+	// `set -k`: an assignment word anywhere on the line is made as the
+	// assignments in front of the command are, and is not an argument.
+	static SimpleCommand withKeywordAssignments(const SimpleCommand& sc) {
+		SimpleCommand moved = sc;
+		moved.words.clear();
+		for (std::size_t i = 0; i < sc.words.size(); ++i) {
+			if (i > 0 && isKeywordAssignment(sc.words[i])) {
+				moved.assignments.push_back(keywordAssignment(sc.words[i]));
+			} else {
+				moved.words.push_back(sc.words[i]);
 			}
 		}
+
+		return moved;
+	}
+
+	// `exec` with nothing to run, also as `command exec`, keeps the
+	// redirections of its command.
+	static bool isBareExec(const std::vector<std::string>& argv) {
+		if (argv.size() == 1) return argv[0] == "exec";
+		return argv.size() == 2 && argv[0] == "command" && argv[1] == "exec";
 	}
 
 	// As POSIX orders it, the words expand before the assignment values.
 	int Executor::execSimpleCommand(const SimpleCommand& sc) {
+		command_first_line_ = firstWordEndLine(sc);
+		const bool keywords = env_.options().keyword && hasKeywordAssignments(sc);
+		const int status = keywords ? runSimpleCommand(withKeywordAssignments(sc))
+			: runSimpleCommand(sc);
+		this_command_name_.clear();
+		return status;
+	}
+
+	int Executor::runSimpleCommand(const SimpleCommand& sc) {
 		cmdsubst_ran_ = false;
 		command_end_line_ = lastLineOf(sc);
 
@@ -3590,43 +4264,42 @@ namespace wbsh {
 		std::vector<bool> compound;
 		if (!expandSimpleCmdArgv(sc, argv, compound)) return 1;
 
-		int alias_status = 0;
-		if (runParsedAlias(sc, argv, alias_status)) return alias_status;
-
 		SimpleCmdAssigns assigns_data;
 		prefix_assign_failed_ = false;
 		if (!expandSimpleCmdAssigns(sc, assigns_data, argv.empty())) return 1;
 		if (prefix_assign_failed_ && !argv.empty() && abandonsAfterAssignError(argv[0])) return 1;
 		NameValueList assigns = assigns_data.scalarPairs();
-		if (env_.options().keyword) takeKeywordAssignments(sc, argv, assigns);
-		const std::size_t words_before_alias = argv.size();
-		aliasExpandArgvHead(sc, argv);
-		if (argv.size() != words_before_alias) compound.clear();
 
-		if (argv.size() == 1 && argv[0] == "exec") return execBareRedirsForExec(sc.redirs);
+		if (isBareExec(argv)) return execBareRedirsForExec(sc.redirs);
 		if (argv.empty()) return execSimpleCommandNoArgv(sc, assigns_data);
 
-		if (!assigns_data.array.empty() || !assigns_data.elem.empty()) {
+		if (!assigns_data.array.empty()) {
 			shellErrorf("array assignments cannot be used as command prefix\n");
 			return 1;
+		}
+
+		// bash names `a[1]=x cmd` no identifier and runs cmd without it.
+		for (const ElemAssign& elem : assigns_data.elem) {
+			shellErrorf("`%s[%s]': not a valid identifier\n", elem.name.c_str(),
+				elem.subscript.raw.c_str());
 		}
 
 		RedirState state;
 		if (!applyRedirectionsOrUndo(sc.redirs, state)) {
 			// bash expands the redirections of a command it forks in the
 			// child, so an expansion error there fails only that command.
-			// Besides external programs, wbsh's built-in utilities (cat,
-			// sort, ...) are programs in bash.
-			const ManPage* page = findManPage(argv[0]);
-			const bool shell_builtin = isBuiltin(argv[0]) && page != nullptr
-				&& page->kind == ManKind::Shell;
-			if (!isFunction(argv[0]) && !shell_builtin) expander_.takeDropLine();
+			if (runsAsProgram(argv[0])) expander_.takeDropLine();
+			if (posixErrorsExit() && isPosixSpecialBuiltin(argv[0]) && isBuiltin(argv[0])) {
+				raiseExit(1);
+			}
+
 			return 1;
 		}
 
 		traceXtrace(argv);
 		compound_args_ = std::move(compound);
 		const int status = runResolvedCommand(argv, assigns);
+		if (runsAsProgram(argv[0])) noteChildExited();
 		env_.set("_", argv.back());
 		undoRedirections(state);
 		exitIfStdoutReaderGone();
@@ -3692,7 +4365,8 @@ namespace wbsh {
 			current.push_back(c);
 		}
 
-		if (!current.empty()) dirs.push_back(current);
+		const bool ends_empty = path.empty() || path.back() == ':';
+		if (!current.empty() || ends_empty) dirs.push_back(current);
 		return dirs;
 	}
 
@@ -3724,10 +4398,14 @@ namespace wbsh {
 		return true;
 	}
 
-	std::string Executor::lookupInPathDirs(const std::string& name, const std::string& path) {
-		for (const auto& dir : splitPathList(path)) {
-			if (dir.empty()) continue;
+	// An empty element of PATH, as POSIX has it, is the current directory.
+	static std::string pathElement(const std::string& dir) {
+		return dir.empty() ? std::string(".") : dir;
+	}
 
+	std::string Executor::lookupInPathDirs(const std::string& name, const std::string& path) {
+		for (const auto& element : splitPathList(path)) {
+			const std::string dir = pathElement(element);
 			std::filesystem::path base = utf8ToPath(path_conv_.toWin32(dir));
 			base /= utf8ToPath(name);
 			const std::string resolved = tryExecutableWithExtensions(base);
@@ -3740,6 +4418,15 @@ namespace wbsh {
 		return {};
 	}
 
+	// With PATH unset bash looks in the working directory, and gives the
+	// whole path of what it finds there.
+	std::string Executor::searchPath() const {
+		if (env_.has("PATH")) return env_.get("PATH");
+
+		std::error_code ec;
+		return path_conv_.toPosix(std::filesystem::current_path(ec).generic_u8string());
+	}
+
 	std::vector<std::string> Executor::findAllExecutables(const std::string& name) {
 		std::vector<std::string> found;
 		if (isAbsoluteOrRelativePath(name)) {
@@ -3748,9 +4435,8 @@ namespace wbsh {
 			return found;
 		}
 
-		for (const auto& dir : splitPathList(env_.get("PATH"))) {
-			if (dir.empty()) continue;
-
+		for (const auto& element : splitPathList(searchPath())) {
+			const std::string dir = pathElement(element);
 			std::filesystem::path base = utf8ToPath(path_conv_.toWin32(dir));
 			base /= utf8ToPath(name);
 			const std::string resolved = tryExecutableWithExtensions(base);
@@ -3785,16 +4471,17 @@ namespace wbsh {
 			return explicitExecutable(utf8ToPath(path_conv_.toWin32(name)));
 		}
 
-		const std::string path = env_.get("PATH");
-		if (path.empty()) return {};
-
+		const std::string path = searchPath();
 		if (path != exec_path_cache_path_) {
 			clearExecutablePathCache();
 			exec_path_cache_path_ = path;
 		}
 
 		const auto hashed = hashed_.find(name);
-		if (hashed != hashed_.end()) return explicitExecutable(utf8ToPath(path_conv_.toWin32(hashed->second)));
+		if (hashed != hashed_.end()) {
+			noteHashHit(name);
+			return explicitExecutable(utf8ToPath(path_conv_.toWin32(hashed->second)));
+		}
 
 		const auto cached = exec_path_cache_.find(name);
 		if (cached != exec_path_cache_.end()) return cached->second;
@@ -3846,6 +4533,17 @@ namespace wbsh {
 		return found;
 	}
 
+	static const char* const kNotFoundHandler = "command_not_found_handle";
+
+	// bash runs the handler in the child it forked for the command, with
+	// the command's words as its arguments.
+	int Executor::runNotFoundHandler(const std::vector<std::string>& argv) {
+		SubshellScope snap = enterSubshell();
+		const int status = endSubshell(callFunction(kNotFoundHandler, argv));
+		leaveSubshell(snap);
+		return status;
+	}
+
 	int Executor::runExternal(const std::vector<std::string>& argv,
 	                          const NameValueList& temp_env) {
 		if (argv.empty()) return 0;
@@ -3854,6 +4552,7 @@ namespace wbsh {
 		const std::string exec_path = findExecutableWith(systemBinCommand(argv[0]), temp_env);
 		if (exec_path.empty()) {
 			if (reportDirectoryCommand(argv[0])) return kStatusCannotExecute;
+			if (isFunction(kNotFoundHandler)) return runNotFoundHandler(argv);
 
 			reportCommandNotFound(argv[0]);
 			return kStatusCommandNotFound;
@@ -3910,6 +4609,58 @@ namespace wbsh {
 		return child_argv;
 	}
 
+	static bool hasOverride(const NameValueList& out, const std::string& name) {
+		return std::any_of(out.begin(), out.end(),
+			[&name](const std::pair<std::string, std::string>& entry) { return entry.first == name; });
+	}
+
+	bool Executor::exportedValue(const std::string& name, std::string& out) const {
+		if (!isLoopVariableName(name)) return env_.exportedEntry(name, out);
+		if (env_.has(name)) {
+			out = env_.get(name);
+			return env_.isExported(name);
+		}
+
+		NameValueList shadowed;
+		appendShadowedExports(shadowed);
+		for (const auto& entry : shadowed) {
+			if (entry.first != name) continue;
+
+			out = entry.second;
+			return true;
+		}
+
+		return false;
+	}
+
+	void Executor::hideBehindLocal(const std::string& name, bool existed, const std::string& value,
+	                               bool exported) {
+		if (scope_stack_.empty()) return;
+
+		for (ScopeEntry& entry : scope_stack_.back()) {
+			if (entry.name != name) continue;
+
+			entry.saved = Environment::VarState{};
+			entry.saved.has_scalar = existed;
+			entry.saved.scalar = value;
+			entry.saved.exported = exported;
+		}
+	}
+
+	// A local without a value hides nothing from a child process: as in
+	// bash, it gets the exported value the local shadows.
+	void Executor::appendShadowedExports(NameValueList& out) const {
+		for (auto scope = scope_stack_.rbegin(); scope != scope_stack_.rend(); ++scope) {
+			for (const ScopeEntry& entry : *scope) {
+				if (entry.name == kLocalOptionsName || env_.has(entry.name)) continue;
+				if (!entry.saved.exported || !entry.saved.has_scalar) continue;
+				if (hasOverride(out, entry.name)) continue;
+
+				out.emplace_back(entry.name, entry.saved.scalar);
+			}
+		}
+	}
+
 	NameValueList Executor::prepareExternalEnvOverrides(const NameValueList& temp_env) {
 		NameValueList out = temp_env;
 
@@ -3934,6 +4685,8 @@ namespace wbsh {
 			if (!home.empty()) out.emplace_back("HOME", path_conv_.toWin32Short(home));
 		}
 
+		appendExportedFunctions(out);
+		appendShadowedExports(out);
 		return out;
 	}
 
@@ -3996,6 +4749,7 @@ namespace wbsh {
 		job.group = group;
 		processes.pop_back();
 		job.stages = std::move(processes);
+		touchJob(job);
 		jobs_.push_back(job);
 
 		std::fputc('\n', stderr);
@@ -4098,6 +4852,7 @@ namespace wbsh {
 			else suspendProcessById(static_cast<unsigned long>(job.pid));
 			job.stopped = true;
 			job.exit_code = kStatusStopped;
+			touchJob(job);
 			std::fputc('\n', stderr);
 			printJobState(job);
 			return kStatusStopped;
@@ -4122,7 +4877,8 @@ namespace wbsh {
 			if (job.id != id || !job.stopped) continue;
 
 			resumeJob(job);
-			std::fprintf(stderr, "[%d]%s %s &\n", job.id, &job == &jobs_.back() ? "+" : " ",
+			touchJob(job);
+			std::fprintf(stderr, "[%d]%s %s &\n", job.id, &job == currentJob() ? "+" : " ",
 				job.cmd_text.c_str());
 			return true;
 		}
@@ -4134,6 +4890,7 @@ namespace wbsh {
 		if (signum == kSignalStop || signum == kSignalTerminalStop) {
 			if (job.group != nullptr) suspendProcessGroup(job.group);
 			else suspendProcessById(static_cast<unsigned long>(job.pid));
+			if (!job.stopped) touchJob(job);
 			job.stopped = true;
 			job.exit_code = 128 + signum;
 			return true;
@@ -4302,8 +5059,8 @@ namespace wbsh {
 		const std::string& interp = interp_argv[0];
 		const std::string name = systemBinCommand(interp);
 		if (!isBuiltin(name) && findExecutable(name).empty()) {
-			shellErrorf("%s: %s: bad interpreter: No such file or directory\n",
-				argv[0].c_str(), interp.c_str());
+			shellErrorWithoutLine(argv[0] + ": " + interp
+				+ ": bad interpreter: No such file or directory");
 			return kStatusCannotExecute;
 		}
 
@@ -4348,8 +5105,10 @@ namespace wbsh {
 		snap.saved_name  = env_.shellName();
 		snap.saved_funcs = functions_;
 		snap.saved_function_files = function_files_;
+		snap.saved_exported_functions = exported_functions_;
 		snap.saved_call_stack = call_stack_;
 		snap.saved_traps = trap_handlers_;
+		snap.saved_startup_ignored = startup_ignored_;
 		snap.saved_lists_inherited_traps = lists_inherited_traps_;
 		snap.saved_options = env_.options();
 		snap.saved_expand_aliases = env_.expand_aliases();
@@ -4380,9 +5139,11 @@ namespace wbsh {
 		env_.setExpandAliases(snap.saved_expand_aliases);
 		functions_ = std::move(snap.saved_funcs);
 		function_files_ = std::move(snap.saved_function_files);
+		exported_functions_ = std::move(snap.saved_exported_functions);
 		call_stack_ = std::move(snap.saved_call_stack);
 		publishCallStack();
 		trap_handlers_ = std::move(snap.saved_traps);
+		startup_ignored_ = std::move(snap.saved_startup_ignored);
 		lists_inherited_traps_ = snap.saved_lists_inherited_traps;
 		publishSignalDispositions();
 
@@ -4418,9 +5179,7 @@ namespace wbsh {
 		const std::string body = readScriptBody(file);
 		ShellScriptScope snap = snapshotShellScriptScope();
 		env_.setExpandAliases(false);
-		trap_handlers_.clear();
-		lists_inherited_traps_ = false;
-		publishSignalDispositions();
+		resetTrapsForScript();
 		beginExecRedirJournal();
 
 		const std::string name = scriptName(argv[0], path);
@@ -4440,7 +5199,7 @@ namespace wbsh {
 
 	int Executor::execBraceGroup(const BraceGroup& group) {
 		RedirState state;
-		if (!applyRedirectionsOrUndo(group.redirs, state)) return 1;
+		if (!applyCompoundRedirections(group.redirs, state)) return 1;
 
 		int status = 0;
 		if (group.body != nullptr) status = execNode(*group.body);
@@ -4460,6 +5219,7 @@ namespace wbsh {
 		snap.dir_stack = dir_stack_;
 		snap.scope_stack = scope_stack_;
 		snap.getopts_subindex = getopts_subindex_;
+		snap.owned_jobs = lendJobsToSubshell();
 
 		std::error_code ec;
 		snap.cwd = std::filesystem::current_path(ec);
@@ -4469,6 +5229,23 @@ namespace wbsh {
 		env_.enterSubshellPid();
 		beginExecRedirJournal();
 		return snap;
+	}
+
+	// A subshell lists the parent's jobs but cannot wait for or resume them.
+	std::vector<int> Executor::lendJobsToSubshell() {
+		std::vector<int> owned;
+		for (Job& job : jobs_) {
+			if (!job.inherited) owned.push_back(job.id);
+			job.inherited = true;
+		}
+
+		return owned;
+	}
+
+	void Executor::takeBackJobs(const std::vector<int>& owned) {
+		for (Job& job : jobs_) {
+			if (std::find(owned.begin(), owned.end(), job.id) != owned.end()) job.inherited = false;
+		}
 	}
 
 	// The parent's traps, EXIT included, belong to the parent and never
@@ -4500,6 +5277,7 @@ namespace wbsh {
 		dir_stack_ = std::move(snap.dir_stack);
 		scope_stack_ = std::move(snap.scope_stack);
 		getopts_subindex_ = snap.getopts_subindex;
+		takeBackJobs(snap.owned_jobs);
 
 		std::error_code ec;
 		std::filesystem::current_path(snap.cwd, ec);
@@ -4522,7 +5300,7 @@ namespace wbsh {
 
 	int Executor::execSubshell(const Subshell& subshell) {
 		RedirState state;
-		if (!applyRedirectionsOrUndo(subshell.redirs, state)) return 1;
+		if (!applyCompoundRedirections(subshell.redirs, state)) return 1;
 
 		const std::size_t hidden = hideSavedFds(state);
 		SubshellScope snap = enterSubshell();
@@ -4557,7 +5335,7 @@ namespace wbsh {
 
 	int Executor::execIf(const IfClause& clause) {
 		RedirState state;
-		if (!applyRedirectionsOrUndo(clause.redirs, state)) return 1;
+		if (!applyCompoundRedirections(clause.redirs, state)) return 1;
 
 		const int status = runIfBranches(clause);
 		undoRedirections(state);
@@ -4609,7 +5387,7 @@ namespace wbsh {
 
 	int Executor::execWhile(const WhileClause& clause) {
 		RedirState state;
-		if (!applyRedirectionsOrUndo(clause.redirs, state)) return 1;
+		if (!applyCompoundRedirections(clause.redirs, state)) return 1;
 
 		++loop_depth_;
 		const int status = runWhileLoop(clause);
@@ -4646,7 +5424,7 @@ namespace wbsh {
 
 	int Executor::execForArith(const ForClause& clause) {
 		RedirState state;
-		if (!applyRedirectionsOrUndo(clause.redirs, state)) return 1;
+		if (!applyCompoundRedirections(clause.redirs, state)) return 1;
 
 		++loop_depth_;
 		const int status = runArithLoop(clause);
@@ -4698,12 +5476,23 @@ namespace wbsh {
 	static bool setLoopVariable(Environment& env, const std::string& name,
 			const std::string& value) {
 		if (env.isNameref(name)) {
+			if (env.rejectsRefValue(value)) return false;
+
 			env.setNameref(name, value);
 			return true;
 		}
 
 		env.set(name, value);
 		return !env.isReadonly(name);
+	}
+
+	// In POSIX mode a readonly loop variable ends the shell, with the
+	// status bash gives it.
+	bool Executor::assignLoopVariable(const std::string& name, const std::string& value) {
+		if (setLoopVariable(env_, name, value)) return true;
+
+		if (posixErrorsExit()) raiseExit(kStatusCommandNotFound);
+		return false;
 	}
 
 	int Executor::runForLoop(const ForClause& clause) {
@@ -4717,7 +5506,7 @@ namespace wbsh {
 			if (flowPending()) break;
 
 			traceLoopHeader("for", clause);
-			if (!setLoopVariable(env_, clause.var, value)) return 1;
+			if (!assignLoopVariable(clause.var, value)) return 1;
 			runBody(clause.body, status);
 			if (loopEnds(dispatchLoopFlow()) || stopForCtrlC(status)) break;
 		}
@@ -4725,12 +5514,31 @@ namespace wbsh {
 		return status;
 	}
 
+	static bool isLoopVariableName(const std::string& name) {
+		if (name.empty()) return false;
+		if (std::isdigit(static_cast<unsigned char>(name[0])) != 0) return false;
+
+		return std::all_of(name.begin(), name.end(), [](char c) {
+			return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+		});
+	}
+
+	// bash checks the name when the loop runs, not when it parses it.
+	bool Executor::loopVariableIsValid(const ForClause& clause) {
+		if (isLoopVariableName(clause.var)) return true;
+
+		shellErrorf("`%s': not a valid identifier\n", clause.var.c_str());
+		if (posixErrorsExit()) raiseExit(2);
+		return false;
+	}
+
 	int Executor::execFor(const ForClause& clause) {
 		if (clause.is_arith) return execForArith(clause);
+		if (!loopVariableIsValid(clause)) return 1;
 		if (clause.is_select) return execSelect(clause);
 
 		RedirState state;
-		if (!applyRedirectionsOrUndo(clause.redirs, state)) return 1;
+		if (!applyCompoundRedirections(clause.redirs, state)) return 1;
 
 		++loop_depth_;
 		const int status = runForLoop(clause);
@@ -4770,8 +5578,9 @@ namespace wbsh {
 		int status = 0;
 		std::vector<std::string> values;
 		if (!expandForWordList(clause, values, &status)) return status;
+		if (values.empty()) return 0;
 
-		const std::string ps3 = env_.has("PS3") ? env_.get("PS3") : "#? ";
+		const std::string ps3 =env_.has("PS3") ? env_.get("PS3") : "#? ";
 		const std::string header = loopHeaderText(clause);
 		for (;;) {
 			announceCommand(header);
@@ -4785,7 +5594,7 @@ namespace wbsh {
 			std::string reply;
 			if (!readSelectReplyLine(reply)) return 1;
 			env_.set("REPLY", reply);
-			if (!setLoopVariable(env_, clause.var, selectedValue(reply, values))) return 1;
+			if (!assignLoopVariable(clause.var, selectedValue(reply, values))) return 1;
 
 			runBody(clause.body, status);
 			if (loopEnds(dispatchLoopFlow()) || stopForCtrlC(status)) break;
@@ -4796,7 +5605,7 @@ namespace wbsh {
 
 	int Executor::execSelect(const ForClause& clause) {
 		RedirState state;
-		if (!applyRedirectionsOrUndo(clause.redirs, state)) return 1;
+		if (!applyCompoundRedirections(clause.redirs, state)) return 1;
 
 		++loop_depth_;
 		const int status = runSelectLoop(clause);
@@ -4879,10 +5688,10 @@ namespace wbsh {
 
 	int Executor::execCase(const CaseClause& clause) {
 		RedirState state;
-		if (!applyRedirectionsOrUndo(clause.redirs, state)) return 1;
+		if (!applyCompoundRedirections(clause.redirs, state)) return 1;
 
 		const std::string header = caseHeaderText(nodeSourceSlice(clause, source_text_));
-		if (trap_depth_ == 0) announceCommand(header);
+		announceCommand(header);
 		traceCaseHeader(clause);
 		if (flowPending()) {
 			undoRedirections(state);
@@ -4901,9 +5710,20 @@ namespace wbsh {
 		return status;
 	}
 
+	// A definition sets no line number of its own: bash reports the line
+	// it has read through, the end of the input command around it.
+	int Executor::definitionErrorLine(const FunctionDef& fd) const {
+		const int own = lastLineOf(fd);
+		if (func_depth_ > 0 || input_command_end_line_ < own) return own;
+		return input_command_end_line_;
+	}
+
 	// POSIX interpretation 383: a function cannot take a special builtin's name.
-	bool Executor::rejectSpecialBuiltinFunction(const std::string& name) {
+	bool Executor::rejectSpecialBuiltinFunction(const FunctionDef& fd) {
+		const std::string& name = fd.name;
 		if (!env_.options().posix || !isPosixSpecialBuiltin(name)) return false;
+
+		env_.setCurrentLineno(definitionErrorLine(fd));
 
 		shellErrorf("`%s': is a special builtin\n", name.c_str());
 		if (env_.interactive()) raiseDiscard();
@@ -4911,8 +5731,32 @@ namespace wbsh {
 		return true;
 	}
 
+	// bash will not define a function whose name had quotes, `$` or a
+	// process substitution in it; it says so on the definition's last
+	// line, and in POSIX mode the shell ends.
+	bool Executor::functionNameAccepted(const FunctionDef& fd) {
+		const std::string& name = fd.name;
+		const bool expanded = name.find_first_of("$'\"`\\") != std::string::npos
+			|| name.rfind("<(", 0) == 0 || name.rfind(">(", 0) == 0;
+		if (!expanded) return true;
+
+		env_.setCurrentLineno(definitionErrorLine(fd));
+		shellErrorf("`%s': not a valid identifier\n", name.c_str());
+		if (posixErrorsExit()) raiseExit(2);
+		return false;
+	}
+
+	bool Executor::rejectsReadonlyFunction(const FunctionDef& fd) {
+		if (!isFunctionReadonly(fd.name)) return false;
+
+		env_.setCurrentLineno(definitionErrorLine(fd));
+		shellErrorf("%s: readonly function\n", fd.name.c_str());
+		return true;
+	}
+
 	int Executor::execFunctionDef(const FunctionDef& fd) {
-		if (rejectSpecialBuiltinFunction(fd.name)) return kSyntaxErrorStatus;
+		if (rejectSpecialBuiltinFunction(fd)) return kSyntaxErrorStatus;
+		if (!functionNameAccepted(fd) || rejectsReadonlyFunction(fd)) return 1;
 
 		functions_[fd.name] = &fd;
 		++function_definitions_;
@@ -4925,7 +5769,7 @@ namespace wbsh {
 			Executor& exec;
 			Expander& expander;
 			bool nocasematch;
-			bool& invalid_regex;
+			bool& test_error;
 		};
 	}
 
@@ -4971,7 +5815,8 @@ namespace wbsh {
 		options.ignore_case = ctx.nocasematch;
 		PosixRegex re;
 		if (!re.compile(rhs, options)) {
-			ctx.invalid_regex = true;
+			shellErrorf("[[: invalid regular expression `%s': %s\n", rhs.c_str(), re.error().c_str());
+			ctx.test_error = true;
 			return false;
 		}
 
@@ -4983,8 +5828,12 @@ namespace wbsh {
 	}
 
 	// An arithmetic error is reported, `[[:`-labelled, and makes the test false.
-	static bool evalDBracketOperand(Expander& expander, const std::string& text, long long& out) {
-		out = expander.evalArith(text);
+	// An operand with a subscript is read as written, as `(( ))` reads it:
+	// a key its expansion yields is not parsed again.
+	static bool evalDBracketOperand(Expander& expander, const Word& word, const std::string& text,
+			long long& out) {
+		const bool subscripted = typedAsArrayReference(word.raw);
+		out = subscripted ? expander.evalArith(word.raw) : expander.evalArithExpanded(text);
 		if (!expander.failed()) return true;
 		if (expander.fatalErrorPending()) return false;
 
@@ -4994,13 +5843,14 @@ namespace wbsh {
 	}
 
 	// `[[ ]]` evaluates both sides of -eq and friends as arithmetic.
-	static bool evalDBracketArithOp(const std::string& op, const std::string& lhs,
+	static bool evalDBracketArithOp(const DBracketCond::Expr& expr, const std::string& lhs,
 	                                const std::string& rhs, Expander& expander) {
 		long long left = 0;
 		long long right = 0;
-		if (!evalDBracketOperand(expander, lhs, left)) return false;
-		if (!evalDBracketOperand(expander, rhs, right)) return false;
+		if (!evalDBracketOperand(expander, expr.lhs, lhs, left)) return false;
+		if (!evalDBracketOperand(expander, expr.rhs, rhs, right)) return false;
 
+		const std::string& op = expr.op;
 		if (op == "-eq") return left == right;
 		if (op == "-ne") return left != right;
 		if (op == "-lt") return left <  right;
@@ -5017,10 +5867,19 @@ namespace wbsh {
 		return expander.expandStringValue(expr.rhs);
 	}
 
+	// bash traces each test it evaluates, a `!` right before it included.
+	static void traceDBracket(const DBracketContext& ctx, bool negated,
+	                          std::vector<std::string> parts) {
+		if (negated) parts.insert(parts.begin(), "!");
+		ctx.exec.traceConditional(parts);
+	}
+
 	static bool evalDBracketBinary(const DBracketCond::Expr& expr, const std::string& lhs,
-	                               const DBracketContext& ctx) {
+	                               const DBracketContext& ctx, bool negated) {
 		const std::string rhs = expandDBracketRhs(expr, ctx.expander);
 		if (ctx.expander.failed()) return false;
+
+		traceDBracket(ctx, negated, { lhs, expr.op, rhs });
 
 		if (isDBracketStringOp(expr.op)) {
 			const std::string cmp_lhs = ctx.nocasematch ? asciiLower(lhs) : lhs;
@@ -5029,18 +5888,53 @@ namespace wbsh {
 		}
 
 		if (expr.op == "=~") return evalDBracketRegexOp(lhs, rhs, ctx);
-		if (isDBracketArithOp(expr.op)) return evalDBracketArithOp(expr.op, lhs, rhs, ctx.expander);
+		if (isDBracketArithOp(expr.op)) return evalDBracketArithOp(expr, lhs, rhs, ctx.expander);
 		if (isFileCompareOperator(expr.op)) return evalFileCompare(ctx.exec, expr.op, lhs, rhs);
 		return false;
 	}
 
-	static bool evalDBracketPrimary(const DBracketCond::Expr& expr, const DBracketContext& ctx) {
+	static bool isFdNumber(const std::string& text) {
+		int fd = -1;
+		std::size_t used = 0;
+		return parseInt(text, fd, 10, &used) && used == text.size();
+	}
+
+	// `[[ -t X ]]` is an error, as in bash, not a false test.
+	static bool rejectTerminalOperand(const std::string& operand, const DBracketContext& ctx) {
+		shellErrorf("[[: %s: integer expected\n", operand.c_str());
+		ctx.test_error = true;
+		return false;
+	}
+
+	static bool evalDBracketUnary(const DBracketCond::Expr& expr, const std::string& lhs,
+	                              const DBracketContext& ctx, bool negated) {
+		traceDBracket(ctx, negated, { expr.op, lhs });
+		if (expr.op == "-t" && !isFdNumber(lhs)) return rejectTerminalOperand(lhs, ctx);
+
+		return evalUnaryTestOperator(ctx.exec, expr.op[1], lhs);
+	}
+
+	static bool evalDBracketPrimary(const DBracketCond::Expr& expr, const DBracketContext& ctx,
+	                                bool negated) {
 		const std::string lhs = ctx.expander.expandStringValue(expr.lhs);
 		if (ctx.expander.failed()) return false;
-		if (expr.op.empty()) return !lhs.empty();
-		if (isUnaryTestOperator(expr.op)) return evalUnaryTestOperator(ctx.exec, expr.op[1], lhs);
+		if (expr.op.empty()) {
+			traceDBracket(ctx, negated, { "-n", lhs });
+			return !lhs.empty();
+		}
 
-		return evalDBracketBinary(expr, lhs, ctx);
+		const bool unary = expr.op == "-t" || isUnaryTestOperator(expr.op);
+		if (unary) return evalDBracketUnary(expr, lhs, ctx, negated);
+
+		return evalDBracketBinary(expr, lhs, ctx, negated);
+	}
+
+	static bool evalDBracketExpr(const DBracketCond::Expr& expr, const DBracketContext& ctx);
+
+	static bool evalDBracketNegated(const DBracketCond::Expr& expr, const DBracketContext& ctx) {
+		if (expr.k == DBracketCond::Expr::K::Prim) return !evalDBracketPrimary(expr, ctx, true);
+
+		return !evalDBracketExpr(expr, ctx);
 	}
 
 	static bool evalDBracketExpr(const DBracketCond::Expr& expr, const DBracketContext& ctx) {
@@ -5048,8 +5942,8 @@ namespace wbsh {
 		switch (expr.k) {
 		case K::And:  return evalDBracketExpr(*expr.a, ctx) && evalDBracketExpr(*expr.b, ctx);
 		case K::Or:   return evalDBracketExpr(*expr.a, ctx) || evalDBracketExpr(*expr.b, ctx);
-		case K::Not:  return !evalDBracketExpr(*expr.a, ctx);
-		case K::Prim: return evalDBracketPrimary(expr, ctx);
+		case K::Not:  return evalDBracketNegated(*expr.a, ctx);
+		case K::Prim: return evalDBracketPrimary(expr, ctx, false);
 		}
 
 		return false;
@@ -5061,10 +5955,10 @@ namespace wbsh {
 
 		int status = 1;
 		if (ok && dc.root != nullptr) {
-			bool invalid_regex = false;
-			const DBracketContext ctx{ *this, expander_, env_.nocasematch(), invalid_regex };
+			bool test_error = false;
+			const DBracketContext ctx{ *this, expander_, env_.nocasematch(), test_error };
 			status = evalDBracketExpr(*dc.root, ctx) ? 0 : 1;
-			if (invalid_regex) status = 2;
+			if (test_error) status = 2;
 		}
 
 		if (expander_.failed()) {
@@ -5083,7 +5977,10 @@ namespace wbsh {
 
 		int status = 1;
 		long long value = 0;
+		const std::string outer = env_.assigningCommand();
+		env_.setAssigningCommand("((");
 		if (ok && evalTracedArith(ac.expr, false, value)) status = (value != 0) ? 0 : 1;
+		env_.setAssigningCommand(outer);
 
 		undoRedirections(state);
 		setLastStatus(status);
@@ -5218,10 +6115,13 @@ namespace wbsh {
 		if (builtin != builtins_.end()) {
 			int help_status = 0;
 			if (answeredHelpFromManPage(name, args, help_status)) return help_status;
-			if (!startsWithIgnoredEndOfOptions(name, args)) return builtin->second(*this, args);
-
-			const std::vector<std::string> operands(args.begin() + 1, args.end());
-			return builtin->second(*this, operands);
+			const std::string outer = env_.assigningCommand();
+			env_.setAssigningCommand(name);
+			const int status = startsWithIgnoredEndOfOptions(name, args)
+				? builtin->second(*this, std::vector<std::string>(args.begin() + 1, args.end()))
+				: builtin->second(*this, args);
+			env_.setAssigningCommand(outer);
+			return status;
 		}
 
 		const auto plugin = plugin_commands_.find(name);
@@ -5257,40 +6157,84 @@ namespace wbsh {
 		const std::string shown = funcnest ? std::to_string(limit) : "out of stack space";
 		shellErrorf("%s: maximum function nesting level exceeded (%s)\n",
 			name.c_str(), shown.c_str());
+		// bash abandons the whole command at the top level and reads on.
 		nesting_exceeded_ = true;
-		if (!env_.interactive()) raiseExit(1);
+		raiseDiscard();
 		return false;
+	}
+
+	// A forked pipeline stage or background command counts as a subshell
+	// when it is a compound command or calls a function; a simple command's
+	// words expand at its parent's level, and `( ... )` counts once.
+	void Executor::enterInheritedStage(const Node& root) {
+		const Node* stage = &root;
+		if (root.kind == Node::Kind::List) {
+			const List& list = static_cast<const List&>(root);
+			if (list.items.size() != 1) return;
+
+			stage = list.items[0].command;
+		}
+
+		if (stage->kind == Node::Kind::Subshell) return;
+		if (stage->kind == Node::Kind::SimpleCommand) {
+			stage_function_bump_ = true;
+			return;
+		}
+
+		env_.setSubshellLevel(env_.subshellLevel() + 1);
 	}
 
 	int Executor::callFunction(const std::string& name, const std::vector<std::string>& args) {
 		const auto it = functions_.find(name);
 		if (it == functions_.end()) return kStatusCommandNotFound;
+		if (std::exchange(stage_function_bump_, false)) {
+			env_.setSubshellLevel(env_.subshellLevel() + 1);
+		}
+
 		const FunctionDef* def = it->second;
 		if (!functionNestingAllowed(name)) return 1;
 
-		pushCallFrame({ name, functionFile(name), env_.currentLineno() });
+		pushCallFrame({ name, functionFile(name), env_.currentLineno(), true });
 		std::vector<std::string> saved_positional = env_.positional();
 		env_.setPositional(args);
-		std::vector<SuspendedTrap> suspended = suspendTrapsForFunction();
+		const bool argv_pushed = pushBashArgv(args);
+		std::vector<SuspendedTrap> suspended = suspendTrapsForFunction(isFunctionTraced(name));
+		if (def->body != nullptr) env_.setCurrentLineno(static_cast<int>(def->body->loc.line));
 		fireDebugTrap();
 
+		this_command_name_ = name;
 		const int status = runFunctionBody(*def);
+		runExitTrapInFunction();
 
 		fireReturnTrap();
 		restoreTrapsAfterFunction(suspended);
+		popBashArgv(argv_pushed, args.size());
 		env_.setPositional(std::move(saved_positional));
 		popCallFrame();
 		return status;
 	}
 
+	// The loops around the call are not the body's to break, as in bash.
+	// An `exit` in a function runs the EXIT trap while the function is still
+	// on the call stack, so the trap sees its FUNCNAME, as in bash.
+	void Executor::runExitTrapInFunction() {
+		if (flow_.kind != FlowSignal::Kind::Exit || trap_handlers_.count("EXIT") == 0) return;
+
+		const int code = flow_.status;
+		clearFlow();
+		raiseExit(fireExitTrap(code));
+	}
+
 	int Executor::runFunctionBody(const FunctionDef& def) {
 		++func_depth_;
 		scope_stack_.emplace_back();
+		const int caller_loops = std::exchange(loop_depth_, 0);
 
 		int status = 0;
 		if (def.body != nullptr) status = execNode(*def.body);
 		consumeFlow(FlowSignal::Kind::Return, &status);
 
+		loop_depth_ = caller_loops;
 		popLocalScope();
 		--func_depth_;
 		if (func_depth_ == 0) nesting_exceeded_ = false;
@@ -5304,12 +6248,22 @@ namespace wbsh {
 		noteGetoptsWroteOptind();
 	}
 
+	// IGNOREEOF follows ignoreeof back too, as in bash.
+	void Executor::restoreLocalOptions(const SetOptions& options) {
+		const bool ignored_eof = env_.options().ignoreeof;
+		env_.options() = options;
+		if (options.ignoreeof == ignored_eof) return;
+
+		if (options.ignoreeof) env_.set("IGNOREEOF", "10");
+		else                   env_.unset("IGNOREEOF");
+	}
+
 	void Executor::popLocalScope() {
 		if (scope_stack_.empty()) return;
 
 		std::vector<ScopeEntry>& top = scope_stack_.back();
 		for (auto entry = top.rbegin(); entry != top.rend(); ++entry) {
-			if (entry->name == kLocalOptionsName) env_.options() = entry->options;
+			if (entry->name == kLocalOptionsName) restoreLocalOptions(entry->options);
 			else env_.restoreVar(entry->name, std::move(entry->saved));
 			if (entry->name == "OPTIND") restoreGetoptsPosition(entry->getopts_subindex);
 		}
@@ -5324,6 +6278,8 @@ namespace wbsh {
 
 	bool Executor::unsetFunction(const std::string& name) {
 		function_files_.erase(name);
+		exported_functions_.erase(name);
+		traced_functions_.erase(name);
 		return functions_.erase(name) != 0;
 	}
 
@@ -5338,12 +6294,35 @@ namespace wbsh {
 		job.pid = pid;
 		job.cmd_text = std::move(cmd_text);
 		job.running = true;
+		job.with_job_control = env_.options().monitor || env_.interactive();
+		touchJob(job);
 		jobs_.push_back(job);
 		return job.id;
 	}
 
 	void Executor::adoptInheritedJob(const Job& job) {
 		jobs_.push_back(job);
+		jobs_.back().inherited = true;
+		touchJob(jobs_.back());
+	}
+
+	static const Executor::Job* latestJobExcept(const std::vector<Executor::Job>& jobs,
+			const Executor::Job* skipped) {
+		const Executor::Job* latest = nullptr;
+		for (const Executor::Job& job : jobs) {
+			if (&job == skipped) continue;
+			if (latest == nullptr || job.recency > latest->recency) latest = &job;
+		}
+
+		return latest;
+	}
+
+	const Executor::Job* Executor::currentJob() const {
+		return latestJobExcept(jobs_, nullptr);
+	}
+
+	const Executor::Job* Executor::previousJob() const {
+		return latestJobExcept(jobs_, currentJob());
 	}
 
 	// As in bash, numbering restarts once the table is empty.
@@ -5381,6 +6360,7 @@ namespace wbsh {
 			::CloseHandle(job.handle);
 			job.handle = nullptr;
 			releaseJobExtras(job);
+			noteJobEnded(job.pid);
 			changed = true;
 		}
 #endif
@@ -5442,7 +6422,12 @@ namespace wbsh {
 				return kSignalStatusBase + interruptingSignal();
 			}
 
-			if (job.running) waitJobToFinish(job);
+			if (job.running) {
+				waitJobToFinish(job);
+				noteJobEnded(job.pid);
+			}
+
+			last_waited_pid_ = job.pid;
 
 			const int status = job.exit_code;
 			forgetJob(id);
@@ -5467,21 +6452,26 @@ namespace wbsh {
 		return 0;
 	}
 
-	int Executor::waitForAnyJob() {
-		reapJobs();
-		for (const Job& job : jobs_) {
-			if (!job.running) return waitForJob(job.id);
-		}
-
-		return waitForFirstRunningJob();
+	static bool isAmong(const std::vector<int>& only, int id) {
+		return only.empty() || std::find(only.begin(), only.end(), id) != only.end();
 	}
 
-	int Executor::waitForFirstRunningJob() {
+	int Executor::waitForAnyJob(const std::vector<int>& only) {
+		reapJobs();
+		for (const Job& job : jobs_) {
+			if (!job.running && isAmong(only, job.id)) return waitForJob(job.id);
+		}
+
+		return waitForFirstRunningJob(only);
+	}
+
+	int Executor::waitForFirstRunningJob(const std::vector<int>& only) {
 #ifdef _WIN32
 		std::vector<HANDLE> handles;
 		std::vector<int> ids;
 		for (const Job& job : jobs_) {
 			if (!job.running || job.stopped || job.handle == nullptr) continue;
+			if (!isAmong(only, job.id)) continue;
 
 			handles.push_back(job.handle);
 			ids.push_back(job.id);
@@ -5537,8 +6527,10 @@ namespace wbsh {
 		if (spec.empty() || spec[0] != '%' || jobs_.empty()) return nullptr;
 
 		const std::string rest = spec.substr(1);
-		if (rest.empty() || rest == "%" || rest == "+") return &jobs_.back();
-		if (rest == "-") return jobs_.size() > 1 ? &jobs_[jobs_.size() - 2] : &jobs_.back();
+		const Job* current = currentJob();
+		const Job* previous = previousJob();
+		if (rest.empty() || rest == "%" || rest == "+") return const_cast<Job*>(current);
+		if (rest == "-") return const_cast<Job*>(previous != nullptr ? previous : current);
 
 		int id = 0;
 		for (Job& job : jobs_) {
@@ -5548,6 +6540,8 @@ namespace wbsh {
 		return nullptr;
 	}
 
+	static const std::size_t kJobStateWidth = 27;
+
 	static std::string jobStateText(const Executor::Job& job) {
 		if (job.stopped) return "Stopped";
 		if (job.running) return "Running";
@@ -5555,14 +6549,14 @@ namespace wbsh {
 		return "Exit " + std::to_string(job.exit_code);
 	}
 
-	// Laid out as bash does: `[1]+  Running                 sleep 9 &`.
+	// Laid out as bash 5.3 does: `[1]+  Running                    sleep 9 &`.
 	std::string Executor::jobLine(const Job& job) const {
 		char mark = ' ';
-		if (!jobs_.empty() && &job == &jobs_.back()) mark = '+';
-		else if (jobs_.size() > 1 && &job == &jobs_[jobs_.size() - 2]) mark = '-';
+		if (&job == currentJob()) mark = '+';
+		else if (&job == previousJob()) mark = '-';
 
 		std::string state = jobStateText(job);
-		state.resize(std::max<std::size_t>(state.size(), 24), ' ');
+		state.resize(std::max<std::size_t>(state.size(), kJobStateWidth), ' ');
 
 		std::string line = "[" + std::to_string(job.id) + "]" + mark + "  " + state + job.cmd_text;
 		if (job.running && !job.stopped) line += " &";
@@ -5801,7 +6795,7 @@ namespace wbsh {
 
 	// A self-spawned subshell sets these readonly variables up itself.
 	static bool isSeededBySubshell(const std::string& name) {
-		return name == "BASH_VERSINFO" || name == "PPID";
+		return name == "BASH_VERSINFO" || name == "PPID" || name == "UID" || name == "EUID";
 	}
 
 	std::string Executor::serializeAttributes() const {
@@ -5817,7 +6811,9 @@ namespace wbsh {
 		}
 
 		for (const auto& entry : sortedKeys(env_.namerefs())) {
-			out += "declare -n " + entry + "=" + shellQuoteSingle(env_.namerefTarget(entry)) + "\n";
+			const std::string target = env_.namerefTarget(entry);
+			const std::string value = target.empty() ? "" : "=" + shellQuoteSingle(target);
+			out += "declare -n " + entry + value + "\n";
 		}
 
 		return out;
@@ -5856,6 +6852,7 @@ namespace wbsh {
 		std::sort(defs.begin(), defs.end(), functionNameLess);
 		std::string out;
 		for (const FunctionDef* def : defs) {
+			out += "function ";
 			out += def->name;
 			out += "() ";
 			out += def->body_text;
@@ -5894,7 +6891,7 @@ namespace wbsh {
 		return false;
 	}
 
-	bool Executor::makeLocal(const std::string& name) {
+	bool Executor::makeLocal(const std::string& name, bool inherit) {
 		if (scope_stack_.empty()) return false;
 
 		std::vector<ScopeEntry>& top = scope_stack_.back();
@@ -5914,9 +6911,86 @@ namespace wbsh {
 		const bool exported = entry.saved.exported;
 		top.push_back(std::move(entry));
 
-		env_.restoreVar(name, Environment::VarState{});
+		// bash's local of a name in the temporary environment keeps its value,
+		// and under localvar_inherit any local starts as what it hides, but
+		// for the nameref attribute. Otherwise it is declared with no value.
+		if (inherit || localInherits(name)) {
+			Environment::VarState inherited = top.back().saved;
+			inherited.has_nameref = false;
+			env_.restoreVar(name, std::move(inherited));
+		} else {
+			env_.restoreVar(name, Environment::VarState{});
+			env_.markValueless(name);
+		}
+
 		if (exported) env_.exportVar(name);
 		return true;
+	}
+
+	bool Executor::isCallerLocal(const std::string& name) const {
+		if (scope_stack_.size() < 2) return false;
+
+		for (auto scope = scope_stack_.rbegin() + 1; scope != scope_stack_.rend(); ++scope) {
+			if (scopeHasName(*scope, name)) return true;
+		}
+
+		return false;
+	}
+
+	bool Executor::isLocalHere(const std::string& name) const {
+		return !scope_stack_.empty() && scopeHasName(scope_stack_.back(), name);
+	}
+
+	bool Executor::hasLocalOptions() const {
+		return !scope_stack_.empty() && scopeHasName(scope_stack_.back(), kLocalOptionsName);
+	}
+
+	bool Executor::localInherits(const std::string& name) const {
+		return env_.shopts().localvar_inherit || isTempEnvName(name);
+	}
+
+	bool Executor::isTempEnvName(const std::string& name) const {
+		return std::find(temp_env_names_.begin(), temp_env_names_.end(), name)
+			!= temp_env_names_.end();
+	}
+
+	// POSIX: `var=20 return` in a function made `var=30 f`'s var the shell's.
+	std::set<std::string> Executor::takePersistedTempNames() {
+		return std::exchange(persisted_temp_names_, {});
+	}
+
+	std::size_t Executor::pushTempEnvNames(
+			const std::vector<std::pair<std::string, std::string>>& assigns) {
+		const std::size_t outer = temp_env_names_.size();
+		for (const auto& assign : assigns) temp_env_names_.push_back(assign.first);
+		return outer;
+	}
+
+	// Each local, innermost first, gives way to the value it hid; after the
+	// body, outermost first, what the body left becomes the hidden value.
+	int Executor::runInGlobalScope(const std::function<int()>& body) {
+		std::vector<Environment::VarState> locals;
+		for (auto scope = scope_stack_.rbegin(); scope != scope_stack_.rend(); ++scope) {
+			for (auto entry = scope->rbegin(); entry != scope->rend(); ++entry) {
+				if (entry->name == kLocalOptionsName) continue;
+
+				locals.push_back(env_.saveVar(entry->name));
+				env_.restoreVar(entry->name, entry->saved);
+			}
+		}
+
+		const int status = body();
+		for (auto& scope : scope_stack_) {
+			for (auto& entry : scope) {
+				if (entry.name == kLocalOptionsName) continue;
+
+				entry.saved = env_.saveVar(entry.name);
+				env_.restoreVar(entry.name, std::move(locals.back()));
+				locals.pop_back();
+			}
+		}
+
+		return status;
 	}
 
 	std::vector<std::string> Executor::localNames() const {
@@ -5931,19 +7005,27 @@ namespace wbsh {
 	}
 
 	bool Executor::assignCompound(const std::string& text) {
+		std::function<void()> apply;
+		if (!expandCompound(text, apply)) return false;
+
+		apply();
+		return true;
+	}
+
+	bool Executor::expandCompound(const std::string& text, std::function<void()>& apply) {
 		Lexer lexer(text);
 		std::vector<Token> tokens = lexer.tokenize();
 		Parser parser(std::move(tokens));
 		Assignment assignment;
 		if (!lexer.errors().empty() || !parser.parseLoneArrayAssignment(assignment)) return false;
 
-		const ArrayAssign array = expandArrayAssign(expander_, assignment);
+		ArrayAssign array = expandArrayAssign(expander_, assignment);
 		if (expander_.failed()) {
 			reportExpanderError(expander_);
 			return false;
 		}
 
-		applyArrayAssignToEnv(env_, expander_, array);
+		apply = [this, array = std::move(array)]() { applyArrayAssignToEnv(env_, expander_, array); };
 		return true;
 	}
 
@@ -5957,8 +7039,20 @@ namespace wbsh {
 		ParseError error;
 		if (!firstSyntaxError(lexer.errors(), parser.errors(), error)) return std::string();
 
-		return syntaxErrorReport(syntaxInputName(origin), source_text, first_line,
-			error.loc.line, error.message);
+		const std::string input = syntaxInputName(origin);
+		std::string report;
+		for (const LexError& warning : lexer.warnings()) {
+			if (warning.loc.line > error.loc.line) continue;
+			report += syntaxWarningReport(input, warning.loc.line, warning.message);
+		}
+
+		report += syntaxErrorReport(input, source_text, first_line, error.loc.line, error.message);
+
+		ParseError follow_up;
+		if (!followUpSyntaxError(parser.errors(), error, follow_up)) return report;
+
+		return report + syntaxErrorReport(input, source_text, first_line, follow_up.loc.line,
+			follow_up.message);
 	}
 
 	// Only the commands on the lines before a syntax error are kept; the
@@ -5967,11 +7061,16 @@ namespace wbsh {
 			const std::string& origin, std::size_t first_line) {
 		Lexer lexer(source_text);
 		lexer.startAtLine(first_line);
+		lexer.lexInPosixMode(env_.options().posix);
 		lexer.acceptHeredocAtEof();
+		if (origin == "<command-substitution>") lexer.lexSubstitutionBody();
+		lexWithAliases(lexer);
 		std::vector<Token> tokens = lexer.tokenize();
-		Parser parser(std::move(tokens), source_text);
+		Parser parser(std::move(tokens), lexer.source());
 
 		ParsedText parsed;
+		parsed.lexed_source = lexer.source();
+		parsed.splices = lexer.aliasSplices();
 		parsed.root = parser.parseProgram();
 		parsed.diagnostics = formatSourceError(origin, source_text, first_line, lexer, parser);
 		if (parsed.root == nullptr) return parsed;
@@ -5979,7 +7078,10 @@ namespace wbsh {
 		truncateAtSyntaxError(*parsed.root, parser,
 			firstSyntaxErrorOffset(lexer.errors(), parser.errors()));
 		if (!env_.options().posix) {
-			parsed.resume_offset = discardResumeOffset(source_text, lexer.errors(), parser.errors());
+			const std::size_t resume = discardResumeOffset(lexer.source(), lexer.errors(),
+				parser.errors());
+			parsed.resume_offset = resume == std::string::npos ? resume
+				: offsetBeforeAliases(parsed.splices, resume);
 		}
 
 		parsed.arena = parser.takeArena();
@@ -5994,7 +7096,7 @@ namespace wbsh {
 
 	// A Discard ends the text it came from (a trap action, `$(...)`).
 	int Executor::finishParsedText(const ParsedText& parsed, int status) {
-		if (consumeFlow(FlowSignal::Kind::Discard)) status = 1;
+		if (consumeFlow(FlowSignal::Kind::Discard) && status == 0) status = 1;
 		if (parsed.diagnostics.empty() || flowPending()) return status;
 
 		std::fputs(parsed.diagnostics.c_str(), stderr);
@@ -6015,8 +7117,15 @@ namespace wbsh {
 			std::size_t first_line) {
 		ParsedText parsed = parseText(source_text, origin, first_line);
 		const std::size_t defined = function_definitions_;
-		const int status = parsed.root != nullptr ? executeInput(*parsed.root, source_text) : 0;
+		const int status = parsed.root != nullptr
+			? executeInput(*parsed.root, parsed.lexed_source)
+			: 0;
 		keepArenaIfDefined(parsed, defined);
+		if (relex_offset_ != std::string::npos) {
+			return relexRestOfInput(source_text,
+				{ origin, first_line, parsed.lexed_source, parsed.splices }, status);
+		}
+
 		if (parsed.resume_offset == std::string::npos || flowPending()) {
 			return finishParsedText(parsed, status);
 		}
@@ -6039,18 +7148,67 @@ namespace wbsh {
 		return executeInputText(source_text.substr(resume), origin, line);
 	}
 
+	// A line can end inside an alias's text: bash has that text as input
+	// already and reads the rest of it before going on.
+	static std::string aliasTextLeft(const Executor::RelexInput& input, std::size_t relex) {
+		const std::size_t original = offsetBeforeAliases(input.splices, relex);
+		const std::size_t resume = offsetAfterAliases(input.splices, original);
+		if (resume <= relex) return std::string();
+
+		return input.lexed_source.substr(relex, resume - relex);
+	}
+
+	// @p relex_offset_ points into the text as lexed; the rest of the input
+	// is the rest of @p source_text from where that was.
+	int Executor::relexRestOfInput(const std::string& source_text, const RelexInput& input,
+			int status) {
+		const std::size_t relex = std::exchange(relex_offset_, std::string::npos);
+		if (relex == std::string::npos || flowPending()) return status;
+
+		const std::string alias_rest = aliasTextLeft(input, relex);
+		const std::size_t resume = offsetBeforeAliases(input.splices, relex);
+		if (resume >= source_text.size() && alias_rest.empty()) return status;
+
+		const auto skipped_lines = std::count(source_text.begin(),
+			source_text.begin() + static_cast<std::ptrdiff_t>((std::min)(resume, source_text.size())),
+			'\n');
+		const auto alias_lines = std::count(alias_rest.begin(), alias_rest.end(), '\n');
+		const std::size_t line = input.first_line + static_cast<std::size_t>(skipped_lines)
+			- (std::min)(static_cast<std::size_t>(alias_lines), input.first_line - 1);
+		const std::string rest = resume < source_text.size() ? source_text.substr(resume) : "";
+		return executeInputText(alias_rest + rest, input.origin, line);
+	}
+
+	// What lexing depends on of the aliases: none while they do not expand.
+	unsigned long long Executor::aliasState() const {
+		return env_.expand_aliases() ? alias_generation_ + 1 : 0;
+	}
+
 	int Executor::executeInput(const Node& root, const std::string& source_text) {
 		const InputEcho saved = input_echo_;
 		const bool is_list = root.kind == Node::Kind::List;
-		input_echo_ = { is_list ? static_cast<const List*>(&root) : nullptr, &source_text, 0 };
+		input_echo_ = { is_list ? static_cast<const List*>(&root) : nullptr, &source_text, 0,
+			env_.options().posix, aliasState() };
 		if (!is_list) echoInputUpTo(source_text.size());
+		if (!is_list) input_command_end_line_ = lastLineOf(root);
 
 		int status = execute(root);
-		if (consumeFlow(FlowSignal::Kind::Discard)) status = 1;
+		if (consumeFlow(FlowSignal::Kind::Discard) && status == 0) status = 1;
 		if (!flowPending()) echoInputUpTo(source_text.size());
+		if (!is_list && !flowPending()) relexAfterSoleCommand(root, source_text);
 
 		input_echo_ = saved;
 		return status;
+	}
+
+	// Input cut short by a syntax error can be a single command; the lines
+	// after it are lexed again as after an item of a list.
+	void Executor::relexAfterSoleCommand(const Node& command, const std::string& source_text) {
+		const bool posix_changed = env_.options().posix != input_echo_.lexed_posix;
+		if (!posix_changed && aliasState() == input_echo_.lexed_aliases) return;
+
+		const std::size_t line_end = commandLineEnd(command, source_text);
+		if (line_end < source_text.size()) relex_offset_ = line_end;
 	}
 
 	static std::size_t lineEndAfter(const std::string& text, std::size_t pos) {
@@ -6087,15 +7245,18 @@ namespace wbsh {
 		return end;
 	}
 
+	static std::size_t commandLineEnd(const Node& command, const std::string& text) {
+		const std::size_t last_byte = (command.src_end > command.loc.offset)
+			? command.src_end
+			: command.loc.offset;
+		return lineEndAfter(text, last_byte);
+	}
+
 	// The input bash has read by the time it runs item `index`: through the
 	// end of the item's last line, heredoc bodies included.
 	static std::size_t inputReadThrough(const List& list, std::size_t index,
 			const std::string& text) {
-		const Node& command = *list.items[index].command;
-		const std::size_t last_byte = (command.src_end > command.loc.offset)
-			? command.src_end
-			: command.loc.offset;
-		const std::size_t command_end = lineEndAfter(text, last_byte);
+		const std::size_t command_end = commandLineEnd(*list.items[index].command, text);
 
 		const bool last = index + 1 >= list.items.size();
 		const std::size_t next_line = last
@@ -6163,8 +7324,7 @@ namespace wbsh {
 		SubshellScope snap = enterSubshell();
 		dropErrexitForSubstitution();
 
-		const int lineno = env_.currentLineno();
-		const std::size_t line = static_cast<std::size_t>(lineno > 0 ? lineno : 1);
+		const std::size_t line = static_cast<std::size_t>(parseBaseLine());
 		const int status = endSubshell(executeSubstitutionText(body, line));
 		leaveSubshell(snap);
 		return status;
@@ -6219,9 +7379,18 @@ namespace wbsh {
 		const Redirection* file_read = parsed.diagnostics.empty()
 			? fileReadRedirection(*parsed.root)
 			: nullptr;
+		const NodeLines lines = reprintedSubstitutionLines(*parsed.root, body);
+		const int base = substitutionBaseLine();
+		for (const auto& entry : lines) {
+			line_overrides_[entry.first] = base + static_cast<int>(entry.second);
+		}
+
+		enterTraceLevel();
 		const int status = file_read != nullptr
 			? writeFileToStdout(*file_read)
 			: execute(*parsed.root);
+		leaveTraceLevel();
+		for (const auto& entry : lines) line_overrides_.erase(entry.first);
 		keepArenaIfDefined(parsed, defined);
 		return finishParsedText(parsed, status);
 	}
@@ -6229,8 +7398,11 @@ namespace wbsh {
 	// bash runs `${ body; }` like an unnamed function that shares the
 	// caller's positional parameters: `local` and `return` work in it.
 	int Executor::runSubstitutionInCurrentShell(const std::string& body) {
-		const int lineno = env_.currentLineno();
-		const std::size_t line = static_cast<std::size_t>(lineno > 0 ? lineno : 1);
+		const std::size_t line = static_cast<std::size_t>(parseBaseLine());
+
+		const bool had_errexit = env_.errexit();
+		dropErrexitForSubstitution();
+		const bool dropped_errexit = had_errexit && !env_.errexit();
 
 		++func_depth_;
 		scope_stack_.emplace_back();
@@ -6239,6 +7411,7 @@ namespace wbsh {
 
 		popLocalScope();
 		--func_depth_;
+		if (dropped_errexit) env_.setErrexit(true);
 		return status;
 	}
 

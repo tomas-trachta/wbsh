@@ -60,8 +60,7 @@ namespace wbsh {
 	};
 
 	/// Every `shopt` flag bash 5.3 has, so rc files written for bash load
-	/// without errors; not all of them change behaviour yet. globstar is on
-	/// by default since bash's `**` is the more useful behaviour.
+	/// without errors; not all of them change behaviour yet.
 	struct ShoptFlags {
 		/// Also what `assoc_expand_once`, bash 5.3's deprecated synonym, sets.
 		bool array_expand_once       = false;
@@ -93,7 +92,7 @@ namespace wbsh {
 		bool force_fignore           = true;
 		bool globasciiranges         = true;
 		bool globskipdots            = true;
-		bool globstar                = true;
+		bool globstar                = false;
 		bool gnu_errfmt              = false;
 		bool histappend              = false;
 		bool histreedit              = false;
@@ -120,7 +119,6 @@ namespace wbsh {
 		bool restricted_shell        = false;
 		bool shift_verbose           = false;
 		bool sourcepath              = true;
-		bool syslog_history          = false;
 		bool varredir_close          = false;
 		bool xpg_echo                = false;
 	};
@@ -169,7 +167,7 @@ namespace wbsh {
 		void   forceSet(const std::string& name, std::string value) {
 			vars_[name] = std::move(value);
 		}
-		void   unset(const std::string& name);
+		bool   unset(const std::string& name);
 		/// Erase one array element: `assoc[key]` if @p name is an assoc
 		/// array, else `indexed[idx]`. No-op if @p name isn't an array.
 		void   unsetElement(const std::string& name, long long idx, const std::string& key);
@@ -182,6 +180,9 @@ namespace wbsh {
 		void   exportVar(const std::string& name);
 		void   unexportVar(const std::string& name);
 		bool   isExported(const std::string& name) const;
+		/// An exported entry by its exact name, which need not be one a
+		/// variable can have (`v[0]` from the environment the shell got).
+		bool   exportedEntry(const std::string& name, std::string& out) const;
 		const std::unordered_set<std::string>& exportedSet() const { return exported_; }
 		/// Mark @p name as readonly; further set() calls will fail.
 		void   markReadonly(const std::string& name)   { readonly_.insert(resolveRef(name)); }
@@ -211,6 +212,8 @@ namespace wbsh {
 			arith_evaluator_ = evaluator;
 			arith_context_ = context;
 		}
+		/// Evaluates the subscript of a `name[sub]` that a builtin was given.
+		void setSubscriptEvaluator(ArithEvaluator evaluator) { subscript_evaluator_ = evaluator; }
 
 		const std::unordered_map<std::string, std::string>& vars() const { return vars_; }
 
@@ -238,6 +241,14 @@ namespace wbsh {
 		}
 		/// The variable @p name stands for after following namerefs.
 		const std::string& resolveRef(const std::string& name) const;
+		/// A value for a nameref without a target must name a variable;
+		/// reports one that does not.
+		bool rejectsRefTarget(const std::string& name, const std::string& value) const;
+		bool rejectsRefValue(const std::string& value) const;
+		void dropUnboundNameref(const std::string& name);
+		/// The builtin whose assignments are running, for their errors.
+		void setAssigningCommand(std::string name) { assigning_command_ = std::move(name); }
+		const std::string& assigningCommand() const { return assigning_command_; }
 		///@}
 
 		/// Sparse indexed array — bash arrays are sparse, so a sorted map.
@@ -257,6 +268,7 @@ namespace wbsh {
 			unsigned attributes = 0;
 			bool has_nameref = false;
 			std::string nameref;
+			bool valueless = false;
 		};
 		VarState saveVar(const std::string& name) const;
 		/// Put @p name back as saved, readonly or not.
@@ -303,10 +315,15 @@ namespace wbsh {
 		/// A negative @p idx counts back from one past the highest index;
 		/// false, reported, when it still ends up below zero.
 		bool resolveElementIndex(const std::string& name, long long& idx) const;
-		void declareAssocArray(const std::string& name);
+		void declareAssocArray(const std::string& name, bool converted = false);
+		/// Gives an empty associative array a hash table of @p buckets.
+		void sizeAssocTable(const std::string& name, std::uint32_t buckets);
+		/// `A=(...)` on an associative array: it starts out empty again.
+		void resetAssocArray(const std::string& name);
 		/// `declare -a x` / `declare -A x` with no value: the array exists but
 		/// was never assigned, which `declare -p` shows without `=()`.
 		void markValueless(const std::string& name) { valueless_.insert(resolveRef(name)); }
+		void markValued(const std::string& name) { valueless_.erase(resolveRef(name)); }
 		unsigned long long optindWrites() const { return optind_writes_; }
 		bool isValueless(const std::string& name) const {
 			return valueless_.count(resolveRef(name)) != 0;
@@ -349,6 +366,9 @@ namespace wbsh {
 		 * process and across wbsh processes, and no real PID can equal it.
 		 */
 		void enterSubshellPid();
+		/// `$BASH_SUBSHELL`: how many subshells deep this shell runs.
+		int subshellLevel() const { return subshell_level_; }
+		void setSubshellLevel(int level) { subshell_level_ = level; }
 
 		/// `$-`: the single-letter options that are on, in bash's order.
 		std::string shellOptions() const;
@@ -415,6 +435,10 @@ namespace wbsh {
 		/// Whether LC_ALL, else LC_CTYPE, else LANG names a UTF-8 locale;
 		/// with none of them set wbsh speaks UTF-8.
 		bool utf8Locale() const;
+		/// The locale LC_ALL, LC_NUMERIC or LANG names, in that order.
+		std::string numericLocale() const;
+		/// The locale LC_ALL, LC_CTYPE or LANG names, in that order.
+		std::string ctypeLocale() const;
 
 		void   setShellName(std::string s) { shell_name_ = std::move(s); }
 		const std::string& shellName() const { return shell_name_; }
@@ -466,9 +490,12 @@ namespace wbsh {
 			std::string key;
 			long long index = 0;
 			bool assoc = false;
+			bool bad_index = false;   ///< The subscript failed to evaluate.
+			bool whole = false;       ///< `[@]` or `[*]`: every element, as a nameref reads it.
 		};
 		bool        splitElementRef(const std::string& ref, ElementRef& out) const;
 		std::string getElement(const ElementRef& element) const;
+		std::string wholeArrayText(const ElementRef& element) const;
 		bool        hasElement(const ElementRef& element) const;
 		void        setResolved(const std::string& name, std::string value);
 		std::string getResolved(const std::string& name) const;
@@ -496,6 +523,7 @@ namespace wbsh {
 		std::unordered_map<std::string, std::string> namerefs_;
 		std::unordered_set<std::string> valueless_;
 		ArithEvaluator arith_evaluator_ = nullptr;
+		ArithEvaluator subscript_evaluator_ = nullptr;
 		void* arith_context_ = nullptr;
 		std::vector<std::string> positional_;
 		int last_status_ = 0;
@@ -503,6 +531,8 @@ namespace wbsh {
 		long long shell_pid_ = 0;
 		long long bash_pid_ = 0;
 		std::string shell_name_ = "wbsh";
+		std::string assigning_command_;
+		int subshell_level_ = 0;
 		SetOptions options_;
 		bool interactive_ = false;
 		char invocation_letter_ = 0;
@@ -515,5 +545,16 @@ namespace wbsh {
 		int current_lineno_ = 0;
 		std::string current_command_;
 	};
+
+	/// The `]` that closes the subscript opened at @p open, as bash's
+	/// skipsubscript finds it: nested brackets balance, and unless the
+	/// subscript is taken as it is, quoted text hides brackets. npos when
+	/// nothing closes it.
+	std::size_t subscriptEnd(const std::string& text, std::size_t open, bool skips_quotes);
+
+	/// Under assoc_expand_once, `name[key]` names an element of the
+	/// associative array `name` whatever brackets the key holds: it runs
+	/// to the `]` that ends @p text, as in bash.
+	bool isAssocKeyReference(const Environment& env, const std::string& text);
 
 }  // namespace wbsh

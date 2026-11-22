@@ -1,0 +1,200 @@
+=== exit, return, shift with bad operands
+numeric.sh: line 1: exit: abc: numeric argument required
+after exit 2
+numeric.sh: line 2: return: abc: numeric argument required
+after f 2
+numeric.sh: line 3: shift: abc: numeric argument required
+after shift 2 2
+numeric.sh: line 4: exit: too many arguments
+next line 2
+numeric.sh: line 6: return: abc: numeric argument required
+numeric.sh: line 6: return: can only `return' from a function or sourced script
+toplevel 2
+break -- 0
+posix exit status 2: exit: abcde: numeric argument required
+posix return status 2: return: abcde: numeric argument required
+=== shopt defaults and names
+globstar            	off
+shopt: xyz1: invalid shell option name
+shopt: xyz1: invalid option name
+restricted_shell    	off
+shopt: syslog_history: invalid shell option name
+=== readonly arrays and compound assignments
+readonly.sh: line 2: f2: a: readonly variable
+readonly.sh: line 3: readonly: a: readonly variable
+declare -ar a=([0]="1")
+declare -ar c=([0]="(3)")
+readonly.sh: line 13: g: r: readonly variable
+readonly.sh: line 13: declare: r: readonly variable
+g 1
+hi
+readonly.sh: line 14: r: readonly variable
+after h 1
+readonly.sh: line 16: declare: r: readonly variable
+declare -a 1
+=== read
+-a-b -
+-a  b-
+b: readonly variable
+a=a b= c= stat=2
+<  line><b >
+=== printf
+bash53_builtins.sh: line 63: printf: -x: invalid option
+printf: usage: printf [-v var] format [arguments]
+status 2
+bash53_builtins.sh: line 64: printf: `bad-name': not a valid identifier
+status 2
+abcd|xy
+n1=4
+\*|'plain'|'a;b'
+<$'B\315'>
+--	A--
+--A7--
+bash53_builtins.sh: line 68: printf: missing hex digit for \x
+--\x--
+bash53_builtins.sh: line 69: printf: 9223372036854775825: Numerical result out of range
+9223372036854775807
+bash53_builtins.sh: line 69: printf: : invalid number
+0
+status 1
+bash53_builtins.sh: line 70: printf: warning: `Z': invalid time format specification
+%(abde)Z|
+[197         ]
+declare -- x=$'B\315'
+=== test
+bash53_builtins.sh: line 75: test: 4+3: integer expected
+status 2
+bash53_builtins.sh: line 76: [: `)' expected, found ]
+status 2
+bash53_builtins.sh: line 77: test: syntax error: `-ne' unexpected
+status 2
+bash53_builtins.sh: line 78: test: syntax error: `-t' unexpected
+status 2
+bash53_builtins.sh: line 79: test: a: integer expected
+status 2
+-w /dev/null 0
+=== type, alias, exec
+break is a special shell builtin
+faketool is hashed (/tmp/fake-tool)
+/tmp/fake-tool
+file
+bash53_builtins.sh: line 86: alias: `\$': invalid alias name
+status 1
+bash53_builtins.sh: line 87: exec: -i: invalid option
+exec: usage: exec [-cl] [-a name] [command [argument ...]] [redirection ...]
+exec status 2
+=== cd, umask, mapfile, misc
+via CDPATH: sub
+bash53_builtins.sh: line 92: cd: too many arguments
+status 2
+bash53_builtins.sh: line 93: cd: HOME not set
+status 1
+u=rwx,g=rx,o=rx
+0002
+umask -S u=rwx,g=rwx,o=rx
+bash53_builtins.sh: line 94: umask: 09: octal number out of range
+bash53_builtins.sh: line 94: umask: `:': invalid symbolic mode operator
+bash53_builtins.sh: line 94: umask: `p': invalid symbolic mode character
+0002
+bash53_builtins.sh: line 95: mapfile: XX: invalid file descriptor specification
+bash53_builtins.sh: line 95: mapfile: empty array variable name
+status 2
+bash53_builtins.sh: line 96: let: expression expected
+status 1
+bash53_builtins.sh: line 97: shopt: cannot set and unset shell options simultaneously
+status 1
+bash53_builtins.sh: line 98: unset: cannot simultaneously unset a function and a variable
+status 1
+bash53_builtins.sh: line 99: trap: -s: invalid option
+trap: usage: trap [-Plp] [[action] signal_spec ...]
+status 2
+bash53_builtins.sh: line 100: eval: -i: invalid option
+eval: usage: eval [arg ...]
+status 2
+bash53_builtins.sh: line 101: break: 0: loop count out of range
+status 1
+unalias: usage: unalias [-a] name [name ...]
+status 2
+=== trap -P and lone operands
+echo exiting
+trap_p.sh: line 3: trap: cannot specify both -p and -P
+status 2
+trap_p.sh: line 4: trap: -P requires at least one signal name
+status 2
+trap: usage: trap [-Plp] [[action] signal_spec ...]
+status 2
+trap: usage: trap [-Plp] [[action] signal_spec ...]
+status 2
+status 0
+echo x
+trap_p.sh: line 9: trap: bogus: invalid signal specification
+status 1
+reset 0
+trap: usage: trap [-Plp] [[action] signal_spec ...]
+=== expr follows GNU expr's grammar
+4.2MP : [^0-9]*[0-9]*.\([0-9]*\) => [2] 0
+abc : a\(b\) => [b] 0
+abc : ab => [2] 0
+abc : x\(y\) => [] 1
+1 + 2 => [3] 0
+2 * 3 + 1 => [7] 0
+7 / 0 => [] 2
+a + 1 => [] 2
+0 |  => [0] 1
+ | 5 => [5] 0
+3 & 0 => [0] 1
+3 & 4 => [3] 0
+a < b => [1] 0
+10 < 9 => [0] 1
+10 < 9a => [1] 0
+length abcd => [4] 0
+substr hello 2 3 => [ell] 0
+index hello lo => [3] 0
+match abc a\(.\) => [b] 0
+( 1 + 2 ) * 3 => [9] 0
+( 1 + 2 => [] 2
+1 + => [] 2
+1 2 => [] 2
++ length => [length] 0
+length => [] 2
+00 => [00] 1
+-0 => [-0] 1
+ => [] 2
+-- 5 => [5] 0
+=== job, kill, unset and history errors
+errs.sh: line 2: unset: [-2]: bad array subscript
+s 1
+errs.sh: line 3: bg: no job control
+s 1
+errs.sh: line 4: fg: no job control
+s 1
+kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]
+s 2
+errs.sh: line 6: kill: -s: option requires an argument
+s 1
+errs.sh: line 7: kill: S: invalid signal specification
+s 1
+errs.sh: line 8: kill: `': not a pid or valid job spec
+s 1
+kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]
+s 2
+errs.sh: line 10: kill: SIGBAD: invalid signal specification
+s 1
+errs.sh: line 11: kill: `@12': not a pid or valid job spec
+s 1
+errs.sh: line 12: unset: BASH_LINENO: cannot unset
+errs.sh: line 12: unset: BASH_SOURCE: cannot unset
+s 1
+errs.sh: line 16: history: abcde: numeric argument required
+after history: 2
+errs.sh: line 17: history: too many arguments
+errs2.sh: line 2: shift: too many arguments
+after shift: 2
+errs2.sh: line 4: return: too many arguments
+after return: 2
+errs2.sh: line 6: array: unbound variable
+errs2.sh: line 6: array: unbound variable
+errs2.sh: line 6: array[7]: unbound variable
+end
+=== character devices are only character devices
+-f:1 -d:1 -s:1 -c:0 -e:0 -r:0 -w:0 

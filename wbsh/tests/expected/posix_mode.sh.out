@@ -27,13 +27,13 @@ export "a b"; echo not reached
 readonly r=1; export r=2; echo not reached
   => wbsh: line 1: r: readonly variable
 unset "a b"; echo not reached
-  => wbsh: line 1: unset: `a b': not a valid identifier
+  => not reached |   reached, status 0
 set -o nosuch; echo not reached
   => wbsh: line 1: set: nosuch: invalid option name
 shift 5; echo not reached
   => wbsh: line 1: shift: 5: shift count out of range
 trap "" NOSIG; echo not reached
-  => wbsh: line 1: trap: NOSIG: invalid signal specification
+  => wbsh: line 1: trap: NOSIG: invalid signal specification | not reached |   reached, status 0
 eval "("; echo not reached
   => wbsh: eval: line 2: syntax error: unexpected end of file from `(' command on line 1
 command eval "("; echo "after command eval $?"

@@ -292,10 +292,14 @@ namespace wbsh {
 	}
 
 	// There is no uid model: UID and EUID are the id `id -u` prints, never
-	// 0, as in Git Bash. Bash sets HOSTNAME only when it is unset.
+	// 0, as in Git Bash, and GROUPS the group `id -g` prints. Bash sets
+	// HOSTNAME only when it is unset.
 	static void seedIdentity(Environment& env) {
 		setReadonlyInteger(env, "UID", "1000");
 		setReadonlyInteger(env, "EUID", "1000");
+		env.setIndexedArrayFromList("GROUPS", { "1000" });
+		env.markReadonly("SHELLOPTS");
+		env.markReadonly("BASHOPTS");
 		if (!env.get("HOSTNAME").empty()) return;
 
 		std::string host = env.get("COMPUTERNAME");
@@ -336,6 +340,11 @@ namespace wbsh {
 		env.set("OPTERR", "1");
 	}
 
+	// The sizes of bash's alias and hashed-command tables, which these
+	// arrays show in their own order.
+	static const std::uint32_t kAliasHashBuckets = 64;
+	static const std::uint32_t kCommandHashBuckets = 256;
+
 	// bash always has these two associative arrays, so `declare -A` and
 	// `set` list them even when nothing is aliased or hashed.
 	static void seedHashArrays(Environment& env) {
@@ -343,6 +352,8 @@ namespace wbsh {
 
 		env.declareAssocArray("BASH_ALIASES");
 		env.declareAssocArray("BASH_CMDS");
+		env.sizeAssocTable("BASH_ALIASES", kAliasHashBuckets);
+		env.sizeAssocTable("BASH_CMDS", kCommandHashBuckets);
 	}
 
 	static void seedBashVariables(Environment& env, const PathConv& path_conv) {
@@ -419,8 +430,32 @@ namespace wbsh {
 		env.unexportVar("_");
 	}
 
+	static void seedPs4(Environment& env) {
+		if (isChildShell(env) || env.has("PS4")) return;
+
+		env.set("PS4", "+ ");
+	}
+
+	static void applyInheritedOption(Environment& env, const std::string& word);
+
+	// bash turns on each option that SHELLOPTS or BASHOPTS names when it
+	// finds the variable in its environment.
+	static void enableListedOptions(Environment& env, const std::string& variable) {
+		const std::string list = env.get(variable);
+		std::size_t start = 0;
+		while (start < list.size()) {
+			std::size_t end = list.find(':', start);
+			if (end == std::string::npos) end = list.size();
+
+			applyInheritedOption(env, "-" + list.substr(start, end - start));
+			start = end + 1;
+		}
+	}
+
 	void prepareEnv(Environment& env) {
 		env.loadFromProcessEnv();
+		enableListedOptions(env, "SHELLOPTS");
+		enableListedOptions(env, "BASHOPTS");
 		seedUpperCaseNames(env);
 		resetInheritedIfs(env);
 		unexportLastArgument(env);
@@ -435,6 +470,7 @@ namespace wbsh {
 		seedPwd(env, path_conv);
 		seedBashVariables(env, path_conv);
 		seedMsystem(env);
+		seedPs4(env);
 	}
 
 	static void unexportInheritedLocals(Environment& env, const std::string& names) {
@@ -479,6 +515,15 @@ namespace wbsh {
 			stack.push_back(text.substr(start, end - start));
 			start = end + 1;
 		}
+	}
+
+	// A pipeline element started from a function may `return`, as the
+	// subshell bash forks for it can.
+	static void applyInheritedReturnContext(Environment& env, Executor& exec) {
+		if (env.get("WBSH_RETURNABLE").empty()) return;
+
+		env.unset("WBSH_RETURNABLE");
+		exec.inheritReturnContext();
 	}
 
 	static void applyInheritedDisabledBuiltins(Environment& env, Executor& exec) {
@@ -614,6 +659,15 @@ namespace wbsh {
 		}
 	}
 
+	static void applyInheritedSubshellLevel(Environment& env) {
+		const std::string text = env.get("WBSH_SUBSHELL_LEVEL");
+		if (text.empty()) return;
+
+		env.unset("WBSH_SUBSHELL_LEVEL");
+		int level = 0;
+		if (parseInt(text, level)) env.setSubshellLevel(level);
+	}
+
 	void absorbInheritedState(Environment& env, Executor& exec) {
 		env.unset("WBSH_SUBSHELL");
 		env.unset("WBSH_UTIL_FILES");
@@ -624,6 +678,7 @@ namespace wbsh {
 			unexportInheritedLocals(env, local_names);
 		}
 
+		exec.importEnvironmentFunctions();
 		replayInheritedText(env, exec, "WBSH_FUNCTIONS", "<inherited functions>");
 		replayInheritedText(env, exec, "WBSH_ALIASES",   "<inherited aliases>");
 		replayInheritedText(env, exec, "WBSH_ARRAYS",    "<inherited arrays>");
@@ -632,11 +687,13 @@ namespace wbsh {
 		applyInheritedDisabledBuiltins(env, exec);
 		applyInheritedTraps(env, exec);
 		applyInheritedDirStack(env, exec);
+		applyInheritedReturnContext(env, exec);
 		env.unset("WBSH_LINENO");
 		replayInheritedText(env, exec, "WBSH_ATTRIBUTES", "<inherited attributes>");
 		replayInheritedText(env, exec, "WBSH_BINDINGS", "<inherited bindings>");
 		replayInheritedText(env, exec, "WBSH_COMPLETIONS", "<inherited completions>");
 		applyInheritedOptions(env);
+		applyInheritedSubshellLevel(env);
 		applyInheritedShellParameters(env, exec);
 		applyInheritedHistory(env, exec);
 		applyInheritedJobs(env, exec);

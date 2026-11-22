@@ -38,6 +38,7 @@ rc=0
 arith_arrays.sh: line 46: a[-10]: bad array subscript
 rc=0 1 2 3
 arith_arrays.sh: line 47: a[]: bad array subscript
+arith_arrays.sh: line 47: a[]: bad array subscript
 0
 rc=0
 arith_arrays.sh: line 48: a[1 : bad array subscript (error token is "a[1 ")

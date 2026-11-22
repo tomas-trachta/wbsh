@@ -31,4 +31,8 @@ namespace wbsh {
 
 	void sourceRcFile(Executor& exec, const ShellStartup& startup);
 
+	/// A non-interactive shell outside POSIX mode reads the file `$BASH_ENV`
+	/// names, after expanding parameters and command substitutions in it.
+	void sourceBashEnv(Executor& exec);
+
 }  // namespace wbsh

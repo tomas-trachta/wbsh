@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <iostream>
 #include <ostream>
 #include <string>
@@ -24,6 +25,7 @@
 #include "environment.h"
 #include "executor.h"
 #include "expander.h"
+#include "funcprint.h"
 #include "lexer.h"
 #include "parser.h"
 #include "printer.h"
@@ -393,8 +395,19 @@ namespace wbsh {
 		if (!firstSyntaxError(lex.errors(), parser.errors(), error)) return;
 
 		const std::string input = run.command_string ? "-c" : std::string();
+		for (const LexError& warning : lex.warnings()) {
+			if (warning.loc.line > error.loc.line) continue;
+			std::cerr << syntaxWarningReport(input, warning.loc.line, warning.message);
+		}
+
 		std::cerr << syntaxErrorReport(input, run.source, run.first_line, error.loc.line,
 			error.message);
+
+		ParseError follow_up;
+		if (!followUpSyntaxError(parser.errors(), error, follow_up)) return;
+
+		std::cerr << syntaxErrorReport(input, run.source, run.first_line, follow_up.loc.line,
+			follow_up.message);
 	}
 
 	static bool hasSyntaxErrors(const Lexer& lex, const Parser& parser) {
@@ -402,16 +415,22 @@ namespace wbsh {
 	}
 
 	// False when a startup file already ended the shell with `exit`.
-	static bool runStartup(Executor& exec, const ScriptRun& run, int& out_status) {
+	static bool runStartup(Executor& exec, const ScriptRun& run, bool child_shell,
+			int& out_status) {
 		applyStartupOptions(exec, run.startup);
 		sourceLoginProfile(exec, run.startup);
 		if (run.read_rc) sourceRcFile(exec, run.startup);
+		else if (!child_shell) sourceBashEnv(exec);
 
 		return !exec.consumeFlow(FlowSignal::Kind::Exit, &out_status);
 	}
 
 	// bash reads on after an error that only discards the command it sits
 	// in; that command fails.
+	static std::string scriptOrigin(const ScriptRun& run) {
+		return run.command_string ? "-c" : std::string();
+	}
+
 	static int resumeScript(Executor& exec, const ScriptRun& run, std::size_t resume) {
 		exec.setLastStatus(1);
 		if (resume >= run.source.size()) return 1;
@@ -419,8 +438,7 @@ namespace wbsh {
 		const auto skipped_lines = std::count(run.source.begin(),
 			run.source.begin() + static_cast<std::ptrdiff_t>(resume), '\n');
 		const std::size_t line = run.first_line + static_cast<std::size_t>(skipped_lines);
-		const std::string input = run.command_string ? "-c" : std::string();
-		return exec.executeInputText(run.source.substr(resume), input, line);
+		return exec.executeInputText(run.source.substr(resume), scriptOrigin(run), line);
 	}
 
 	// Like bash, the commands on the lines before a syntax error run
@@ -430,6 +448,11 @@ namespace wbsh {
 	                           const Lexer& lex, const Parser& parser) {
 		truncateAtSyntaxError(*root, parser, firstSyntaxErrorOffset(lex.errors(), parser.errors()));
 		const int status = exec.executeInput(*root, run.source);
+		if (exec.relexPending()) {
+			return exec.relexRestOfInput(run.source,
+				{ scriptOrigin(run), run.first_line, lex.source(), lex.aliasSplices() }, status);
+		}
+
 		if (exec.flowPending() || !hasSyntaxErrors(lex, parser)) return status;
 
 		printRunSyntaxErrors(lex, parser, run);
@@ -610,11 +633,13 @@ namespace wbsh {
 		Executor exec(env);
 		exec.setSourceText(run.source);
 		const bool child_shell = isChildShell(env);
+		const bool inherited_stage = !env.get("WBSH_SUBSHELL_LEVEL").empty();
 		absorbInheritedState(env, exec);
+		if (inherited_stage) exec.enterInheritedStage(*root);
 		if (!child_shell) env.setInvocationLetter(run.invocation_letter);
 
 		int status = 0;
-		if (!runStartup(exec, run, status)) return exec.fireExitTrap(status);
+		if (!runStartup(exec, run, child_shell, status)) return exec.fireExitTrap(status);
 
 		if (run.from_file) exec.beginScriptFrame(run.script_name);
 
@@ -640,11 +665,27 @@ namespace wbsh {
 		}
 
 		if (run.show_expansions && root != nullptr) dumpExpansions(root, out_color, run);
+		if (run.pretty_print && root != nullptr) std::cout << prettyPrintedProgram(*root, run.source);
+	}
+
+	// The last `-o posix` / `+o posix` of the invocation wins over the
+	// environment, as it is applied after POSIXLY_CORRECT is imported.
+	static bool startsInPosixMode(const ShellStartup& startup) {
+		bool posix = std::getenv("POSIXLY_CORRECT") != nullptr;
+		const std::vector<std::string>& words = startup.set_words;
+		for (std::size_t k = 0; k + 1 < words.size(); ++k) {
+			if (words[k + 1] != "posix") continue;
+			if (words[k] == "-o") posix = true;
+			if (words[k] == "+o") posix = false;
+		}
+
+		return posix;
 	}
 
 	int runScript(const ScriptRun& run) {
 		Lexer lex(run.source);
 		lex.startAtLine(run.first_line);
+		lex.lexInPosixMode(startsInPosixMode(run.startup));
 		lex.acceptHeredocAtEof();
 		auto tokens = lex.tokenize();
 		const std::vector<Token> dumped_tokens = run.show_tokens ? tokens : std::vector<Token>{};

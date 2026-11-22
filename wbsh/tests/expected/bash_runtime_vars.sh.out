@@ -20,12 +20,12 @@ direct: show main / bash_runtime_vars.sh bash_runtime_vars.sh / 28 0
 nested: show outer main / bash_runtime_vars.sh bash_runtime_vars.sh bash_runtime_vars.sh / 27 29 0
 substituted: show main / bash_runtime_vars.sh bash_runtime_vars.sh / 30 0
 piped: show main / bash_runtime_vars.sh bash_runtime_vars.sh / 31 0
-lib top: source main / bash_runtime_vars_lib.sh bash_runtime_vars.sh
+lib top:  / bash_runtime_vars_lib.sh bash_runtime_vars.sh
 in-lib: show source main / bash_runtime_vars.sh bash_runtime_vars_lib.sh bash_runtime_vars.sh / 3 35 0
 libf: show libf main / bash_runtime_vars.sh bash_runtime_vars_lib.sh bash_runtime_vars.sh / 2 36 0
 lib top: source wrap main / bash_runtime_vars_lib.sh bash_runtime_vars.sh bash_runtime_vars.sh
 in-lib: show source wrap main / bash_runtime_vars.sh bash_runtime_vars_lib.sh bash_runtime_vars.sh bash_runtime_vars.sh / 3 37 38 0
-after: main
+after: 
 === ERR trap
 ERR status=1 line=44
 ERR status=1 line=50

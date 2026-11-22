@@ -20,7 +20,8 @@ namespace wbsh {
 
 	/// One of `-a -b -c -d -e -f -g -h -k -L -N -O -G -p -r -s -S -t -u -w -x -z -n -v -o`.
 	bool isUnaryTestOperator(const std::string& op);
-	bool evalUnaryTestOperator(Executor& exec, char op, const std::string& operand);
+	bool evalUnaryTestOperator(Executor& exec, char op, const std::string& operand,
+		bool test_builtin = false);
 
 	/// `-nt`, `-ot`, `-ef`.
 	bool isFileCompareOperator(const std::string& op);

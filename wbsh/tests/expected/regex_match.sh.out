@@ -24,5 +24,7 @@ no match leaves 0 elements
 declare -a BASH_REMATCH=([0]="ab" [1]="a" [2]="b")
 nocasematch: B
 === 4. invalid regex returns 2
+regex_match.sh: line 39: [[: invalid regular expression `a(': Unmatched ( or \(
 status 2
+regex_match.sh: line 41: [[: invalid regular expression `a(': Unmatched ( or \(
 and is false

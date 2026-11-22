@@ -1,0 +1,56 @@
+=== text that came from an expansion is never run as a command
+inject.sh: line 3: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+inject.sh: line 4: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+0
+inject.sh: line 6: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+inject.sh: line 7: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+inject.sh: line 8: $(echo INJECTED >&2; echo 2): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 2)")
+inject.sh: line 9: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+inject.sh: line 11: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+inject.sh: line 12: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+inject.sh: line 13: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+inject.sh: line 14: $(echo INJECTED >&2; echo 0): arithmetic syntax error: operand expected (error token is "$(echo INJECTED >&2; echo 0)")
+declare -a a
+=== subscripts: quotes, negative indices, empty keys
+one two
+case.sh: line 1: a: bad array subscript
+
+after
+case.sh: line 2: c: bad array subscript
+|
+case.sh: line 2: [-10]: bad array subscript
+case.sh: line 1: b[]: bad array subscript
+case.sh: line 1: []=abc: bad array subscript
+case.sh: line 1: d[7]: cannot assign list to array member
+case.sh: line 1: [*]=2: cannot assign to non-numeric index
+2
+case.sh: line 1: 1+: arithmetic syntax error: operand expected (error token is "+")
+=== compound assignments
+case.sh: line 1: 1+: arithmetic syntax error: operand expected (error token is "+")
+6
+6
+declare -a q=([0]="1" [1]="2" [2]="3")
+declare -A A=([1]="1" )
+case.sh: line 2: g: A: cannot convert associative to indexed array
+case.sh: line 2: declare: A: cannot convert associative to indexed array
+declare -A A=([1]="1" )
+declare -A h=([j]="w" )
+declare -A h=([0]="x" [j]="w" )
+declare -ar c
+case.sh: line 1: declare: c: readonly variable
+=== [[ -v ]] and test -v on arrays
+1
+0
+0
+0
+=== declare listings
+declare -ar z=([0]="1")
+readonly -a z=([0]="1")
+declare -fr f
+case.sh: line 1: f: readonly function
+case.sh: line 1: unset: f: cannot unset: readonly function
+rc=1
+=== the star list
+<X> <X>
+<a><b c><dx>
+<a><b><c><da><b c><d-a-b c-d>

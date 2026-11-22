@@ -27,7 +27,7 @@ a
 _run_tmp/syntax_probe.sh: line 2: unexpected EOF while looking for matching `"'
 rc=2
 a
-_run_tmp/syntax_probe.sh: line 2: unexpected EOF while looking for matching `)'
+_run_tmp/syntax_probe.sh: line 3: unexpected EOF while looking for matching `)'
 rc=2
 === 5. exit before the error wins; the EXIT trap sees 2
 a

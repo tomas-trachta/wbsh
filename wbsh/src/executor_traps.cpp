@@ -9,7 +9,9 @@
 
 #include <cstring>
 #include <iterator>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -38,13 +40,43 @@ namespace wbsh {
 		const int saved_line = env_.currentLineno();
 		frozen_lineno_source_ = parsed.root->source_text;
 		++trap_depth_;
+		enterTraceLevel();
 
 		const int status = execute(*parsed.root);
 
+		leaveTraceLevel();
 		--trap_depth_;
 		frozen_lineno_source_ = saved_frozen;
 		env_.setCurrentLineno(saved_line);
 		return finishParsedText(parsed, status);
+	}
+
+	static bool isPseudoSignal(const std::string& name) {
+		if (name == "EXIT") return true;
+
+		for (const char* scoped : kFunctionScopedTraps) {
+			if (name == scoped) return true;
+		}
+
+		return false;
+	}
+
+	// A script starts with no traps, but the signals its parent ignored stay
+	// ignored for good.
+	void Executor::resetTrapsForScript() {
+		std::unordered_map<std::string, std::string> ignored;
+		std::set<std::string> names;
+		for (const auto& trap : trap_handlers_) {
+			if (!trap.second.empty() || isPseudoSignal(trap.first)) continue;
+
+			ignored.insert(trap);
+			names.insert(trap.first);
+		}
+
+		trap_handlers_ = std::move(ignored);
+		startup_ignored_ = std::move(names);
+		lists_inherited_traps_ = false;
+		publishSignalDispositions();
 	}
 
 	static Environment::IndexedArray savedPipeStatus(const Environment& env) {
@@ -85,25 +117,42 @@ namespace wbsh {
 
 	int Executor::runExitTrapText(const std::string& action) {
 		const trap_signal::Saved saved = trap_signal::publish(env_, 0);
+		enterTraceLevel();
 		const int status = executeText(action, "<EXIT trap>");
+		leaveTraceLevel();
 		trap_signal::restore(env_, saved);
 		return status;
 	}
 
+	// POSIX interp 1602: `return` or `exit` without a status, run by the
+	// trap action itself rather than a function it calls, gives `$?` as it
+	// was before the trap; the DEBUG trap is the exception.
+	Executor::TrapReturnContext Executor::enterTrapReturnContext(int trap_number, int status) {
+		const TrapReturnContext saved = trap_return_context_;
+		if (trap_number != trap_signal::kDebug) {
+			trap_return_context_ = { func_depth_ + source_depth_, status };
+		}
+
+		return saved;
+	}
+
 	// The command the trap interrupts sees `$?`, PIPESTATUS and its errexit
 	// judgement as they were before the trap ran.
-	void Executor::runTrapKeepingStatus(const std::string& action, int trap_number) {
+	int Executor::runTrapKeepingStatus(const std::string& action, int trap_number) {
 		const int status = last_status_;
 		const bool judged = status_judged_;
 		Environment::IndexedArray pipe_status = savedPipeStatus(env_);
 
-		runTrapPublishingSignal(action, trap_number);
+		const TrapReturnContext saved_context = enterTrapReturnContext(trap_number, status);
+		const int trap_status = runTrapPublishingSignal(action, trap_number);
+		trap_return_context_ = saved_context;
 
 		status_judged_ = judged;
-		if (flowPending()) return;
+		if (flowPending()) return trap_status;
 
 		setLastStatus(status);
 		env_.setIndexedArraySparse("PIPESTATUS", std::move(pipe_status));
+		return trap_status;
 	}
 
 	static const int kSigInt = 2;
@@ -163,8 +212,32 @@ namespace wbsh {
 		if (!ignoredByDefault(signum, env_.interactive())) raiseExit(kSignalStatusBase + signum);
 	}
 
+	void Executor::noteChildExited() {
+		std::string action;
+		if (!env_.options().monitor || !trapActionFor("CHLD", action)) return;
+
+		++exited_children_;
+	}
+
+	void Executor::runChildExitTraps() {
+		if (running_child_traps_) return;
+
+		running_child_traps_ = true;
+		std::string action;
+		int signum = 0;
+		parseSignalSpec("CHLD", signum);
+		while (exited_children_ > 0 && !flowPending() && trapActionFor("CHLD", action)) {
+			--exited_children_;
+			runTrapKeepingStatus(action, signum);
+		}
+
+		exited_children_ = 0;
+		running_child_traps_ = false;
+	}
+
 	// A signal posted while its own trap runs waits for the next safe point.
 	void Executor::handlePendingSignals() {
+		runChildExitTraps();
 		if (handling_signals_ || pendingShellSignals() == 0) return;
 
 		handling_signals_ = true;
@@ -193,26 +266,36 @@ namespace wbsh {
 		in_err_trap_ = false;
 	}
 
-	void Executor::fireDebugTrap() {
+	// Under extdebug a failing DEBUG trap skips the command, and status 2
+	// inside a function or sourced file returns from it.
+	bool Executor::fireDebugTrap() {
 		std::string action;
-		if (trap_depth_ > 0 || flowPending() || !trapActionFor("DEBUG", action)) return;
+		if (running_debug_trap_ || flowPending() || !trapActionFor("DEBUG", action)) return true;
 
-		runTrapKeepingStatus(action, trap_signal::kDebug);
+		running_debug_trap_ = true;
+		const int status = runTrapKeepingStatus(action, trap_signal::kDebug);
+		running_debug_trap_ = false;
+		if (!env_.shopts().extdebug || status == 0 || flowPending()) return true;
+
+		if (status == 2 && (funcDepth() > 0 || sourceDepth() > 0)) raiseReturn(status);
+		setLastStatus(0);
+		return false;
 	}
 
 	void Executor::fireReturnTrap() {
 		std::string action;
-		if (trap_depth_ > 0 || flowPending() || !trapActionFor("RETURN", action)) return;
+		if (running_return_trap_ || flowPending() || !trapActionFor("RETURN", action)) return;
 
+		running_return_trap_ = true;
 		runTrapKeepingStatus(action, trap_signal::kReturn);
+		running_return_trap_ = false;
 	}
 
-	// BASH_COMMAND keeps naming the interrupted command while a trap runs.
-	void Executor::announceCommand(std::string text) {
-		if (trap_depth_ > 0) return;
-
-		env_.setCurrentCommand(std::move(text));
-		fireDebugTrap();
+	// BASH_COMMAND keeps naming the interrupted command while a trap runs;
+	// the DEBUG trap still runs before the trap action's commands.
+	bool Executor::announceCommand(std::string text) {
+		if (trap_depth_ == 0) env_.setCurrentCommand(std::move(text));
+		return fireDebugTrap();
 	}
 
 	static bool isErrTrap(const char* name) {
@@ -225,12 +308,17 @@ namespace wbsh {
 		return false;
 	}
 
-	Executor::SuspendedTrap Executor::suspendTrap(const char* name) {
+	// `declare -ft` makes one function inherit DEBUG and RETURN as functrace
+	// does; a function the DEBUG trap calls never runs the RETURN trap.
+	Executor::SuspendedTrap Executor::suspendTrap(const char* name, bool traced) {
 		SuspendedTrap trap{ name, {}, false };
 		const auto it = trap_handlers_.find(name);
 		if (it == trap_handlers_.end()) return trap;
 
-		trap.kept = it->second.empty() || inheritsTrap(name);
+		const bool traced_trap = traced && !isErrTrap(name);
+		const bool inherited = inheritsTrap(name) || traced_trap;
+		const bool return_in_debug = running_debug_trap_ && std::strcmp(name, "RETURN") == 0;
+		trap.kept = it->second.empty() || (inherited && !return_in_debug);
 		if (trap.kept) return trap;
 
 		trap.action = std::move(it->second);
@@ -238,10 +326,10 @@ namespace wbsh {
 		return trap;
 	}
 
-	std::vector<Executor::SuspendedTrap> Executor::suspendTrapsForFunction() {
+	std::vector<Executor::SuspendedTrap> Executor::suspendTrapsForFunction(bool traced) {
 		std::vector<SuspendedTrap> suspended;
 		suspended.reserve(std::size(kFunctionScopedTraps));
-		for (const char* name : kFunctionScopedTraps) suspended.push_back(suspendTrap(name));
+		for (const char* name : kFunctionScopedTraps) suspended.push_back(suspendTrap(name, traced));
 		return suspended;
 	}
 
@@ -261,7 +349,9 @@ namespace wbsh {
 	// not fire for the `trap` commands after it.
 	void Executor::adoptInheritedTraps(const std::string& text) {
 		++trap_depth_;
+		running_debug_trap_ = true;
 		executeText(text, "<inherited traps>");
+		running_debug_trap_ = false;
 		--trap_depth_;
 		resetSubshellTraps();
 	}

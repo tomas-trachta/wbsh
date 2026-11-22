@@ -5,7 +5,7 @@ subshell status 5
 status 3
 from-program
 status 0
-wbsh: line 1: no-such-program-wbsh: command not found
+wbsh: line 1: exec: no-such-program-wbsh: not found
 status 127
 in-function
 status 4

@@ -11,7 +11,7 @@ expanded-name
 === 3. a value ending in a blank makes the next word a candidate
 TARGET target
 echo TARGET
-target
+TARGET
 TARGET
 === 4. an alias does not expand itself again
 self rc=127

@@ -694,12 +694,29 @@ namespace wbsh {
 		}
 	}
 
+	// The legacy charsets printf and echo can encode through a Windows
+	// code page, listed where the language has a UTF-8 locale.
+	static const char* const kLegacyLocales[] = {
+		"de_DE.ISO8859-1", "en_US.ISO8859-1", "fr_FR.ISO8859-1", "ja_JP.SJIS",
+		"ja_JP.eucJP", "ko_KR.eucKR", "ru_RU.KOI8-R", "zh_CN.GB2312", "zh_TW.BIG5",
+	};
+
+	static void addLegacyLocales(std::set<std::string>& names) {
+		for (const char* legacy : kLegacyLocales) {
+			const std::string name = legacy;
+			const std::string utf8 = name.substr(0, name.find('.')) + ".UTF-8";
+			if (names.count(utf8) != 0) names.insert(name);
+		}
+	}
+
 	static void printAllLocales() {
 		std::set<std::string> names;
 		for (const std::wstring& windows : windowsLocales()) {
 			const std::string posix = posixLocaleName(windows);
 			if (!posix.empty()) names.insert(posix);
 		}
+
+		addLegacyLocales(names);
 
 		std::printf("C\nC.UTF-8\nPOSIX\n");
 		for (const std::string& name : names) std::printf("%s\n", name.c_str());

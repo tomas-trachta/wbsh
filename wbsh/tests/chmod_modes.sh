@@ -12,8 +12,8 @@ modes() {
     local f
     for f in "$@"; do
         printf '%-10s %s %s ' "$f" "$(stat -c '%a %A' "$f")" "$(ls -ld "$f" | cut -d' ' -f1)"
-        [ -x "$f" ] && printf 'x ' || printf '- '
-        [[ -x $f ]] && printf 'x ' || printf '- '
+        [ -x "$f" ] && printf 'x ' || printf -- '- '
+        [[ -x $f ]] && printf 'x ' || printf -- '- '
         [ -w "$f" ] && echo w || echo -
     done
 }

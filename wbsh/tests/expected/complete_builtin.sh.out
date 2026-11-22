@@ -32,9 +32,9 @@ status 1
 wbsh: compopt: not currently executing completion function
 status 1
 === compgen
-SIGURG
 SIGUSR1
 SIGUSR2
+SIGURG
 alpha
 alps
 status 1
@@ -53,9 +53,9 @@ cdir/sub
 cdir/file.c
 cdir/file.txt
 cdir/file.c
+cdir/x
 cdir/other
 cdir/sub
-cdir/x
 === compopt changes a spec's options
 compopt +o bashdefault +o default +o dirnames -o filenames +o noquote +o nosort -o nospace +o plusdirs foo
 complete -o nospace -W 'w' foo

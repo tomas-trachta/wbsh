@@ -132,11 +132,11 @@ namespace wbsh {
 		return 1;
 	}
 
+	// As bash's hash_flush, the table keeps its size.
 	void BashAssocMap::clear() {
 		items_.clear();
 		slots_.clear();
 		bucket_heads_.clear();
-		buckets_ = kInitialBuckets;
 	}
 
 }  // namespace wbsh

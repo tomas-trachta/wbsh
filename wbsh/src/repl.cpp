@@ -230,6 +230,7 @@ namespace wbsh {
 		}
 
 		if (env.get("PS2").empty()) env.set("PS2", "> ");
+		env.shopts().globstar = true;
 	}
 
 	// Semantic marks (OSC 133, which Windows Terminal, VS Code, WezTerm and
@@ -647,8 +648,11 @@ namespace wbsh {
 	static void parseAndMaybeExecute(Executor& exec, ReplState& state) {
 		const std::string text = state.buffer + "\n";
 		Lexer lex(text);
+		lex.lexInPosixMode(exec.env().options().posix);
+		exec.lexWithAliases(lex);
 		auto tokens = lex.tokenize();
-		Parser parser(std::move(tokens), text);
+		const std::string& lexed = lex.source();
+		Parser parser(std::move(tokens), lexed);
 		auto root = parser.parseProgram();
 
 		if (looksIncomplete(state.buffer, lex.errors(), parser.errors())) {
@@ -667,9 +671,10 @@ namespace wbsh {
 		} else if (root) {
 			Arena arena = parser.takeArena();
 			const std::size_t defined = exec.functionDefinitionCount();
-			exec.setSourceText(text);
-			exec.executeInput(*root, text);
+			exec.setSourceText(lexed);
+			const int status = exec.executeInput(*root, lexed);
 			if (exec.functionDefinitionCount() != defined) exec.adoptArena(std::move(arena));
+			exec.relexRestOfInput(text, { std::string(), 1, lexed, lex.aliasSplices() }, status);
 		}
 
 		state.buffer.clear();

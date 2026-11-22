@@ -30,6 +30,29 @@ namespace wbsh {
 	bool fnmatchRange(const std::string& p, const std::string& s,
 	                  std::size_t start, std::size_t len, bool extglob = false);
 
+	/// How a file name's leading `.` matches: bash's FNM_PERIOD (dotglob off)
+	/// keeps wildcards off it, FNM_DOTDOT (dotglob on) keeps them off `.` and `..`.
+	enum class LeadingDot { Any, Explicit, NotDotDot };
+
+	/// fnmatchFull for a file name in pathname expansion.
+	bool fnmatchName(const std::string& p, const std::string& name, bool extglob, LeadingDot dots);
+
+	struct GlobSkipRules {
+		bool extglob  = false;
+		bool dotglob  = false;
+		bool skipdots = false;   ///< globskipdots: `.` and `..` never match
+	};
+
+	/// bash's skipname: true when pathname expansion passes over @p name
+	/// for @p p before matching, for its leading `.`.
+	bool globSkipsName(const std::string& p, const std::string& name, const GlobSkipRules& rules);
+
+	/// The index just past the bracket expression at p[k], or k + 1 when it never closes.
+	std::size_t bracketEnd(const std::string& p, std::size_t k);
+
+	/// The index just past the extglob group `X(...)` at p[k], or npos when it never closes.
+	std::size_t extglobGroupEnd(const std::string& p, std::size_t k);
+
 	/// What the expander's match loops can skip without calling the matcher.
 	struct PatternShape {
 		bool literal = false;                      ///< no wildcards at all

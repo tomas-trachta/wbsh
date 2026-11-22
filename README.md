@@ -42,7 +42,7 @@ job that reproduces it is in [`.github/workflows/ci.yml`](.github/workflows/ci.y
 | metric | wbsh | data | CI job |
 | --- | --- | --- | --- |
 | Differential corpus vs GNU bash | 420 / 426 cases identical (vs bash 4.4, 2026-11-12); CI floor 400 vs bash 5.3 | [FINDINGS.md](tools/difftest/FINDINGS.md), [baseline.txt](tools/difftest/baseline.txt) | `difftest` |
-| GNU bash 5.3 upstream suites | **11 / 86** byte-identical, 0 env-only, 75 real failures (2026-11-13) | [compat-ledger.md](docs/compat-ledger.md) | `bashtests` |
+| GNU bash 5.3 upstream suites | **67 / 86** byte-identical, 12 env-only, 7 real failures (2026-11-22) | [compat-ledger.md](docs/compat-ledger.md) | `bashtests` |
 | Real-world assets sourced cleanly | 275 / 1,034 runs (26.6 %; Git Bash 969 / 1,034 on the same files) over oh-my-bash, bash-it, bash-completion, nvm, sdkman, asdf and git's completion scripts (2026-11-13) | [corpus snapshot](docs/corpus/2026-11-13-local.md) | local only |
 | Speed vs Git Bash (same machine) | faster on every row: `-c true` 43 vs 66 ms, 20k function calls 196 vs 225 ms | [docs/bench/](docs/bench/2026-11-12-local.md) | `bench` (perf gate) |
 
@@ -593,12 +593,13 @@ numbers above are the authoritative list; this is the summary. The
 process, signal, permission, file-system and terminal differences are
 detailed in [docs/posix-differences.md](docs/posix-differences.md).
 
-- **Not GNU bash.** wbsh is its own implementation. It passes 11 of bash 5.3's
-  86 upstream suites byte for byte; the other 75 fail on real differences
-  (error-message wording, a syntax error aborting the whole script instead
-  of the one command, `set -k`, `mapfile -C`, restricted mode, some quoting
-  and IFS corners). Every failure is listed in
-  [docs/compat-ledger.md](docs/compat-ledger.md) with a reproducer.
+- **Not GNU bash.** wbsh is its own implementation. It passes 67 of bash 5.3's
+  86 upstream suites byte for byte, and 12 more differ only where Windows
+  lacks a Unix path or file name. The other 7 fail on real differences:
+  history and history expansion in scripts, `declare -n` combined with
+  other attributes, a here-document opened inside `$( )`, scripts without
+  the execute bit, `~/.bash_logout`, and bash's own `help` text. Every
+  failure is listed in [docs/compat-ledger.md](docs/compat-ledger.md).
 - **Frameworks.** bash-completion, oh-my-bash and git-completion.bash do
   not load yet, and bash-it's main file fails in its default theme: two
   parser bugs (a `[[ ... ]]` continued over lines after `&&`, and

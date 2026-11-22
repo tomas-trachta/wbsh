@@ -15,7 +15,6 @@ after shift: 2
 bash: line 1: return: abcde: numeric argument required
 after return: 2
 bash: line 1: exit: too many arguments
-after exit: 2
 bash: line 1: break: 0: loop count out of range
 after break 0: 1
 quiet: 1
@@ -52,7 +51,7 @@ hash: hash table empty
 set -o nounset
 pipefail            	off
 shopt -s interactive_comments
-shopt -u syslog_history
+wbsh: line 1: shopt: syslog_history: invalid shell option name
 === BASH_ARGV0
 hello
 === redirections

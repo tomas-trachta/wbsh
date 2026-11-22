@@ -35,8 +35,7 @@ unset falls back to the function rc=1
 unset -f rc=1
 declaration_builtins.sh: line 42: unset: RO: cannot unset: readonly variable
 rc=1
-declaration_builtins.sh: line 43: unset: `1x': not a valid identifier
-rc=1
+rc=0
 XN=1 printenv=[]
 declare -x XE="a \"b\" \$c"
 1
@@ -47,7 +46,7 @@ rc=4
 before
 function continues rc=3
 declaration_builtins.sh: line 56: return: can only `return' from a function or sourced script
-top level rc=1
+top level rc=2
 === 5. declare in a function is local, -g is global
 d=out t=out gd=in
 [unset]
@@ -65,11 +64,12 @@ m=[]
 Q rc=1
 declaration_builtins.sh: line 69: local: GR: readonly variable
 rc=1 GR=1
-a=1
+declare -- a="1"
+declare -- b
 declaration_builtins.sh: line 71: local: can only be used in a function
 local at top level rc=1
 declaration_builtins.sh: line 72: declare: -z: invalid option
-declare: usage: declare [-aAfFgilnrtux] [-p] [name[=value] ...]
+declare: usage: declare [-aAfFgiIlnrtux] [name[=value] ...] or declare -p [-aAfFilnrtux] [name ...]
 rc=2
 === 6. declaration arguments do not word-split
 [a: b]

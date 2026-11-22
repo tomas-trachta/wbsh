@@ -6,8 +6,11 @@
 
 #include "executor.h"
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <charconv>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -163,6 +166,14 @@ namespace wbsh {
 
 	}  // namespace callstack_detail
 
+	bool Executor::inFunctionFrame() const {
+		for (const CallFrame& frame : call_stack_) {
+			if (frame.function) return true;
+		}
+
+		return false;
+	}
+
 	void Executor::pushCallFrame(CallFrame frame) {
 		callstack_detail::PublishedArrays arrays{};
 		const bool in_place = callstack_detail::findPublished(env_, call_stack_, arrays);
@@ -176,7 +187,7 @@ namespace wbsh {
 		const bool in_place = call_stack_.size() > 1
 			&& callstack_detail::findPublished(env_, call_stack_, arrays);
 		if (!call_stack_.empty()) call_stack_.pop_back();
-		if (in_place) callstack_detail::publishPopped(arrays);
+		if (in_place && inFunctionFrame()) callstack_detail::publishPopped(arrays);
 		else publishCallStack();
 	}
 
@@ -197,23 +208,43 @@ namespace wbsh {
 			lines.push_back(std::to_string(frame->line));
 		}
 
+		if (!inFunctionFrame()) names.clear();
+		const bool outside_functions = names.empty();
 		env_.setIndexedArrayFromList(kFuncNameVar, std::move(names));
 		env_.setIndexedArrayFromList(kBashSourceVar, std::move(sources));
 		env_.setIndexedArrayFromList(kBashLinenoVar, std::move(lines));
+
+		// Outside functions bash's FUNCNAME is declared but holds nothing.
+		if (outside_functions) env_.markValueless(kFuncNameVar);
 	}
 
+	// bash starts a script with BASH_ARGV and BASH_ARGC set, and empty.
 	void Executor::beginScriptFrame(const std::string& path) {
 		pushCallFrame({ "main", path, 0 });
+		for (const char* name : { "BASH_ARGV", "BASH_ARGC" }) {
+			if (!env_.isIndexedArray(name)) env_.setIndexedArrayFromList(name, {});
+		}
 	}
 
+	// Without functrace a sourced file does not see the DEBUG trap.
 	void Executor::beginSource(const std::string& file) {
 		++source_depth_;
+		source_debug_traps_.push_back(suspendTrap("DEBUG", false));
+		enterTraceLevel();
 		pushCallFrame({ "source", file, env_.currentLineno() });
 	}
 
+	// The RETURN trap runs once the file's frame is gone, at the line of
+	// the `source` command.
 	void Executor::endSource() {
+		const int line = call_stack_.empty() ? env_.currentLineno() : call_stack_.back().line;
 		--source_depth_;
+		leaveTraceLevel();
 		popCallFrame();
+		env_.setCurrentLineno(line);
+		fireReturnTrap();
+		restoreTrap(source_debug_traps_.back());
+		source_debug_traps_.pop_back();
 	}
 
 	static std::vector<std::string> arrayValues(const Environment& env, const char* name) {
@@ -225,17 +256,57 @@ namespace wbsh {
 		return values;
 	}
 
+	// Under extdebug each call puts its arguments, last first, on top of
+	// BASH_ARGV and their count on top of BASH_ARGC.
+	bool Executor::pushBashArgv(const std::vector<std::string>& args) {
+		if (!env_.shopts().extdebug) return false;
+
+		std::vector<std::string> argv(args.rbegin(), args.rend());
+		const std::vector<std::string> outer = arrayValues(env_, "BASH_ARGV");
+		argv.insert(argv.end(), outer.begin(), outer.end());
+		env_.setIndexedArrayFromList("BASH_ARGV", std::move(argv));
+
+		std::vector<std::string> argc{ std::to_string(args.size()) };
+		const std::vector<std::string> outer_counts = arrayValues(env_, "BASH_ARGC");
+		argc.insert(argc.end(), outer_counts.begin(), outer_counts.end());
+		env_.setIndexedArrayFromList("BASH_ARGC", std::move(argc));
+		return true;
+	}
+
+	void Executor::popBashArgv(bool pushed, std::size_t count) {
+		if (!pushed) return;
+
+		std::vector<std::string> argv = arrayValues(env_, "BASH_ARGV");
+		const auto popped = static_cast<std::ptrdiff_t>((std::min)(count, argv.size()));
+		argv.erase(argv.begin(), argv.begin() + popped);
+		env_.setIndexedArrayFromList("BASH_ARGV", std::move(argv));
+
+		std::vector<std::string> argc = arrayValues(env_, "BASH_ARGC");
+		if (!argc.empty()) argc.erase(argc.begin());
+		env_.setIndexedArrayFromList("BASH_ARGC", std::move(argc));
+	}
+
+	// FUNCNAME is empty outside functions; the frames are then the script
+	// (line 0, at the bottom) and the files `source`d on top of it.
+	static std::vector<std::string> framesWithoutFunctions(const std::vector<std::string>& lines) {
+		std::vector<std::string> names(lines.size(), "source");
+		if (!lines.empty() && lines.back() == "0") names.back() = "main";
+		return names;
+	}
+
 	void Executor::adoptInheritedCallStack() {
-		const std::vector<std::string> names   = arrayValues(env_, kFuncNameVar);
+		std::vector<std::string> names = arrayValues(env_, kFuncNameVar);
 		const std::vector<std::string> sources = arrayValues(env_, kBashSourceVar);
 		const std::vector<std::string> lines   = arrayValues(env_, kBashLinenoVar);
+		const bool functions = !names.empty();
+		if (!functions) names = framesWithoutFunctions(lines);
 		if (names.empty() || names.size() != sources.size() || names.size() != lines.size()) return;
 
 		call_stack_.clear();
 		for (std::size_t i = names.size(); i-- > 0; ) {
 			int line = 0;
 			parseInt(lines[i], line);
-			call_stack_.push_back({ names[i], sources[i], line });
+			call_stack_.push_back({ names[i], sources[i], line, functions });
 		}
 	}
 

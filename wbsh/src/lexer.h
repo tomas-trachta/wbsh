@@ -19,6 +19,7 @@
 #include "source.h"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace wbsh {
@@ -79,6 +80,9 @@ namespace wbsh {
 		std::string text;
 		std::vector<WordSegment> nested;
 		char proc_dir = 0;
+		bool backquoted = false;      ///< A CmdSubst written with backquotes.
+		bool unterminated = false;    ///< The input ended before its closing `)`.
+		bool aliased = false;         ///< Aliases in the body went into finding its end.
 	};
 
 	const char* segKindName(WordSegment::Kind k);
@@ -100,6 +104,23 @@ namespace wbsh {
 		std::size_t heredoc_eof_line = 0;   ///< Line the input ended on, the body unterminated.
 	};
 
+	/// An alias expanded where its name was: the text from @p at for
+	/// @p length bytes replaced @p replaced bytes of what was there.
+	struct AliasSplice {
+		std::size_t at = 0;
+		std::size_t length = 0;
+		std::size_t replaced = 0;
+		std::string name;
+	};
+
+	/// Where @p offset of the expanded text was in the text before any
+	/// alias went in: a place inside an alias is the end of its name.
+	std::size_t offsetBeforeAliases(const std::vector<AliasSplice>& splices, std::size_t offset);
+
+	/// Where @p offset of the text before aliases went in is in the text
+	/// with them expanded.
+	std::size_t offsetAfterAliases(const std::vector<AliasSplice>& splices, std::size_t offset);
+
 	struct LexError {
 		SourceLoc loc;
 		std::string message;
@@ -113,14 +134,41 @@ namespace wbsh {
 		/// Number lines from @p line: the text was cut out of a larger script.
 		void startAtLine(std::size_t line) { loc_.line = line; }
 
+		/// The first @p length bytes are an alias value: bash keeps the line
+		/// number of the command it replaced across the newlines in it.
+		void keepLineThrough(std::size_t length) { same_line_end_ = length; }
+
 		/// A script, as bash runs it, takes a here-document that the end of
 		/// the input cuts off as it is; interactive input waits for more.
 		void acceptHeredocAtEof() { heredoc_at_eof_ok_ = true; }
+
+		/// The text is the body of a `$(...)`: a here-document delimiter on
+		/// its unterminated last line is where the `)` cut the document off.
+		void lexSubstitutionBody() { substitution_body_ = true; }
+
+		/// bash parses the word of a double-quoted "${name+word}" by the
+		/// posix option in force when it reads the line.
+		void lexInPosixMode(bool posix) { posix_mode_ = posix; }
+
+		/// As bash reads it, a word in command position that names an alias
+		/// gives way to the alias text, which is read on as input.
+		void expandAliases(const std::unordered_map<std::string, std::string>* aliases) {
+			aliases_ = aliases;
+		}
+
+		/// The text as lexed, aliases expanded; token offsets point into it.
+		const std::string& source() const { return src_; }
+		const std::vector<AliasSplice>& aliasSplices() const { return splices_; }
 
 		/// The result is always terminated with a TokKind::EndOfInput token.
 		std::vector<Token> tokenize();
 
 		const std::vector<LexError>& errors() const { return errors_; }
+
+		/// Here-documents the end of the input cut off inside a `$(` that
+		/// never closes: bash warns about them while it reads, before the
+		/// syntax error.
+		const std::vector<LexError>& warnings() const { return warnings_; }
 
 		// For callers that scan raw text (heredoc bodies) for the same
 		// forms the lexer finds in words. `body_start` is the offset just
@@ -163,9 +211,11 @@ namespace wbsh {
 		void trackDBracket(const Token& word, bool command_start);
 		bool atExtglobOpen(bool word_start) const;
 		bool inCasePattern() const;
+		bool afterPatternBar() const;
 		void trackCaseWord(const Token& word, bool command_start);
 		void trackCaseOperator(TokKind kind);
 		void markHeredocDelimiter(Token& word) const;
+		void queueHeredoc();
 		void skipWhitespace();
 		void skipComment();
 
@@ -210,6 +260,14 @@ namespace wbsh {
 		// is not part of the result. Quoted strings and nested forms
 		// of the same construct are respected.
 		std::string readBalancedBraces();
+		bool atFunsubStart() const;
+		bool atClosingBraceWord() const;
+		bool atBraceGroupOpen() const;
+		bool scanToUnmatchedBrace();
+		std::string readFunsubBody();
+		void copyBraceSingleQuote(std::string& out);
+		void copyBraceDollarParen(std::string& out);
+		bool literalBraceQuotes() const;
 		std::size_t bracketExpressionLength() const;
 		void copyBracketExpression(std::string& out);
 		// `$[...]` (legacy bash arithmetic); nested `[...]` is respected
@@ -222,8 +280,6 @@ namespace wbsh {
 		void copyBackslashEscape(std::string& out);
 		void copySingleQuotedRun(std::string& out);
 		void copyDollarSingleQuotedRun(std::string& out);
-		void copyBraceSingleQuote(std::string& out);
-		void copyBraceDollarParen(std::string& out);
 		void copyDoubleQuotedRun(std::string& out);
 		void copyBackquotedRun  (std::string& out);
 		void copyDollarParenRun (std::string& out);
@@ -231,18 +287,50 @@ namespace wbsh {
 		void copyArithmeticDollar(std::string& out);
 
 		void collectHeredocBodies();
+		// One line of a here-document as bash compares it with the delimiter.
+		struct HeredocLine {
+			std::string logical;
+			std::string pending;
+			bool continued = false;
+		};
 		std::string readHeredocBody(Token& delim);
+		void joinHeredocLine(HeredocLine& joined, const std::string& line, bool quoted);
+		void takeHeredocLine(HeredocLine& joined, const std::string& line, std::string& body);
+		std::string finishHeredocAtEof(Token& delim, const HeredocLine& joined,
+		                               const std::string& line, std::string& body);
+		bool endsAtSubstitutionClose(const std::string& line, const std::string& terminator) const;
+		bool cutOffBySubstitutionClose(const std::string& line, const std::string& terminator) const;
+		void unreadLineTail(std::size_t length);
 		std::size_t lastLineReached() const;
 		std::string readLineText();
+		bool expandsAlias(const Token& word, std::size_t start_pos, bool command_start);
+		bool insideAliasOf(const std::string& name, std::size_t pos) const;
+		bool insideAlias(std::size_t pos) const;
+		void spliceAlias(const Token& word, std::size_t start_pos, const std::string& alias_text);
+		void restoreAliasNames(std::size_t from, std::size_t first_splice);
+		bool closedInsideAlias(std::size_t first_splice) const;
+		void warnHeredocAtEof(const Token& delim);
+		bool atAliasPosition() const;
+		void warnCutOffHeredocs();
 
 		std::string src_;
 		std::size_t pos_ = 0;
 		SourceLoc loc_{};
+		std::size_t same_line_end_ = 0;
 		std::vector<Token> tokens_;
 		std::vector<LexError> errors_;
+		std::vector<LexError> warnings_;
 
 		bool at_line_start_ = true;
 		bool heredoc_at_eof_ok_ = false;
+		bool substitution_body_ = false;
+		bool posix_mode_ = false;
+		int nested_scan_depth_ = 0;
+		const std::unordered_map<std::string, std::string>* aliases_ = nullptr;
+		std::vector<AliasSplice> splices_;
+		std::size_t blank_alias_end_ = std::string::npos;
+		std::size_t alias_restart_ = std::string::npos;
+		bool body_had_aliases_ = false;
 		// Inside `[[ ... ]]` the word after `=~` is a regex in which
 		// `(`, `)` and `|` (and blanks inside parentheses) are word text.
 		bool in_dbracket_ = false;

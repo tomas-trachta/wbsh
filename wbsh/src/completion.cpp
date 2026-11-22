@@ -85,8 +85,8 @@ namespace wbsh {
 		};
 
 		static const char* const kKeywords[] = {
-			"!", "[[", "]]", "case", "coproc", "do", "done", "elif", "else", "esac", "fi", "for",
-			"function", "if", "in", "select", "then", "time", "until", "while", "{", "}", nullptr,
+			"if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until",
+			"do", "done", "in", "function", "time", "{", "}", "!", "[[", "]]", "coproc", nullptr,
 		};
 
 		static const char* const kSignals[] = {
@@ -359,8 +359,19 @@ namespace wbsh {
 			return topics;
 		}
 
-		static std::vector<std::string> actionCandidates(Executor& exec, const std::string& action,
-		                                                 const std::string& word) {
+		static bool listedInTableOrder(const std::string& action) {
+			static const char* const kTableOrdered[] = {
+				"keyword", "signal", nullptr,
+			};
+			for (int i = 0; kTableOrdered[i] != nullptr; ++i) {
+				if (action == kTableOrdered[i]) return true;
+			}
+
+			return false;
+		}
+
+		static std::vector<std::string> unsortedCandidates(Executor& exec, const std::string& action,
+		                                                   const std::string& word) {
 			const Environment& env = exec.env();
 			if (action == "alias")     return keysOf(exec.aliases());
 			if (action == "arrayvar")  return arrayNames(env);
@@ -387,6 +398,14 @@ namespace wbsh {
 			if (action == "helptopic") return helpTopics(exec);
 			const bool builtins = action == "builtin" || action == "enabled";
 			return builtins ? shellBuiltinNames(exec) : std::vector<std::string>();
+		}
+
+		// bash lists tables in table order and every other source sorted.
+		static std::vector<std::string> actionCandidates(Executor& exec, const std::string& action,
+		                                                 const std::string& word) {
+			std::vector<std::string> names = unsortedCandidates(exec, action, word);
+			if (!listedInTableOrder(action)) std::sort(names.begin(), names.end());
+			return names;
 		}
 
 		static std::vector<std::string> splitLines(const std::string& text) {
@@ -610,7 +629,10 @@ namespace wbsh {
 		completion_detail::applyAffixes(spec, result.matches);
 		completion_detail::applyFallbacks(exec, request.word, result);
 		if (result.hasOption("filenames")) result.file_names = true;
-		if (!result.hasOption("nosort")) completion_detail::sortUnique(result.matches);
+		if (!request.keep_order && !result.hasOption("nosort")) {
+			completion_detail::sortUnique(result.matches);
+		}
+
 		return result;
 	}
 
@@ -936,6 +958,7 @@ namespace wbsh {
 			}
 
 			CompletionRequest request;
+			request.keep_order = true;
 			if (!parsed.names.empty()) request.word = parsed.names.back();
 
 			const CompletionResult result = generateCompletions(exec, parsed.spec, request);

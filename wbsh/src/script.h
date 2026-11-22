@@ -29,6 +29,7 @@ namespace wbsh {
 		bool show_tokens     = false;
 		bool show_ast        = false;
 		bool show_expansions = false;
+		bool pretty_print    = false;
 		bool execute         = false;
 		bool read_rc         = false;           ///< `-i` with a script: read the rc file first.
 		char invocation_letter = 0;             ///< `c` (-c) or `s` (stdin), last in `$-`.

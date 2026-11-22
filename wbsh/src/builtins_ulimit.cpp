@@ -14,6 +14,7 @@
 #  include <windows.h>
 #endif
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -100,7 +101,7 @@ namespace wbsh::ulimit_detail {
 	}
 
 	static void printUsage() {
-		std::fprintf(stderr, "ulimit: usage: ulimit [-SHacdefilmnpqrstuvx] [limit]\n");
+		std::fprintf(stderr, "ulimit: usage: ulimit [-SHabcdefiklmnpqrstuvxPRT] [limit]\n");
 	}
 
 	static bool applyOptionLetter(char letter, Request& request) {
@@ -177,7 +178,8 @@ namespace wbsh::ulimit_detail {
 		if (text == "unlimited") value = kUnlimited;
 		else if (text == "hard") value = hardValue(limit);
 		else if (text == "soft") value = softValue(limit);
-		else if (!parseLL(text, value) || value < 0) {
+		else if (text.empty() || !std::isdigit(static_cast<unsigned char>(text[0]))
+				|| !parseLL(text, value) || value < 0) {
 			shellErrorf("ulimit: %s: invalid number\n", text.c_str());
 			return false;
 		}
@@ -234,12 +236,20 @@ namespace wbsh::ulimit_detail {
 		return status;
 	}
 
-	static int builtin_ulimit(Executor&, const std::vector<std::string>& args) {
+	static void publishOpenFileLimit(Executor& exec, const Request& request) {
+		for (const Limit* limit : request.limits) {
+			if (limit->option == 'n') exec.setOpenFileLimit(softValue(*limit));
+		}
+	}
+
+	static int builtin_ulimit(Executor& exec, const std::vector<std::string>& args) {
 		Request request;
 		if (!parseRequest(args, request)) return 2;
 		if (!request.has_value || request.all) return printLimits(request);
 
-		return setLimits(request);
+		const int status = setLimits(request);
+		publishOpenFileLimit(exec, request);
+		return status;
 	}
 
 }  // namespace wbsh::ulimit_detail

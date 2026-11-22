@@ -28,6 +28,8 @@ namespace wbsh {
 		SourceLoc loc;
 		std::string message;
 		bool discards_command = false;
+		/// bash reports this one too, right after the error before it.
+		bool follows_previous = false;
 	};
 
 	/**
@@ -102,7 +104,9 @@ namespace wbsh {
 
 		void expectClosing(const char* word);
 		void expectClosingParen();
-		void reportUnclosed();
+		void reportUnexpected();
+		void reportEndOfFileAfter();
+		void reportUnexpectedAtLineEnd();
 		void reportUnclosedArrayLiteral();
 		std::size_t endOfInputLine() const;
 
@@ -111,7 +115,10 @@ namespace wbsh {
 		bool atListSeparator() const;
 		bool atCommandStart() const;
 		bool atFunctionNameParens() const;
-		Word tokenToWord(const Token& t) const;
+		Word tokenToWord(const Token& t);
+		void checkSubstitutions(const Token& t, const std::vector<WordSegment>& segments);
+		void checkSubstitutionBody(const Token& t, const std::string& body);
+		void reportSubstitutionError(const Token& t, const std::string& body, const ParseError& inner);
 		bool tokenIsReservedTerminator(const Token& t) const;
 
 		// Byte offset just before the next-to-be-consumed token; stamps
@@ -131,9 +138,17 @@ namespace wbsh {
 		NodePtr parsePipeline();
 		bool matchTimePrefix();
 		NodePtr makeNullCommand();
-		bool matchBangs(bool& out_saw_bang);
+		struct PipelinePrefixes {
+			bool timed = false;
+			bool time_posix = false;
+			bool bang = false;
+			bool saw_bang = false;
+		};
+
+		void matchPipelinePrefixes(PipelinePrefixes& out);
 		bool atBareListTerminator() const;
 		bool matchTimePosixOption();
+		bool matchTimeDashDash();
 		NodePtr parseCommand();
 		NodePtr parseFunctionKeyword();
 		NodePtr parseCoproc();
@@ -146,6 +161,7 @@ namespace wbsh {
 		NodePtr parseWhileUntil(bool until);
 		NodePtr parseFor();
 		NodePtr parseForArith(std::size_t start, SourceLoc loc);
+		void reportArithForHeader(const Token& header, std::size_t parts);
 		NodePtr parseSelect();
 		NodePtr parseWordListLoop(std::size_t start, SourceLoc loc, bool is_select);
 		bool parseInWordListHeader(std::string& var, bool& has_in, std::vector<Word>& items);
@@ -153,6 +169,7 @@ namespace wbsh {
 		NodePtr parseCase();
 		void parseCaseItem(CaseClause::Item& item);
 		CaseClause::Term matchCaseTerminator();
+		bool atCompoundCommand() const;
 		NodePtr parseFunctionRest(std::string name, SourceLoc loc);
 		void captureFunctionBodyText(FunctionDef& function) const;
 		NodePtr parseDoGroup();
@@ -161,6 +178,12 @@ namespace wbsh {
 		DBracketCond::Expr* parseDBracketAnd();
 		DBracketCond::Expr* parseDBracketUnary();
 		DBracketCond::Expr* parseDBracketPrimary();
+		DBracketCond::Expr* parseDBracketGroup();
+		bool atDBracketOperand() const;
+		bool atDBracketTermEnd() const;
+		void reportDBracketLeftover();
+		void parseDBracketBinaryRest(DBracketCond::Expr& expr);
+		void condError(const std::string& detail, const Token& at);
 		bool tryParseDBracketUnary(DBracketCond::Expr& e);
 		bool atDBracketUnaryTest() const;
 		bool atDBracketEnd() const;
@@ -173,6 +196,8 @@ namespace wbsh {
 		bool tryExtractAssignment(const Token& t, Assignment& out) const;
 		bool tryConsumeLeadingAssignment(SimpleCommand& cmd);
 		bool tryConsumeDeclarationArg(SimpleCommand& cmd);
+		bool tryConsumeCompoundWord(SimpleCommand& cmd);
+		void takeParenthesizedValue(Assignment& assignment, std::size_t open);
 		std::string compoundTextFrom(std::size_t first_token) const;
 		void parseArrayLiteralBody(Assignment& a);
 		void parseArrayLiteralItem(Assignment& a);
@@ -208,6 +233,10 @@ namespace wbsh {
 	/// when there is none.
 	bool firstSyntaxError(const std::vector<LexError>& lex_errors,
 	                      const std::vector<ParseError>& parse_errors, ParseError& out_error);
+
+	/// The error bash reports right after @p first, if there is one.
+	bool followUpSyntaxError(const std::vector<ParseError>& parse_errors, const ParseError& first,
+	                         ParseError& out_error);
 
 	/// Where bash reads on after the first syntax error when that error
 	/// only discards the command it sits in: the start of the next line.

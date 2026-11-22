@@ -51,6 +51,28 @@ from the file
 -c first in the group
 -r too
 wbsh: -Z: invalid option
+wbsh [GNU long option] [option] ...
+wbsh [GNU long option] [option] script-file ...
+GNU long options:
+	--debug
+	--debugger
+	--dump-po-strings
+	--dump-strings
+	--help
+	--init-file
+	--login
+	--noediting
+	--noprofile
+	--norc
+	--posix
+	--pretty-print
+	--rcfile
+	--restricted
+	--verbose
+	--version
+Shell options:
+	-ilrsD or -c command or -O shopt_option		(invocation only)
+	-abefhkmnptuvxBCEHPT or -o option
 status 2
 + echo traced
 traced

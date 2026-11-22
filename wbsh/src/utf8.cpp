@@ -185,6 +185,17 @@ namespace wbsh {
 		return { code, length };
 	}
 
+	bool isValidUtf8(const std::string& text, std::size_t from, std::size_t to) {
+		for (std::size_t k = from; k < to; ) {
+			const Utf8Char c = decodeUtf8(text, k, to);
+			if (c.length == 1 && static_cast<unsigned char>(text[k]) >= 0x80) return false;
+
+			k += c.length;
+		}
+
+		return true;
+	}
+
 	std::size_t utf8Count(const std::string& text) {
 		std::size_t count = 0;
 		for (std::size_t pos = 0; pos < text.size(); pos += utf8CharLength(text, pos)) ++count;
@@ -240,10 +251,36 @@ namespace wbsh {
 		return digits > 0;
 	}
 
+	static const char32_t kMaxUnicode = 0x10FFFF;
+	static const char32_t kMaxFourByte = 0x1FFFFF;
+	static const char32_t kMaxFiveByte = 0x3FFFFFF;
+	static const char32_t kMaxSixByte = 0x7FFFFFFF;
+
+	// Past U+10FFFF bash still writes the old 4-, 5- and 6-byte UTF-8 forms.
+	static void appendExtendedUtf8(std::string& out, char32_t code) {
+		if (code <= kMaxFourByte) {
+			appendUtf8(out, code);
+			return;
+		}
+
+		const int continuation = code <= kMaxFiveByte ? 4 : 5;
+		const unsigned lead = continuation == 4 ? 0xF8u : 0xFCu;
+		out.push_back(static_cast<char>(lead | (code >> (6 * continuation))));
+		for (int k = continuation - 1; k >= 0; --k) {
+			out.push_back(static_cast<char>(0x80u | ((code >> (6 * k)) & 0x3Fu)));
+		}
+	}
+
 	void appendUnicodeEscape(std::string& out, char32_t code, bool utf8_locale) {
-		const bool encodable = code <= 0x10FFFF && !utf8_detail::isStrayCode(code);
+		const bool encodable = code <= kMaxUnicode && !utf8_detail::isStrayCode(code);
 		if (code < 0x80 || (utf8_locale && encodable)) {
 			appendUtf8(out, code);
+			return;
+		}
+
+		if (utf8_locale && code > kMaxSixByte) return;
+		if (utf8_locale && code > kMaxUnicode) {
+			appendExtendedUtf8(out, code);
 			return;
 		}
 
@@ -252,6 +289,68 @@ namespace wbsh {
 		if (code <= 0xFFFF) std::snprintf(escape, sizeof escape, "\\u%04lX", value);
 		else std::snprintf(escape, sizeof escape, "\\U%08lX", value);
 		out += escape;
+	}
+
+	struct CharsetCodePage {
+		const char* charset;    ///< lower case, without `-` and `_`
+		unsigned code_page;
+	};
+
+	static const CharsetCodePage kCharsetCodePages[] = {
+		{ "iso88591", 28591 }, { "iso885915", 28605 }, { "cp1252", 1252 },
+		{ "big5", 950 }, { "sjis", 932 }, { "shiftjis", 932 }, { "eucjp", 20932 },
+		{ "gb2312", 936 }, { "gbk", 936 }, { "euckr", 51949 }, { "koi8r", 20866 },
+	};
+
+	static std::string normalizedCharset(const std::string& locale) {
+		const std::size_t dot = locale.find('.');
+		if (dot == std::string::npos) return std::string();
+
+		std::string charset;
+		for (std::size_t k = dot + 1; k < locale.size() && locale[k] != '@'; ++k) {
+			const char c = locale[k];
+			if (c == '-' || c == '_') continue;
+			charset.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+		}
+
+		return charset;
+	}
+
+	unsigned codePageOfLocale(const std::string& locale) {
+		const std::string charset = normalizedCharset(locale);
+		for (const CharsetCodePage& entry : kCharsetCodePages) {
+			if (charset == entry.charset) return entry.code_page;
+		}
+
+		return 0;
+	}
+
+	bool appendInCodePage(std::string& out, char32_t code, unsigned code_page) {
+#ifdef _WIN32
+		if (code > kMaxUnicode) return false;
+
+		wchar_t units[2];
+		int count = 1;
+		if (code < 0x10000) {
+			units[0] = static_cast<wchar_t>(code);
+		} else {
+			units[0] = static_cast<wchar_t>(0xD800 + ((code - 0x10000) >> 10));
+			units[1] = static_cast<wchar_t>(0xDC00 + ((code - 0x10000) & 0x3FF));
+			count = 2;
+		}
+
+		char bytes[8];
+		BOOL defaulted = FALSE;
+		const int written = ::WideCharToMultiByte(code_page, WC_NO_BEST_FIT_CHARS, units, count,
+			bytes, sizeof bytes, nullptr, &defaulted);
+		if (written <= 0 || defaulted) return false;
+
+		out.append(bytes, static_cast<std::size_t>(written));
+		return true;
+#else
+		(void)out; (void)code; (void)code_page;
+		return false;
+#endif /* _WIN32 */
 	}
 
 	char32_t upperCode(char32_t code) {

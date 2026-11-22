@@ -584,10 +584,8 @@ namespace wbsh {
 		return text;
 	}
 
-	static std::string hexdumpLine(char format, const unsigned char* row, std::size_t got,
-	                               unsigned long long offset) {
-		if (format == 'C') return hexdumpCanonicalLine(row, got, offset);
-
+	static std::string hexdumpCells(char format, const unsigned char* row, std::size_t got,
+	                                unsigned long long offset) {
 		char text[16];
 		std::snprintf(text, sizeof(text), "%07llx ", offset);
 		std::string line = text;
@@ -598,6 +596,19 @@ namespace wbsh {
 		}
 
 		return rightTrimmed(line);
+	}
+
+	// As util-linux does, a short last line is padded out to the width of a
+	// full one.
+	static std::string hexdumpLine(char format, const unsigned char* row, std::size_t got,
+	                               unsigned long long offset) {
+		if (format == 'C') return hexdumpCanonicalLine(row, got, offset);
+
+		static const unsigned char kFullRow[16] = {};
+		std::string line = hexdumpCells(format, row, got, offset);
+		const std::size_t full = hexdumpCells(format, kFullRow, sizeof(kFullRow), offset).size();
+		if (line.size() < full) line.append(full - line.size(), ' ');
+		return line;
 	}
 
 	static const std::vector<OptDef> kHexdumpOptionDefs = {

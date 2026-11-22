@@ -167,15 +167,46 @@ namespace wbsh {
 		return segmentOf(WordSegment::Kind::Literal, std::move(text));
 	}
 
-	static std::string flattenDelim(const Token& delim) {
-		std::string out;
-		for (const auto& segment : delim.segments) {
-			if (segment.kind != WordSegment::Kind::DoubleQuoted) {
-				out += segment.text;
+	static bool escapesInDelimQuotes(char c) {
+		return c == '$' || c == '`' || c == '"' || c == '\\' || c == '\n';
+	}
+
+	static bool atLineContinuation(const std::string& raw, std::size_t k) {
+		return raw[k] == '\\' && k + 1 < raw.size() && raw[k + 1] == '\n';
+	}
+
+	static void copyQuotedDelimRun(const std::string& raw, std::size_t& k, std::string& out) {
+		const char quote = raw[k++];
+		while (k < raw.size() && raw[k] != quote) {
+			if (quote == '"' && atLineContinuation(raw, k)) {
+				k += 2;
 				continue;
 			}
 
-			for (const auto& inner : segment.nested) out += inner.text;
+			const bool escape = quote == '"' && raw[k] == '\\' && k + 1 < raw.size()
+				&& escapesInDelimQuotes(raw[k + 1]);
+			if (escape) ++k;
+			out.push_back(raw[k++]);
+		}
+	}
+
+	// The delimiter is the word after quote removal and nothing else: bash
+	// expands nothing in it, so `` EO`true`F `` is matched as written.
+	static std::string flattenDelim(const Token& delim) {
+		const std::string& raw = delim.text;
+		std::string out;
+		for (std::size_t k = 0; k < raw.size(); ++k) {
+			const char c = raw[k];
+			const bool quote_follows = k + 1 < raw.size() && (raw[k + 1] == '\'' || raw[k + 1] == '"');
+			if (atLineContinuation(raw, k)) {
+				++k;
+			} else if (c == '\\' && k + 1 < raw.size()) {
+				out.push_back(raw[++k]);
+			} else if (c == '\'' || c == '"') {
+				copyQuotedDelimRun(raw, k, out);
+			} else if (c != '$' || !quote_follows) {
+				out.push_back(c);
+			}
 		}
 
 		return out;
@@ -195,6 +226,19 @@ namespace wbsh {
 		}
 
 		return false;
+	}
+
+	// bash takes a number that overflows an int for an ordinary word.
+	static bool fitsInInt(const std::string& digits) {
+		static const long long kIntMax = 2147483647;
+
+		long long value = 0;
+		for (const char c : digits) {
+			value = value * 10 + (c - '0');
+			if (value > kIntMax) return false;
+		}
+
+		return true;
 	}
 
 	static bool isDigitsOnly(const std::vector<WordSegment>& segments) {
@@ -254,7 +298,7 @@ namespace wbsh {
 		const char c = src_[pos_++];
 		loc_.offset++;
 		if (c == '\n') {
-			loc_.line++;
+			if (pos_ > same_line_end_ && !insideAlias(pos_ - 1)) loc_.line++;
 			loc_.column = 1;
 			return c;
 		}
@@ -510,14 +554,205 @@ namespace wbsh {
 		else scanWordSegments(word);
 
 		word.text = src_.substr(start_pos, pos_ - start_pos);
-		const bool names_fd = isDigitsOnly(word.segments) || isFdVariableWord(word.text);
+		if (expandsAlias(word, start_pos, command_start)) return;
+
+		const bool fd_number = isDigitsOnly(word.segments) && fitsInInt(word.text);
+		const bool names_fd = fd_number || isFdVariableWord(word.text);
 		if (names_fd && (peek() == '<' || peek() == '>')) word.kind = TokKind::IoNumber;
 
 		markHeredocDelimiter(word);
 		trackDBracket(word, command_start);
 		trackCaseWord(word, command_start);
 		tokens_.push_back(std::move(word));
-		if (tokens_.back().is_heredoc_delim) pending_heredocs_.push_back({ tokens_.size() - 1 });
+		if (tokens_.back().is_heredoc_delim) queueHeredoc();
+	}
+
+	// POSIX has reserved words recognized before aliases.
+	static bool isReservedWordText(const std::string& text) {
+		static const char* const kReserved[] = {
+			"!", "case", "coproc", "do", "done", "elif", "else", "esac", "fi", "for", "function",
+			"if", "in", "select", "then", "time", "until", "while", "{", "}", "[[", "]]",
+		};
+
+		for (const char* reserved : kReserved) {
+			if (text == reserved) return true;
+		}
+
+		return false;
+	}
+
+	// A plain word, quoted nowhere, in command position, after an alias
+	// whose text ends in a blank, or first in an alias's text. An alias
+	// never expands inside its own text.
+	bool Lexer::expandsAlias(const Token& word, std::size_t start_pos, bool command_start) {
+		const bool after_blank_alias = blank_alias_end_ != std::string::npos
+			&& start_pos >= blank_alias_end_;
+		if (after_blank_alias) blank_alias_end_ = std::string::npos;
+		const bool first_in_alias = start_pos == alias_restart_;
+		alias_restart_ = std::string::npos;
+		if (aliases_ == nullptr || inCasePattern()) return false;
+
+		const bool candidate = command_start || after_blank_alias || first_in_alias;
+		if (!candidate && !atAliasPosition()) return false;
+		if (word.segments.size() != 1 || word.segments[0].kind != WordSegment::Kind::Literal) {
+			return false;
+		}
+
+		const auto alias = aliases_->find(word.text);
+		if (word.segments[0].text != word.text || alias == aliases_->end()) return false;
+		if (insideAliasOf(word.text, start_pos)) return false;
+		if (posix_mode_ && command_start && isReservedWordText(word.text)) return false;
+
+		spliceAlias(word, start_pos, alias->second);
+		return true;
+	}
+
+	bool Lexer::insideAliasOf(const std::string& name, std::size_t pos) const {
+		for (const AliasSplice& splice : splices_) {
+			if (splice.name == name && pos >= splice.at && pos < splice.at + splice.length) return true;
+		}
+
+		return false;
+	}
+
+	bool Lexer::insideAlias(std::size_t pos) const {
+		for (const AliasSplice& splice : splices_) {
+			if (pos >= splice.at && pos < splice.at + splice.length) return true;
+		}
+
+		return false;
+	}
+
+	static bool endsInsideQuotes(const std::string& text) {
+		char quote = '\0';
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			const char c = text[i];
+			if (quote == '\'') {
+				if (c == '\'') quote = '\0';
+			} else if (c == '\\') {
+				++i;
+			} else if (c == '"' || (c == '\'' && quote == '\0')) {
+				quote = quote == c ? '\0' : c;
+			}
+		}
+
+		return quote != '\0';
+	}
+
+	// bash's shell_getc ends an alias's text with a blank, so that it is
+	// a token of its own, unless the text is empty, already ends one, ends
+	// in a backslash that quotes what follows, or ends inside quotes. Text
+	// of more than one line may end inside a here-document, which a blank
+	// would change.
+	static bool needsClosingBlank(const std::string& text) {
+		if (text.empty() || text.find('\n') != std::string::npos) return false;
+		if (std::strchr(" \t\n\\|&;()<>", text.back()) != nullptr) return false;
+
+		return !endsInsideQuotes(text);
+	}
+
+	// The alias text takes the name's place and is read from the start of
+	// the name again; an alias it sits in grows by the difference.
+	void Lexer::spliceAlias(const Token& word, std::size_t start_pos, const std::string& alias_text) {
+		const std::string value = needsClosingBlank(alias_text) ? alias_text + " " : alias_text;
+		const bool checks_next = !alias_text.empty() && isBlank(alias_text.back());
+		const std::size_t replaced = pos_ - start_pos;
+		for (AliasSplice& outer : splices_) {
+			if (start_pos >= outer.at && start_pos < outer.at + outer.length) {
+				outer.length = outer.length + value.size() - replaced;
+			}
+		}
+
+		src_.replace(start_pos, replaced, value);
+		splices_.push_back({ start_pos, value.size(), replaced, word.text });
+		blank_alias_end_ = checks_next ? start_pos + value.size() : std::string::npos;
+		alias_restart_ = start_pos;
+
+		pos_ = start_pos;
+		loc_ = word.loc;
+		at_line_start_ = word.first_on_line;
+	}
+
+	// The aliases expanded since @p first_splice, from @p from on, go back to
+	// their names.
+	void Lexer::restoreAliasNames(std::size_t from, std::size_t first_splice) {
+		if (splices_.size() == first_splice || closedInsideAlias(first_splice)) return;
+
+		std::string original;
+		std::size_t cursor = from;
+		for (std::size_t k = first_splice; k < splices_.size(); ++k) {
+			const AliasSplice& splice = splices_[k];
+			if (splice.at < cursor) continue;
+
+			original += src_.substr(cursor, splice.at - cursor) + splice.name;
+			cursor = splice.at + splice.length;
+		}
+
+		original += src_.substr(cursor, pos_ - cursor);
+		const std::size_t expanded = pos_ - from;
+		for (std::size_t k = 0; k < first_splice; ++k) {
+			AliasSplice& outer = splices_[k];
+			if (from >= outer.at && from < outer.at + outer.length) {
+				outer.length = outer.length + original.size() - expanded;
+			}
+		}
+
+		src_.replace(from, expanded, original);
+		pos_ = from + original.size();
+		loc_.offset = loc_.offset + original.size() - expanded;
+		splices_.resize(first_splice);
+	}
+
+	// The `)` just read came from an alias's text: the body has no text of
+	// its own to go back to.
+	bool Lexer::closedInsideAlias(std::size_t first_splice) const {
+		for (std::size_t k = first_splice; k < splices_.size(); ++k) {
+			const AliasSplice& splice = splices_[k];
+			if (pos_ > splice.at && pos_ <= splice.at + splice.length) return true;
+		}
+
+		return false;
+	}
+
+	std::size_t offsetAfterAliases(const std::vector<AliasSplice>& splices, std::size_t offset) {
+		std::size_t shift = 0;
+		std::size_t covered_to = 0;
+		for (const AliasSplice& splice : splices) {
+			if (splice.at < covered_to) continue;
+			if (splice.at - shift >= offset) break;
+
+			covered_to = splice.at + splice.length;
+			shift += splice.length - splice.replaced;
+		}
+
+		return offset + shift;
+	}
+
+	std::size_t offsetBeforeAliases(const std::vector<AliasSplice>& splices, std::size_t offset) {
+		std::size_t shift = 0;
+		std::size_t covered_to = 0;
+		for (const AliasSplice& splice : splices) {
+			if (splice.at < covered_to) continue;
+			if (offset <= splice.at) break;
+
+			covered_to = splice.at + splice.length;
+			if (offset < covered_to) return splice.at + splice.replaced - shift;
+			shift += splice.length - splice.replaced;
+		}
+
+		return offset - shift;
+	}
+
+	static const std::size_t kMaxPendingHeredocs = 16;
+
+	// bash's HEREDOC_MAX: a 17th here-document waiting for its body is an
+	// error that ends the shell.
+	void Lexer::queueHeredoc() {
+		if (pending_heredocs_.size() == kMaxPendingHeredocs) {
+			error(tokens_.back().loc, "maximum here-document count exceeded");
+		}
+
+		pending_heredocs_.push_back({ tokens_.size() - 1 });
 	}
 
 	void Lexer::scanWordSegments(Token& word) {
@@ -588,6 +823,47 @@ namespace wbsh {
 		return in_dbracket_ && !tokens_.empty() && isWordSpelled(tokens_.back(), "=~");
 	}
 
+	static bool isRedirectionKind(TokKind kind) {
+		return kind >= TokKind::Less && kind <= TokKind::AmpDGreat;
+	}
+
+	// `name=value` or `name[sub]=value`, as a word in front of a command.
+	static bool isAssignmentText(const std::string& text) {
+		if (text.empty() || !(std::isalpha(static_cast<unsigned char>(text[0])) || text[0] == '_')) {
+			return false;
+		}
+
+		std::size_t i = 1;
+		while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '_')) {
+			++i;
+		}
+
+		if (i < text.size() && text[i] == '[') i = text.find(']', i);
+		if (i == std::string::npos || i >= text.size()) return false;
+		if (text[i] == ']') ++i;
+		return text.compare(i, 1, "=") == 0 || text.compare(i, 2, "+=") == 0;
+	}
+
+	// bash checks for an alias wherever a command name may come: after
+	// the redirections and assignments in front of it too.
+	bool Lexer::atAliasPosition() const {
+		std::size_t i = tokens_.size();
+		while (i > 0) {
+			const Token& previous = tokens_[i - 1];
+			if (previous.kind == TokKind::Word && i >= 2 && isRedirectionKind(tokens_[i - 2].kind)) {
+				i -= 2;
+				if (i > 0 && tokens_[i - 1].kind == TokKind::IoNumber) --i;
+				continue;
+			}
+
+			if (previous.kind != TokKind::Word || !isAssignmentText(previous.text)) break;
+			--i;
+		}
+
+		if (i == 0) return true;
+		return isCommandSeparator(tokens_[i - 1].kind) || isCommandPrefixWord(tokens_[i - 1]);
+	}
+
 	bool Lexer::atCommandWordStart() const {
 		if (tokens_.empty()) return true;
 
@@ -605,6 +881,15 @@ namespace wbsh {
 		return !case_states_.empty() && case_states_.back() == CaseState::Pattern;
 	}
 
+	// In `in|esac)` and `(esac)` the word is a pattern; only an `esac`
+	// where a pattern list could start ends the case.
+	bool Lexer::afterPatternBar() const {
+		if (tokens_.empty()) return false;
+
+		const TokKind previous = tokens_.back().kind;
+		return previous == TokKind::Pipe || previous == TokKind::LParen;
+	}
+
 	void Lexer::trackCaseWord(const Token& word, bool command_start) {
 		const CaseState state = case_states_.empty() ? CaseState::Body : case_states_.back();
 		switch (state) {
@@ -615,7 +900,7 @@ namespace wbsh {
 			if (isWordSpelled(word, "in")) case_states_.back() = CaseState::Pattern;
 			return;
 		case CaseState::Pattern:
-			if (isWordSpelled(word, "esac")) case_states_.pop_back();
+			if (isWordSpelled(word, "esac") && !afterPatternBar()) case_states_.pop_back();
 			return;
 		case CaseState::Body:
 			if (!command_start) return;
@@ -737,6 +1022,7 @@ namespace wbsh {
 
 	WordSegment Lexer::readDoubleQuotedBody() {
 		const SourceLoc start = loc_;
+		const std::size_t errors_before = errors_.size();
 		advance();
 
 		WordSegment segment;
@@ -769,7 +1055,10 @@ namespace wbsh {
 		}
 
 		if (eof()) {
-			error(start, "unexpected EOF while looking for matching `\"'");
+			if (errors_.size() == errors_before) {
+				error(start, "unexpected EOF while looking for matching `\"'");
+			}
+
 			return segment;
 		}
 
@@ -888,12 +1177,21 @@ namespace wbsh {
 		return c == '$' || c == '`' || c == '\\' || (in_double_quotes && c == '"');
 	}
 
+	// A backquote does not cut a here-document off the way `)` ends one
+	// in `$(...)`: a delimiter right before it still ends it cleanly.
+	static void endHeredocLine(std::string& body) {
+		if (body.find("<<") == std::string::npos || body.empty() || body.back() == '\n') return;
+
+		body.push_back('\n');
+	}
+
 	WordSegment Lexer::readBacktick(bool in_double_quotes) {
 		const SourceLoc start = loc_;
 		advance();
 
 		WordSegment segment;
 		segment.kind = WordSegment::Kind::CmdSubst;
+		segment.backquoted = true;
 		while (!eof() && peek() != '`') {
 			if (peek() != '\\') {
 				segment.text.push_back(advance());
@@ -903,7 +1201,9 @@ namespace wbsh {
 			advance();
 			if (eof()) break;
 
-			if (backquoteEscapes(peek(), in_double_quotes)) {
+			if (peek() == '\n') {
+				advance();
+			} else if (backquoteEscapes(peek(), in_double_quotes)) {
 				segment.text.push_back(advance());
 			} else {
 				segment.text.push_back('\\');
@@ -915,6 +1215,7 @@ namespace wbsh {
 			return segment;
 		}
 
+		endHeredocLine(segment.text);
 		advance();
 		return segment;
 	}
@@ -926,7 +1227,10 @@ namespace wbsh {
 		std::string body;
 		const ArithScan scan = tryArithmeticAfterParen(body);
 		if (scan == ArithScan::NotArithmetic) {
+			const std::size_t errors_before = errors_.size();
 			out.push_back(segmentOf(WordSegment::Kind::CmdSubst, readCommandSubstitutionBody()));
+			out.back().unterminated = errors_.size() > errors_before;
+			out.back().aliased = body_had_aliases_;
 			return;
 		}
 
@@ -973,10 +1277,7 @@ namespace wbsh {
 			case '\'': copySingleQuotedRun(out); continue;
 			case '"':  copyDoubleQuotedRun(out); continue;
 			case '`':  copyBackquotedRun(out); continue;
-			case '$':
-				if (peek(1) == '(') copyDollarParenRun(out);
-				else out.push_back(advance());
-				continue;
+			case '$':  copyArithmeticDollar(out); continue;
 			default:
 				out.push_back(advance());
 				continue;
@@ -994,20 +1295,45 @@ namespace wbsh {
 		return ArithScan::Closed;
 	}
 
+	// Aliases in the body count for finding its end, as in bash; the body
+	// keeps its own text, for it is read again, aliases and all, as it runs.
 	std::string Lexer::readCommandSubstitutionBody() {
 		const SourceLoc start = loc_;
 		const std::size_t body_start = pos_;
+		const std::size_t splices_before = splices_.size();
 
 		OuterScanState outer = enterNestedScan();
+		++nested_scan_depth_;
 		const bool closed = scanToUnmatchedParen();
+		--nested_scan_depth_;
+		if (!closed) warnCutOffHeredocs();
 		leaveNestedScan(outer);
+		body_had_aliases_ = splices_.size() > splices_before;
+		restoreAliasNames(body_start, splices_before);
 
 		if (!closed) {
-			error(start, "unexpected EOF while looking for matching `)'");
+			SourceLoc past_end = loc_;
+			past_end.line = lastLineReached() + 1;
+			error(past_end, "unexpected EOF while looking for matching `)'");
 			return src_.substr(body_start);
 		}
 
 		return src_.substr(body_start, pos_ - 1 - body_start);
+	}
+
+	void Lexer::warnCutOffHeredocs() {
+		for (const Token& token : tokens_) {
+			if (token.heredoc_eof_line != 0) warnHeredocAtEof(token);
+		}
+	}
+
+	// Only a syntax error report shows these; a document whose command runs
+	// gets its warning as it is read in.
+	void Lexer::warnHeredocAtEof(const Token& delim) {
+		SourceLoc at = delim.loc;
+		at.line = delim.heredoc_eof_line;
+		warnings_.push_back({ at, "here-document at line " + std::to_string(delim.loc.line)
+			+ " delimited by end-of-file (wanted `" + flattenDelim(delim) + "')" });
 	}
 
 	bool Lexer::scanToUnmatchedParen() {
@@ -1158,6 +1484,12 @@ namespace wbsh {
 	void Lexer::copyDoubleQuotedRun(std::string& out) {
 		out.push_back(advance());
 		while (!eof() && peek() != '"') {
+			if (peek() == '\\' && peek(1) == '\n') {
+				advance();
+				advance();
+				continue;
+			}
+
 			if (peek() == '\\') {
 				copyBackslashEscape(out);
 				continue;
@@ -1260,22 +1592,106 @@ namespace wbsh {
 		return quotes % 2 == 1;
 	}
 
+	bool Lexer::literalBraceQuotes() const {
+		return posix_mode_ && in_double_quotes_;
+	}
+
 	// A `$(` between such literal quotes is plain text while the brace is
-	// looked for; bash 5.3 parses it only if the word is expanded.
+	// looked for.
 	void Lexer::copyBraceDollarParen(std::string& out) {
-		if (in_double_quotes_ && insideLiteralQuote(out)) out.push_back(advance());
+		if (literalBraceQuotes() && insideLiteralQuote(out)) out.push_back(advance());
 		else copyDollarParenRun(out);
 	}
 
-	// Inside double quotes bash 5.3 takes a single quote in the word of
-	// "${name-word}" (and +, =, ?) literally, so it cannot hide a closing
-	// brace; in a pattern ("${name#'x'}") it still quotes.
+	// In POSIX mode a single quote in the word of a double-quoted
+	// "${name-word}" (and +, =, ?) is literal and cannot hide a closing
+	// brace; in a pattern ("${name#'x'}") it still quotes. Outside POSIX
+	// mode it hides the brace, though bash 5.3 keeps it in the value.
 	void Lexer::copyBraceSingleQuote(std::string& out) {
-		if (in_double_quotes_ && atWordOperator(out)) out.push_back(advance());
+		if (literalBraceQuotes() && atWordOperator(out)) out.push_back(advance());
 		else copySingleQuotedRun(out);
 	}
 
+	// bash 5.3's `${ list; }` and `${| list; }` hold commands: the brace
+	// that ends them is a `}` where a command could start.
+	bool Lexer::atFunsubStart() const {
+		const char c = peek();
+		return c == ' ' || c == '\t' || c == '\n' || c == '|';
+	}
+
+	// Like bash, a `}` where a command word could start ends the list,
+	// whatever follows it: `${ echo a;}b` is `ab`.
+	bool Lexer::atClosingBraceWord() const {
+		return peek() == '}' && atCommandWordStart();
+	}
+
+	// A `{` opens a group where a command could start and as the body of
+	// `name()` or `function name`.
+	bool Lexer::atBraceGroupOpen() const {
+		if (atCommandWordStart()) return true;
+		if (tokens_.empty()) return false;
+		if (tokens_.back().kind == TokKind::RParen) return true;
+
+		return tokens_.size() >= 2 && isWordSpelled(tokens_[tokens_.size() - 2], "function");
+	}
+
+	static int braceGroupDelta(const Token& token, bool group_open, bool command_word) {
+		if (token.kind != TokKind::Word) return 0;
+		if (group_open && isWordSpelled(token, "{")) return 1;
+		if (command_word && isWordSpelled(token, "}")) return -1;
+		return 0;
+	}
+
+	bool Lexer::scanToUnmatchedBrace() {
+		int depth = 0;
+		while (!eof()) {
+			skipWhitespace();
+			if (depth == 0 && atClosingBraceWord()) {
+				advance();
+				return true;
+			}
+
+			if (eof()) break;
+
+			const bool group_open = atBraceGroupOpen();
+			const bool command_word = atCommandWordStart();
+			const std::size_t before = tokens_.size();
+			scanToken();
+			if (tokens_.size() > before) {
+				depth += braceGroupDelta(tokens_.back(), group_open, command_word);
+			}
+		}
+
+		return false;
+	}
+
+	std::string Lexer::readFunsubBody() {
+		const SourceLoc start = loc_;
+		const std::size_t body_start = pos_;
+		if (peek() == '|') advance();
+
+		const std::size_t splices_before = splices_.size();
+		OuterScanState outer = enterNestedScan();
+		++nested_scan_depth_;
+		const bool closed = scanToUnmatchedBrace();
+		--nested_scan_depth_;
+		leaveNestedScan(outer);
+		restoreAliasNames(body_start, splices_before);
+
+		if (!closed) {
+			SourceLoc past_end = loc_;
+			past_end.line = lastLineReached() + 1;
+			error(past_end, "unexpected EOF while looking for matching `}'");
+			return src_.substr(body_start);
+		}
+
+		return src_.substr(body_start, pos_ - 1 - body_start);
+	}
+
 	std::string Lexer::readBalancedBraces() {
+		if (atFunsubStart()) return readFunsubBody();
+
+		const SourceLoc start = loc_;
 		std::string out;
 		int depth = 1;
 		while (!eof() && depth > 0) {
@@ -1283,6 +1699,7 @@ namespace wbsh {
 			case '\\': copyBackslashEscape(out); continue;
 			case '\'': copyBraceSingleQuote(out); continue;
 			case '"':  copyDoubleQuotedRun(out); continue;
+			case '`':  copyBackquotedRun(out); continue;
 			case '$':
 				if (peek(1) == '{') {
 					out.push_back(advance());
@@ -1321,7 +1738,7 @@ namespace wbsh {
 			}
 		}
 
-		error(loc_, "unexpected EOF while looking for matching `}'");
+		error(start, "unexpected EOF while looking for matching `}'");
 		return out;
 	}
 
@@ -1377,37 +1794,96 @@ namespace wbsh {
 		return backslashes % 2 == 1;
 	}
 
+	// In an unquoted document bash joins a line ending in a backslash with
+	// the next before it compares the result with the delimiter, so `EO\`
+	// and `F` end a document delimited by EOF. The lines of a joined line
+	// wait in `pending` until it is known not to be the delimiter.
 	std::string Lexer::readHeredocBody(Token& delim) {
-		const std::string terminator = flattenDelim(delim);
+		std::string terminator = flattenDelim(delim);
+		if (delim.heredoc_strip_tabs) stripLeadingTabs(terminator);
+
+		HeredocLine joined;
 		std::string body;
-		bool continued = false;
 		for (;;) {
 			std::string line = readLineText();
-			if (delim.heredoc_strip_tabs && !continued) stripLeadingTabs(line);
+			if (delim.heredoc_strip_tabs && !joined.continued) stripLeadingTabs(line);
+			if (!joined.continued && endsAtSubstitutionClose(line, terminator)) {
+				unreadLineTail(line.size() - terminator.size());
+				return body;
+			}
 
-			const bool is_terminator = !continued && line == terminator;
-			continued = !delim.heredoc_quoted && endsInLineContinuation(line);
+			if (!joined.continued && cutOffBySubstitutionClose(line, terminator)) {
+				delim.heredoc_eof_line = loc_.line;
+				return body;
+			}
 
-			if (is_terminator) {
+			joinHeredocLine(joined, line, delim.heredoc_quoted);
+			const bool is_line = !eof() || !line.empty();
+			if (!joined.continued && is_line && joined.logical == terminator) {
 				if (!eof()) advance();
 				return body;
 			}
 
-			if (eof() && !heredoc_at_eof_ok_) {
-				error(delim.loc, "unterminated heredoc body");
-				return body;
-			}
+			if (eof()) return finishHeredocAtEof(delim, joined, line, body);
 
-			if (eof()) {
-				if (!line.empty()) body += line + "\n";
-				delim.heredoc_eof_line = lastLineReached();
-				return body;
-			}
-
-			body += line;
-			body.push_back('\n');
+			takeHeredocLine(joined, line, body);
 			advance();
 		}
+	}
+
+	void Lexer::joinHeredocLine(HeredocLine& joined, const std::string& line, bool quoted) {
+		const bool continues = !quoted && endsInLineContinuation(line);
+		joined.logical += continues ? line.substr(0, line.size() - 1) : line;
+		joined.continued = continues;
+	}
+
+	void Lexer::takeHeredocLine(HeredocLine& joined, const std::string& line, std::string& body) {
+		joined.pending += line + "\n";
+		if (joined.continued) return;
+
+		body += joined.pending;
+		joined.pending.clear();
+		joined.logical.clear();
+	}
+
+	std::string Lexer::finishHeredocAtEof(Token& delim, const HeredocLine& joined,
+			const std::string& line, std::string& body) {
+		if (!heredoc_at_eof_ok_) {
+			error(delim.loc, "unterminated heredoc body");
+			return body;
+		}
+
+		body += joined.pending;
+		if (!line.empty()) body += line + "\n";
+		delim.heredoc_eof_line = lastLineReached();
+		if (nested_scan_depth_ == 0 && errors_.empty()) warnHeredocAtEof(delim);
+		return body;
+	}
+
+	static bool startsWith(const std::string& line, const std::string& prefix) {
+		return line.compare(0, prefix.size(), prefix) == 0;
+	}
+
+	// Inside `$(...)` bash 5.3 also ends a here-document at a line that
+	// starts with the delimiter and has a `)` after it, and reads the rest
+	// of that line again.
+	bool Lexer::endsAtSubstitutionClose(const std::string& line,
+			const std::string& terminator) const {
+		if (nested_scan_depth_ == 0 || line.size() <= terminator.size()) return false;
+		if (!startsWith(line, terminator)) return false;
+
+		return line.find(')', terminator.size()) != std::string::npos;
+	}
+
+	bool Lexer::cutOffBySubstitutionClose(const std::string& line,
+			const std::string& terminator) const {
+		return substitution_body_ && nested_scan_depth_ == 0 && eof() && startsWith(line, terminator);
+	}
+
+	void Lexer::unreadLineTail(std::size_t length) {
+		pos_ -= length;
+		loc_.offset -= length;
+		loc_.column -= length;
 	}
 
 	// The line of the last character read: a final newline does not

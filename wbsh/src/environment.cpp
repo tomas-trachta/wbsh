@@ -15,6 +15,7 @@
 extern char** environ;
 #endif /* _WIN32 */
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -29,11 +30,23 @@ namespace wbsh {
 
 	static const char* const kDefaultIfs = " \t\n";
 
-	// Classic LCG; the high half masked to 0..32767 to match bash.
-	static const unsigned int kRandomMultiplier = 1103515245u;
-	static const unsigned int kRandomIncrement  = 12345u;
-	static const unsigned int kRandomDivisor    = 65536u;
-	static const unsigned int kRandomRange      = 32768u;
+	// bash 5's generator, so `RANDOM=seed` gives bash's sequence: Park and
+	// Miller's minimal standard x' = 16807 x mod (2^31 - 1), computed by
+	// Schrage's method, then the two halves folded into 0..32767.
+	static const long long    kParkMillerModulus    = 0x7fffffffLL;
+	static const long long    kParkMillerMultiplier = 16807;
+	static const long long    kParkMillerQuotient   = 127773;
+	static const long long    kParkMillerRemainder  = 2836;
+	static const unsigned int kZeroSeedReplacement  = 123459876u;
+	static const unsigned int kRandomMask           = 32767u;
+
+	static unsigned int parkMillerNext(unsigned int last) {
+		const long long x = (last == 0) ? kZeroSeedReplacement : last;
+		const long long high = x / kParkMillerQuotient;
+		const long long low = x - kParkMillerQuotient * high;
+		const long long t = kParkMillerMultiplier * low - kParkMillerRemainder * high;
+		return static_cast<unsigned int>(t < 0 ? t + kParkMillerModulus : t);
+	}
 
 	Environment::Environment() {
 #ifdef _WIN32
@@ -157,7 +170,6 @@ namespace wbsh {
 		{ "restricted_shell",        &ShoptFlags::restricted_shell },
 		{ "shift_verbose",           &ShoptFlags::shift_verbose },
 		{ "sourcepath",              &ShoptFlags::sourcepath },
-		{ "syslog_history",          &ShoptFlags::syslog_history },
 		{ "varredir_close",          &ShoptFlags::varredir_close },
 		{ "xpg_echo",                &ShoptFlags::xpg_echo },
 	};
@@ -243,6 +255,24 @@ namespace wbsh {
 		return true;
 	}
 
+	std::string Environment::ctypeLocale() const {
+		for (const char* name : { "LC_ALL", "LC_CTYPE", "LANG" }) {
+			const std::string value = get(name);
+			if (!value.empty()) return value;
+		}
+
+		return std::string();
+	}
+
+	std::string Environment::numericLocale() const {
+		for (const char* name : { "LC_ALL", "LC_NUMERIC", "LANG" }) {
+			const std::string value = get(name);
+			if (!value.empty()) return value;
+		}
+
+		return std::string();
+	}
+
 	bool Environment::rejectIfReadonly(const std::string& name) const {
 		if (readonly_.count(name) == 0) return false;
 
@@ -309,16 +339,38 @@ namespace wbsh {
 		out.base = ref.substr(0, open);
 		out.key = ref.substr(open + 1, ref.size() - open - 2);
 		out.assoc = assoc_.count(out.base) != 0;
-		if (out.assoc) return true;
+		out.whole = out.key == "@" || out.key == "*";
+		if (out.assoc || out.whole) return true;
 
-		if (arith_evaluator_ == nullptr || !arith_evaluator_(arith_context_, out.key, out.index)) {
+		if (subscript_evaluator_ == nullptr) {
 			if (!parseLL(out.key, out.index)) out.index = 0;
+			return true;
 		}
 
+		out.bad_index = !subscript_evaluator_(arith_context_, out.key, out.index);
 		return true;
 	}
 
+	std::string Environment::wholeArrayText(const ElementRef& element) const {
+		std::string text;
+		const auto append = [&text](const std::string& value) {
+			if (!text.empty()) text.push_back(' ');
+			text += value;
+		};
+
+		if (element.assoc) {
+			for (const auto& entry : assoc_.at(element.base)) append(entry.second);
+		} else if (const auto indexed = indexed_.find(element.base); indexed != indexed_.end()) {
+			for (const auto& entry : indexed->second) append(entry.second);
+		} else {
+			text = getResolved(element.base);
+		}
+
+		return text;
+	}
+
 	std::string Environment::getElement(const ElementRef& element) const {
+		if (element.whole) return wholeArrayText(element);
 		if (element.assoc) {
 			const AssocArray& array = assoc_.at(element.base);
 			const auto found = array.find(element.key);
@@ -333,6 +385,7 @@ namespace wbsh {
 	}
 
 	bool Environment::hasElement(const ElementRef& element) const {
+		if (element.whole) return !wholeArrayText(element).empty() || has(element.base);
 		if (element.assoc) return assoc_.at(element.base).count(element.key) != 0;
 
 		const auto indexed = indexed_.find(element.base);
@@ -351,10 +404,50 @@ namespace wbsh {
 		return name == "FUNCNAME" || name == "GROUPS";
 	}
 
+	static bool isRefName(const std::string& name) {
+		if (name.empty() || std::isdigit(static_cast<unsigned char>(name[0]))) return false;
+
+		return std::all_of(name.begin(), name.end(), [](char c) {
+			return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+		});
+	}
+
+	// A name, or an element `name[subscript]`.
+	static bool isValidRefTarget(const std::string& target) {
+		const std::size_t bracket = target.find('[');
+		if (!isRefName(target.substr(0, bracket))) return false;
+
+		return bracket == std::string::npos || (target.size() > bracket + 2 && target.back() == ']');
+	}
+
+	bool Environment::rejectsRefTarget(const std::string& name, const std::string& value) const {
+		const auto unbound = namerefs_.find(name);
+		if (unbound == namerefs_.end() || !unbound->second.empty()) return false;
+
+		return rejectsRefValue(value);
+	}
+
+	bool Environment::rejectsRefValue(const std::string& value) const {
+		if (isValidRefTarget(value)) return false;
+
+		const std::string prefix = assigning_command_.empty() ? "" : assigning_command_ + ": ";
+		shellErrorf("%s`%s': not a valid identifier\n", prefix.c_str(), value.c_str());
+		return true;
+	}
+
+	// An array made under the name of a nameref without a target replaces it.
+	void Environment::dropUnboundNameref(const std::string& name) {
+		const auto found = namerefs_.find(name);
+		if (found == namerefs_.end() || !found->second.empty()) return;
+
+		shellErrorf("warning: %s: removing nameref attribute\n", name.c_str());
+		unsetNameref(name);
+	}
+
 	void Environment::set(const std::string& name, std::string value) {
 		const auto unbound = namerefs_.find(name);
 		if (unbound != namerefs_.end() && unbound->second.empty()) {
-			unbound->second = std::move(value);
+			if (!rejectsRefTarget(name, value)) unbound->second = std::move(value);
 			return;
 		}
 
@@ -362,6 +455,12 @@ namespace wbsh {
 		ElementRef element;
 		if (!splitElementRef(target, element)) {
 			setResolved(target, std::move(value));
+			return;
+		}
+
+		if (element.bad_index) return;
+		if (element.whole && !element.assoc) {
+			shellErrorf("%s: bad array subscript\n", target.c_str());
 			return;
 		}
 
@@ -387,10 +486,11 @@ namespace wbsh {
 			return;
 		}
 
+		if (rejectIfReadonly(name)) return;
+
 		// Read-only dynamic params; writes are ignored silently.
 		if (isReadOnlyDynamicName(name) || isNoAssignName(name)) return;
 
-		if (rejectIfReadonly(name)) return;
 		if (!applyAttributes(name, value)) return;
 
 		valueless_.erase(name);
@@ -400,12 +500,19 @@ namespace wbsh {
 			return;
 		}
 
-		assoc_.erase(name);
+		// As in bash, a value for an associative array's name is its key "0".
+		auto assoc = assoc_.find(name);
+		if (assoc != assoc_.end()) {
+			assoc->second["0"] = std::move(value);
+			return;
+		}
+
 		vars_[name] = std::move(value);
 		if (options_.allexport) exported_.insert(name);
 		if (name == "GLOBIGNORE") noteGlobIgnore();
 		if (name == "POSIXLY_CORRECT") notePosixlyCorrect();
 		if (name == "OPTIND") ++optind_writes_;
+		if (name == "IGNOREEOF") options_.ignoreeof = true;
 		if (name == "PWD") indexed_["DIRSTACK"][0] = vars_[name];
 	}
 
@@ -518,14 +625,29 @@ namespace wbsh {
 		indexed_[target] = std::move(array);
 	}
 
-	void Environment::declareAssocArray(const std::string& name) {
+	// A variable that already existed is converted, which in bash gives it
+	// a smaller hash table and so another key order.
+	void Environment::declareAssocArray(const std::string& name, bool converted) {
 		const std::string& target = resolveRef(name);
 		if (rejectIfReadonly(target)) return;
 
 		vars_.erase(target);
 		indexed_.erase(target);
 		valueless_.erase(target);
-		assoc_.emplace(target, AssocArray{});
+		const auto made = assoc_.emplace(target, AssocArray{});
+		if (made.second && converted) made.first->second.useDefaultHashSize();
+	}
+
+	void Environment::sizeAssocTable(const std::string& name, std::uint32_t buckets) {
+		const auto array = assoc_.find(resolveRef(name));
+		if (array != assoc_.end() && array->second.empty()) array->second.useBuckets(buckets);
+	}
+
+	void Environment::resetAssocArray(const std::string& name) {
+		declareAssocArray(name);
+
+		const auto array = assoc_.find(resolveRef(name));
+		if (array != assoc_.end() && !isReadonly(name)) array->second.clear();
 	}
 
 	void Environment::setAssocElement(const std::string& name, std::string key, std::string val) {
@@ -581,14 +703,22 @@ namespace wbsh {
 
 	// Unsetting a nameref unsets the variable it names; one with no
 	// target goes itself.
-	void Environment::unset(const std::string& name) {
+	// False only when an element's subscript failed to evaluate.
+	bool Environment::unset(const std::string& name) {
 		const std::string target = resolveRef(name);
 		if (target == name) namerefs_.erase(name);
 
 		ElementRef element;
 		if (splitElementRef(target, element)) {
+			if (element.bad_index) return false;
+			if (element.whole && !element.assoc) {
+				const auto indexed = indexed_.find(element.base);
+				if (indexed != indexed_.end()) indexed->second.clear();
+				return true;
+			}
+
 			unsetElement(element.base, element.index, element.key);
-			return;
+			return true;
 		}
 
 		vars_.erase(target);
@@ -599,12 +729,14 @@ namespace wbsh {
 		valueless_.erase(target);
 		if (target == "GLOBIGNORE") noteGlobIgnore();
 		if (target == "POSIXLY_CORRECT") notePosixlyCorrect();
+		if (target == "IGNOREEOF") options_.ignoreeof = false;
+		return true;
 	}
 
 	bool Environment::has(const std::string& name) const {
 		const std::string& target = resolveRef(name);
 		ElementRef element;
-		if (splitElementRef(target, element)) return hasElement(element);
+		if (splitElementRef(target, element)) return !element.bad_index && hasElement(element);
 		return hasResolved(target);
 	}
 
@@ -622,8 +754,9 @@ namespace wbsh {
 	std::string Environment::get(const std::string& name) const {
 		const std::string& target = resolveRef(name);
 		ElementRef element;
-		if (splitElementRef(target, element)) return getElement(element);
-		return getResolved(target);
+		if (!splitElementRef(target, element)) return getResolved(target);
+
+		return element.bad_index ? std::string() : getElement(element);
 	}
 
 	std::string Environment::getResolved(const std::string& name) const {
@@ -655,6 +788,14 @@ namespace wbsh {
 
 	bool Environment::isExported(const std::string& name) const {
 		return exported_.count(resolveRef(name)) != 0;
+	}
+
+	bool Environment::exportedEntry(const std::string& name, std::string& out) const {
+		const auto found = vars_.find(name);
+		if (found == vars_.end() || exported_.count(name) == 0) return false;
+
+		out = found->second;
+		return true;
 	}
 
 	unsigned Environment::attributes(const std::string& name) const {
@@ -772,6 +913,7 @@ namespace wbsh {
 		const unsigned* attributes = findEntry(attributes_, name);
 		state.exported = exported_.count(name) != 0;
 		state.readonly = readonly_.count(name) != 0;
+		state.valueless = valueless_.count(name) != 0;
 		state.attributes = attributes == nullptr ? 0u : *attributes;
 		return state;
 	}
@@ -794,8 +936,10 @@ namespace wbsh {
 
 		setMembership(exported_, name, state.exported);
 		setMembership(readonly_, name, state.readonly);
+		setMembership(valueless_, name, state.valueless);
 		if (state.attributes == 0) attributes_.erase(name);
 		else attributes_[name] = state.attributes;
+		if (name == "POSIXLY_CORRECT") notePosixlyCorrect();
 	}
 
 	void Environment::setPositional(std::vector<std::string> args) {
@@ -803,8 +947,8 @@ namespace wbsh {
 	}
 
 	unsigned int Environment::randomNext() {
-		random_state_ = random_state_ * kRandomMultiplier + kRandomIncrement;
-		return (random_state_ / kRandomDivisor) % kRandomRange;
+		random_state_ = parkMillerNext(random_state_);
+		return ((random_state_ >> 16) ^ (random_state_ & 0xffffu)) & kRandomMask;
 	}
 
 	void Environment::reseedRandom() {
@@ -820,6 +964,7 @@ namespace wbsh {
 		const long long pid = static_cast<long long>(::getpid());
 #endif
 		bash_pid_ = ((++serial) << 32) | pid;
+		++subshell_level_;
 	}
 
 	template <typename Map>
@@ -853,6 +998,7 @@ namespace wbsh {
 		positional_   = snapshot.positional_;
 		last_bg_pid_  = snapshot.last_bg_pid_;
 		bash_pid_     = snapshot.bash_pid_;
+		subshell_level_ = snapshot.subshell_level_;
 		shell_name_   = snapshot.shell_name_;
 		options_      = snapshot.options_;
 		interactive_  = snapshot.interactive_;
@@ -936,5 +1082,30 @@ namespace wbsh {
 		}
 	}
 #endif /* _WIN32 */
+
+	static std::size_t closingQuote(const std::string& text, std::size_t open) {
+		const std::size_t close = text.find(text[open], open + 1);
+		return close == std::string::npos ? text.size() : close;
+	}
+
+	bool isAssocKeyReference(const Environment& env, const std::string& text) {
+		const std::size_t bracket = text.find('[');
+		if (!env.shopts().array_expand_once || bracket == std::string::npos) return false;
+		if (text.size() < bracket + 3 || text.back() != ']') return false;
+
+		return env.isAssocArray(text.substr(0, bracket));
+	}
+
+	std::size_t subscriptEnd(const std::string& text, std::size_t open, bool skips_quotes) {
+		int depth = 0;
+		for (std::size_t i = open; i < text.size(); ++i) {
+			const char c = text[i];
+			if (skips_quotes && (c == '\'' || c == '"')) i = closingQuote(text, i);
+			else if (c == '[') ++depth;
+			else if (c == ']' && --depth == 0) return i;
+		}
+
+		return std::string::npos;
+	}
 
 }  // namespace wbsh

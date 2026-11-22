@@ -1,0 +1,157 @@
+=== extdebug: a failing DEBUG trap skips the command
+x is 1
+=== FUNCNAME outside functions
+0
+f
+[]
+0 []
+sourced []
+sourced [source g main]
+=== export -f
+exported foo 1
+exported foo-a
+declare -fx foo
+declare -fx foo-a
+foo: command not found
+bash53_runtime.sh: line 38: export: a=b: cannot export
+status 1
+status 1
+warning: x: ignoring function definition attempt
+error importing function definition for `x'
+x: command not found
+after 127
+imported y
+y
+1
+=== fd variables
+vredir.sh: line 2: v: readonly variable
+vredir.sh: line 2: v: cannot assign fd to variable
+status 1
+to x
+vredir.sh: line 8: y: ambiguous redirect
+close status 1
+vredir.sh: line 10: $v: Bad file descriptor
+f is a function
+f () 
+{ 
+    exec {z}>&-;
+    exec 3>&- 1>&-
+}
+vredir.sh: line 15: $u: Bad file descriptor
+=== extglob and dot files
+.foo | .foo | !(bar).foo | bar | .a
+. .. .a .foo | .. .a
+.a .foo bar | . .. .a .foo bar
+!([*)* | +(a|b[)*
+literal group matched
+.a .foo bar
+=== xtrace prefix
++[3] echo a
+a
++[4] eval 'echo b'
+++[4] echo b
+b
+++[5] echo c
++[5] x=c
++[6] PS4=
+echo d
+d
+set +x
+[+ ]
+=== return in a trap action
+f 0
+g 0 stat 111
+=== declare -ft and the RETURN trap after source
+debug main 6
+debug main 7
+debug h 3
+debug h 4
+debug main 8
+h
+debug main 9
+return main 12
+=== "$*" joins with a multibyte IFS character
+ 141 303 251 142 012
+=== arithmetic: subscripts, constants, the conditional's false branch
+_run_tmp/bash53_runtime/arith.sh: line 2: a[]: bad array subscript
+_run_tmp/bash53_runtime/arith.sh: line 2: a[]: bad array subscript
+1 5 0 6 6
+2 7
+_run_tmp/bash53_runtime/arith.sh: line 4: 1 + "2" : arithmetic syntax error: operand expected (error token is ""2" ")
+4 6
+5 8
+_run_tmp/bash53_runtime/arith.sh: line 7: a[]: bad array subscript
+_run_tmp/bash53_runtime/arith.sh: line 7: a[]: bad array subscript
+6 0
+_run_tmp/bash53_runtime/arith.sh: line 8: 1 ? 20 : x+=2 : attempted assignment to non-variable (error token is "+=2 ")
+5 5 3
+_run_tmp/bash53_runtime/arith.sh: line 10: 2#: invalid integer constant (error token is "2#")
+31 8 4031 0
+_run_tmp/bash53_runtime/arith.sh: line 12: 08: value too great for base (error token is "08")
+abcdefg
+efg ef
+let 1 0 0 5
+let 2 0 7 5
+_run_tmp/bash53_runtime/arith.sh: line 17: let: jv += $iv: arithmetic syntax error: operand expected (error token is "$iv")
+let 3 1
+_run_tmp/bash53_runtime/arith.sh: line 18: ((: jv += $iv : arithmetic syntax error: operand expected (error token is "$iv ")
+dparen 1
+cond 1 0
+_run_tmp/bash53_runtime/arith.sh: line 20: [[: $i: arithmetic syntax error: operand expected (error token is "$i")
+cond 2 1
+_run_tmp/bash53_runtime/arith.sh: line 22: u: unbound variable
+1
+after b
+_run_tmp/bash53_runtime/arith.sh: line 24: h: unbound variable
+=== globstar: runs of **, duplicates after a pattern, links
+1: a a/a a/a/a a/f b b/a b/ab c
+2: a a/a a/a/a a/f b b/a b/ab c
+3: a/ a/a a/a/a a/f
+4: a a/a a/a/a a/f
+5: a/ a/a/ a/a/a/
+6: a/ a/a/ a/a/a/ b/ b/a/ c/
+7: a a/a a/a a/a/a a/a/a a/a/a a/f b/a
+8: a a/a a/a a/a/a a/a/a a/a/a a/f b/a
+9: b b/ab
+10: a a/a a/a/a b/a
+=== functions: FUNCNEST, odd names, printing, export listing
+funcs.sh: line 2: deep: maximum function nesting level exceeded (5)
+function a=2 () 
+{ 
+    echo eq
+}
+11111 () 
+{ 
+    echo digits
+}
+foo-bar () 
+{ 
+    echo dash
+}
+funcs.sh: line 9: `'a b c'': not a valid identifier
+funcs.sh: line 10: `<(:)': not a valid identifier
+f () 
+{ 
+    echo a 1>&2;
+    cat 0<&3;
+    echo b 1>&-;
+    echo c >&"$fd";
+    { 
+        echo x
+    } 1>&2
+}
+no exported functions
+dash
+bash: line 1: `sys$x': not a valid identifier
+posix status 2
+=== RANDOM follows bash's generator once seeded
+17772 26794 1435 24388
+20814
+17772 26794
+=== a file still open through a redirection can be removed
+removed
+gone
+read data
+g gone
+line 4: d: Is a directory
+status 1

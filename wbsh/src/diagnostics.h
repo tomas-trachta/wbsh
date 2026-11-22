@@ -44,15 +44,24 @@ namespace wbsh {
 
 	/// A syntax error the way bash reports it, one or two lines: the
 	/// message, then for an unexpected token the line of @p source it is on.
+	/// A @p message of two lines gets the prefix on each of them.
 	/// @p first_line is the number of the first line of @p source.
 	std::string syntaxErrorReport(const std::string& input, const std::string& source,
 	                              std::size_t first_line, std::size_t line,
 	                              const std::string& message);
 
+	/// A warning bash prints while it reads @p input, prefixed as a syntax
+	/// error at @p line is.
+	std::string syntaxWarningReport(const std::string& input, std::size_t line,
+	                                const std::string& message);
+
 	/// `NAME: line N: warning: MESSAGE` for @p line.
 	void shellWarningAt(std::size_t line, const std::string& message);
 
 	void shellError(const std::string& message);
+
+	/// `NAME: MESSAGE`, without the line, as bash's internal errors are.
+	void shellErrorWithoutLine(const std::string& message);
 
 	void shellErrorf(const char* format, ...);
 

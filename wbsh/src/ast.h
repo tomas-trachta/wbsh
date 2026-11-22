@@ -134,6 +134,10 @@ namespace wbsh {
 		Assignment assignment;
 		/// `name=(...)` as written; the builtin expands the items itself.
 		std::string compound_text;
+		/// `eval` and `let` get the text with each item expanded instead.
+		bool expands_items = false;
+		/// What follows the `)` with no blank between, as in `let a=(4*3)/2`.
+		Word trailing;
 	};
 
 	struct SimpleCommand : Node {
