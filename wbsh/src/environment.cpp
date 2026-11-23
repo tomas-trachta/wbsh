@@ -297,6 +297,33 @@ namespace wbsh {
 		return *current;
 	}
 
+	bool Environment::isCyclicRef(const std::string& name) const {
+		if (namerefs_.empty()) return false;
+
+		std::vector<std::string> followed;
+		std::string current = name;
+		for (int depth = 0; depth <= kMaxNamerefDepth; ++depth) {
+			const auto found = namerefs_.find(current);
+			if (found == namerefs_.end() || found->second.empty()) return false;
+			if (std::find(followed.begin(), followed.end(), current) != followed.end()) return true;
+
+			followed.push_back(current);
+			if (found->second.find('[') != std::string::npos) return false;
+
+			current = found->second;
+		}
+
+		return true;
+	}
+
+	// A local nameref to an element of itself, `local -n a='a[0]'`.
+	bool Environment::refersToOwnElement(const std::string& name) const {
+		const std::string& target = resolveRef(name);
+		const std::size_t bracket = target.find('[');
+		return bracket != std::string::npos && target.compare(0, bracket, name) == 0
+			&& isNameref(name);
+	}
+
 	std::string Environment::namerefTarget(const std::string& name) const {
 		const auto found = namerefs_.find(name);
 		return found == namerefs_.end() ? std::string() : found->second;
@@ -435,6 +462,23 @@ namespace wbsh {
 		return true;
 	}
 
+	bool Environment::rejectsArrayThroughElement(const std::string& name) const {
+		if (!isNameref(name)) return false;
+
+		const std::string& target = resolveRef(name);
+		if (target.find('[') == std::string::npos) return false;
+
+		const std::string prefix = assigning_command_.empty() ? "" : assigning_command_ + ": ";
+		shellErrorf("%s`%s': not a valid identifier\n", prefix.c_str(), target.c_str());
+		return true;
+	}
+
+	void Environment::dropNamerefAttribute(const std::string& name) {
+		if (namerefs_.erase(name) == 0) return;
+
+		shellErrorf("warning: %s: removing nameref attribute\n", name.c_str());
+	}
+
 	// An array made under the name of a nameref without a target replaces it.
 	void Environment::dropUnboundNameref(const std::string& name) {
 		const auto found = namerefs_.find(name);
@@ -451,7 +495,24 @@ namespace wbsh {
 			return;
 		}
 
+		if (isCyclicRef(name)) {
+			const bool global = cycle_assigner_ != nullptr && cycle_assigner_(cycle_context_, name, value);
+			if (!global) shellErrorf("warning: %s: circular name reference\n", name.c_str());
+			return;
+		}
+
+		if (refersToOwnElement(name) && local_query_ != nullptr && local_query_(cycle_context_, name)) {
+			shellErrorf("`%s': not a valid identifier\n", resolveRef(name).c_str());
+			return;
+		}
+
 		const std::string& target = resolveRef(name);
+		const auto chained = namerefs_.find(target);
+		if (chained != namerefs_.end() && chained->second.empty()) {
+			if (!rejectsRefValue(value)) chained->second = std::move(value);
+			return;
+		}
+
 		ElementRef element;
 		if (!splitElementRef(target, element)) {
 			setResolved(target, std::move(value));
@@ -459,6 +520,7 @@ namespace wbsh {
 		}
 
 		if (element.bad_index) return;
+		dropNamerefAttribute(element.base);
 		if (element.whole && !element.assoc) {
 			shellErrorf("%s: bad array subscript\n", target.c_str());
 			return;
@@ -803,6 +865,20 @@ namespace wbsh {
 		return found == attributes_.end() ? 0u : found->second;
 	}
 
+	std::string Environment::namerefLetters(const std::string& name) const {
+		const auto found = attributes_.find(name);
+		const unsigned attrs = found == attributes_.end() ? 0 : found->second;
+		std::string letters;
+		if ((attrs & kAttrInteger) != 0)   letters += 'i';
+		letters += 'n';
+		if (readonly_.count(name) != 0)    letters += 'r';
+		if (exported_.count(name) != 0)    letters += 'x';
+		if ((attrs & kAttrLowercase) != 0) letters += 'l';
+		if ((attrs & kAttrUppercase) != 0) letters += 'u';
+		if ((attrs & kAttrCapitalize) != 0) letters += 'c';
+		return letters;
+	}
+
 	std::string Environment::attributeLetters(const std::string& name) const {
 		const unsigned attrs = attributes(name);
 		std::string letters;
@@ -832,9 +908,23 @@ namespace wbsh {
 		return appendedTo(name, get(name), suffix);
 	}
 
+	// Through a nameref the integer attribute is the reference's own or
+	// that of the array whose element it names.
+	bool Environment::appendsAsInteger(const std::string& name) const {
+		if ((attributes(name) & kAttrInteger) != 0) return true;
+		if (!isNameref(name)) return false;
+
+		const auto own = attributes_.find(name);
+		if (own != attributes_.end() && (own->second & kAttrInteger) != 0) return true;
+
+		const std::string& target = resolveRef(name);
+		const auto base = attributes_.find(target.substr(0, target.find('[')));
+		return base != attributes_.end() && (base->second & kAttrInteger) != 0;
+	}
+
 	std::string Environment::appendedTo(const std::string& name, const std::string& current,
 			const std::string& suffix) const {
-		if ((attributes(name) & kAttrInteger) == 0) return current + suffix;
+		if (!appendsAsInteger(name)) return current + suffix;
 		if (current.empty()) return suffix;
 
 		return "(" + current + ")+(" + suffix + ")";

@@ -6,11 +6,11 @@ records how wbsh does on them. It is the strictest measure we have: a suite
 counts only if its whole output is **byte-identical**, error messages, line
 numbers and the shell's name included.
 
-**2026-11-22, local: 67/86 byte-identical, 12 env-only, 7 real failures,
+**2026-11-23, local: 68/86 byte-identical, 18 env-only, no real failures,
 no timeouts.** The first measurement, on 2026-11-13, was 11/86.
 
-- Shell: wbsh 1.1.3, `x64/Release/wbsh.exe` built 2026-11-22 from 02844ca
-  plus the `fix/bash-compat` work.
+- Shell: wbsh 1.1.3, `x64/Release/wbsh.exe` built 2026-11-23 from c9532f2
+  plus the rest of the `fix/bash-compat` work.
 - Reference: bash-5.3.tar.gz from ftp.gnu.org, SHA-256
   `0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba`.
 - Machine: Windows 10 22H2 (19045), Ryzen 7 5800H; 3 suites in parallel,
@@ -26,17 +26,19 @@ no timeouts.** The first measurement, on 2026-11-13, was 11/86.
 python -I tools/bashtests/run.py --shell x64/Release/wbsh.exe --fetch C:/cache/bash-src     --jobs 3 --timeout 150 --low-priority --json bashtests.json --diff-dir diffs
 ```
 
-## Identical (67)
+## Identical (68)
 
-`alias`, `appendop`, `arith`, `arith-for`, `array`, `array2`, `assoc`, `attr`, `braces`, `case`, `casemod`, `complete`, `comsub`, `comsub-eof`, `comsub-posix`, `comsub2`, `cond`, `cprint`, `dbg-support`, `dbg-support2`, `dollars`, `dynvar`, `errors`, `exp-tests`, `exportfunc`, `extglob2`, `extglob3`, `func`, `getopts`, `globstar`, `herestr`, `ifs`, `ifs-posix`, `input-test`, `intl`, `invert`, `iquote`, `jobs`, `lastpipe`, `mapfile`, `more-exp`, `nquote`, `nquote1`, `nquote2`, `nquote3`, `nquote4`, `nquote5`, `parser`, `posix2`, `posixexp`, `posixexp2`, `posixpat`, `posixpipe`, `precedence`, `printf`, `procsub`, `quote`, `quotearray`, `rhs-exp`, `set-e`, `set-x`, `shopt`, `strip`, `tilde2`, `trap`, `varenv`, `vredir`.
+`alias`, `appendop`, `arith`, `arith-for`, `array`, `array2`, `assoc`, `attr`, `braces`, `case`, `casemod`, `complete`, `comsub`, `comsub-eof`, `comsub-posix`, `comsub2`, `cond`, `cprint`, `dbg-support`, `dbg-support2`, `dollars`, `dynvar`, `errors`, `exp-tests`, `exportfunc`, `extglob2`, `extglob3`, `func`, `getopts`, `globstar`, `herestr`, `ifs`, `ifs-posix`, `input-test`, `intl`, `invert`, `iquote`, `jobs`, `lastpipe`, `mapfile`, `more-exp`, `nameref`, `nquote`, `nquote1`, `nquote2`, `nquote3`, `nquote4`, `nquote5`, `parser`, `posix2`, `posixexp`, `posixexp2`, `posixpat`, `posixpipe`, `precedence`, `printf`, `procsub`, `quote`, `quotearray`, `rhs-exp`, `set-e`, `set-x`, `shopt`, `strip`, `tilde2`, `trap`, `varenv`, `vredir`.
 
-## Env-only (12)
+## Env-only (18)
 
-Every changed line of these suites comes from the machine, not the shell:
-a Linux path that does not exist on Windows, a file name Windows rejects,
-or the test harness's closed stdin. Each rule in
+Every changed line of these suites is either the machine or one of
+wbsh's stated design choices, never a shell bug. Each rule in
 [`env_rules.json`](../tools/bashtests/env_rules.json) names what was read
 and what matches.
+
+From the machine: a Linux path that does not exist on Windows, a file name
+Windows rejects, or the test harness's closed stdin.
 
 | suite | rule | what differs |
 | --- | --- | --- |
@@ -45,7 +47,8 @@ and what matches.
 | `extglob` | `extglob-colon-filename` | `touch a:b` fails on Windows |
 | `glob-bracket` | `glob-bracket-needs-build-tree` | needs bash's build tree and a C compiler |
 | `glob-test` | `glob-windows-filesystem` | file names Windows rejects or folds |
-| `new-exp` | `new-exp-version-and-root` | `BASH_VERSION` is 5.2 by design; `cd /` reaches `/c/` |
+| `heredoc` | `bash-build-tree-files`, `host-grep-message`, `windows-reserved-filename` | bash's build tree, the host grep's wording, a file name Windows reserves |
+| `histexpand` | `histexpand-git-sh` | `/bin/sh` is Git's sh, which calls itself `/usr/bin/sh` |
 | `read` | `read-stdin-closed` | the timed reads see the harness's closed stdin |
 | `redir` | `redir-unix-files` | `/etc`, `/dev/tty` and Unix device files |
 | `rsh` | `rsh-no-bin-sh` | `cp /bin/sh .` has no `/bin/sh` to copy |
@@ -53,19 +56,25 @@ and what matches.
 | `tilde` | `tilde-no-usr` | `cd /usr` fails; `/tmp` maps to the temp directory |
 | `type` | `type-windows-commands` | `/bin/sh` and the built-in `cat` |
 
-## Real failures (7)
+From a design choice, each next to machine differences like the above:
 
-"Changed" is the number of added plus removed lines in the diff.
+| suite | rule | what differs |
+| --- | --- | --- |
+| `builtins` | `builtins-gpl-help-and-unix-dirs` | bash's `help` text is GPL and wbsh is MIT, so wbsh keeps its own; no `/bin`, the `ulimit -u` hard limit |
+| `execscript` | `execscript-no-exec-bit` | Windows files have no execute bit, so a script without one still runs; macOS signal order in `exec.right`, no `sh` on the PATH, the built-in `cat` |
+| `history` | `history-version-and-file-format` | `BASH_VERSION` is 5.2; `bash -i` writes wbsh's own history file, which keeps each entry's exit status |
+| `invocation` | `invocation-wbsh-startup-files` | a login shell reads only `~/.wbsh_*`, not `~/.bash_logout`; no `/usr/bin` |
+| `new-exp` | `new-exp-version-and-root` | `BASH_VERSION` is 5.2; `cd /` reaches `/c/` |
 
-| suite | changed | reason |
-| --- | ---: | --- |
-| `invocation` | 3 | `bash --login -c logout` should read `~/.bash_logout`; wbsh reads only its own `.wbsh_*` startup files (a design choice). `bash ls` finds no `/bin/ls` (env) |
-| `heredoc` | 18 | a here-document started inside `$( )` (heredoc7) should take its body from the lines after the command; the rest is Windows file names and bash's build tree (env) |
-| `execscript` | 31 | `exec ./x.sh` of a file without the execute bit runs it; bash fails with `Permission denied`, and the rest of exec3.sub is lost. Also `/bin/sh` and `/tmp/bash` do not exist (env) |
-| `nameref` | 237 | `declare -n` together with other attributes (`-nx`, `-nr`, `-ai`), circular references inside functions falling back to the global variable, `r=/ f` on an unset nameref |
-| `histexpand` | 257 | history expansion (`set -H`, `!!`) in non-interactive shells: wbsh parses a script before it runs it, bash reads it line by line |
-| `builtins` | 282 | mostly builtins10.sub, which compares bash's own `help` text; that text is GPL and wbsh is MIT, so wbsh keeps its own `help`. The rest: `/bin`, `/tmp` paths and the `ulimit -u` hard limit (env) |
-| `history` | 452 | a script does not record its commands with `set -o history`; `history -d/-n/-p` and file arguments, `fc` ranges |
+## Real failures (0)
+
+None. The last ones fixed, from 2026-11-22: `declare -n` with other
+attributes and circular references (`nameref`); a here-document opened
+inside `$( )` (`heredoc`); history recorded and expanded line by line in
+scripts, `fc` ranges, history files with timestamps and `bash -i` reading
+a pipe (`history`, `histexpand`); `set -e` ignored by pipeline elements
+and coprocs under `!`, and the EXIT trap after `set -e` running with the
+function's redirections undone (`execscript`).
 
 ## Shell bugs found
 

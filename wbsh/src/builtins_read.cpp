@@ -557,6 +557,7 @@ namespace wbsh::read_detail {
 	}
 
 	static int assignArray(Environment& env, const Options& opts, const Input& input) {
+		if (env.rejectsArrayThroughElement(opts.array_name)) return 1;
 		if (env.isReadonly(opts.array_name)) {
 			shellErrorf("%s: readonly variable\n", opts.array_name.c_str());
 			return 1;

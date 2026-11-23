@@ -164,6 +164,7 @@ namespace wbsh {
 		void setPrompt(const std::string& prompt);
 		LineStatus readLineRaw(const std::string& prompt, std::string& out);
 		LineStatus readLineCooked(std::string& out);
+		LineStatus readLinePiped(const std::string& prompt, std::string& out);
 		LineStatus lineStatus() const;
 		std::string describeReplay(bool finished) const;
 
@@ -188,6 +189,7 @@ namespace wbsh {
 		void revsearchEraseQueryChar(SearchState& search);
 		void revsearchExtendQuery(SearchState& search, const std::string& text);
 		void revsearchShowMatch(const SearchState& search);
+		void settleOnMatch(const SearchState& search);
 		void revsearchMoveTo(SearchState& search, bool found, const SearchHit& hit);
 		void endReverseSearch(const SearchState& search);
 #endif
@@ -324,6 +326,7 @@ namespace wbsh {
 		void copyToKillRing(const std::string& text);
 		void overwriteChars(const std::string& text);
 		void loadOperateNext();
+		std::size_t operateNextIndex() const;
 
 		// lineedit_vi.cpp: vi's insert and command modes.
 		void emacsEditingMode();
@@ -538,6 +541,7 @@ namespace wbsh {
 		Environment& env_;
 		Executor& exec_;
 		bool headless_ = false;
+		bool piped_ = false;       // headless, with the keys read from a pipe
 		std::size_t forced_columns_ = 0;
 		std::size_t forced_rows_ = 0;
 		bool capture_output_ = false;

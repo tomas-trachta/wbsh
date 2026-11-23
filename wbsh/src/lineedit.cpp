@@ -28,6 +28,7 @@
 
 #include "consolekeys.h"
 #include "numparse.h"
+#include "pathconv.h"
 #include "strscan.h"
 #include "termreq.h"
 #include "textcells.h"
@@ -291,11 +292,13 @@ namespace wbsh {
 
 #ifdef _WIN32
 		if (stdinIsTty()) return readLineRaw(prompt, out);
-#endif /* _WIN32 */
 
+		return readLinePiped(prompt, out);
+#else
 		std::fputs(prompt_detail::withoutMarks(prompt).c_str(), stdout);
 		std::fflush(stdout);
 		return readLineCooked(out);
+#endif /* _WIN32 */
 	}
 
 	void LineEditor::resetLine(const std::string& prompt) {
@@ -1044,10 +1047,21 @@ namespace wbsh {
 			cursor_ = revsearch_origin_.cursor;
 		}
 
+		if (!search.cancel) settleOnMatch(search);
 		revsearch_active_ = false;
 		redraw();
 		if (interrupted_) interrupt();
 		if (search.submit) acceptLine();
+	}
+
+	// As readline, the history position is the entry the search found, so
+	// C-p, C-n and operate-and-get-next go on from there.
+	void LineEditor::settleOnMatch(const SearchState& search) {
+		const auto& history = exec_.history();
+		if (search.match >= history.size()) return;
+
+		if (history_pos_ == 0) saved_partial_ = revsearch_origin_.buffer;
+		history_pos_ = history.size() - search.match;
 	}
 
 	static DWORD enterRawInputMode(HANDLE input) {
@@ -1277,6 +1291,75 @@ namespace wbsh {
 
 	// Key-ups only matter for Alt-code input; a resize lays the line out
 	// again, and other events are passed over.
+	namespace pipe_detail {
+
+		static INPUT_RECORD keyPress(WORD vk, WCHAR ch, DWORD modifiers) {
+			INPUT_RECORD record{};
+			record.EventType = KEY_EVENT;
+			KEY_EVENT_RECORD& key = record.Event.KeyEvent;
+			key.bKeyDown = TRUE;
+			key.wRepeatCount = 1;
+			key.wVirtualKeyCode = vk;
+			key.uChar.UnicodeChar = ch;
+			key.dwControlKeyState = modifiers;
+			return record;
+		}
+
+		static std::size_t sequenceLength(unsigned char lead) {
+			if (lead >= 0xF0) return 4;
+			if (lead >= 0xE0) return 3;
+			if (lead >= 0xC0) return 2;
+
+			return 1;
+		}
+
+		// A UTF-8 character from its first byte on, as the UTF-16 units the
+		// console delivers for it.
+		static void queueCharacter(int lead, std::deque<INPUT_RECORD>& queue) {
+			std::string bytes(1, static_cast<char>(lead));
+			const std::size_t length = sequenceLength(static_cast<unsigned char>(lead));
+			while (bytes.size() < length) {
+				const int next = std::fgetc(stdin);
+				if (next == EOF) break;
+
+				bytes.push_back(static_cast<char>(next));
+			}
+
+			for (const wchar_t unit : utf8ToWide(bytes)) queue.push_back(keyPress(0, unit, 0));
+		}
+
+		// A control character as the console reports its Ctrl chord.
+		static INPUT_RECORD controlKey(int byte) {
+			if (byte == '\b') return keyPress(VK_BACK, L'\b', 0);
+			if (byte == '\t') return keyPress(VK_TAB, L'\t', 0);
+			if (byte == 0x1B) return keyPress(VK_ESCAPE, 0x1B, 0);
+			if (byte >= 1 && byte <= 26) {
+				const WORD letter = static_cast<WORD>('A' + byte - 1);
+				return keyPress(letter, static_cast<WCHAR>(byte), LEFT_CTRL_PRESSED);
+			}
+
+			return keyPress(0, static_cast<WCHAR>(byte), LEFT_CTRL_PRESSED);
+		}
+
+		// The next byte of a pipe as the key that types it, as readline reads
+		// its input a byte at a time: a newline is Enter.
+		static void queueStdinKey(std::deque<INPUT_RECORD>& queue) {
+			const int byte = std::fgetc(stdin);
+			if (byte == EOF) return;
+
+			if (byte == '\n' || byte == '\r') {
+				queue.push_back(keyPress(VK_RETURN, L'\r', 0));
+			} else if (byte >= 0x80) {
+				queueCharacter(byte, queue);
+			} else if (byte < 0x20) {
+				queue.push_back(controlKey(byte));
+			} else {
+				queue.push_back(keyPress(0, static_cast<WCHAR>(byte), 0));
+			}
+		}
+
+	}  // namespace pipe_detail
+
 	bool LineEditor::nextKeyDown(KEY_EVENT_RECORD& key) {
 		INPUT_RECORD record;
 		while (nextInputRecord(record)) {
@@ -1305,6 +1388,7 @@ namespace wbsh {
 	}
 
 	bool LineEditor::takeReplayRecord(INPUT_RECORD& record) {
+		if (replay_keys_.empty() && piped_) pipe_detail::queueStdinKey(replay_keys_);
 		if (replay_keys_.empty()) return false;
 
 		record = replay_keys_.front();
@@ -1359,6 +1443,30 @@ namespace wbsh {
 
 		out = accepted_;
 		return lineStatus();
+	}
+
+	// As readline on a pipe: the bytes are keys for the editor, which shows
+	// nothing, and the prompt with the line it ends with goes to stderr.
+	// A last line without its newline still runs.
+	LineStatus LineEditor::readLinePiped(const std::string& prompt, std::string& out) {
+		headless_ = true;
+		piped_ = true;
+		editUntilDone();
+		headless_ = false;
+		piped_ = false;
+
+		if (eof_ && accepted_.empty() && !buffer_.empty()) {
+			accepted_ = buffer_;
+			eof_ = false;
+		}
+
+		out = accepted_;
+		const LineStatus status = lineStatus();
+		std::string echo = prompt_detail::withoutMarks(prompt);
+		if (status == LineStatus::kLine) echo += out + "\n";
+		std::fputs(echo.c_str(), stderr);
+		std::fflush(stderr);
+		return status;
 	}
 
 	namespace replay_detail {
@@ -1568,9 +1676,8 @@ namespace wbsh {
 
 		std::string report = describeReplay(finished);
 		if (options.columns != 0 && !finished) report += " " + describeCursorCell();
-		if (operate_next_ < exec_.history().size()) {
-			report += " then [" + exec_.history()[operate_next_] + "]";
-		}
+		const std::size_t next = operateNextIndex();
+		if (next < exec_.history().size()) report += " then [" + exec_.history()[next] + "]";
 
 		if (options.show_output) report += "\n" + spelledOut(captured_output_);
 

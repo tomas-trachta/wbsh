@@ -477,6 +477,7 @@ static int runShell(int argc, char** argv) {
 		invocation.action = InvocationAction::RunInteractive;
 	}
 
+	invocation.startup.forced_interactive = invocation.interactive;
 	switch (invocation.action) {
 	case InvocationAction::PrintHelp:
 		printHelp();

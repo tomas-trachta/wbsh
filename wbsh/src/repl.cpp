@@ -560,7 +560,8 @@ namespace wbsh {
 
 		const char quote = state.waiting_for_more ? openQuoteOf(state.buffer) : '\0';
 		const HistoryExpansion expansion =
-			expandHistoryLine(line, exec.history(), quote, state.last_substitution);
+			expandHistoryLine(line, exec.history(), quote, state.last_substitution,
+				exec.env().options().posix);
 		switch (expansion.kind) {
 		case HistoryExpansion::Kind::kExpanded:
 			showExpandedLine(expansion.text);
@@ -705,8 +706,11 @@ namespace wbsh {
 		exec.setLastStatus(kSigintStatus);
 	}
 
+	// As bash, a shell reading a pipe says `exit`; at the console the line
+	// just ends.
 	static int exitOnEof(Executor& exec) {
-		std::fputc('\n', stdout);
+		if (stdinIsTty()) std::fputc('\n', stdout);
+		else std::fputs("exit\n", stderr);
 		const int status = exec.fireExitTrap(exec.lastStatus());
 		finishHistory(exec);
 		return status;
@@ -728,6 +732,13 @@ namespace wbsh {
 		const std::string command = state.buffer;
 		parseAndMaybeExecute(exec, state);
 		if (!state.waiting_for_more) reportCommandEnd(exec, state, command);
+	}
+
+	// The banner greets a person at the console; `-i` given keeps `-n`,
+	// as in bash.
+	static void adaptToInput(Executor& exec, const ReplState& state, const ShellStartup& startup) {
+		if (stdinIsTty()) printBanner(state);
+		if (startup.forced_interactive) exec.keepNoexec();
 	}
 
 	// Unlike bash, a login shell reads .wbshrc after the profile, so
@@ -752,7 +763,7 @@ namespace wbsh {
 		initConsoleAndSignals(state);
 		initShellDefaults(env, state);
 		noteCommandLineWanted(env, state);
-		printBanner(state);
+		adaptToInput(exec, state, startup);
 		initHistoryVariables(env);
 
 		readStartupFiles(exec, startup);

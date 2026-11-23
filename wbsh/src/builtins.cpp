@@ -34,6 +34,7 @@
 #include "diagnostics.h"
 #include "executor.h"
 #include "fifo.h"
+#include "history.h"
 #include "funcprint.h"
 #include "exitstatus.h"
 #include "interrupt.h"
@@ -1616,11 +1617,24 @@ namespace wbsh {
 		return 0;
 	}
 
+	static std::string historyFilePath(Executor& exec);
+
+	// As bash, turning history on in a shell that has no history yet reads
+	// $HISTFILE in.
+	static void loadSessionHistory(Executor& exec) {
+		if (!exec.history().empty() || exec.env().interactive()) return;
+
+		const std::string named = exec.env().get("HISTFILE");
+		if (!named.empty()) exec.loadHistoryFromFile(exec.pathConv().toWin32(named));
+	}
+
 	static int builtin_set(Executor& exec, const std::vector<std::string>& args) {
 		if (args.empty()) return listShellVariables(exec);
 
 		SetOperands operands;
+		const bool had_history = exec.env().options().history;
 		const int status = parseSetFlags(exec, args, operands);
+		if (!had_history && exec.env().options().history) loadSessionHistory(exec);
 		if (status != 0) return status;
 
 		if (operands.replace_positional) {
@@ -2902,6 +2916,8 @@ namespace wbsh {
 		std::vector<std::string> lines = readMapfileInput(options, opened);
 		if (!opened) return 1;
 
+		if (exec.env().rejectsArrayThroughElement(options.array_name)) return 1;
+
 		exec.env().dropUnboundNameref(options.array_name);
 		if (!options.has_origin) exec.env().setIndexedArraySparse(options.array_name, {});
 		storeMapfileLines(exec, options, lines);
@@ -3708,52 +3724,234 @@ namespace wbsh {
 		return exec.pathConv().toWin32(path);
 	}
 
-	static int writeHistoryFile(Executor& exec) {
-		const std::string path = historyFilePath(exec);
-		if (path.empty() || !exec.writeHistory(path)) {
-			printerr("history: cannot write history file");
+	namespace history_detail {
+
+		struct Request {
+			bool append = false;
+			bool clear = false;
+			bool read = false;
+			bool write = false;
+			bool new_lines = false;
+			bool print = false;
+			bool store = false;
+			bool remove = false;
+			std::string remove_spec;
+			std::vector<std::string> operands;
+		};
+
+		static const char* const kUsage = "history: usage: history [-c] [-d offset] [n] or "
+			"history -anrw [filename] or history -ps arg [arg...]";
+
+		static bool reportUsage(const std::string& message) {
+			printerr("history: " + message);
+			printUsage(kUsage);
+			return false;
+		}
+
+		// `-d` takes the rest of its word or the next word as the offset.
+		static bool takeRemoveSpec(const std::vector<std::string>& args, std::size_t& i,
+				std::size_t k, Request& request) {
+			request.remove = true;
+			if (k + 1 < args[i].size()) {
+				request.remove_spec = args[i].substr(k + 1);
+				return true;
+			}
+
+			if (i + 1 >= args.size()) return reportUsage("-d: option requires an argument");
+
+			request.remove_spec = args[++i];
+			return true;
+		}
+
+		// False when the letter ends the word, as `-d` does.
+		static bool applyLetter(char letter, Request& request) {
+			switch (letter) {
+				case 'a': request.append = true;    return true;
+				case 'c': request.clear = true;     return true;
+				case 'n': request.new_lines = true; return true;
+				case 'r': request.read = true;      return true;
+				case 'w': request.write = true;     return true;
+				case 's': request.store = true;     return true;
+				case 'p': request.print = true;     return true;
+				default:  return false;
+			}
+		}
+
+		static bool parseWord(const std::vector<std::string>& args, std::size_t& i, Request& request) {
+			const std::string& word = args[i];
+			for (std::size_t k = 1; k < word.size(); ++k) {
+				if (word[k] == 'd') return takeRemoveSpec(args, i, k, request);
+				if (!applyLetter(word[k], request)) {
+					return reportUsage(std::string("-") + word[k] + ": invalid option");
+				}
+			}
+
+			return true;
+		}
+
+		static bool parse(const std::vector<std::string>& args, Request& request) {
+			std::size_t i = 0;
+			for (; i < args.size() && args[i].size() > 1 && args[i][0] == '-'; ++i) {
+				if (args[i] == "--") {
+					++i;
+					break;
+				}
+
+				if (!parseWord(args, i, request)) return false;
+			}
+
+			request.operands.assign(args.begin() + static_cast<std::ptrdiff_t>(i), args.end());
+			return true;
+		}
+
+		static int fileOptionCount(const Request& request) {
+			return static_cast<int>(request.append) + static_cast<int>(request.read)
+				+ static_cast<int>(request.write) + static_cast<int>(request.new_lines);
+		}
+
+		static bool parseNumber(const std::string& text, long long& value) {
+			std::size_t used = 0;
+			return !text.empty() && parseLL(text, value, 10, &used) && used == text.size();
+		}
+
+		static int reportOutOfRange(const std::string& text) {
+			printerr("history: " + text + ": history position out of range");
 			return 1;
 		}
 
-		return 0;
-	}
+		// A position as `history` shows it, or counted back from the newest
+		// entry when negative; -1 when outside the list.
+		static long long entryIndex(long long value, bool negative, std::size_t length,
+				std::size_t base) {
+			long long index = value;
+			if (negative && value < 0) index += static_cast<long long>(length);
+			else if (value > 0) index -= static_cast<long long>(base);
 
-	static int appendHistoryFileEntries(Executor& exec) {
-		const std::string path = historyFilePath(exec);
-		if (path.empty() || !exec.appendNewHistory(path)) {
-			printerr("history: cannot append to history file");
-			return 1;
+			return index < 0 || index >= static_cast<long long>(length) ? -1 : index;
 		}
 
-		return 0;
-	}
+		// `-d start-end`; either end may count back with a minus sign.
+		static int deleteRange(Executor& exec, const std::string& spec, std::size_t dash) {
+			const std::string first_text = spec.substr(0, dash);
+			const std::string last_text = spec.substr(dash + 1);
+			long long first = 0;
+			long long last = 0;
+			if (!parseNumber(first_text, first) || !parseNumber(last_text, last)) {
+				return reportOutOfRange(spec);
+			}
 
-	static int readHistoryFile(Executor& exec) {
-		const std::string path = historyFilePath(exec);
-		if (path.empty() || !exec.loadHistoryFromFile(path)) {
-			printerr("history: cannot read history file");
-			return 1;
+			const std::size_t length = exec.history().size();
+			const long long from = entryIndex(first, first_text[0] == '-', length, exec.historyBase());
+			if (from < 0) return reportOutOfRange(first_text);
+
+			const long long to = entryIndex(last, last_text[0] == '-', length, exec.historyBase());
+			if (to < 0) return reportOutOfRange(last_text);
+
+			exec.deleteHistoryEntries(static_cast<std::size_t>(from), static_cast<std::size_t>(to));
+			return 0;
 		}
 
-		return 0;
-	}
+		static int deleteEntry(Executor& exec, const std::string& spec) {
+			long long value = 0;
+			if (!parseNumber(spec, value)) {
+				printerr("history: " + spec + ": invalid number");
+				return 1;
+			}
 
-	static int appendHistoryEntry(Executor& exec, const std::vector<std::string>& args) {
-		if (args.size() < 2) return 0;
+			const std::size_t length = exec.history().size();
+			const std::size_t base = exec.historyBase();
+			const bool back = spec[0] == '-' && value < 0;
+			const long long highest = static_cast<long long>(base + length);
+			if (!back && (value < static_cast<long long>(base) || value >= highest)) {
+				return reportOutOfRange(spec);
+			}
 
-		exec.addHistoryEntry(joinWithSpaces(args.begin() + 1, args.end()));
-		return 0;
-	}
+			const long long index = back ? static_cast<long long>(length) + value
+				: value - static_cast<long long>(base);
+			if (index < 0) return reportOutOfRange(spec);
+
+			exec.deleteHistoryEntries(static_cast<std::size_t>(index), static_cast<std::size_t>(index));
+			return 0;
+		}
+
+		static int deletePosition(Executor& exec, const std::string& spec) {
+			const std::size_t dash = spec.find('-', !spec.empty() && spec[0] == '-' ? 1 : 0);
+			if (dash != std::string::npos) return deleteRange(exec, spec, dash);
+
+			return deleteEntry(exec, spec);
+		}
+
+		// `history -s` puts its words in place of its own entry, through
+		// HISTCONTROL and HISTIGNORE.
+		static int storeEntry(Executor& exec, const std::vector<std::string>& words) {
+			if (words.empty()) return 0;
+
+			exec.dropCurrentHistoryEntry();
+			const std::string entry = joinWithSpaces(words.begin(), words.end());
+			const Environment& env = exec.env();
+			const HistoryFilter filter = { env.get("HISTCONTROL"), env.get("HISTIGNORE") };
+			const auto& history = exec.history();
+			if (historyAccepts(filter, entry, history.empty() ? std::string() : history.back())) {
+				exec.addHistoryEntry(entry);
+			}
+
+			return 0;
+		}
+
+		static int printExpanded(Executor& exec, const std::vector<std::string>& words) {
+			exec.dropCurrentHistoryEntry();
+			int status = 0;
+			HistorySubstitution last;
+			for (const std::string& word : words) {
+				const HistoryExpansion expansion = expandHistoryLine(word, exec.history(), '\0', last);
+				if (expansion.kind == HistoryExpansion::Kind::kFailed) {
+					printerr("history: " + word + ": history expansion failed");
+					status = 1;
+					continue;
+				}
+
+				const bool same = expansion.kind == HistoryExpansion::Kind::kUnchanged;
+				std::printf("%s\n", same ? word.c_str() : expansion.text.c_str());
+			}
+
+			std::fflush(stdout);
+			return status;
+		}
+
+		static std::string fileFor(Executor& exec, const Request& request) {
+			if (request.operands.empty()) return historyFilePath(exec);
+
+			return exec.pathConv().toWin32(request.operands.front());
+		}
+
+		// bash reports no read errors of the history file, only the status.
+		static int useFile(Executor& exec, const Request& request) {
+			const std::string path = fileFor(exec, request);
+			if (path.empty()) {
+				printerr("history: HISTFILE: parameter null or not set");
+				return 1;
+			}
+
+			bool ok = true;
+			if (request.append) ok = exec.appendNewHistory(path);
+			else if (request.write) ok = exec.writeHistory(path);
+			else ok = exec.loadHistoryFromFile(path);
+
+			if (!ok && request.write) printerr("history: cannot write history file");
+			return ok ? 0 : 1;
+		}
+
+	}  // namespace history_detail
 
 	static std::size_t historyStartIndex(const std::vector<std::string>& args, std::size_t total) {
-		long count = -1;
+		long long count = -1;
 		if (!args.empty()) {
 			bool ok = false;
 			const long long value = toIntSafe(args[0], ok);
-			if (ok) count = static_cast<long>(value);
+			if (ok) count = value < 0 ? -value : value;
 		}
 
-		if (count > 0 && static_cast<std::size_t>(count) < total) {
+		if (count >= 0 && static_cast<std::size_t>(count) < total) {
 			return total - static_cast<std::size_t>(count);
 		}
 
@@ -3804,26 +4002,33 @@ namespace wbsh {
 		const std::size_t start = historyStartIndex(args, history.size());
 		for (std::size_t i = start; i < history.size(); ++i) {
 			const std::string stamp = historyTimeText(exec, i);
-			std::printf("%5zu  %s%s\n", i + 1, stamp.c_str(), history[i].c_str());
+			std::printf("%5zu  %s%s\n", i + exec.historyBase(), stamp.c_str(), history[i].c_str());
 		}
 
 		return 0;
 	}
 
 	static int builtin_history(Executor& exec, const std::vector<std::string>& args) {
-		if (!args.empty()) {
-			if (args[0] == "-c") {
-				exec.clearHistory();
-				return 0;
-			}
+		history_detail::Request request;
+		if (!history_detail::parse(args, request)) return 2;
 
-			if (args[0] == "-w") return writeHistoryFile(exec);
-			if (args[0] == "-a") return appendHistoryFileEntries(exec);
-			if (args[0] == "-r") return readHistoryFile(exec);
-			if (args[0] == "-s") return appendHistoryEntry(exec, args);
+		const int files = history_detail::fileOptionCount(request);
+		if (files > 1) {
+			printerr("history: cannot use more than one of -anrw");
+			return 1;
 		}
 
-		return printHistory(exec, args);
+		if (request.clear) {
+			exec.clearHistory();
+			if (request.operands.empty()) return 0;
+		}
+
+		if (request.store) return history_detail::storeEntry(exec, request.operands);
+		if (request.print) return history_detail::printExpanded(exec, request.operands);
+		if (request.remove) return history_detail::deletePosition(exec, request.remove_spec);
+		if (files == 0 && !request.clear) return printHistory(exec, request.operands);
+
+		return history_detail::useFile(exec, request);
 	}
 
 	namespace revsearch_detail {

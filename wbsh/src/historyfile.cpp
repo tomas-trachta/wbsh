@@ -116,11 +116,95 @@ namespace wbsh {
 			return text;
 		}
 
+		// bash's own format: each command as typed, after its `#<seconds>`
+		// line when times are kept.
+		static std::string formatBashEntries(const HistoryList& list, std::size_t first,
+		                                     bool with_times) {
+			std::string text;
+			for (std::size_t i = first; i < list.commands.size(); ++i) {
+				const long long time = i < list.times.size() ? list.times[i] : 0;
+				if (with_times && time > 0) text += "#" + std::to_string(time) + '\n';
+				text += list.commands[i] + '\n';
+			}
+
+			return text;
+		}
+
 		static bool timeLine(const std::string& line, long long& time) {
 			if (line.size() < 2 || line[0] != '#') return false;
 			if (std::isdigit(static_cast<unsigned char>(line[1])) == 0) return false;
 
 			return parseLL(line.substr(1), time);
+		}
+
+		static void addEntry(HistoryList& list, std::string command, int status, long long time) {
+			list.commands.push_back(std::move(command));
+			list.statuses.push_back(status);
+			list.times.push_back(time);
+		}
+
+		static void readWbshLines(std::istream& file, Format format, HistoryList& list) {
+			std::string line;
+			long long time = 0;
+			while (std::getline(file, line)) {
+				stripLineEnding(line);
+				int status = 0;
+				std::string command;
+				if (line.empty() || timeLine(line, time)) continue;
+				if (!parseLine(line, format, status, command)) continue;
+
+				addEntry(list, std::move(command), status, time);
+				time = 0;
+			}
+		}
+
+		// readline's reading of a bash history file: `#<digits>` lines are
+		// times only when the file starts with one, and with times written
+		// (HISTTIMEFORMAT set) the lines up to the next time are one entry.
+		struct BashReader {
+			HistoryList& list;
+			bool timestamps;
+			bool multiline;
+			bool skip_blanks;
+			bool after_time = false;
+			long long time = 0;
+		};
+
+		static void takeBashLine(BashReader& reader, const std::string& line) {
+			long long time = 0;
+			if (reader.timestamps && timeLine(line, time)) {
+				reader.time = time;
+				reader.after_time = true;
+				reader.skip_blanks = true;
+				return;
+			}
+
+			if (line.empty() && reader.skip_blanks) return;
+
+			reader.skip_blanks = !reader.multiline;
+			if (!reader.after_time && reader.multiline && !reader.list.commands.empty()) {
+				reader.list.commands.back() += "\n" + line;
+				return;
+			}
+
+			addEntry(reader.list, line, 0, reader.time);
+			reader.time = 0;
+			reader.after_time = false;
+		}
+
+		static void readBashLines(std::istream& file, const std::string& first, HistoryList& list,
+				bool multiline) {
+			long long time = 0;
+			const bool timestamps = timeLine(first, time);
+			const bool joins = multiline && timestamps;
+			BashReader reader{ list, timestamps, joins, !joins };
+			takeBashLine(reader, first);
+
+			std::string line;
+			while (std::getline(file, line)) {
+				stripLineEnding(line);
+				takeBashLine(reader, line);
+			}
 		}
 
 		static Format formatOfFile(const std::string& path) {
@@ -266,31 +350,19 @@ namespace wbsh {
 
 	}  // namespace histfile_detail
 
-	bool readHistoryFile(const std::string& path, HistoryList& list) {
+	bool readHistoryFile(const std::string& path, HistoryList& list, bool multiline) {
 		std::ifstream file(utf8ToPath(path), std::ios::binary);
 		if (!file) return false;
 
-		std::string line;
-		bool first = true;
-		long long time = 0;
-		histfile_detail::Format format = histfile_detail::Format::kLegacy;
-		while (std::getline(file, line)) {
-			histfile_detail::stripLineEnding(line);
-			if (first) {
-				first = false;
-				format = histfile_detail::formatOf(line);
-				if (format != histfile_detail::Format::kLegacy) continue;
-			}
+		std::string first;
+		if (!std::getline(file, first)) return true;
 
-			int status = 0;
-			std::string command;
-			if (line.empty() || histfile_detail::timeLine(line, time)) continue;
-			if (!histfile_detail::parseLine(line, format, status, command)) continue;
-
-			list.commands.push_back(std::move(command));
-			list.statuses.push_back(status);
-			list.times.push_back(time);
-			time = 0;
+		histfile_detail::stripLineEnding(first);
+		const histfile_detail::Format format = histfile_detail::formatOf(first);
+		if (format == histfile_detail::Format::kLegacy) {
+			histfile_detail::readBashLines(file, first, list, multiline);
+		} else {
+			histfile_detail::readWbshLines(file, format, list);
 		}
 
 		return true;
@@ -330,12 +402,35 @@ namespace wbsh {
 		return histfile_detail::appendText(path, text);
 	}
 
+	bool writeBashHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
+	                          bool with_times) {
+		return histfile_detail::replaceFile(path,
+			histfile_detail::formatBashEntries(list, first, with_times));
+	}
+
+	// A file in wbsh's format keeps it; anything else gets bash's lines.
+	bool appendBashHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
+	                           bool with_times) {
+		if (first >= list.commands.size()) return true;
+		if (histfile_detail::formatOfFile(path) == histfile_detail::Format::kV3) {
+			return appendHistoryFile(path, list, first, with_times);
+		}
+
+		return histfile_detail::appendText(path,
+			histfile_detail::formatBashEntries(list, first, with_times));
+	}
+
 	bool trimHistoryFile(const std::string& path, std::size_t keep) {
 		HistoryList list;
 		if (!readHistoryFile(path, list)) return false;
 		if (list.commands.size() <= keep) return true;
 
-		return writeHistoryFile(path, list, list.commands.size() - keep, historyHasTimes(list));
+		const std::size_t first = list.commands.size() - keep;
+		if (histfile_detail::formatOfFile(path) == histfile_detail::Format::kLegacy) {
+			return writeBashHistoryFile(path, list, first, historyHasTimes(list));
+		}
+
+		return writeHistoryFile(path, list, first, historyHasTimes(list));
 	}
 
 	long long historyLimit(const std::string& value) {

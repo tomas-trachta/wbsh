@@ -2395,6 +2395,16 @@ namespace wbsh {
 
 		std::string dynamic;
 		if (lookupDynamicSpecial(name, dynamic)) return dynamic;
+		if (env_.isNameref(name) && env_.isCyclicRef(name)) {
+			shellErrorf("warning: %s: circular name reference\n", name.c_str());
+			std::string global;
+			env_.readThroughCycle(name, global);
+			return global;
+		}
+
+		// Only set -u needs to know whether it is set; a nameref's subscript
+		// is evaluated once either way.
+		if (!env_.nounset() || suppress_nounset) return env_.get(name);
 
 		const bool unbound = !env_.has(name) || lacksElementZero(name);
 		if (!unbound) return env_.get(name);
@@ -4171,7 +4181,19 @@ namespace wbsh {
 		if (quoted_null) pushQuotedNull(out);
 	}
 
+	// A nameref to `a[@]` or `a[*]` expands as that array does.
+	bool Expander::renderWholeArrayRef(const std::string& name, Tagged& out, bool inside_dq) {
+		WordSegment as_array;
+		as_array.kind = WordSegment::Kind::ParamExp;
+		as_array.text = env_.resolveRef(name);
+		return renderParamExpSegment(as_array, out, inside_dq);
+	}
+
 	bool Expander::renderParamExpSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
+		if (isPlainName(s.text) && refersToWholeArray(s.text)) {
+			return renderWholeArrayRef(s.text, out, inside_dq);
+		}
+
 		std::string prefix;
 		bool star = false;
 		if (parsePrefixNamesForm(s.text, prefix, star)) {
@@ -4466,6 +4488,15 @@ namespace wbsh {
 		out.had_quote = true;
 	}
 
+	// bash warns as it reads the command that the substitution left a
+	// here-document open, whose body then came from the lines after it.
+	static void warnCarriedHeredocs(const WordSegment& s) {
+		if (s.carried_heredocs == 0) return;
+
+		shellErrorf("warning: command substitution: %zu unterminated here-document%s\n",
+			s.carried_heredocs, s.carried_heredocs == 1 ? "" : "s");
+	}
+
 	bool Expander::renderSegment(const WordSegment& s, Tagged& out, bool inside_dq) {
 		using K = WordSegment::Kind;
 		const std::uint8_t mark = inside_dq ? F_QUOTED : 0;
@@ -4499,11 +4530,14 @@ namespace wbsh {
 				break;
 			}
 
+			if (refersToWholeArray(s.text)) return renderWholeArrayRef(s.text, out, inside_dq);
+
 			pushText(out, lookupParam(s.text), mark);
 			break;
 		case K::ParamExp:
 			return renderParamExpSegment(s, out, inside_dq);
 		case K::CmdSubst: {
+			warnCarriedHeredocs(s);
 			std::string output = runCmdSubst(s.text);
 			stripTrailingNewlines(output);
 			pushText(out, output, mark);

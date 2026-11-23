@@ -440,16 +440,27 @@ namespace wbsh {
 	}
 
 	// The history entry after the one run comes up at the next prompt, so
-	// a run of old commands is done again with one key each.
+	// a run of old commands is done again with one key each. It is kept
+	// by its history number, which stays put when HISTSIZE drops the
+	// oldest entry.
 	void LineEditor::operateAndGetNext() {
 		const auto& history = exec_.history();
-		operate_next_ = history_pos_ == 0
-			? readline_detail::kNoEntry : history.size() - history_pos_ + 1;
+		operate_next_ = history_pos_ == 0 ? readline_detail::kNoEntry
+			: history.size() - history_pos_ + 1 + exec_.historyBase();
 		acceptLine();
 	}
 
+	std::size_t LineEditor::operateNextIndex() const {
+		const std::size_t base = exec_.historyBase();
+		if (operate_next_ == readline_detail::kNoEntry || operate_next_ < base) {
+			return readline_detail::kNoEntry;
+		}
+
+		return operate_next_ - base;
+	}
+
 	void LineEditor::loadOperateNext() {
-		const std::size_t next = operate_next_;
+		const std::size_t next = operateNextIndex();
 		operate_next_ = readline_detail::kNoEntry;
 
 		const auto& history = exec_.history();

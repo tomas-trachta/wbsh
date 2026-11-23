@@ -526,6 +526,15 @@ namespace wbsh {
 		exec.inheritReturnContext();
 	}
 
+	// A pipeline element or coproc started where `set -e` is ignored -- under
+	// `!`, in a condition -- ignores it too, as bash's forked subshell does.
+	static void applyInheritedErrexitContext(Environment& env, Executor& exec) {
+		if (env.get("WBSH_ERREXIT_IGNORED").empty()) return;
+
+		env.unset("WBSH_ERREXIT_IGNORED");
+		exec.pushErrexitSuppress();
+	}
+
 	static void applyInheritedDisabledBuiltins(Environment& env, Executor& exec) {
 		const std::string names = env.get("WBSH_DISABLED_BUILTINS");
 		if (names.empty()) return;
@@ -688,6 +697,7 @@ namespace wbsh {
 		applyInheritedTraps(env, exec);
 		applyInheritedDirStack(env, exec);
 		applyInheritedReturnContext(env, exec);
+		applyInheritedErrexitContext(env, exec);
 		env.unset("WBSH_LINENO");
 		replayInheritedText(env, exec, "WBSH_ATTRIBUTES", "<inherited attributes>");
 		replayInheritedText(env, exec, "WBSH_BINDINGS", "<inherited bindings>");

@@ -442,6 +442,15 @@ namespace wbsh {
 
 	// An exported SHELLOPTS, BASHOPTS or BASH_ARGV0 carries its value as
 	// the shell computes it now.
+	// An exported nameref passes the name it refers to, as bash does.
+	static void appendExportedReferences(const Environment& env, std::vector<EnvEntry>& entries) {
+		for (const auto& entry : env.namerefs()) {
+			if (!env.isOwnExported(entry.first) || entry.second.empty()) continue;
+
+			entries.push_back(EnvEntry{ utf8ToWide(entry.first + "=" + entry.second), true });
+		}
+	}
+
 	static void appendComputedExports(const Environment& env, std::vector<EnvEntry>& entries) {
 		if (env.isExported("BASH_ARGV0")) {
 			entries.push_back(EnvEntry{ utf8ToWide("BASH_ARGV0=" + env.shellName()), true });
@@ -467,6 +476,7 @@ namespace wbsh {
 		}
 
 		appendComputedExports(env, entries);
+		appendExportedReferences(env, entries);
 		return entries;
 	}
 
@@ -897,11 +907,67 @@ namespace wbsh {
 	// Room for every bundled command, so registering them never rehashes.
 	static const std::size_t kBuiltinTableSize = 512;
 
+	// bash gives up on a nameref that leads back to itself in a function
+	// and assigns the global variable of that name instead.
+	Executor::ScopeEntry* Executor::outermostLocal(const std::string& name) {
+		for (std::vector<ScopeEntry>& scope : scope_stack_) {
+			for (ScopeEntry& entry : scope) {
+				if (entry.name == name) return &entry;
+			}
+		}
+
+		return nullptr;
+	}
+
+	// The global holds an array: the value goes to its element 0.
+	static void assignSavedValue(Environment::VarState& saved, const std::string& value) {
+		if (saved.has_indexed) {
+			saved.indexed[0] = value;
+			return;
+		}
+
+		if (saved.has_assoc) {
+			saved.assoc["0"] = value;
+			return;
+		}
+
+		saved.has_scalar = true;
+		saved.scalar = value;
+		saved.has_nameref = false;
+	}
+
+	bool Executor::assignThroughCycle(void* context, const std::string& name,
+			const std::string& value) {
+		ScopeEntry* entry = static_cast<Executor*>(context)->outermostLocal(name);
+		if (entry == nullptr) return false;
+
+		shellErrorf("warning: %s: maximum nameref depth (8) exceeded\n", name.c_str());
+		assignSavedValue(entry->saved, value);
+		return true;
+	}
+
+	bool Executor::isFunctionLocal(void* context, const std::string& name) {
+		return static_cast<Executor*>(context)->outermostLocal(name) != nullptr;
+	}
+
+	bool Executor::readThroughCycle(void* context, const std::string& name, std::string& out) {
+		ScopeEntry* entry = static_cast<Executor*>(context)->outermostLocal(name);
+		if (entry == nullptr) return false;
+
+		const Environment::VarState& saved = entry->saved;
+		if (saved.has_scalar) out = saved.scalar;
+		else if (saved.has_indexed && saved.indexed.count(0) != 0) out = saved.indexed.at(0);
+		else out.clear();
+		return true;
+	}
+
 	Executor::Executor(Environment& env)
 		: env_(env), expander_(env, this) {
 		stdout_started_as_pipe_ = fdIsPipe(1);
 		env_.setArithEvaluator(evalIntegerAttribute, &expander_);
 		env_.setSubscriptEvaluator(evalElementSubscript);
+		env_.setCycleAssigner(assignThroughCycle, this);
+		env_.setLocalQueries(isFunctionLocal, readThroughCycle);
 		builtins_.reserve(kBuiltinTableSize);
 		registerCoreBuiltins(*this);
 		registerCoreutils(*this);
@@ -948,7 +1014,7 @@ namespace wbsh {
 	// once it returns, the line is the caller's again, as an ERR trap
 	// for the call itself sees it.
 	int Executor::execNode(const Node& node) {
-		if (env_.noexec() && !env_.interactive()) return 0;
+		if (env_.noexec() && (keeps_noexec_ || !env_.interactive())) return 0;
 		const bool tracks_line = nodeTracksLineno(node);
 		if (tracks_line) env_.setCurrentLineno(nodeLine(node));
 
@@ -1141,6 +1207,8 @@ namespace wbsh {
 	}
 
 	void Executor::publishCoprocArray(const std::string& name, int read_fd, int write_fd) {
+		if (env_.rejectsArrayThroughElement(name)) return;
+
 		if (env_.isReadonly(name)) {
 			shellErrorf("%s: readonly variable\n", name.c_str());
 			return;
@@ -1299,7 +1367,9 @@ namespace wbsh {
 		if (&list != input_echo_.list) return false;
 
 		const bool posix_changed = env_.options().posix != input_echo_.lexed_posix;
-		if (!posix_changed && aliasState() == input_echo_.lexed_aliases) return false;
+		lines_requested_ = readsByLines();
+		const bool relex = posix_changed || aliasState() != input_echo_.lexed_aliases;
+		if (!relex && !lines_requested_) return false;
 
 		const bool more_items = index + 1 < list.items.size();
 		const std::size_t line_end = more_items
@@ -1310,6 +1380,13 @@ namespace wbsh {
 
 		relex_offset_ = line_end;
 		return true;
+	}
+
+	// A script records its lines in the history, and expands them, only
+	// while it reads them one at a time.
+	bool Executor::readsByLines() const {
+		return line_runner_ != nullptr && !by_lines_ && !env_.interactive()
+			&& env_.options().history;
 	}
 
 	// True when the shell must stop: the ERR trap left a flow signal, or
@@ -1323,7 +1400,7 @@ namespace wbsh {
 		if (flowPending()) return true;
 		if (!env_.errexit()) return false;
 
-		raiseExit(status);
+		raiseErrexit(status);
 		return true;
 	}
 
@@ -2102,6 +2179,7 @@ namespace wbsh {
 		const std::string dir_stack = joinLines(dir_stack_);
 		if (!dir_stack.empty()) overrides.emplace_back("WBSH_DIRSTACK", dir_stack);
 		if (canReturn()) overrides.emplace_back("WBSH_RETURNABLE", "1");
+		if (errexit_suppress_ > 0) overrides.emplace_back("WBSH_ERREXIT_IGNORED", "1");
 
 		const std::vector<std::string> locals = unexportedNames(env_);
 		if (!locals.empty()) overrides.emplace_back("WBSH_LOCAL_NAMES", joinWithSpaces(locals));
@@ -2926,8 +3004,10 @@ namespace wbsh {
 			env_.unset(coproc_.name);
 		}
 
-		env_.clearReadonly(coproc_.name + "_PID");
-		env_.unset(coproc_.name + "_PID");
+		const std::string pid_name = coproc_.name + "_PID";
+		env_.clearReadonly(pid_name);
+		if (env_.isNameref(pid_name)) env_.unsetNameref(pid_name);
+		else env_.unset(pid_name);
 		coproc_ = CoprocFds();
 	}
 
@@ -2993,8 +3073,10 @@ namespace wbsh {
 			delimiter = redir.target.raw;
 		}
 
+		const std::size_t start = redir.heredoc_start_line != 0 ? redir.heredoc_start_line
+			: redir.target.loc.line;
 		shellWarningAt(redir.heredoc_eof_line, "here-document at line "
-			+ std::to_string(redir.target.loc.line) + " delimited by end-of-file (wanted `"
+			+ std::to_string(start) + " delimited by end-of-file (wanted `"
 			+ delimiter + "')");
 	}
 
@@ -3588,6 +3670,8 @@ namespace wbsh {
 	// Even `a+=()` gives a declared array a value.
 	static void applyArrayAssignToEnv(Environment& env, Expander& expander,
 	                                  const Executor::ArrayAssign& array) {
+		if (env.rejectsArrayThroughElement(array.name)) return;
+
 		env.markValued(array.name);
 		if (env.isAssocArray(array.name)) {
 			if (!array.append) env.resetAssocArray(array.name);
@@ -3641,6 +3725,8 @@ namespace wbsh {
 
 	static void applyElemAssignToEnv(Environment& env, Expander& expander,
 	                                 const Executor::ElemAssign& elem) {
+		if (env.rejectsArrayThroughElement(elem.name)) return;
+
 		if (!env.isAssocArray(elem.name) && rejectWholeArraySubscript(expander, elem)) return;
 
 		std::string subscript = expander.expandStringValue(elem.subscript);
@@ -3700,12 +3786,19 @@ namespace wbsh {
 	// the assignments expand; the command gets them all afterwards.
 	using SavedVars = std::vector<std::pair<std::string, Environment::VarState>>;
 
+	// A nameref without a target is hidden by the temporary variable, as
+	// bash's temporary environment is not looked up through namerefs.
+	static bool isUnboundNameref(const Environment& env, const std::string& name) {
+		return env.isNameref(name) && env.namerefTarget(name).empty();
+	}
+
 	static void setTemporarily(Environment& env, const Executor::ScalarAssign& scalar,
 			SavedVars& prior) {
 		if (env.isReadonly(scalar.name)) return;
 
 		const std::string target = env.resolveRef(scalar.name);
 		prior.emplace_back(target, env.saveVar(target));
+		if (isUnboundNameref(env, scalar.name)) env.unsetNameref(scalar.name);
 		env.set(scalar.name, scalar.value);
 	}
 
@@ -3786,6 +3879,24 @@ namespace wbsh {
 
 	// A bare assignment to a readonly variable fails with status 1 and, as
 	// in bash, drops the rest of the line: a subshell ends there.
+	// A value for a nameref without a target must name a variable, and an
+	// element of one has no array to go to; bash drops the rest of the line.
+	static bool rejectsBadReference(const Environment& env,
+	                                const Executor::SimpleCmdAssigns& assigns) {
+		for (const auto& scalar : assigns.scalar) {
+			if (env.rejectsRefTarget(scalar.name, scalar.value)) return true;
+		}
+
+		for (const auto& elem : assigns.elem) {
+			if (!env.isNameref(elem.name) || !env.namerefTarget(elem.name).empty()) continue;
+
+			shellErrorf("`': not a valid identifier\n");
+			return true;
+		}
+
+		return false;
+	}
+
 	static bool assignsReadonly(const Environment& env,
 	                            const Executor::SimpleCmdAssigns& assigns) {
 		for (const auto& scalar : assigns.scalar) {
@@ -3822,6 +3933,11 @@ namespace wbsh {
 		traceAssignment(assignment, one);
 		checkXtraceFdAssignment(one);
 		dropRestrictedHashAssignments(one);
+		if (bare && rejectsBadReference(env_, one)) {
+			expander_.dropRestOfLine();
+			return false;
+		}
+
 		if (bare) {
 			const bool readonly = assignsReadonly(env_, one);
 			applyAssignNow(env_, expander_, one);
@@ -3916,6 +4032,8 @@ namespace wbsh {
 			bool existed;
 			std::string value;
 			bool exported;
+			bool hid_reference = false;
+			Environment::VarState reference;
 		};
 
 		// Prefix assignments are in the command's environment, so they are
@@ -3936,9 +4054,18 @@ namespace wbsh {
 					}
 
 					prior.push_back({ name, env.has(name), env.get(name), env.isExported(name) });
+					hideUnboundReference(prior.back());
 					env.set(name, assign.second);
 					env.exportVar(name);
 				}
+			}
+
+			void hideUnboundReference(PriorValue& value) {
+				if (!env.isNameref(value.name) || !env.namerefTarget(value.name).empty()) return;
+
+				value.hid_reference = true;
+				value.reference = env.saveVar(value.name);
+				env.unsetNameref(value.name);
 			}
 
 			// A declaration builtin makes these temporary values the shell's own;
@@ -3955,6 +4082,11 @@ namespace wbsh {
 			// the one it hid comes back as it was.
 			~EnvAssignsGuard() {
 				for (auto it = prior.rbegin(); it != prior.rend(); ++it) {
+					if (it->hid_reference) {
+						env.restoreVar(it->name, std::move(it->reference));
+						continue;
+					}
+
 					env.clearReadonly(env.resolveRef(it->name));
 					if (!it->existed) {
 						env.unset(it->name);
@@ -4324,12 +4456,34 @@ namespace wbsh {
 		return statPath(pathToUtf8(path), info) && (info.st_mode & S_IFMT) != S_IFDIR;
 	}
 
+#ifdef _WIN32
+	// A link to `prog` where only prog.exe exists, as Cygwin's ln leaves
+	// them: Windows cannot start the link, so the program it names runs.
+	static std::filesystem::path linkedProgram(const std::filesystem::path& candidate) {
+		std::error_code ec;
+		if (!std::filesystem::is_symlink(candidate, ec)) return candidate;
+
+		std::filesystem::path target = std::filesystem::read_symlink(candidate, ec);
+		if (ec) return candidate;
+		if (target.is_relative()) target = candidate.parent_path() / target;
+		if (std::filesystem::exists(target, ec)) return candidate;
+
+		for (const char* ext : kExecutableExtensions) {
+			std::filesystem::path program = target;
+			program += ext;
+			if (ext[0] != '\0' && isExistingFile(program)) return program;
+		}
+
+		return candidate;
+	}
+#endif  // _WIN32
+
 	static std::string tryExecutableWithExtensions(const std::filesystem::path& base) {
 #ifdef _WIN32
 		for (const char* ext : kExecutableExtensions) {
 			std::filesystem::path candidate = base;
 			if (ext[0] != '\0') candidate += ext;
-			if (isExistingFile(candidate)) return pathToUtf8(candidate);
+			if (isExistingFile(candidate)) return pathToUtf8(linkedProgram(candidate));
 		}
 
 		return {};
@@ -4615,6 +4769,11 @@ namespace wbsh {
 	}
 
 	bool Executor::exportedValue(const std::string& name, std::string& out) const {
+		if (env_.isNameref(name)) {
+			out = env_.namerefTarget(name);
+			return env_.isOwnExported(name) && !out.empty();
+		}
+
 		if (!isLoopVariableName(name)) return env_.exportedEntry(name, out);
 		if (env_.has(name)) {
 			out = env_.get(name);
@@ -6216,9 +6375,11 @@ namespace wbsh {
 
 	// The loops around the call are not the body's to break, as in bash.
 	// An `exit` in a function runs the EXIT trap while the function is still
-	// on the call stack, so the trap sees its FUNCNAME, as in bash.
+	// on the call stack, so the trap sees its FUNCNAME, as in bash. set -e
+	// unwinds first: the trap runs with the call's redirections undone.
 	void Executor::runExitTrapInFunction() {
-		if (flow_.kind != FlowSignal::Kind::Exit || trap_handlers_.count("EXIT") == 0) return;
+		if (flow_.kind != FlowSignal::Kind::Exit || flow_.errexit) return;
+		if (trap_handlers_.count("EXIT") == 0) return;
 
 		const int code = flow_.status;
 		clearFlow();
@@ -6633,12 +6794,34 @@ namespace wbsh {
 		saved -= count < saved_in_range ? count : saved_in_range;
 	}
 
-	static void trimHistoryTo(HistoryList& list, std::size_t& saved, long long limit) {
+	// As bash's history_base, the number of the oldest entry goes up as
+	// HISTSIZE drops entries.
+	static void trimHistoryTo(HistoryList& list, std::size_t& saved, std::size_t& base,
+			long long limit) {
 		if (limit < 0 || list.commands.size() <= static_cast<std::size_t>(limit)) return;
 
 		const std::size_t drop = list.commands.size() - static_cast<std::size_t>(limit);
 		eraseHistoryRange(list, 0, drop);
 		forgetSavedEntries(saved, 0, drop);
+		base += drop;
+	}
+
+	void Executor::deleteHistoryEntries(std::size_t first, std::size_t last) {
+		if (first > last || last >= history_.commands.size()) return;
+
+		const std::size_t count = last - first + 1;
+		eraseHistoryRange(history_, first, count);
+		forgetSavedEntries(history_saved_, first, count);
+	}
+
+	// The running command's own entry goes, as bash removes `history -s`
+	// and `history -p` before they act.
+	bool Executor::dropCurrentHistoryEntry() {
+		if (!current_in_history_ || history_.commands.empty()) return false;
+
+		deleteHistoryEntries(history_.commands.size() - 1, history_.commands.size() - 1);
+		current_in_history_ = false;
+		return true;
 	}
 
 	void Executor::addHistoryEntry(std::string line) {
@@ -6647,7 +6830,7 @@ namespace wbsh {
 		history_.commands.push_back(std::move(line));
 		history_.statuses.push_back(0);
 		history_.times.push_back(static_cast<long long>(std::time(nullptr)));
-		trimHistoryTo(history_, history_saved_, historyLimit(env_.get("HISTSIZE")));
+		trimHistoryTo(history_, history_saved_, history_base_, historyLimit(env_.get("HISTSIZE")));
 	}
 
 	void Executor::replaceLastHistoryEntry(std::string line) {
@@ -6684,11 +6867,12 @@ namespace wbsh {
 		history_.statuses.clear();
 		history_.times.clear();
 		history_saved_ = 0;
+		history_base_ = 1;
 	}
 
 	bool Executor::loadHistoryFromFile(const std::string& path) {
 		HistoryList loaded;
-		if (!readHistoryFile(path, loaded)) return false;
+		if (!readHistoryFile(path, loaded, writesHistoryTimes())) return false;
 
 		history_.commands.insert(history_.commands.end(), loaded.commands.begin(),
 			loaded.commands.end());
@@ -6696,7 +6880,7 @@ namespace wbsh {
 			loaded.statuses.end());
 		history_.times.insert(history_.times.end(), loaded.times.begin(), loaded.times.end());
 		history_saved_ = history_.commands.size();
-		trimHistoryTo(history_, history_saved_, historyLimit(env_.get("HISTSIZE")));
+		trimHistoryTo(history_, history_saved_, history_base_, historyLimit(env_.get("HISTSIZE")));
 		return true;
 	}
 
@@ -6706,6 +6890,7 @@ namespace wbsh {
 	}
 
 	bool Executor::saveHistoryToFile(const std::string& path) const {
+		if (!env_.interactive()) return writeBashHistoryFile(path, history_, 0, writesHistoryTimes());
 		return writeHistoryFile(path, history_, 0, writesHistoryTimes());
 	}
 
@@ -6717,7 +6902,12 @@ namespace wbsh {
 	}
 
 	bool Executor::appendNewHistory(const std::string& path) {
-		if (!appendHistoryFile(path, history_, history_saved_, writesHistoryTimes())) return false;
+		// A script writes bash's format, which bash and other tools read;
+		// the interactive shell keeps each entry's status in wbsh's own.
+		const bool written = env_.interactive()
+			? appendHistoryFile(path, history_, history_saved_, writesHistoryTimes())
+			: appendBashHistoryFile(path, history_, history_saved_, writesHistoryTimes());
+		if (!written) return false;
 
 		history_saved_ = history_.commands.size();
 		return true;
@@ -7176,7 +7366,12 @@ namespace wbsh {
 		const std::size_t line = input.first_line + static_cast<std::size_t>(skipped_lines)
 			- (std::min)(static_cast<std::size_t>(alias_lines), input.first_line - 1);
 		const std::string rest = resume < source_text.size() ? source_text.substr(resume) : "";
-		return executeInputText(alias_rest + rest, input.origin, line);
+		if (!std::exchange(lines_requested_, false)) {
+			return executeInputText(alias_rest + rest, input.origin, line);
+		}
+
+		by_lines_ = true;
+		return line_runner_(*this, alias_rest + rest, input.origin, line);
 	}
 
 	// What lexing depends on of the aliases: none while they do not expand.

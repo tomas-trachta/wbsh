@@ -26,6 +26,7 @@
 #include "executor.h"
 #include "expander.h"
 #include "funcprint.h"
+#include "history.h"
 #include "lexer.h"
 #include "parser.h"
 #include "printer.h"
@@ -558,6 +559,154 @@ namespace wbsh {
 		return error.discards_command ? Completeness::Complete : Completeness::Fatal;
 	}
 
+	static bool takeTextLine(const std::string& text, std::size_t& pos, std::string& line) {
+		if (pos >= text.size()) return false;
+
+		const std::size_t newline = text.find('\n', pos);
+		const std::size_t end = newline == std::string::npos ? text.size() : newline + 1;
+		line = text.substr(pos, end - pos);
+		pos = end;
+		return true;
+	}
+
+	static std::string withoutNewline(const std::string& line) {
+		return !line.empty() && line.back() == '\n' ? line.substr(0, line.size() - 1) : line;
+	}
+
+	// As bash, the line is history-expanded as it is read while the history
+	// option is on: the result goes to stderr, and a failed expansion drops
+	// the line.
+	static void recordScriptHistory(Executor& exec, const std::string& entry);
+
+	static bool expandScriptLine(Executor& exec, std::string& line, HistorySubstitution& last) {
+		const SetOptions& options = exec.env().options();
+		if (!options.history || !options.histexpand) return true;
+
+		const bool newline = !line.empty() && line.back() == '\n';
+		const HistoryExpansion expansion =
+			expandHistoryLine(withoutNewline(line), exec.history(), '\0', last, options.posix);
+		switch (expansion.kind) {
+			case HistoryExpansion::Kind::kExpanded:
+				std::fprintf(stderr, "%s\n", expansion.text.c_str());
+				line = expansion.text + (newline ? "\n" : "");
+				return true;
+			case HistoryExpansion::Kind::kPrintOnly:
+				std::fprintf(stderr, "%s\n", expansion.text.c_str());
+				recordScriptHistory(exec, expansion.text);
+				return false;
+			case HistoryExpansion::Kind::kFailed:
+				shellErrorf("%s\n", expansion.text.c_str());
+				return false;
+			default:
+				return true;
+		}
+	}
+
+	static bool historyTakes(Executor& exec, const std::string& entry) {
+		const Environment& env = exec.env();
+		if (!env.options().history || entry.empty()) return false;
+
+		const HistoryFilter filter = { env.get("HISTCONTROL"), env.get("HISTIGNORE") };
+		const auto& history = exec.history();
+		return historyAccepts(filter, entry, history.empty() ? std::string() : history.back());
+	}
+
+	// fc and history leave out the command that runs them when it is the
+	// newest entry.
+	static void recordScriptHistory(Executor& exec, const std::string& entry) {
+		const bool recorded = historyTakes(exec, entry);
+		exec.setCurrentCommandInHistory(recorded);
+		if (!recorded) return;
+
+		const HistoryFilter filter = { exec.env().get("HISTCONTROL"), std::string() };
+		if (historyErasesDuplicates(filter)) exec.eraseHistoryEntries(entry);
+
+		exec.addHistoryEntry(entry);
+	}
+
+	// bash's entry for a command with a here-document ends in a newline.
+	static bool opensHeredoc(const std::string& text) {
+		Lexer lexer(text);
+		for (const Token& token : lexer.tokenize()) {
+			if (token.kind == TokKind::DLess || token.kind == TokKind::DLessDash) return true;
+		}
+
+		return false;
+	}
+
+	struct ScriptCommand {
+		std::string text;
+		std::string entry;
+		std::size_t lines = 0;
+		bool dropped = false;
+	};
+
+	static Completeness judgeCommandText(const std::string& text);
+
+	// The text ends inside a here-document's body.
+	static bool heredocPending(const std::string& text) {
+		if (text.empty()) return false;
+
+		Lexer lexer(text);
+		lexer.tokenize();
+		const auto mentions = [](const LexError& error) {
+			return error.message.find("delimited by end-of-file") != std::string::npos
+				|| error.message.find("unterminated heredoc") != std::string::npos;
+		};
+		return std::any_of(lexer.warnings().begin(), lexer.warnings().end(), mentions)
+			|| std::any_of(lexer.errors().begin(), lexer.errors().end(), mentions);
+	}
+
+	// The lines of one command, each expanded and joined into its history
+	// entry as bash reads them; a here-document's body is not expanded.
+	static Completeness readScriptCommand(Executor& exec, const std::string& text, std::size_t& pos,
+			std::size_t first_line, HistorySubstitution& last, ScriptCommand& command) {
+		std::string pending;
+		std::string line;
+		Completeness completeness = Completeness::Incomplete;
+		while (completeness == Completeness::Incomplete && takeTextLine(text, pos, line)) {
+			exec.env().setCurrentLineno(static_cast<int>(first_line + command.lines));
+			++command.lines;
+			const bool body = heredocPending(command.text);
+			if (!body && !expandScriptLine(exec, line, last)) {
+				command.dropped = true;
+				return Completeness::Complete;
+			}
+
+			appendHistoryLine(command.entry, pending, withoutNewline(line));
+			pending += (pending.empty() ? "" : "\n") + withoutNewline(line);
+			command.text += line;
+			completeness = heredocPending(command.text) ? Completeness::Incomplete
+				: judgeCommandText(command.text);
+		}
+
+		return completeness;
+	}
+
+	// Once a script turns the history option on it is read a command at a
+	// time, so each line can be recorded and expanded before it runs.
+	static int runScriptLines(Executor& exec, const std::string& text, const std::string& origin,
+			std::size_t first_line) {
+		std::size_t pos = 0;
+		std::size_t line = first_line;
+		int status = exec.lastStatus();
+		HistorySubstitution last;
+		while (pos < text.size()) {
+			ScriptCommand command;
+			const Completeness completeness = readScriptCommand(exec, text, pos, line, last, command);
+			if (!command.dropped) {
+				if (opensHeredoc(command.text)) command.entry += '\n';
+				recordScriptHistory(exec, command.entry);
+				status = exec.executeInputText(command.text, origin, line);
+			}
+
+			line += command.lines;
+			if (exec.flowPending() || completeness == Completeness::Fatal) return status;
+		}
+
+		return status;
+	}
+
 	static const std::size_t kLineByLineLimit = 64;
 
 	// Past kLineByLineLimit lines a command is judged at doubling lengths
@@ -633,6 +782,7 @@ namespace wbsh {
 		Executor exec(env);
 		exec.setSourceText(run.source);
 		const bool child_shell = isChildShell(env);
+		if (!child_shell) exec.setLineRunner(runScriptLines);
 		const bool inherited_stage = !env.get("WBSH_SUBSHELL_LEVEL").empty();
 		absorbInheritedState(env, exec);
 		if (inherited_stage) exec.enterInheritedStage(*root);

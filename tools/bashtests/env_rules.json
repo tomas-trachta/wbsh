@@ -63,6 +63,41 @@
             "suites": ["new-exp"]
         },
         {
+            "id": "builtins-gpl-help-and-unix-dirs",
+            "reason": "read 2026-11-23, accepted by Tomas: builtins10.sub prints bash's `help` output, which is GPL text; wbsh is MIT and keeps its own help, so those lines differ by license, not by behaviour. The rest is the system: there is no /bin, so builtins12's `cd /bin` and `pushd /bin` fail and the directory stack it builds is one entry shorter (the popd +8/-8 lines move), /tmp resolves to its real directory and `/` to the drive root /c/, and `ulimit -u` has no hard limit to refuse. Every other line of the 500 matches",
+            "suites": [
+                "builtins"
+            ]
+        },
+        {
+            "id": "execscript-no-exec-bit",
+            "reason": "read 2026-11-23, accepted by Tomas: Windows files have no execute bit and wbsh ignores mode bits by design, so exec3's `exec ./x.sh` on a non-executable file runs it (`bar`) instead of failing with EACCES, and exec7 runs the mode-655 testa/foo where bash skips to testb. The rest is the platform: exec.right lists SIGTERM before SIGUSR1 (macOS signal numbers; Linux bash 5.3 prints USR1 first, as wbsh does), there is no /bin/sh and no sh on the runner's PATH (the `this is sh` and `command -p sh` lines), `cat` is a wbsh builtin so `command -v cat` finds it with an empty PATH, and wbsh names itself by argv[0]'s basename (`bash:` where bash prints the link name `/tmp/bash:`). The /tmp/bash link itself runs and exits 127 as in bash",
+            "suites": [
+                "execscript"
+            ]
+        },
+        {
+            "id": "invocation-wbsh-startup-files",
+            "reason": "read 2026-11-23, accepted by Tomas: a wbsh login shell reads only its own ~/.wbsh_* files, so bash's ~/.bash_logout (`this is bash_logout`) is not run. `bash ls` with PATH=/bin:/usr/bin prints `cannot execute binary file` when /usr/bin exists (checked under Git's PATH); the runner has no /usr/bin, so it reports the missing script instead. Every other line matches",
+            "suites": [
+                "invocation"
+            ]
+        },
+        {
+            "id": "history-version-and-file-format",
+            "reason": "read 2026-11-23: two design differences, nothing else. history2.sub prints ${BASH_VERSION%.*} twice and wbsh reports Git Bash's release (5.2) by design. history7.sub counts and cats the file `bash -i` leaves behind; wbsh's interactive shell writes its own history format (a #!wbsh-history-v3 header and each entry's exit status, which the line editor's predictions use), so each count is one higher and each entry carries its status column. The entries kept (HISTFILESIZE trimming), the echoed prompts and `exit`, and everything else match: fc ranges, history -d/-s/-r/-w, HISTCONTROL/HISTIGNORE, line-at-a-time history in scripts, and the bash -i sessions on a pipe with C-r, C-o and C-p",
+            "suites": [
+                "history"
+            ]
+        },
+        {
+            "id": "histexpand-git-sh",
+            "reason": "read 2026-11-23: histexp.tests re-runs `/bin/sh -c 'echo this is $0'` from the history; on Windows /bin/sh is Git's sh.exe in /usr/bin, which reports itself as /usr/bin/sh. Every history expansion, event, word designator and modifier line matches",
+            "suites": [
+                "histexpand"
+            ]
+        },
+        {
             "id": "glob-bracket-needs-build-tree",
             "reason": "read 2026-11-22: glob-bracket.tests reads $BUILD_DIR/examples/loadables/Makefile, compiles a fnmatch(3) helper and the strmatch loadable with gcc and loads it with `enable -f`; the runner has no bash build tree or compiler, so the script stops with `shared objects not supported` before its first test, as bash itself does outside its build directory",
             "suites": ["glob-bracket"]

@@ -28,6 +28,7 @@ fc -lnr | show
 
 echo "=== errors"
 fc -l 99; echo "status $?"
+fc -0; echo "status $?"
 fc -l nosuch; echo "status $?"
 fc -x; echo "status $?"
 fc -e; echo "status $?"

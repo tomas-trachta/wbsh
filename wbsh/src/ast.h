@@ -64,6 +64,7 @@ namespace wbsh {
 		std::string heredoc_body;
 		bool heredoc_quoted = false;
 		std::size_t heredoc_eof_line = 0;   ///< The body ran to the end of input on this line.
+		std::size_t heredoc_start_line = 0; ///< The line whose end the body follows.
 	};
 
 	// A `name=value` prefix assignment: scalar, indexed element

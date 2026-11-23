@@ -1307,7 +1307,13 @@ namespace wbsh {
 		const bool closed = scanToUnmatchedParen();
 		--nested_scan_depth_;
 		if (!closed) warnCutOffHeredocs();
+		std::vector<Token> unread;
+		for (const PendingHeredoc& pending : pending_heredocs_) {
+			unread.push_back(tokens_[pending.delim_token_index]);
+		}
+
 		leaveNestedScan(outer);
+		if (closed && !unread.empty()) carryHeredocs(unread, src_.substr(body_start, pos_ - 1 - body_start));
 		body_had_aliases_ = splices_.size() > splices_before;
 		restoreAliasNames(body_start, splices_before);
 
@@ -1332,7 +1338,9 @@ namespace wbsh {
 	void Lexer::warnHeredocAtEof(const Token& delim) {
 		SourceLoc at = delim.loc;
 		at.line = delim.heredoc_eof_line;
-		warnings_.push_back({ at, "here-document at line " + std::to_string(delim.loc.line)
+		const std::size_t start = delim.heredoc_start_line != 0 ? delim.heredoc_start_line
+			: delim.loc.line;
+		warnings_.push_back({ at, "here-document at line " + std::to_string(start)
 			+ " delimited by end-of-file (wanted `" + flattenDelim(delim) + "')" });
 	}
 
@@ -1773,13 +1781,56 @@ namespace wbsh {
 		return out;
 	}
 
+	// The body follows the end of the line the command ends on, which bash
+	// names in its end-of-file warning.
 	void Lexer::collectHeredocBodies() {
+		const std::size_t start_line = tokens_.back().loc.line;
 		while (!pending_heredocs_.empty()) {
 			const PendingHeredoc pending = pending_heredocs_.front();
 			pending_heredocs_.erase(pending_heredocs_.begin());
 
 			Token& delim = tokens_[pending.delim_token_index];
+			delim.heredoc_start_line = start_line;
 			delim.heredoc_body = readHeredocBody(delim);
+		}
+
+		collectCarriedHeredocs(start_line);
+	}
+
+	void Lexer::carryHeredocs(const std::vector<Token>& unread, const std::string& body) {
+		for (const Token& delim : unread) carried_heredocs_.push_back({ delim, tokens_.size(), body });
+	}
+
+	static WordSegment* carriedSubstitution(std::vector<WordSegment>& segments,
+			const std::string& body) {
+		for (WordSegment& segment : segments) {
+			if (segment.kind == WordSegment::Kind::CmdSubst && segment.text == body) return &segment;
+
+			WordSegment* inner = carriedSubstitution(segment.nested, body);
+			if (inner != nullptr) return inner;
+		}
+
+		return nullptr;
+	}
+
+	void Lexer::collectCarriedHeredocs(std::size_t start_line) {
+		std::vector<CarriedHeredoc> carried = std::move(carried_heredocs_);
+		carried_heredocs_.clear();
+		for (std::size_t k = 0; k < carried.size(); ++k) {
+			CarriedHeredoc& entry = carried[k];
+			entry.delim.heredoc_start_line = start_line;
+			const std::string text = readHeredocBody(entry.delim);
+			if (entry.word_token_index >= tokens_.size()) continue;
+
+			WordSegment* segment = carriedSubstitution(tokens_[entry.word_token_index].segments,
+				entry.body);
+			if (segment == nullptr) continue;
+
+			segment->text += "\n" + text + flattenDelim(entry.delim) + "\n";
+			++segment->carried_heredocs;
+			for (std::size_t later = k + 1; later < carried.size(); ++later) {
+				if (carried[later].body == entry.body) carried[later].body = segment->text;
+			}
 		}
 	}
 

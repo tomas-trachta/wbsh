@@ -1810,6 +1810,7 @@ namespace wbsh {
 			out.heredoc_body = target.heredoc_body;
 			out.heredoc_quoted = target.heredoc_quoted;
 			out.heredoc_eof_line = target.heredoc_eof_line;
+			out.heredoc_start_line = target.heredoc_start_line;
 		}
 
 		advance();

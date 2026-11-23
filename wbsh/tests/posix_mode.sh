@@ -58,5 +58,5 @@ rm -rf _posix_tmp
 
 echo "=== interactive shells do not exit"
 printf 'set -o posix\nexport "a b"\necho still here\n' \
-    | env -u WBSH_INIT_COMMAND "$WBSH" -i --norc 2>&1 | grep -ao 'still here\|not a valid identifier'
+    | env -u WBSH_INIT_COMMAND "$WBSH" -i --norc 2>&1 | grep -ao '^still here\|not a valid identifier'
 

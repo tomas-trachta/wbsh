@@ -63,7 +63,8 @@ namespace wbsh {
 	 */
 	HistoryExpansion expandHistoryLine(const std::string& line,
 	                                   const std::vector<std::string>& history,
-	                                   char starting_quote, HistorySubstitution& last);
+	                                   char starting_quote, HistorySubstitution& last,
+	                                   bool posix = false);
 
 	/** The words of a history entry as word designators count them: quotes keep a word together. */
 	std::vector<std::string> historyWords(const std::string& entry);
@@ -78,8 +79,11 @@ namespace wbsh {
 	/** True when some entry of @p list has a time. */
 	bool historyHasTimes(const HistoryList& list);
 
-	/** Reads the history file at the native @p path; false when it cannot be opened. */
-	bool readHistoryFile(const std::string& path, HistoryList& list);
+	/**
+	 * Reads the history file at the native @p path; false when it cannot be
+	 * opened. With @p multiline a bash file's lines between times are one entry.
+	 */
+	bool readHistoryFile(const std::string& path, HistoryList& list, bool multiline = false);
 
 	/**
 	 * Replaces the file with the entries of @p list from @p first on, all or
@@ -96,6 +100,12 @@ namespace wbsh {
 	 */
 	bool appendHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
 	                       bool with_times);
+
+	/** As writeHistoryFile and appendHistoryFile, in bash's format: one line per entry. */
+	bool writeBashHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
+	                          bool with_times);
+	bool appendBashHistoryFile(const std::string& path, const HistoryList& list, std::size_t first,
+	                           bool with_times);
 
 	/** Drops all but the newest @p keep entries of the file at @p path. */
 	bool trimHistoryFile(const std::string& path, std::size_t keep);

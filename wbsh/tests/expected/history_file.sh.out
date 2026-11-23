@@ -15,8 +15,8 @@ echo a2
 echo two
 echo three
 === HISTSIZE limits the list in memory
-    1  echo four
-    2  history > "$HOME/listing"
+    3  echo four
+    4  history > "$HOME/listing"
 === HISTCONTROL=ignorespace and ignoredups
     1  echo same
     2  echo other
@@ -43,9 +43,7 @@ hist untouched
 === an empty HISTFILE saves nothing
 hist untouched
 === history -a appends the new entries, history -w rewrites the file
-#!wbsh-history-v3
-0<TAB>echo appended
-#!wbsh-history-v3
-0<TAB>echo appended
-0<TAB>echo second
+echo appended
+echo appended
+echo second
 0

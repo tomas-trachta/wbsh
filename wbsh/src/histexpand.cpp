@@ -18,7 +18,7 @@ namespace wbsh {
 
 	namespace histexpand_detail {
 
-		static const char* const kNoExpandAfterBang = " \t\n\r=(";
+		static const char* const kNoExpandAfterBang = " \t\n\r=;&|()<>";
 		static const char* const kWordDelimiters = ";&|()<>";
 		static const char* const kModifiers = "htrepqxsg&aG";
 		static const std::size_t kNoWord = static_cast<std::size_t>(-1);
@@ -32,6 +32,7 @@ namespace wbsh {
 			std::string error;
 			bool print_only = false;
 			bool expanded = false;
+			bool posix = false;
 		};
 
 		static bool isDigit(char letter) {
@@ -79,15 +80,63 @@ namespace wbsh {
 			return text.size();
 		}
 
-		static std::size_t wordEnd(const std::string& text, std::size_t i) {
-			if (isOneOf(text[i], kWordDelimiters)) {
-				while (i < text.size() && isOneOf(text[i], kWordDelimiters)) ++i;
-				return i;
-			}
+		// `(` after `$`, `<`, `>` or an extglob character opens a group that
+		// stays in its word.
+		static bool opensGroup(const std::string& text, std::size_t i) {
+			return text[i] == '(' && i > 0 && isOneOf(text[i - 1], "$<>+*@!?");
+		}
 
-			while (i < text.size() && !isBlank(text[i]) && !isOneOf(text[i], kWordDelimiters)) {
+		static std::size_t groupEnd(const std::string& text, std::size_t open) {
+			int depth = 0;
+			for (std::size_t i = open; i < text.size(); ++i) {
 				const char letter = text[i];
 				if (letter == '\'' || letter == '"' || letter == '`') {
+					i = skipQuotedWord(text, i) - 1;
+				} else if (letter == '(') {
+					++depth;
+				} else if (letter == ')' && --depth == 0) {
+					return i + 1;
+				}
+			}
+
+			return text.size();
+		}
+
+		static bool startsProcessSubstitution(const std::string& text, std::size_t i) {
+			return (text[i] == '<' || text[i] == '>') && at(text, i + 1) == '(';
+		}
+
+		// `2>` or `10>&` is one word: the descriptor with its operator.
+		static std::size_t redirectionEnd(const std::string& text, std::size_t i) {
+			std::size_t j = i;
+			while (j < text.size() && isDigit(text[j])) ++j;
+			if (j == i || j >= text.size() || !isOneOf(text[j], "<>")) return i;
+
+			while (j < text.size() && isOneOf(text[j], "<>&|")) ++j;
+			return j;
+		}
+
+		static std::size_t delimiterRunEnd(const std::string& text, std::size_t i) {
+			while (i < text.size() && isOneOf(text[i], kWordDelimiters)) ++i;
+			return i;
+		}
+
+		static std::size_t wordEnd(const std::string& text, std::size_t i) {
+			const std::size_t redirect = redirectionEnd(text, i);
+			if (redirect != i) return redirect;
+			if (isOneOf(text[i], kWordDelimiters) && !startsProcessSubstitution(text, i)) {
+				return delimiterRunEnd(text, i);
+			}
+
+			while (i < text.size() && !isBlank(text[i])) {
+				const char letter = text[i];
+				if (startsProcessSubstitution(text, i)) {
+					i = groupEnd(text, i + 1);
+				} else if (opensGroup(text, i)) {
+					i = groupEnd(text, i);
+				} else if (isOneOf(letter, kWordDelimiters)) {
+					break;
+				} else if (letter == '\'' || letter == '"' || letter == '`') {
 					i = skipQuotedWord(text, i);
 				} else {
 					i += letter == '\\' ? 2 : 1;
@@ -182,10 +231,18 @@ namespace wbsh {
 			    || isOneOf(letter, kWordDelimiters);
 		}
 
+		// After its first character a word designator ends the event's
+		// name: `!shopt-1`, `!shopt*`.
+		static bool endsEventNameAfter(char letter) {
+			return endsEventName(letter) || isOneOf(letter, "-*$^%");
+		}
+
 		static bool prefixedEvent(Expansion& expansion, std::size_t& j, std::string& event) {
 			const std::string& line = expansion.line;
 			const std::size_t start = j;
-			while (j < line.size() && !endsEventName(line[j])) ++j;
+			while (j < line.size() && !(j > start ? endsEventNameAfter(line[j]) : endsEventName(line[j]))) {
+				++j;
+			}
 
 			return j > start && findNewest(expansion, line.substr(start, j - start), false, event);
 		}
@@ -306,10 +363,11 @@ namespace wbsh {
 		                         std::string& text) {
 			if (expansion.search.empty()) return false;
 
-			for (const std::string& word : words) {
-				if (word.find(expansion.search) == std::string::npos) continue;
+			// readline searches the line from its end: the last word wins.
+			for (auto word = words.rbegin(); word != words.rend(); ++word) {
+				if (word->find(expansion.search) == std::string::npos) continue;
 
-				text = word;
+				text = *word;
 				return true;
 			}
 
@@ -342,8 +400,14 @@ namespace wbsh {
 
 		// The colon may be left out before a designator that starts with
 		// ^ $ * % or -.
+		// After an event's name `-1` reads as the range `0-1`.
 		static bool hasWordDesignator(const std::string& line, std::size_t j) {
 			if (startsWordDesignator(line, j)) return true;
+			if (at(line, j) == '-' && isDigit(at(line, j + 1)) && j > 0
+					&& std::isalpha(static_cast<unsigned char>(line[j - 1])) != 0) {
+				return true;
+			}
+
 			if (at(line, j) != ':') return false;
 
 			const char letter = at(line, j + 1);
@@ -532,8 +596,15 @@ namespace wbsh {
 			return true;
 		}
 
+		// A letter after `:` that is no modifier fails the expansion.
 		static bool applyModifiers(Expansion& expansion, std::size_t& j, std::string& text) {
 			const std::string& line = expansion.line;
+			const char next = at(line, j + 1);
+			if (at(line, j) == ':' && std::isalpha(static_cast<unsigned char>(next)) != 0
+					&& !isOneOf(next, kModifiers)) {
+				return fail(expansion, ":" + std::string(1, next), "unrecognized history modifier");
+			}
+
 			while (at(line, j) == ':' && isOneOf(at(line, j + 1), kModifiers)) {
 				++j;
 				if (!applyModifier(expansion, j, text)) return false;
@@ -570,7 +641,40 @@ namespace wbsh {
 			bool single = false;
 			bool ansi = false;
 			bool dquote = false;
+			std::vector<bool> outer_dquotes;   ///< dquote outside each open `$(`
+			bool comment = false;
 		};
+
+		// `$(` starts its own quoting, as bash's skip_to_histexp reads it;
+		// the `)` that closes it brings back the quoting around it.
+		static bool trackSubstitution(const std::string& line, std::size_t i, QuoteState& quote) {
+			if (line[i] == '(' && i > 0 && line[i - 1] == '$') {
+				quote.outer_dquotes.push_back(quote.dquote);
+				quote.dquote = false;
+				return true;
+			}
+
+			if (line[i] != ')' || quote.dquote || quote.outer_dquotes.empty()) return false;
+
+			quote.dquote = quote.outer_dquotes.back();
+			quote.outer_dquotes.pop_back();
+			return true;
+		}
+
+		// An unquoted `#` that starts a word begins a comment.
+		static bool startsComment(const std::string& line, std::size_t i, const QuoteState& quote) {
+			if (line[i] != '#' || quote.dquote || !quote.outer_dquotes.empty()) return false;
+
+			return i == 0 || isBlank(line[i - 1]);
+		}
+
+		// In POSIX mode nothing in double quotes is expanded.
+		static bool expandsHere(const Expansion& expansion, const std::string& line, std::size_t i,
+				const QuoteState& quote) {
+			if (expansion.posix && quote.dquote) return false;
+
+			return !bangIsLiteral(line, i, quote.dquote);
+		}
 
 		// Copies the character at `i` (two for an escape) when it is not a
 		// `!` to expand; false when the `!` is up to expandBang.
@@ -592,8 +696,9 @@ namespace wbsh {
 				quote.ansi = i > 0 && line[i - 1] == '$';
 			} else if (letter == '"') {
 				quote.dquote = !quote.dquote;
-			} else if (letter == '!' && !bangIsLiteral(line, i, quote.dquote)) {
-				return false;
+			} else if (!trackSubstitution(line, i, quote)) {
+				quote.comment = quote.comment || startsComment(line, i, quote);
+				if (letter == '!' && !quote.comment && expandsHere(expansion, line, i, quote)) return false;
 			}
 
 			expansion.out.push_back(letter);
@@ -661,8 +766,9 @@ namespace wbsh {
 
 	HistoryExpansion expandHistoryLine(const std::string& line,
 	                                   const std::vector<std::string>& history,
-	                                   char starting_quote, HistorySubstitution& last) {
+	                                   char starting_quote, HistorySubstitution& last, bool posix) {
 		histexpand_detail::Expansion expansion{ line, history, last };
+		expansion.posix = posix;
 		const bool quick = starting_quote == '\0' && !line.empty() && line[0] == '^';
 		const bool ok = quick ? histexpand_detail::expandQuickSubstitution(expansion)
 		                      : histexpand_detail::expandBangs(expansion, starting_quote);

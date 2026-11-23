@@ -68,6 +68,7 @@ namespace wbsh {
 		Kind kind = Kind::None;
 		int  status = 0;    ///< Return / Exit payload.
 		int  count = 1;     ///< Break / Continue: loop levels left to unwind.
+		bool errexit = false;   ///< Exit: set -e ended the shell, not `exit`.
 	};
 
 	/**
@@ -280,9 +281,15 @@ namespace wbsh {
 		/// Whether the command running now, read at the prompt, is the newest entry.
 		bool  currentCommandInHistory() const { return current_in_history_; }
 		void  setCurrentCommandInHistory(bool held) { current_in_history_ = held; }
+		/// As bash with `-i` given: `-n` holds in the interactive shell too.
+		void  keepNoexec() { keeps_noexec_ = true; }
 		void  markLastHistoryStatus(int status);
 		void  setHistoryEntryStatus(std::size_t index, int status);
 		void  clearHistory();
+		/// The number `history` shows for the oldest entry.
+		std::size_t historyBase() const { return history_base_; }
+		void  deleteHistoryEntries(std::size_t first, std::size_t last);
+		bool  dropCurrentHistoryEntry();
 		// Entries read from a file count as already saved there.
 		bool  loadHistoryFromFile(const std::string& path);
 		bool  saveHistoryToFile(const std::string& path) const;
@@ -541,6 +548,11 @@ namespace wbsh {
 		};
 		int relexRestOfInput(const std::string& source_text, const RelexInput& input, int status);
 		bool relexPending() const { return relex_offset_ != std::string::npos; }
+		/// Runs the rest of a script a line at a time, as bash reads it,
+		/// once the history option is on.
+		using LineRunner = int (*)(Executor& exec, const std::string& text,
+			const std::string& origin, std::size_t first_line);
+		void setLineRunner(LineRunner runner) { line_runner_ = runner; }
 
 		// Hand AST ownership to the executor by adopting the Arena that
 		// backs it (see Parser::takeArena). Used by the REPL: each line
@@ -627,6 +639,11 @@ namespace wbsh {
 			flow_.kind = FlowSignal::Kind::Exit;
 			flow_.status = status;
 			flow_.count = 1;
+			flow_.errexit = false;
+		}
+		void raiseErrexit(int status) {
+			raiseExit(status);
+			flow_.errexit = true;
 		}
 		void raiseDiscard() {
 			flow_.kind = FlowSignal::Kind::Discard;
@@ -929,10 +946,15 @@ namespace wbsh {
 		bool expandUnsplitRedirWord(const Word& target, std::string& out);
 		int  runTrapPublishingSignal(const std::string& action, int trap_number);
 		int  runNotFoundHandler(const std::vector<std::string>& argv);
+		static bool assignThroughCycle(void* context, const std::string& name,
+		                               const std::string& value);
+		static bool isFunctionLocal(void* context, const std::string& name);
+		static bool readThroughCycle(void* context, const std::string& name, std::string& out);
 		int  nodeLine(const Node& node) const;
 		int  firstWordEndLine(const SimpleCommand& sc) const;
 		int  substitutionBaseLine() const;
 		int  parseBaseLine() const;
+		bool readsByLines() const;
 		bool runsHashedPath(const std::vector<std::string>& argv,
 		                    const std::vector<std::pair<std::string, std::string>>& assigns,
 		                    int& status);
@@ -1185,6 +1207,7 @@ namespace wbsh {
 			SetOptions options;
 			int getopts_subindex = 1;
 		};
+		ScopeEntry* outermostLocal(const std::string& name);
 
 		struct SubshellScope {
 			Environment env;
@@ -1383,6 +1406,7 @@ namespace wbsh {
 		std::unordered_map<std::string, std::string> aliases_;
 		HistoryList history_;
 		std::size_t history_saved_ = 0;
+		std::size_t history_base_ = 1;
 		std::vector<std::string> dir_stack_;
 		std::unordered_map<std::string, std::string> trap_handlers_;
 		// Signals a script found ignored when it started: as in bash, it
@@ -1450,6 +1474,9 @@ namespace wbsh {
 		bool cmdsubst_ran_ = false;
 		bool stage_function_bump_ = false;
 		int command_first_line_ = 0;
+		LineRunner line_runner_ = nullptr;
+		bool by_lines_ = false;
+		bool lines_requested_ = false;
 		std::unordered_map<const Node*, int> line_overrides_;
 		// Active redirections of fd 1, so a failed write is blamed on the
 		// pipe this process was started with only when nothing replaced it.
@@ -1500,6 +1527,7 @@ namespace wbsh {
 		FlowSignal flow_;
 		std::size_t command_number_ = 1;
 		bool current_in_history_ = false;
+		bool keeps_noexec_ = false;
 	};
 
 	void registerCoreBuiltins(Executor& exec);

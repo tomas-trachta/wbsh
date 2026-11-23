@@ -337,7 +337,7 @@ namespace wbsh::declare_detail {
 
 	static std::string namerefLine(const Environment& env, const std::string& name) {
 		const std::string target = env.namerefTarget(name);
-		const std::string line = "declare -n " + name;
+		const std::string line = "declare -" + env.namerefLetters(name) + " " + name;
 		return target.empty() ? line : line + "=" + doubleQuoted(target);
 	}
 
@@ -601,13 +601,15 @@ namespace wbsh::declare_detail {
 
 	static bool isLocalHere(Executor& exec, const std::string& name);
 
-	static int printNamedDeclarations(Executor& exec, const Command& cmd,
+	static int printNamedDeclarations(Executor& exec, const Command& cmd, const Options& opts,
 			const std::vector<std::string>& args, std::size_t first) {
 		int status = 0;
 		for (std::size_t i = first; i < args.size(); ++i) {
 			const std::string name = args[i].substr(0, args[i].find('='));
 			const bool outside = &cmd == &kLocal && !isLocalHere(exec, name);
-			if (outside || !isKnownVariable(exec.env(), name)) {
+			const bool element = name.find('[') != std::string::npos;
+			const bool unreferenced = opts.nameref_on && !exec.env().isNameref(name);
+			if (outside || element || unreferenced || !isKnownVariable(exec.env(), name)) {
 				shellErrorf("%s: %s: not found\n", cmd.name, name.c_str());
 				status = 1;
 				continue;
@@ -952,6 +954,72 @@ namespace wbsh::declare_detail {
 		return 1;
 	}
 
+	// declare in a function makes local what a nameref of that function
+	// refers to; a nameref from outside is hidden by a new local instead.
+	static std::string localNameFor(Executor& exec, const std::string& name) {
+		const Environment& env = exec.env();
+		if (!env.isNameref(name) || env.namerefTarget(name).empty()) return name;
+		if (!isLocalHere(exec, name)) return name;
+
+		const std::string& target = env.resolveRef(name);
+		return target.substr(0, target.find('['));
+	}
+
+	static bool isValidRefTarget(const std::string& target);
+
+	// In a function, a value for a nameref without a target must name a
+	// variable, as bash checks the local it makes.
+	static bool rejectsLocalRefValue(const Environment& env, const Command& cmd, const Operand& op,
+			bool make_local) {
+		if (!make_local || !op.has_value || op.compound || !env.isNameref(op.name)) return false;
+		if (!env.namerefTarget(op.name).empty() || isValidRefTarget(op.value)) return false;
+
+		shellErrorf("%s: `%s': invalid variable name for name reference\n", cmd.name,
+			op.value.c_str());
+		return true;
+	}
+
+	// Outside a function a value that names no variable drops the nameref
+	// without a target; `-a` or `-A` turn it into the array.
+	static bool dropsUnboundReference(Environment& env, const Command& cmd, const Options& opts,
+			const Operand& op) {
+		if (!env.isNameref(op.name) || !env.namerefTarget(op.name).empty()) return false;
+
+		if (makesArray(opts) && !op.has_value) {
+			env.unsetNameref(op.name);
+			return false;
+		}
+
+		if (!op.has_value || op.compound || isValidRefTarget(op.value)) return false;
+
+		shellErrorf("%s: `%s': not a valid identifier\n", cmd.name, op.value.c_str());
+		env.unsetNameref(op.name);
+		return true;
+	}
+
+	// bash ignores -a and -A on a nameref to an array element.
+	static bool refersToElement(const Environment& env, const std::string& name) {
+		return env.isNameref(name) && env.resolveRef(name).find('[') != std::string::npos;
+	}
+
+	// An array element cannot be readonly; bash says so and goes on.
+	static bool marksElementReadonly(const Environment& env, const Command& cmd,
+			const Options& opts, const Operand& op) {
+		if (!opts.readonly_on || op.has_value || !env.isNameref(op.name)) return false;
+
+		const std::string target = env.namerefTarget(op.name);
+		if (target.find('[') == std::string::npos) return false;
+
+		shellErrorf("%s: `%s': not a valid identifier\n", cmd.name, target.c_str());
+		return true;
+	}
+
+	// `+r` on a nameref without a target follows it to nothing.
+	static bool followsToNothing(const Environment& env, const Options& opts, const Operand& op) {
+		return opts.readonly_off && !op.has_value && env.isNameref(op.name)
+			&& env.namerefTarget(op.name).empty();
+	}
+
 	static int declareOperand(Executor& exec, const Command& cmd, const Options& opts,
 			const Operand& op, bool make_local) {
 		Environment& env = exec.env();
@@ -965,8 +1033,15 @@ namespace wbsh::declare_detail {
 			return rejectCompoundConversion(exec, cmd, op, from, to);
 		}
 
+		if (followsToNothing(env, opts, op)) return 0;
+		if (rejectsLocalRefValue(env, cmd, op, make_local)) return 1;
+		if (dropsUnboundReference(env, cmd, opts, op)) return 1;
+		if (marksElementReadonly(env, cmd, opts, op)) return 0;
+		if (op.has_subscript && env.isNameref(op.name)) env.dropNamerefAttribute(op.name);
+		if (op.compound && env.rejectsArrayThroughElement(op.name)) return 1;
+		if (makesArray(opts) && !op.compound && refersToElement(env, op.name)) return 0;
 		if (rejectsReadonly(exec, cmd, opts, op, make_local)) {
-			return reportReadonly(cmd, opts, op.name);
+			return reportReadonly(cmd, opts, env.resolveRef(op.name));
 		}
 
 		if (opts.array_off && isArray(env, op.name)) {
@@ -980,9 +1055,10 @@ namespace wbsh::declare_detail {
 		const bool items_first = op.compound && make_local;
 		if (items_first && !exec.expandCompound(op.text, assign_items)) return 1;
 
-		const LocalKind local = isLocalHere(exec, op.name) ? LocalKind::Earlier
+		const std::string local_name = make_local ? localNameFor(exec, op.name) : op.name;
+		const LocalKind local = isLocalHere(exec, local_name) ? LocalKind::Earlier
 			: make_local ? LocalKind::New : LocalKind::None;
-		if (make_local) exec.makeLocal(op.name, opts.inherit);
+		if (make_local) exec.makeLocal(local_name, opts.inherit);
 		if (!applyArrayKind(env, cmd, opts, op.name, local)) return 1;
 		if (makesSubscriptedArray(env, opts, op) && !makeIndexedArray(env, op.name)) return 1;
 
@@ -1042,7 +1118,9 @@ namespace wbsh::declare_detail {
 	}
 
 	// Without a value, a variable that already holds one keeps it as its target.
+	// `-n ref+=word` appends to the name ref already holds.
 	static std::string namerefTargetFor(const Environment& env, const Operand& op) {
+		if (op.has_value && op.append) return env.namerefTarget(op.name) + op.value;
 		if (op.has_value) return op.value;
 		if (env.isNameref(op.name)) return env.namerefTarget(op.name);
 
@@ -1054,6 +1132,13 @@ namespace wbsh::declare_detail {
 		shellErrorf("%s: `%s': invalid variable name for name reference\n",
 			cmd.name, target.c_str());
 		return 1;
+	}
+
+	// In a function bash makes the reference anyway and warns, once as
+	// declare and once as it checks the new value.
+	static void warnCircularLocal(const Command& cmd, const std::string& name) {
+		shellErrorf("%s: warning: %s: circular name reference\n", cmd.name, name.c_str());
+		shellErrorf("warning: %s: circular name reference\n", name.c_str());
 	}
 
 	static int reportSelfReference(const Command& cmd, const std::string& name) {
@@ -1072,15 +1157,59 @@ namespace wbsh::declare_detail {
 		return 1;
 	}
 
-	static int declareNamerefOperand(Executor& exec, const Command& cmd, const Operand& op,
-			bool make_local) {
+	// Options given with -n mark the reference itself.
+	static void markReference(Environment& env, const Options& opts, const std::string& name) {
+		if (opts.readonly_on) env.markOwnReadonly(name);
+		if (opts.export_on) env.markOwnExported(name);
+		if (opts.add_attrs != 0) env.addOwnAttributes(name, opts.add_attrs);
+	}
+
+	static Options withoutNameref(const Options& opts) {
+		Options plain = opts;
+		plain.nameref_on = false;
+		plain.nameref_off = false;
+		return plain;
+	}
+
+	// bash makes `name=(...)` an array before declare runs, then refuses
+	// to make the array a reference.
+	static int declareArrayNotReference(Executor& exec, const Command& cmd, const Options& opts,
+			const Operand& op, bool make_local) {
+		declareOperand(exec, cmd, withoutNameref(opts), op, make_local);
+		return reportArrayReference(cmd, op.name);
+	}
+
+	// With -i the value is evaluated first, and a number names no variable.
+	static bool integerValueRejected(Executor& exec, const Options& opts, const Operand& op) {
+		if ((opts.add_attrs & kAttrInteger) == 0 || !op.has_value || op.value.empty()) return false;
+
+		const long long value = exec.expander().evalArith(op.value);
+		if (exec.expander().failed()) exec.expander().takeError();
+		return !isValidRefTarget(std::to_string(value));
+	}
+
+	static int declareNamerefOperand(Executor& exec, const Command& cmd, const Options& opts,
+			const Operand& op, bool make_local) {
 		if (op.has_subscript) return reportArrayReference(cmd, op.name + "[" + op.subscript + "]");
 
 		Environment& env = exec.env();
+		const bool locked = env.isNameref(op.name) && env.isOwnReadonly(op.name);
+		if (locked && (opts.readonly_off || op.has_value)) {
+			shellErrorf("%s: %s: readonly variable\n", cmd.name, op.name.c_str());
+			return 1;
+		}
+
 		const bool held = !op.has_value && !env.isNameref(op.name);
 		if (!make_local && held && env.isReadonly(op.name)) {
 			shellErrorf("%s: %s: readonly variable\n", cmd.name, op.name.c_str());
 			return 1;
+		}
+
+		if (op.compound) return declareArrayNotReference(exec, cmd, opts, op, make_local);
+		if (integerValueRejected(exec, opts, op)) return 1;
+		const std::string proposed = namerefTargetFor(env, op);
+		if (op.has_value && !proposed.empty() && !isValidRefTarget(proposed)) {
+			return reportBadRefTarget(cmd, proposed);
 		}
 
 		if (make_local) exec.makeLocal(op.name);
@@ -1090,22 +1219,41 @@ namespace wbsh::declare_detail {
 		const std::string target = namerefTargetFor(env, op);
 		if (held && env.has(op.name) && target.empty()) return reportBadRefTarget(cmd, target);
 		if (!isValidRefTarget(target)) return reportBadRefTarget(cmd, target);
-		if (target == op.name) return reportSelfReference(cmd, op.name);
+		if (target == op.name && op.append) {
+			shellErrorf("%s: nameref variable self references not allowed\n", op.name.c_str());
+			return 1;
+		}
 
+		if (target == op.name && !make_local) return reportSelfReference(cmd, op.name);
+		const bool own_element = target.compare(0, target.find('['), op.name) == 0;
+		if (make_local && own_element) warnCircularLocal(cmd, op.name);
+
+		if (!env.isNameref(op.name)) env.setAttributes(op.name, 0);
 		env.setNameref(op.name, target);
+		markReference(env, opts, op.name);
 		return 0;
 	}
 
 	// bash assigns through the reference before it drops the attribute:
 	// `typeset +n foo=other` sets foo's target, and foo keeps its name.
-	static int removeNamerefOperand(Executor& exec, const Operand& op) {
-		if (op.has_value) exec.env().set(op.name, op.value);
+	static int removeNamerefOperand(Executor& exec, const Command& cmd, const Options& opts,
+			const Operand& op, bool make_local) {
+		const bool targeted = !exec.env().namerefTarget(op.name).empty();
+		if (targeted && exec.env().isNameref(op.name) && exec.env().isOwnReadonly(op.name)) {
+			shellErrorf("%s: %s: readonly variable\n", cmd.name, op.name.c_str());
+			return 1;
+		}
+
+		const bool through = op.has_value || opts.add_attrs != 0 || opts.remove_attrs != 0;
+		const int status = through ? declareOperand(exec, cmd, withoutNameref(opts), op, make_local)
+			: 0;
 		exec.env().clearNameref(op.name);
-		return 0;
+		return status;
 	}
 
 	static int declareNamerefs(Executor& exec, const Command& cmd, const Options& opts,
 			const std::vector<std::string>& args, std::size_t first, bool make_local) {
+		const std::vector<bool> compound = exec.takeCompoundArgs();
 		int status = 0;
 		for (std::size_t i = first; i < args.size(); ++i) {
 			Operand op;
@@ -1114,8 +1262,9 @@ namespace wbsh::declare_detail {
 				continue;
 			}
 
-			const int result = opts.nameref_off ? removeNamerefOperand(exec, op)
-				: declareNamerefOperand(exec, cmd, op, make_local);
+			op.compound = isCompoundArg(compound, i);
+			const int result = opts.nameref_off ? removeNamerefOperand(exec, cmd, opts, op, make_local)
+				: declareNamerefOperand(exec, cmd, opts, op, make_local);
 			if (result != 0) status = result;
 		}
 
@@ -1136,7 +1285,7 @@ namespace wbsh::declare_detail {
 		if (functions && first < args.size() && rejectFunctionAttributes(cmd, opts) != 0) return 1;
 		if (functions) return declareFunctions(exec, opts, args, first);
 		if (first == args.size()) return listDeclarations(exec, opts, locals_only);
-		if (opts.print) return printNamedDeclarations(exec, cmd, args, first);
+		if (opts.print) return printNamedDeclarations(exec, cmd, opts, args, first);
 
 		const bool make_local = locals_only || (exec.funcDepth() > 0 && !opts.global);
 		if (opts.nameref_on || opts.nameref_off) {
@@ -1330,14 +1479,16 @@ namespace wbsh::declare_detail {
 			return 1;
 		}
 
-		if (env.isReadonly(text)) {
+		const bool readonly = opts.n_flag ? env.isOwnReadonly(text) : env.isReadonly(text);
+		if (readonly) {
 			const std::string& shown = opts.n_flag ? text : env.resolveRef(text);
 			shellErrorf("unset: %s: cannot unset: readonly variable\n", shown.c_str());
 			return 1;
 		}
 
+		// bash leaves a variable that is no nameref alone.
 		if (opts.n_flag) {
-			env.unsetNameref(text);
+			if (env.isNameref(text)) env.unsetNameref(text);
 			return 0;
 		}
 

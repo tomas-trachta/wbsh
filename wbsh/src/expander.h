@@ -408,6 +408,7 @@ namespace wbsh {
 			const std::string& label = {});
 		bool isUnboundNameref(const std::string& name) const;
 		bool refersToWholeArray(const std::string& name) const;
+		bool renderWholeArrayRef(const std::string& name, Tagged& out, bool inside_dq);
 		std::string lookupPositional(std::size_t index) const;
 		bool isVariableSet(const std::string& name) const;
 		bool isUnsetPositional(const std::string& name) const;

@@ -83,6 +83,7 @@ namespace wbsh {
 		bool backquoted = false;      ///< A CmdSubst written with backquotes.
 		bool unterminated = false;    ///< The input ended before its closing `)`.
 		bool aliased = false;         ///< Aliases in the body went into finding its end.
+		std::size_t carried_heredocs = 0;  ///< Documents left open, read after the command.
 	};
 
 	const char* segKindName(WordSegment::Kind k);
@@ -102,6 +103,7 @@ namespace wbsh {
 		bool heredoc_quoted = false;        ///< Delimiter quoted -> body kept verbatim.
 		std::string heredoc_body;           ///< Slurped body (excludes terminator line).
 		std::size_t heredoc_eof_line = 0;   ///< Line the input ended on, the body unterminated.
+		std::size_t heredoc_start_line = 0; ///< Line whose end starts the body, as bash names it.
 	};
 
 	/// An alias expanded where its name was: the text from @p at for
@@ -287,6 +289,8 @@ namespace wbsh {
 		void copyArithmeticDollar(std::string& out);
 
 		void collectHeredocBodies();
+		void collectCarriedHeredocs(std::size_t start_line);
+		void carryHeredocs(const std::vector<Token>& unread, const std::string& body);
 		// One line of a here-document as bash compares it with the delimiter.
 		struct HeredocLine {
 			std::string logical;
@@ -349,6 +353,17 @@ namespace wbsh {
 			std::size_t delim_token_index;
 		};
 		std::vector<PendingHeredoc> pending_heredocs_;
+
+		// A here-document opened in a `$( )` body that closed before its
+		// own body: it takes the lines after the outer command, which are
+		// added to the substitution's text (`word_token_index` is the word
+		// the substitution sits in, `body` its text when it closed).
+		struct CarriedHeredoc {
+			Token delim;
+			std::size_t word_token_index;
+			std::string body;
+		};
+		std::vector<CarriedHeredoc> carried_heredocs_;
 
 		// Open `(` of the command being scanned inside a `$(` body.
 		int nested_paren_depth_ = 0;

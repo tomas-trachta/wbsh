@@ -186,6 +186,15 @@ namespace wbsh {
 		const std::unordered_set<std::string>& exportedSet() const { return exported_; }
 		/// Mark @p name as readonly; further set() calls will fail.
 		void   markReadonly(const std::string& name)   { readonly_.insert(resolveRef(name)); }
+		/// A nameref's own readonly and export marks, not its target's.
+		void   markOwnReadonly(const std::string& name) { readonly_.insert(name); }
+		void   markOwnExported(const std::string& name) { exported_.insert(name); }
+		void   addOwnAttributes(const std::string& name, unsigned bits) { attributes_[name] |= bits; }
+		bool   appendsAsInteger(const std::string& name) const;
+		bool   isOwnReadonly(const std::string& name) const { return readonly_.count(name) != 0; }
+		bool   isOwnExported(const std::string& name) const { return exported_.count(name) != 0; }
+		/// `declare -p`'s letters for nameref @p name itself (`inrx`).
+		std::string namerefLetters(const std::string& name) const;
 		bool   isReadonly(const std::string& name) const {
 			return readonly_.count(resolveRef(name)) != 0;
 		}
@@ -214,6 +223,28 @@ namespace wbsh {
 		}
 		/// Evaluates the subscript of a `name[sub]` that a builtin was given.
 		void setSubscriptEvaluator(ArithEvaluator evaluator) { subscript_evaluator_ = evaluator; }
+		/// Gives a value assigned through a circular nameref to the global
+		/// variable of that name; false when there is no function scope.
+		using CycleAssigner = bool (*)(void* context, const std::string& name,
+			const std::string& value);
+		void setCycleAssigner(CycleAssigner assigner, void* context) {
+			cycle_assigner_ = assigner;
+			cycle_context_ = context;
+		}
+		/// The namerefs from @p name lead back to one already followed.
+		bool isCyclicRef(const std::string& name) const;
+		bool refersToOwnElement(const std::string& name) const;
+		/// Whether @p name is a local of a running function; with the cycle
+		/// reader, what the global variable of that name holds.
+		using LocalQuery = bool (*)(void* context, const std::string& name);
+		using CycleReader = bool (*)(void* context, const std::string& name, std::string& out);
+		void setLocalQueries(LocalQuery is_local, CycleReader reader) {
+			local_query_ = is_local;
+			cycle_reader_ = reader;
+		}
+		bool readThroughCycle(const std::string& name, std::string& out) const {
+			return cycle_reader_ != nullptr && cycle_reader_(cycle_context_, name, out);
+		}
 
 		const std::unordered_map<std::string, std::string>& vars() const { return vars_; }
 
@@ -246,6 +277,11 @@ namespace wbsh {
 		bool rejectsRefTarget(const std::string& name, const std::string& value) const;
 		bool rejectsRefValue(const std::string& value) const;
 		void dropUnboundNameref(const std::string& name);
+		/// An array made under a nameref's own name ends the reference.
+		void dropNamerefAttribute(const std::string& name);
+		/// An array made through a nameref to an element has nowhere to
+		/// go; reports it.
+		bool rejectsArrayThroughElement(const std::string& name) const;
 		/// The builtin whose assignments are running, for their errors.
 		void setAssigningCommand(std::string name) { assigning_command_ = std::move(name); }
 		const std::string& assigningCommand() const { return assigning_command_; }
@@ -523,6 +559,10 @@ namespace wbsh {
 		std::unordered_map<std::string, std::string> namerefs_;
 		std::unordered_set<std::string> valueless_;
 		ArithEvaluator arith_evaluator_ = nullptr;
+		CycleAssigner cycle_assigner_ = nullptr;
+		LocalQuery local_query_ = nullptr;
+		CycleReader cycle_reader_ = nullptr;
+		void* cycle_context_ = nullptr;
 		ArithEvaluator subscript_evaluator_ = nullptr;
 		void* arith_context_ = nullptr;
 		std::vector<std::string> positional_;
