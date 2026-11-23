@@ -7,7 +7,7 @@
 ; architecture.
 
 #ifndef AppVersion
-#define AppVersion "1.1.3"
+#define AppVersion "1.2.0"
 #endif
 
 #ifndef Arch
