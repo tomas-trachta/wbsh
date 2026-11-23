@@ -68,7 +68,7 @@ printf '<%q>\n' $'B\315' 2>&1
 printf -- '--%b--\n' '\t\101' '\1017' '\x' 2>&1
 printf '%d\n' 9223372036854775825 '' 2>&1; echo "status $?"
 printf '%(abde)Z|\n' -1 2>&1
-printf '[%-12.3(%Y (x) %m)T]\n' 0
+printf '[%-12.3(%Y (x) %m)T]\n' 1000000000
 x=$'B\315'; declare -p x
 
 echo "=== test"

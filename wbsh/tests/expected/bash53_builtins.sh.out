@@ -59,7 +59,7 @@ bash53_builtins.sh: line 69: printf: : invalid number
 status 1
 bash53_builtins.sh: line 70: printf: warning: `Z': invalid time format specification
 %(abde)Z|
-[197         ]
+[200         ]
 declare -- x=$'B\315'
 === test
 bash53_builtins.sh: line 75: test: 4+3: integer expected
