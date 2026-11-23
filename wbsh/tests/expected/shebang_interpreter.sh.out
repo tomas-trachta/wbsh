@@ -11,7 +11,7 @@ CRLF line
 === a script as the interpreter
 interp got: -x ./by_script arg
 === a missing interpreter
-shebang_interpreter.sh: line 37: ./missing: /usr/bin/no-such-interpreter: bad interpreter: No such file or directory
+shebang_interpreter.sh: ./missing: /usr/bin/no-such-interpreter: bad interpreter: No such file or directory
 status 126
 === in a pipeline, in the background, with a temporary variable
 HELLO ./BY_ECHO PIPED

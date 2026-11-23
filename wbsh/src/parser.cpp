@@ -189,26 +189,63 @@ namespace wbsh {
 		owner.openers_.pop_back();
 	}
 
+	static bool endsInEscape(const std::string& text) {
+		std::size_t backslashes = 0;
+		while (backslashes < text.size() && text[text.size() - 1 - backslashes] == '\\') {
+			++backslashes;
+		}
+
+		return backslashes % 2 == 1;
+	}
+
 	// bash counts a last line without its newline as ended, so the end of
-	// such input is one line further on.
+	// such input is one line further on; a backslash before that newline
+	// continues the line once more.
 	std::size_t Parser::endOfInputLine() const {
 		const std::size_t line = peek().loc.line;
 		const bool unterminated = source_ != nullptr && !source_->empty()
 			&& source_->back() != '\n';
-		return unterminated ? line + 1 : line;
+		if (!unterminated) return line;
+
+		return endsInEscape(*source_) ? line + 2 : line + 1;
 	}
 
-	void Parser::reportUnclosed() {
-		if (!atEnd() || openers_.empty()) {
+	// bash names the token its grammar could not take, or the end of the
+	// input and the compound command still open there.
+	void Parser::reportUnexpected() {
+		if (!atEnd()) {
 			error(peek(), "syntax error near unexpected token `" + tokenSpelling(peek()) + "'");
 			return;
 		}
 
-		const Opener& opener = openers_.back();
 		SourceLoc at = peek().loc;
 		at.line = endOfInputLine();
+		if (openers_.empty()) {
+			errors_.push_back({ at, "syntax error: unexpected end of file" });
+			return;
+		}
+
+		const Opener& opener = openers_.back();
 		errors_.push_back({ at, std::string("syntax error: unexpected end of file from `")
 			+ opener.keyword + "' command on line " + std::to_string(opener.line) });
+	}
+
+	// bash's grammar still reads to the end of the input after some `[[`
+	// errors, and reports the end there too.
+	void Parser::reportEndOfFileAfter() {
+		reportUnexpected();
+		errors_.back().follows_previous = true;
+	}
+
+	// Where bash's grammar does not skip newlines, the end of an
+	// unterminated last line is the newline bash reads there.
+	void Parser::reportUnexpectedAtLineEnd() {
+		if (!atEnd()) {
+			reportUnexpected();
+			return;
+		}
+
+		error(peek(), "syntax error near unexpected token `newline'");
 	}
 
 	// bash drops only the command a stray token in an array literal breaks
@@ -224,11 +261,11 @@ namespace wbsh {
 	}
 
 	void Parser::expectClosing(const char* word) {
-		if (!matchReserved(word)) reportUnclosed();
+		if (!matchReserved(word)) reportUnexpected();
 	}
 
 	void Parser::expectClosingParen() {
-		if (!match(TokKind::RParen)) reportUnclosed();
+		if (!match(TokKind::RParen)) reportUnexpected();
 	}
 
 	void Parser::skipNewlines() {
@@ -296,12 +333,59 @@ namespace wbsh {
 		return !tryExtractAssignment(peek(), probe);
 	}
 
-	Word Parser::tokenToWord(const Token& t) const {
+	Word Parser::tokenToWord(const Token& t) {
+		checkSubstitutions(t, t.segments);
+
 		Word word;
 		word.segments = t.segments;
 		word.raw = t.text;
 		word.loc = t.loc;
 		return word;
+	}
+
+	// bash parses a `$(...)` body along with the command around it, so a
+	// syntax error inside stops that command before it runs. Backquotes
+	// are parsed only when they run, and so is a body with aliases in it,
+	// which only the lexer had the alias table for.
+	void Parser::checkSubstitutions(const Token& t, const std::vector<WordSegment>& segments) {
+		for (const WordSegment& segment : segments) {
+			if (segment.kind == WordSegment::Kind::DoubleQuoted) checkSubstitutions(t, segment.nested);
+
+			const bool parsed_early = segment.kind == WordSegment::Kind::CmdSubst
+				&& !segment.backquoted && !segment.unterminated && !segment.aliased;
+			if (parsed_early) checkSubstitutionBody(t, segment.text);
+		}
+	}
+
+	void Parser::checkSubstitutionBody(const Token& t, const std::string& body) {
+		Lexer lexer(body);
+		lexer.lexSubstitutionBody();
+		std::vector<Token> tokens = lexer.tokenize();
+		if (!lexer.errors().empty()) return;
+
+		Parser inner(std::move(tokens), body);
+		inner.parseProgram();
+		if (!inner.errors().empty()) reportSubstitutionError(t, body, inner.errors().front());
+	}
+
+	// The body ending inside a command is the `)` coming too early; a
+	// stray token is reported with the `)' bash was looking for.
+	void Parser::reportSubstitutionError(const Token& t, const std::string& body,
+			const ParseError& inner) {
+		SourceLoc at = t.loc;
+		if (inner.message.rfind("syntax error: unexpected end of file", 0) == 0) {
+			at.line += static_cast<std::size_t>(std::count(body.begin(), body.end(), '\n'));
+			errors_.push_back({ at, "syntax error near unexpected token `)'" });
+			return;
+		}
+
+		at.line += inner.loc.line - 1;
+		std::string message = inner.message;
+		if (message.rfind("syntax error near unexpected token", 0) == 0) {
+			message += " while looking for matching `)'";
+		}
+
+		errors_.push_back({ at, message });
 	}
 
 	void Parser::parseTrailingRedirections(std::vector<Redirection>& redirs) {
@@ -407,6 +491,20 @@ namespace wbsh {
 		return false;
 	}
 
+	bool followUpSyntaxError(const std::vector<ParseError>& parse_errors, const ParseError& first,
+	                         ParseError& out_error) {
+		for (std::size_t i = 0; i + 1 < parse_errors.size(); ++i) {
+			const ParseError& error = parse_errors[i];
+			if (error.loc.offset != first.loc.offset || error.message != first.message) continue;
+			if (!parse_errors[i + 1].follows_previous) return false;
+
+			out_error = parse_errors[i + 1];
+			return true;
+		}
+
+		return false;
+	}
+
 	std::size_t discardResumeOffset(const std::string& source,
 	                                const std::vector<LexError>& lex_errors,
 	                                const std::vector<ParseError>& parse_errors) {
@@ -447,7 +545,7 @@ namespace wbsh {
 
 			auto right = parsePipeline();
 			if (right == nullptr) {
-				error(peek(), "expected pipeline after && / ||");
+				reportUnexpected();
 				break;
 			}
 
@@ -494,36 +592,50 @@ namespace wbsh {
 		return command;
 	}
 
-	// Each `!` toggles the negation, so `! !` cancels out.
-	bool Parser::matchBangs(bool& out_saw_bang) {
-		bool negated = false;
-		while (matchReserved("!")) {
-			negated = !negated;
-			out_saw_bang = true;
-		}
+	bool Parser::matchTimeDashDash() {
+		if (!check(TokKind::Word) || peek().text != "--") return false;
 
-		return negated;
+		advance();
+		return true;
+	}
+
+	// bash's pipeline_command takes any run of `!` (each one toggles the
+	// negation, so `! !` cancels out) and `time [-p] [--]`.
+	void Parser::matchPipelinePrefixes(PipelinePrefixes& out) {
+		for (;;) {
+			if (matchReserved("!")) {
+				out.bang = !out.bang;
+				out.saw_bang = true;
+				continue;
+			}
+
+			if (!matchTimePrefix()) return;
+
+			out.timed = true;
+			if (matchTimePosixOption()) out.time_posix = true;
+			matchTimeDashDash();
+		}
 	}
 
 	// bash takes `!` or `time` right before `;`, a newline or the end of
 	// the input as negating resp. timing an empty command.
 	bool Parser::atBareListTerminator() const {
-		return check(TokKind::Semi) || check(TokKind::Newline) || atEnd();
+		return check(TokKind::Semi) || check(TokKind::Amp) || check(TokKind::Newline) || atEnd();
 	}
 
 	NodePtr Parser::parsePipeline() {
 		const std::size_t start = srcOffsetHere();
-		const bool timed = matchTimePrefix();
-		const bool time_posix = timed && matchTimePosixOption();
-		bool saw_bang = false;
-		const bool bang = matchBangs(saw_bang);
+		PipelinePrefixes prefixes;
+		matchPipelinePrefixes(prefixes);
+		const bool timed = prefixes.timed;
+		const bool saw_bang = prefixes.saw_bang;
+		const bool bang = prefixes.bang;
 
 		auto first = parseCommand();
 		if (first == nullptr && timed && !saw_bang) first = makeNullCommand();
 		if (first == nullptr && saw_bang && atBareListTerminator()) first = makeNullCommand();
 		if (first == nullptr) {
-			if (saw_bang) error(peek(), "expected command after `!`");
-			if (timed) error(peek(), "expected command after `time`");
+			if (saw_bang || timed) reportUnexpected();
 			return nullptr;
 		}
 
@@ -534,7 +646,7 @@ namespace wbsh {
 		auto pipe = arena_.make<Pipeline>();
 		pipe->bang = bang;
 		pipe->timed = timed;
-		pipe->time_posix = time_posix;
+		pipe->time_posix = prefixes.time_posix;
 		pipe->loc = first->loc;
 		pipe->commands.push_back(first);
 
@@ -545,7 +657,7 @@ namespace wbsh {
 
 			auto next = parseCommand();
 			if (next == nullptr) {
-				error(peek(), "expected command after pipe");
+				reportUnexpected();
 				break;
 			}
 
@@ -596,10 +708,11 @@ namespace wbsh {
 	}
 
 	// A NAME is taken only before a compound command; before a simple
-	// command the word is the command's own name, as in bash.
+	// command the word is the command's own name, as in bash. Any word
+	// will do here; one that is no identifier fails when the coproc runs.
 	bool Parser::atCoprocName() const {
 		const Token& next = peek(1);
-		if (peek().kind != TokKind::Word || !isShellName(peek().text)) return false;
+		if (peek().kind != TokKind::Word) return false;
 		if (next.kind == TokKind::LParen || next.kind == TokKind::DArithCmd) return true;
 
 		static const char* const kCompoundStarts[] = {
@@ -621,7 +734,7 @@ namespace wbsh {
 		if (atCoprocName()) node->name = advance().text;
 
 		node->command = parseCommand();
-		if (node->command == nullptr) error(peek(), "expected command after `coproc`");
+		if (node->command == nullptr) reportUnexpectedAtLineEnd();
 
 		stampSpan(*node, start);
 		return node;
@@ -631,7 +744,7 @@ namespace wbsh {
 		const SourceLoc loc = peek().loc;
 		advance();
 		if (peek().kind != TokKind::Word) {
-			reportUnclosed();
+			reportUnexpected();
 			return nullptr;
 		}
 
@@ -720,8 +833,14 @@ namespace wbsh {
 	}
 
 	NodePtr Parser::parseDoGroup() {
+		if (matchReserved("{")) {
+			auto body = parseCompoundList();
+			expectClosing("}");
+			return body;
+		}
+
 		if (!matchReserved("do")) {
-			reportUnclosed();
+			reportUnexpected();
 			return nullptr;
 		}
 
@@ -749,15 +868,43 @@ namespace wbsh {
 		return node;
 	}
 
+	// The end of the `$(...)` or `${...}` at body[i], whose `;` and
+	// parentheses (`$(case x in x) esac)`) are not the header's.
+	static std::size_t arithForSubstitutionEnd(const std::string& body, std::size_t i) {
+		if (body[i + 1] == '(') {
+			const std::size_t close = Lexer::commandSubstitutionEnd(body, i + 2);
+			return close == std::string::npos ? body.size() : close + 1;
+		}
+
+		int depth = 0;
+		for (std::size_t k = i + 1; k < body.size(); ++k) {
+			if (body[k] == '{') ++depth;
+			if (body[k] == '}' && --depth == 0) return k + 1;
+		}
+
+		return body.size();
+	}
+
+	static bool atArithForSubstitution(const std::string& body, std::size_t i) {
+		return body[i] == '$' && i + 1 < body.size() && (body[i + 1] == '(' || body[i + 1] == '{');
+	}
+
 	// Splits the raw body of a `for (( init; cond; update ))` header on its
-	// top-level semicolons, respecting nested parens so that command
-	// substitutions or subexpressions containing `;` aren't split.
+	// top-level semicolons, respecting nested parens and substitutions.
 	static std::vector<std::string> splitArithForHeader(const std::string& body) {
 		std::vector<std::string> parts;
 		std::string part;
 		int depth = 0;
+		std::size_t i = 0;
+		while (i < body.size()) {
+			if (atArithForSubstitution(body, i)) {
+				const std::size_t end = arithForSubstitutionEnd(body, i);
+				part += body.substr(i, end - i);
+				i = end;
+				continue;
+			}
 
-		for (char c : body) {
+			const char c = body[i++];
 			if (c == '(') ++depth;
 			else if (c == ')') --depth;
 
@@ -782,8 +929,17 @@ namespace wbsh {
 		return text.substr(begin);
 	}
 
+	// bash names what is wrong, then shows the whole header.
+	void Parser::reportArithForHeader(const Token& header, std::size_t parts) {
+		const std::string what = parts < 3
+			? "syntax error: arithmetic expression required"
+			: "syntax error: `;' unexpected";
+		error(header, what + "\nsyntax error: `((" + header.text + "))'");
+	}
+
 	NodePtr Parser::parseForArith(std::size_t start, SourceLoc loc) {
-		const std::vector<std::string> parts = splitArithForHeader(peek().text);
+		const Token header = peek();
+		const std::vector<std::string> parts = splitArithForHeader(header.text);
 		advance();
 		skipNewlines();
 		match(TokKind::Semi);
@@ -793,7 +949,7 @@ namespace wbsh {
 		node->loc = loc;
 		node->is_arith = true;
 		if (parts.size() != 3) {
-			error(peek(), "expected `init; cond; update` inside `for ((...))`");
+			reportArithForHeader(header, parts.size());
 		} else {
 			node->arith_init = trimArith(parts[0]);
 			node->arith_cond = trimArith(parts[1]);
@@ -813,7 +969,7 @@ namespace wbsh {
 	bool Parser::parseInWordListHeader(std::string& var, bool& has_in,
 	                                   std::vector<Word>& items) {
 		if (peek().kind != TokKind::Word) {
-			reportUnclosed();
+			reportUnexpected();
 			return false;
 		}
 
@@ -832,13 +988,9 @@ namespace wbsh {
 	}
 
 	void Parser::parseInWordList(std::vector<Word>& items) {
-		while (peek().kind == TokKind::Word && !tokenIsReservedTerminator(peek())) {
-			items.push_back(tokenToWord(advance()));
-		}
+		while (peek().kind == TokKind::Word) items.push_back(tokenToWord(advance()));
 
-		if (!match(TokKind::Semi) && !match(TokKind::Newline)) {
-			if (!checkReserved("do")) error(peek(), "expected `;` or newline after word list");
-		}
+		if (!match(TokKind::Semi) && !match(TokKind::Newline)) reportUnexpected();
 
 		skipNewlines();
 	}
@@ -888,7 +1040,7 @@ namespace wbsh {
 		const OpenerScope opener(*this, "case", loc.line);
 		advance();
 		if (peek().kind != TokKind::Word) {
-			reportUnclosed();
+			reportUnexpected();
 			return nullptr;
 		}
 
@@ -933,6 +1085,10 @@ namespace wbsh {
 			&& !check(TokKind::SemiAmp)
 			&& !check(TokKind::DSemiAmp);
 		if (has_body) item.body = parseList(false);
+
+		const bool terminated = check(TokKind::DSemi) || check(TokKind::SemiAmp)
+			|| check(TokKind::DSemiAmp);
+		if (!terminated && !checkReserved("esac")) reportUnexpected();
 
 		item.term = matchCaseTerminator();
 		skipNewlines();
@@ -1028,8 +1184,8 @@ namespace wbsh {
 
 		const Token& operand = peek(1);
 		if (operand.kind != TokKind::Word || isReserved(operand, "]]")) {
-			error(operand, "unexpected argument `" + operand.text
-				+ "' to conditional unary operator");
+			condError("unexpected argument `" + tokenSpelling(operand)
+				+ "' to conditional unary operator", operand);
 			e.lhs = tokenToWord(advance());
 			return true;
 		}
@@ -1042,14 +1198,22 @@ namespace wbsh {
 
 	// Like bash, newlines may sit between the terms of `[[ ... ]]` but
 	// not inside one: a newline between `a` and `==` is an error.
-	DBracketCond::Expr* Parser::parseDBracketPrimary() {
-		if (check(TokKind::LParen)) {
-			advance();
-			auto inner = parseDBracketExpr();
-			if (!match(TokKind::RParen)) error(peek(), "expected `)` inside [[ ... ]]");
-			skipNewlines();
-			return inner;
+	DBracketCond::Expr* Parser::parseDBracketGroup() {
+		advance();
+		auto inner = parseDBracketExpr();
+		if (atEnd()) {
+			error(peek(), "unexpected token `EOF', expected `)'");
+			reportEndOfFileAfter();
+		} else if (!match(TokKind::RParen)) {
+			condError("unexpected token `" + tokenSpelling(peek()) + "', expected `)'", peek());
 		}
+
+		skipNewlines();
+		return inner;
+	}
+
+	DBracketCond::Expr* Parser::parseDBracketPrimary() {
+		if (check(TokKind::LParen)) return parseDBracketGroup();
 
 		auto expr = arena_.make<DBracketCond::Expr>();
 		expr->k = DBracketCond::Expr::K::Prim;
@@ -1058,29 +1222,59 @@ namespace wbsh {
 			return expr;
 		}
 
-		if (peek().kind != TokKind::Word) {
-			error(peek(), "expected operand in [[ ... ]]");
+		if (!atDBracketOperand()) {
+			const bool operator_token = peek().kind != TokKind::Word && !atEnd();
+			condError(operator_token ? "unexpected token `" + tokenSpelling(peek())
+				+ "' in conditional command" : std::string(), peek());
 			return expr;
 		}
 
 		expr->lhs = tokenToWord(advance());
+		parseDBracketBinaryRest(*expr);
+		return expr;
+	}
 
+	// What may follow a complete term of `[[ ... ]]`.
+	bool Parser::atDBracketTermEnd() const {
+		return atEnd() || atDBracketEnd() || check(TokKind::AndIf) || check(TokKind::OrIf)
+			|| check(TokKind::RParen) || check(TokKind::Newline);
+	}
+
+	bool Parser::atDBracketOperand() const {
+		return peek().kind == TokKind::Word && !isReserved(peek(), "]]");
+	}
+
+	void Parser::parseDBracketBinaryRest(DBracketCond::Expr& expr) {
 		const std::string op_text = dBracketOpAsString(peek());
 		const bool is_binary_op = !op_text.empty()
 		    && (op_text == "<" || op_text == ">" || isDBracketBinaryOp(op_text))
 		    && !isReserved(peek(), "]]");
-		if (!is_binary_op) return expr;
+		if (!is_binary_op) {
+			if (!atDBracketTermEnd()) {
+				condError("unexpected token `" + tokenSpelling(peek())
+					+ "', conditional binary operator expected", peek());
+			}
 
-		expr->op = op_text;
-		advance();
-		if (peek().kind != TokKind::Word) {
-			error(peek(), "expected right operand in [[ ... ]]");
-			return expr;
+			return;
 		}
 
-		expr->rhs = tokenToWord(advance());
+		expr.op = op_text;
+		advance();
+		if (!atDBracketOperand()) {
+			condError("unexpected argument `" + tokenSpelling(peek())
+				+ "' to conditional binary operator", peek());
+			return;
+		}
+
+		expr.rhs = tokenToWord(advance());
 		skipNewlines();
-		return expr;
+	}
+
+	// bash reports what it expected, if anything, then where it stopped,
+	// and quotes the line.
+	void Parser::condError(const std::string& detail, const Token& at) {
+		const std::string near = "syntax error near `" + tokenSpelling(at) + "'";
+		error(at, detail.empty() ? near : detail + "\n" + near);
 	}
 
 	NodePtr Parser::parseDBracket() {
@@ -1090,12 +1284,14 @@ namespace wbsh {
 		const OpenerScope opener(*this, "[[", node->loc.line);
 		advance();
 
+		const std::size_t errors_before = errors_.size();
 		if (atDBracketEnd()) {
-			error(peek(), "[[: empty conditional expression");
+			condError("", peek());
 		} else {
 			node->root = parseDBracketExpr();
 		}
 
+		if (errors_.size() == errors_before) reportDBracketLeftover();
 		expectClosing("]]");
 
 		parseTrailingRedirections(node->redirs);
@@ -1103,13 +1299,39 @@ namespace wbsh {
 		return node;
 	}
 
+	// After a whole expression only `]]` may come.
+	void Parser::reportDBracketLeftover() {
+		if (atDBracketEnd()) return;
+
+		if (atEnd()) {
+			error(peek(), "unexpected EOF while looking for `]]'");
+			reportEndOfFileAfter();
+			return;
+		}
+
+		condError("syntax error in conditional expression: unexpected token `"
+			+ tokenSpelling(peek()) + "'", peek());
+	}
+
+	// A function body is a compound command; `f() echo hi` is an error.
+	bool Parser::atCompoundCommand() const {
+		static const char* const kCompoundStarts[] = {
+			"{", "if", "while", "until", "for", "select", "case", "[[", nullptr,
+		};
+		for (int i = 0; kCompoundStarts[i] != nullptr; ++i) {
+			if (checkReserved(kCompoundStarts[i])) return true;
+		}
+
+		return check(TokKind::DArithCmd) || check(TokKind::LParen);
+	}
+
 	NodePtr Parser::parseFunctionRest(std::string name, SourceLoc loc) {
 		const std::size_t start = loc.offset;
 		skipNewlines();
 
-		auto body = parseCommand();
+		auto body = atCompoundCommand() ? parseCommand() : nullptr;
 		if (body == nullptr) {
-			error(peek(), "expected function body");
+			reportUnexpected();
 			return nullptr;
 		}
 
@@ -1232,18 +1454,42 @@ namespace wbsh {
 		return a.value.segments.empty() && !a.has_subscript;
 	}
 
+	static bool followsWithoutBlank(const Token& before, const Token& next) {
+		return next.kind == TokKind::Word && next.loc.offset == before.loc.offset + before.text.size();
+	}
+
 	bool Parser::tryConsumeLeadingAssignment(SimpleCommand& cmd) {
 		Assignment assignment;
 		if (!tryExtractAssignment(peek(), assignment)) return false;
 
 		advance();
-		if (isEmptyScalarAssignmentSlot(assignment) && peek().kind == TokKind::LParen) {
+		const bool empty_slot = assignment.value.segments.empty();
+		if (empty_slot && peek().kind == TokKind::LParen) {
+			const std::size_t open = peek().loc.offset;
 			advance();
 			parseArrayLiteralBody(assignment);
+			const bool glued = followsWithoutBlank(toks_[pos_ - 1], peek());
+			if (glued) takeParenthesizedValue(assignment, open);
 		}
 
 		cmd.assignments.push_back(std::move(assignment));
 		return true;
+	}
+
+	// `a=(4*3)/2`: with text right after the `)`, bash's word is no array
+	// but a value that starts with the parentheses.
+	void Parser::takeParenthesizedValue(Assignment& assignment, std::size_t open) {
+		const Token& rest = advance();
+		const std::size_t end = rest.loc.offset + rest.text.size();
+		if (source_ == nullptr || end > source_->size()) return;
+
+		WordSegment literal;
+		literal.kind = WordSegment::Kind::Literal;
+		literal.text = source_->substr(open, end - open);
+		assignment.value.raw = literal.text;
+		assignment.value.segments = { literal };
+		assignment.is_array = false;
+		assignment.keyed_items.clear();
 	}
 
 	bool Parser::parseLoneArrayAssignment(Assignment& out) {
@@ -1268,6 +1514,16 @@ namespace wbsh {
 		}
 
 		return false;
+	}
+
+	// bash's parser lets the words after `eval` and `let` hold `name=(...)`
+	// too, though only the declaration builtins expand them as assignments.
+	static bool takesCompoundWords(const Word& word) {
+		if (word.segments.size() != 1) return false;
+		if (word.segments[0].kind != WordSegment::Kind::Literal) return false;
+
+		const std::string& name = word.segments[0].text;
+		return name == "eval" || name == "let";
 	}
 
 	std::string Parser::compoundTextFrom(std::size_t first_token) const {
@@ -1301,12 +1557,26 @@ namespace wbsh {
 		return true;
 	}
 
+	bool Parser::tryConsumeCompoundWord(SimpleCommand& cmd) {
+		Assignment assignment;
+		if (!tryExtractAssignment(peek(), assignment)) return false;
+		if (!isEmptyScalarAssignmentSlot(assignment)) return false;
+		if (pos_ + 1 >= toks_.size() || toks_[pos_ + 1].kind != TokKind::LParen) return false;
+		if (!tryConsumeDeclarationArg(cmd)) return false;
+
+		DeclarationArg& arg = cmd.declaration_args.back();
+		arg.expands_items = true;
+		if (followsWithoutBlank(toks_[pos_ - 1], peek())) arg.trailing = tokenToWord(advance());
+		return true;
+	}
+
 	NodePtr Parser::parseSimpleCommand() {
 		const std::size_t start = srcOffsetHere();
 		auto cmd = arena_.make<SimpleCommand>();
 		cmd->loc = peek().loc;
 		bool seen_word = false;
 		bool declaration = false;
+		bool compound_words = false;
 
 		while (!atEnd()) {
 			if (atRedirOp() || peek().kind == TokKind::IoNumber) {
@@ -1320,9 +1590,11 @@ namespace wbsh {
 			if (peek().kind != TokKind::Word) break;
 			if (!seen_word && tryConsumeLeadingAssignment(*cmd)) continue;
 			if (declaration && tryConsumeDeclarationArg(*cmd)) continue;
+			if (compound_words && tryConsumeCompoundWord(*cmd)) continue;
 
 			cmd->words.push_back(tokenToWord(advance()));
 			if (!seen_word) declaration = isDeclarationCommandWord(cmd->words.back());
+			if (!seen_word) compound_words = takesCompoundWords(cmd->words.back());
 			seen_word = true;
 		}
 
@@ -1350,18 +1622,22 @@ namespace wbsh {
 		return length;
 	}
 
+	// The `]` that closes the subscript: `a[b[c]d]=e` nests.
 	static bool findSubscriptCloseBracket(const Token& token, SubscriptSpan& span) {
-		for (std::size_t k = 0; k < token.segments.size(); ++k) {
+		int depth = 1;
+		for (std::size_t k = span.open_seg; k < token.segments.size(); ++k) {
 			const auto& segment = token.segments[k];
 			if (segment.kind != WordSegment::Kind::Literal) continue;
 
 			const std::size_t from = (k == span.open_seg) ? span.open_pos : 0;
-			const std::size_t close = segment.text.find(']', from);
-			if (close == std::string::npos) continue;
-
-			span.close_seg = k;
-			span.close_pos = close;
-			return true;
+			for (std::size_t i = from; i < segment.text.size(); ++i) {
+				if (segment.text[i] == '[') ++depth;
+				else if (segment.text[i] == ']' && --depth == 0) {
+					span.close_seg = k;
+					span.close_pos = i;
+					return true;
+				}
+			}
 		}
 
 		return false;
@@ -1524,7 +1800,7 @@ namespace wbsh {
 		out.fd_variable = std::move(fd_variable);
 		advance();
 		if (peek().kind != TokKind::Word) {
-			error(peek(), "expected word after redirection operator");
+			reportUnexpectedAtLineEnd();
 			return false;
 		}
 
@@ -1534,6 +1810,7 @@ namespace wbsh {
 			out.heredoc_body = target.heredoc_body;
 			out.heredoc_quoted = target.heredoc_quoted;
 			out.heredoc_eof_line = target.heredoc_eof_line;
+			out.heredoc_start_line = target.heredoc_start_line;
 		}
 
 		advance();

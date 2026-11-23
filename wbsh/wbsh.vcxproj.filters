@@ -126,6 +126,7 @@
     <ClCompile Include="src\diagnostics.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\funcprint.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor_callstack.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\executor_funcexport.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor_procsubst.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor_xtrace.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\executor_restricted.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -283,6 +284,7 @@
     <ClCompile Include="src\coreutils_fileops.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_remove.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_copy.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\coreutils_expr.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_headtail.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\devices.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\coreutils_system.cpp"><Filter>Source Files</Filter></ClCompile>

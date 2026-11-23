@@ -44,10 +44,10 @@ read_options.sh: line 49: read: abc: invalid timeout specification
 rc=1
 === 7. bad options and names
 read_options.sh: line 52: read: -z: invalid option
-read: usage: read [-ers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] [-p prompt] [-t timeout] [-u fd] [name ...]
+read: usage: read [-Eers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] [-p prompt] [-t timeout] [-u fd] [name ...]
 rc=2
 read_options.sh: line 53: read: `1x': not a valid identifier
 rc=1
 read_options.sh: line 54: read: -a: option requires an argument
-read: usage: read [-ers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] [-p prompt] [-t timeout] [-u fd] [name ...]
+read: usage: read [-Eers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] [-p prompt] [-t timeout] [-u fd] [name ...]
 rc=2

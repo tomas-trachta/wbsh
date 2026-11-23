@@ -32,7 +32,7 @@ wbsh: line 1: h[k]: unbound variable
 [rc=1]
 wbsh: line 1: nope: unbound variable
 [rc=1]
-wbsh: line 1: a: unbound variable
+wbsh: line 1: a[5]: unbound variable
 [rc=1]
 wbsh: line 1: nope: unbound variable
 [rc=1]

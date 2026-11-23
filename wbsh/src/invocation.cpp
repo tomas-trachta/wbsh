@@ -41,6 +41,7 @@ namespace wbsh {
 			Tokens,
 			Expand,
 			Ast,
+			PrettyPrint,
 			NoAst,
 			Ignored,
 			Login,
@@ -74,6 +75,7 @@ namespace wbsh {
 		{ "--tokens",         LongKind::Tokens      },
 		{ "--expand",         LongKind::Expand      },
 		{ "--ast",            LongKind::Ast         },
+		{ "--pretty-print",   LongKind::PrettyPrint },
 		{ "--no-ast",         LongKind::NoAst       },
 		{ "--noediting",      LongKind::Ignored     },
 		{ "--debugger",       LongKind::Ignored     },
@@ -199,6 +201,7 @@ namespace wbsh {
 		case LongKind::Tokens:      out.show_tokens     = true;                       return;
 		case LongKind::Expand:      out.show_expansions = true;                       return;
 		case LongKind::Ast:         out.show_ast        = true;                       return;
+		case LongKind::PrettyPrint: out.pretty_print    = true;                       return;
 		case LongKind::NoAst:       out.hide_ast        = true;                       return;
 		case LongKind::Json:        out.json            = true;                       return;
 		default:                                                                      return;
@@ -255,7 +258,10 @@ namespace wbsh {
 	static bool takeShoptName(ParseState& state, ArgCursor& cursor, char sign) {
 		std::string name;
 		if (!takeOptionValue(state, cursor, std::string(1, sign) + "O", name)) return false;
-		if (findShopt(name) == nullptr) return fail(state, name + ": invalid shell option name");
+		// bash reports it from the shopt code, as at line 0 of the input.
+		if (findShopt(name) == nullptr) {
+			return fail(state, "line 0: " + name + ": invalid shell option name");
+		}
 
 		ShellStartup& startup = state.out.startup;
 		if (sign == '-') startup.shopts_on.push_back(name);
@@ -374,13 +380,13 @@ namespace wbsh {
 
 	bool invocationExecutes(const Invocation& invocation) {
 		const bool dumping = invocation.show_tokens || invocation.show_ast
-			|| invocation.show_expansions;
+			|| invocation.show_expansions || invocation.pretty_print;
 		return invocation.force_run || !dumping;
 	}
 
 	bool invocationShowsAst(const Invocation& invocation) {
 		if (invocation.show_ast) return true;
-		if (invocation.hide_ast) return false;
+		if (invocation.hide_ast || invocation.pretty_print) return false;
 
 		return !invocationExecutes(invocation);
 	}

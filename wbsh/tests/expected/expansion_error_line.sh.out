@@ -17,7 +17,7 @@ expansion_error_line.sh: line 21: p 2: arithmetic syntax error in expression (er
 10 after eval 0
 expansion_error_line.sh: line 22: p 2: arithmetic syntax error in expression (error token is "2")
 11 subshell 1
-expansion_error_line.sh: line 24: p 2: arithmetic syntax error in expression (error token is "2")
+expansion_error_line.sh: line 25: p 2: arithmetic syntax error in expression (error token is "2")
 12 substitution [] 1
 expansion_error_line.sh: line 26: p 2: arithmetic syntax error in expression (error token is "2")
 13 after pipe

@@ -106,6 +106,8 @@ namespace wbsh {
 			if (exec.env().isExported(entry.first)) exported.push_back(entry);
 		}
 
+		exec.appendExportedFunctions(exported);
+		exec.appendShadowedExports(exported);
 		std::sort(exported.begin(), exported.end());
 		for (const auto& entry : exported) {
 			std::printf("%s=%s\n", entry.first.c_str(), entry.second.c_str());
@@ -119,12 +121,13 @@ namespace wbsh {
 
 		int status = 0;
 		for (const std::string& name : args) {
-			if (!exec.env().has(name) || !exec.env().isExported(name)) {
+			std::string value;
+			if (!exec.exportedValue(name, value)) {
 				status = 1;
 				continue;
 			}
 
-			std::printf("%s\n", exec.env().get(name).c_str());
+			std::printf("%s\n", value.c_str());
 		}
 
 		return status;

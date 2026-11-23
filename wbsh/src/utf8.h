@@ -40,6 +40,12 @@ namespace wbsh {
 
 	std::size_t utf8Count(const std::string& text);
 
+	/// Whether @p text from @p from to @p to holds only whole UTF-8 sequences.
+	bool isValidUtf8(const std::string& text, std::size_t from, std::size_t to);
+	inline bool isValidUtf8(const std::string& text) {
+		return isValidUtf8(text, 0, text.size());
+	}
+
 	/// Byte offset @p count characters after @p pos, clamped to the end.
 	std::size_t utf8Advance(const std::string& text, std::size_t pos, std::size_t count);
 
@@ -53,6 +59,13 @@ namespace wbsh {
 	/// The character in UTF-8; outside a UTF-8 locale a non-ASCII character
 	/// is written back as its escape (`é`), as bash does.
 	void appendUnicodeEscape(std::string& out, char32_t code, bool utf8_locale);
+
+	/// The Windows code page of a locale's charset (`fr_FR.ISO8859-1` is
+	/// 28591), or 0 for UTF-8 and charsets it does not know.
+	unsigned codePageOfLocale(const std::string& locale);
+
+	/// @p code in code page @p code_page; false when the page lacks it.
+	bool appendInCodePage(std::string& out, char32_t code, unsigned code_page);
 
 	char32_t upperCode(char32_t code);
 	char32_t lowerCode(char32_t code);

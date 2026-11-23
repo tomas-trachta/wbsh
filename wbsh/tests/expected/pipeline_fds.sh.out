@@ -13,7 +13,7 @@ background
 none open: 0 1 2
 inside a redirected group: 0 1 2
 3, 7 and {v}=10 open: 0 1 10 2 3 7
-with coproc 11 12: 0 1 10 2 3 7
+with coproc 63 60: 0 1 10 2 3 7
 grandchild: 0 1 10 2 3 7
 closed again: 0 1 2
 === a closed descriptor stays closed

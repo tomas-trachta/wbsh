@@ -16,16 +16,18 @@
 
 namespace wbsh::enable_detail {
 
-	// POSIX special builtins, what `enable -s` lists.
+	// POSIX special builtins, what `enable -s` lists; bash counts `source`
+	// as one, as it does `.`.
 	static const char* const kSpecialBuiltins[] = {
 		".", ":", "break", "continue", "eval", "exec", "exit", "export",
-		"readonly", "return", "set", "shift", "times", "trap", "unset",
+		"readonly", "return", "set", "shift", "source", "times", "trap", "unset",
 	};
 
 	struct Options {
 		bool disable = false;
 		bool all = false;
 		bool special = false;
+		bool unload = false;    ///< `-d`: delete a loaded builtin
 		std::vector<std::string> names;
 	};
 
@@ -50,8 +52,10 @@ namespace wbsh::enable_detail {
 				return true;
 			case 'p':
 				return true;
-			case 'f':
 			case 'd':
+				options.unload = true;
+				return true;
+			case 'f':
 				shellErrorf("enable: -%c: loadable builtins are not supported\n",
 					flag);
 				return false;
@@ -113,10 +117,22 @@ namespace wbsh::enable_detail {
 		return status;
 	}
 
+	// No builtin is ever loaded, so none can be deleted.
+	static int unloadBuiltins(const Executor& exec, const Options& options) {
+		for (const std::string& name : options.names) {
+			const char* problem = exec.isKnownBuiltin(name) ? "not dynamically loaded"
+				: "not a shell builtin";
+			shellErrorf("enable: %s: %s\n", name.c_str(), problem);
+		}
+
+		return 1;
+	}
+
 	static int builtin_enable(Executor& exec, const std::vector<std::string>& args) {
 		Options options;
 		if (!parseOptions(args, options)) return 2;
 		if (options.names.empty()) return listBuiltins(exec, options);
+		if (options.unload) return unloadBuiltins(exec, options);
 
 		return switchBuiltins(exec, options);
 	}

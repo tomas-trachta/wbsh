@@ -66,10 +66,16 @@ namespace wbsh::trap_detail {
 		return out + "'";
 	}
 
-	static void printTrap(const Executor& exec, const std::string& name) {
+	// `-P` prints the action alone, `-p` the command that would set it.
+	static void printTrap(const Executor& exec, const std::string& name, bool action_only) {
 		const auto& traps = exec.listedTraps();
 		const auto found = traps.find(name);
 		if (found == traps.end()) return;
+
+		if (action_only) {
+			std::printf("%s\n", found->second.c_str());
+			return;
+		}
 
 		std::printf("trap -- %s %s\n", quoted(found->second).c_str(), displayName(name).c_str());
 	}
@@ -85,9 +91,10 @@ namespace wbsh::trap_detail {
 		shellErrorf("trap: %s: invalid signal specification\n", spec.c_str());
 	}
 
-	static int printTraps(const Executor& exec, const std::vector<std::string>& specs) {
+	static int printTraps(const Executor& exec, const std::vector<std::string>& specs,
+			bool action_only) {
 		if (specs.empty()) {
-			for (const std::string& name : listingOrder()) printTrap(exec, name);
+			for (const std::string& name : listingOrder()) printTrap(exec, name, action_only);
 			return 0;
 		}
 
@@ -100,7 +107,7 @@ namespace wbsh::trap_detail {
 				continue;
 			}
 
-			printTrap(exec, name);
+			printTrap(exec, name, action_only);
 		}
 
 		return status;
@@ -144,15 +151,32 @@ namespace wbsh::trap_detail {
 		return true;
 	}
 
-	// `trap - SIG...`, `trap SIG` and POSIX's `trap N SIG...` (an unsigned
-	// number first) reset; anything else installs the first word.
+	static void printUsage() {
+		std::fprintf(stderr, "trap: usage: trap [-Plp] [[action] signal_spec ...]\n");
+	}
+
+	// As bash decides it: a first word that is a signal number resets every
+	// operand; outside POSIX mode a lone signal name resets it; a lone word
+	// that is no signal is a usage error; otherwise the first word is the
+	// action, and `-` resets.
+	static bool resetsAll(Executor& exec, const std::vector<std::string>& operands) {
+		const std::string& first = operands[0];
+		const bool is_signal = !conditionName(first).empty();
+		if (isUnsignedNumber(first) && is_signal) return true;
+
+		return !exec.env().options().posix && operands.size() == 1 && first != "-" && is_signal;
+	}
+
 	static int setOrReset(Executor& exec, const std::vector<std::string>& operands) {
+		if (resetsAll(exec, operands)) return applyToSignals(exec, nullptr, operands);
+		if (operands.size() == 1) {
+			printUsage();
+			return 2;
+		}
+
 		const std::string& first = operands[0];
 		const std::vector<std::string> conditions(operands.begin() + 1, operands.end());
 		if (first == "-") return applyToSignals(exec, nullptr, conditions);
-		if (operands.size() == 1 || isUnsignedNumber(first)) {
-			return applyToSignals(exec, nullptr, operands);
-		}
 
 		return applyToSignals(exec, &first, conditions);
 	}
@@ -160,33 +184,60 @@ namespace wbsh::trap_detail {
 	struct Options {
 		bool list_signals = false;
 		bool print = false;
+		bool print_actions = false;
 		std::vector<std::string> operands;
 	};
 
-	static void parseOptions(const std::vector<std::string>& args, Options& options) {
+	static bool reportInvalidOption(char letter) {
+		shellErrorf("trap: -%c: invalid option\n", letter);
+		printUsage();
+		return false;
+	}
+
+	static bool applyOptionLetters(const std::string& word, Options& options) {
+		for (std::size_t k = 1; k < word.size(); ++k) {
+			if (word[k] == 'l') options.list_signals = true;
+			else if (word[k] == 'p') options.print = true;
+			else if (word[k] == 'P') options.print_actions = true;
+			else return reportInvalidOption(word[k]);
+		}
+
+		return true;
+	}
+
+	static bool optionsConflict(const Options& options) {
+		if (options.print && options.print_actions) {
+			shellErrorf("trap: cannot specify both -p and -P\n");
+			return true;
+		}
+
+		if (options.print_actions && options.operands.empty() && !options.list_signals) {
+			shellErrorf("trap: -P requires at least one signal name\n");
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool parseOptions(const std::vector<std::string>& args, Options& options) {
 		std::size_t i = 0;
 		while (i < args.size() && args[i].size() > 1 && args[i][0] == '-') {
-			const std::string& word = args[i];
-			if (word == "--") {
-				++i;
-				break;
-			}
-
-			if (word == "-l") options.list_signals = true;
-			else if (word == "-p") options.print = true;
-			else if (word == "-lp" || word == "-pl") options.list_signals = options.print = true;
-			else break;
-			++i;
+			const std::string& word = args[i++];
+			if (word == "--") break;
+			if (!applyOptionLetters(word, options)) return false;
 		}
 
 		options.operands.assign(args.begin() + static_cast<std::ptrdiff_t>(i), args.end());
+		return true;
 	}
 
 	static int builtin_trap(Executor& exec, const std::vector<std::string>& args) {
 		Options options;
-		parseOptions(args, options);
+		if (!parseOptions(args, options) || optionsConflict(options)) return 2;
 		if (options.list_signals) return listSignals();
-		if (options.print || options.operands.empty()) return printTraps(exec, options.operands);
+		if (options.print || options.print_actions || options.operands.empty()) {
+			return printTraps(exec, options.operands, options.print_actions);
+		}
 
 		return setOrReset(exec, options.operands);
 	}

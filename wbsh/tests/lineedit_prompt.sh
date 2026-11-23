@@ -37,5 +37,5 @@ __lineedit -p $'top\nabcdefghij' -c 10 -o 'x'
 echo "=== the REPL turns \\[ \\] into the marks and prints the prompt without them"
 D=$(mktemp -d) || exit 1
 printf 'echo ran\n' | env -u WBSH_INIT_COMMAND HOME="$D" HISTFILE="$D/hist" \
-    PS1='\[\e[1m\]B\[\e[0m\]\n\$ ' ../../x64/Release/wbsh.exe -i 2>&1 | tail -n +3 | as_unelevated | od -c | sed 's/  */ /g'
+    PS1='\[\e[1m\]B\[\e[0m\]\n\$ ' ../../x64/Release/wbsh.exe -i 2>&1 | as_unelevated | od -c | sed 's/  */ /g'
 rm -rf "$D"

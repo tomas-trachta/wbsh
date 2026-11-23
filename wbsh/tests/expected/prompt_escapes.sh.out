@@ -23,35 +23,51 @@ a$b `c` "d" e\f
 $name $ A
 promptvars          	off
 === an interactive shell: PS1 expansion, \#, \!, PROMPT_COMMAND
-[1:1:2]$ one
-[2:2:2]$ two
-[3:3:2]$ 
+[1:1:2]$ echo one
+one
+[2:2:2]$ echo two
+two
+[3:3:2]$ exit
 (exit 0)
 --- $? is not changed by the prompt's command substitution
-[]$ []$ status=1
-[]$ []$ status=0
-[]$ 
+[]$ false
+[]$ echo "status=$?"
+status=1
+[]$ true
+[]$ echo "status=$?"
+status=0
+[]$ exit
 (exit 0)
 --- PROMPT_COMMAND runs before each primary prompt and keeps $?
-[p]$ <pc>
-[p]$ <pc>
-[p]$ status=1
+[p]$ PROMPT_COMMAND='echo "<pc>"'
 <pc>
-[p]$ 
+[p]$ false
+<pc>
+[p]$ echo "status=$?"
+status=1
+<pc>
+[p]$ exit
 (exit 0)
 --- an array PROMPT_COMMAND runs every element
-[p]$ first
-second
-[p]$ body
+[p]$ PROMPT_COMMAND=('echo first' 'echo second')
 first
 second
-[p]$ 
+[p]$ echo body
+body
+first
+second
+[p]$ exit
 (exit 0)
 --- PROMPT_COMMAND is not run before a continuation prompt
-[p]$ <pc>
-[p]$ > > inside
+[p]$ PROMPT_COMMAND='echo "<pc>"'
 <pc>
-[p]$ 
+[p]$ if true
+> then echo inside
+> fi
+inside
+<pc>
+[p]$ exit
 (exit 0)
 --- exit in PROMPT_COMMAND ends the shell
-[p]$ (exit 7)
+[p]$ PROMPT_COMMAND='exit 7'
+(exit 7)

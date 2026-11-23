@@ -29,6 +29,7 @@ namespace wbsh {
 	class BashAssocMap {
 	public:
 		static const std::uint32_t kInitialBuckets = 1024;
+		static const std::uint32_t kDefaultHashBuckets = 128;
 
 		using value_type     = std::pair<const std::string, std::string>;
 		using iterator       = std::list<value_type>::iterator;
@@ -58,6 +59,13 @@ namespace wbsh {
 		std::string& operator[](const std::string& key);
 		std::size_t erase(const std::string& key);
 		void clear();
+
+		/// bash's hash_create(0), the table a variable converted to an
+		/// associative array gets; for an empty map only.
+		void useDefaultHashSize() { buckets_ = kDefaultHashBuckets; }
+		/// A table of @p buckets, a power of two, as bash's own tables have
+		/// (64 for aliases, 256 for hashed commands); for an empty map only.
+		void useBuckets(std::uint32_t buckets) { buckets_ = buckets; }
 
 		bool operator==(const BashAssocMap& other) const { return items_ == other.items_; }
 		bool operator!=(const BashAssocMap& other) const { return !(*this == other); }

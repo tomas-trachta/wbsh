@@ -13,7 +13,17 @@
         {
             "id": "windows-reserved-filename",
             "reason": "Windows file systems reject : * ? \" < > | in file names, so creating such a file fails",
-            "pattern": "cannot (?:touch|create|open) '[^']*[:*?\"<>|][^']*'"
+            "pattern": "cannot (?:touch|create|open|remove) '[^']*[:*?\"<>|][^']*'"
+        },
+        {
+            "id": "bash-build-tree-files",
+            "reason": "heredoc5.sub reads bash's own build files ($BUILD_DIR/y.tab.c, config.h, version.h) to feed large here-documents; the runner's sandbox holds only the tests directory, so cat and cmp report them missing",
+            "pattern": "(?:cat|cmp): \\S*(?:y\\.tab\\.c|config\\.h|version\\.h): No such file or directory$"
+        },
+        {
+            "id": "host-grep-message",
+            "reason": "heredoc7.sub ends with `grep *.c` in a directory without C files; the message comes from the grep found on PATH, the host's GNU grep for bash and wbsh's built-in grep, which names the shell in front of its own name",
+            "pattern": "^(?:wbsh: )?grep: \\*\\.c: No such file or directory$"
         },
         {
             "id": "linux-signal-list",
@@ -31,6 +41,91 @@
             "id": "tilde-no-usr",
             "reason": "read 2026-11-14: tilde.tests runs `cd /usr; cd /tmp; echo ~- ~+`; Windows has no /usr and wbsh maps /tmp to the user's temp directory, so ~- and ~+ print the directories actually reached instead of /usr and /tmp. The other 30 lines, all tilde-expansion cases, match",
             "suites": ["tilde"]
+        },
+        {
+            "id": "read-stdin-closed",
+            "reason": "read 2026-11-22: read6.sub/read7.sub poll and time out on the terminal that make tests runs with; the runner closes stdin, so `read -t 0` finds input waiting and the timed reads hit end of file. GNU bash 5.3 run with stdin on /dev/null prints the same four changed lines, the rest of the suite matches",
+            "suites": ["read"]
+        },
+        {
+            "id": "coproc-no-etc-passwd",
+            "reason": "read 2026-11-22: coproc.tests runs `cat /etc/passwd | grep root`; Windows has no /etc/passwd, so cat fails and the line `root` is missing. Every coproc fd number, status and echoed line matches the .right file",
+            "suites": ["coproc"]
+        },
+        {
+            "id": "extglob-colon-filename",
+            "reason": "read 2026-11-22: extglob.tests creates a file named `a:b`; Windows file systems reject `:` in a name, so touch fails and every listing of that directory lacks `a:b`. All other lines, every extglob pattern result included, match",
+            "suites": ["extglob"]
+        },
+        {
+            "id": "new-exp-version-and-root",
+            "reason": "read 2026-11-22: new-exp10.sub expands the prompt escapes for the version and the working directory through ${NPS1@P}. wbsh reports Git Bash's release (5.2) in BASH_VERSION by design, so the version prints 5.2. `cd /` reaches the drive root /c/ because Windows has no single root, so the directory basename prints /c/. Only those three lines differ; the other 800 lines of the suite match",
+            "suites": ["new-exp"]
+        },
+        {
+            "id": "builtins-gpl-help-and-unix-dirs",
+            "reason": "read 2026-11-23, accepted by Tomas: builtins10.sub prints bash's `help` output, which is GPL text; wbsh is MIT and keeps its own help, so those lines differ by license, not by behaviour. The rest is the system: there is no /bin, so builtins12's `cd /bin` and `pushd /bin` fail and the directory stack it builds is one entry shorter (the popd +8/-8 lines move), /tmp resolves to its real directory and `/` to the drive root /c/, and `ulimit -u` has no hard limit to refuse. Every other line of the 500 matches",
+            "suites": [
+                "builtins"
+            ]
+        },
+        {
+            "id": "execscript-no-exec-bit",
+            "reason": "read 2026-11-23, accepted by Tomas: Windows files have no execute bit and wbsh ignores mode bits by design, so exec3's `exec ./x.sh` on a non-executable file runs it (`bar`) instead of failing with EACCES, and exec7 runs the mode-655 testa/foo where bash skips to testb. The rest is the platform: exec.right lists SIGTERM before SIGUSR1 (macOS signal numbers; Linux bash 5.3 prints USR1 first, as wbsh does), there is no /bin/sh and no sh on the runner's PATH (the `this is sh` and `command -p sh` lines), `cat` is a wbsh builtin so `command -v cat` finds it with an empty PATH, and wbsh names itself by argv[0]'s basename (`bash:` where bash prints the link name `/tmp/bash:`). The /tmp/bash link itself runs and exits 127 as in bash",
+            "suites": [
+                "execscript"
+            ]
+        },
+        {
+            "id": "invocation-wbsh-startup-files",
+            "reason": "read 2026-11-23, accepted by Tomas: a wbsh login shell reads only its own ~/.wbsh_* files, so bash's ~/.bash_logout (`this is bash_logout`) is not run. `bash ls` with PATH=/bin:/usr/bin prints `cannot execute binary file` when /usr/bin exists (checked under Git's PATH); the runner has no /usr/bin, so it reports the missing script instead. Every other line matches",
+            "suites": [
+                "invocation"
+            ]
+        },
+        {
+            "id": "history-version-and-file-format",
+            "reason": "read 2026-11-23: two design differences, nothing else. history2.sub prints ${BASH_VERSION%.*} twice and wbsh reports Git Bash's release (5.2) by design. history7.sub counts and cats the file `bash -i` leaves behind; wbsh's interactive shell writes its own history format (a #!wbsh-history-v3 header and each entry's exit status, which the line editor's predictions use), so each count is one higher and each entry carries its status column. The entries kept (HISTFILESIZE trimming), the echoed prompts and `exit`, and everything else match: fc ranges, history -d/-s/-r/-w, HISTCONTROL/HISTIGNORE, line-at-a-time history in scripts, and the bash -i sessions on a pipe with C-r, C-o and C-p",
+            "suites": [
+                "history"
+            ]
+        },
+        {
+            "id": "histexpand-git-sh",
+            "reason": "read 2026-11-23: histexp.tests re-runs `/bin/sh -c 'echo this is $0'` from the history; on Windows /bin/sh is Git's sh.exe in /usr/bin, which reports itself as /usr/bin/sh. Every history expansion, event, word designator and modifier line matches",
+            "suites": [
+                "histexpand"
+            ]
+        },
+        {
+            "id": "glob-bracket-needs-build-tree",
+            "reason": "read 2026-11-22: glob-bracket.tests reads $BUILD_DIR/examples/loadables/Makefile, compiles a fnmatch(3) helper and the strmatch loadable with gcc and loads it with `enable -f`; the runner has no bash build tree or compiler, so the script stops with `shared objects not supported` before its first test, as bash itself does outside its build directory",
+            "suites": ["glob-bracket"]
+        },
+        {
+            "id": "glob-windows-filesystem",
+            "reason": "read 2026-11-22: glob.tests makes files named with * and ? (rejected by Windows), takes read or search permission away from directories with chmod and mkdir -m (Windows lists them anyway, so */. and ./tmp/a/* still match), and checks big5 bytes under zh_TW.big5 (no such locale on Windows). Every other line, bracket, extglob, nullglob, escaped-slash and backslash-in-variable case included, matches",
+            "suites": ["glob-test"]
+        },
+        {
+            "id": "redir-unix-files",
+            "reason": "read 2026-11-22: redir.tests reads /etc/passwd and prints the directory after `cd /`, and redir12.sub makes a file unreadable with chmod a-r; Windows has no /etc/passwd, wbsh shows the root of C: as /c/ and /tmp as the user's temp directory, and Windows files stay readable without their read bit, so those redirections succeed. All other lines, the saved-fd, `command exec`, `>&word`, ambiguous-redirect and set -e/ERR-trap cases included, match",
+            "suites": ["redir"]
+        },
+        {
+            "id": "dirstack-unix-dirs",
+            "reason": "read 2026-11-22: dstack.tests and dstack2.tests pushd /usr, /etc and /tmp after `cd /`; Windows has no /usr or /etc, wbsh shows the root of C: as /c/ and maps /tmp to the user's temp directory. With those directories replaced by existing ones, both tests print exactly what GNU bash 5.3 prints",
+            "suites": ["dirstack"]
+        },
+        {
+            "id": "type-windows-commands",
+            "reason": "read 2026-11-22: type.tests names /bin/sh, mv and cat; Windows has no /bin/sh (wbsh finds Git's sh.exe) and wbsh runs mv and cat as builtins, so type -t/-p/-P report builtin or the Git path instead of /bin. Every keyword, alias, function body (here-documents, coprocs, $'' strings), hash hit count and PATH lookup line matches",
+            "suites": ["type"]
+        },
+        {
+            "id": "test-unix-file-modes",
+            "reason": "read 2026-11-22: test.tests checks /etc (absent on Windows), setuid and setgid bits and a file made unreadable with chmod (Windows has no such modes), -N on a file just written (Windows updates the access time on every write) and -t 0 (the runner closes stdin; GNU bash 5.3 with stdin on /dev/null prints the same 1). Every operator result on files Windows can represent matches",
+            "suites": ["test"]
         }
     ]
 }

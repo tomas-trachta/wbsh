@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -30,7 +31,7 @@
 
 namespace wbsh::fc_detail {
 
-	static const std::size_t kDefaultListLength = 16;
+	static const long long kDefaultListLength = 16;
 	static const char* const kDefaultEditor = "notepad";
 	static const char* const kUsage =
 		"usage: fc [-e ename] [-lnr] [first] [last] or fc -s [pat=rep] [command]";
@@ -98,91 +99,159 @@ namespace wbsh::fc_detail {
 		return true;
 	}
 
-	// The history as fc sees it: the entries before the current command,
-	// numbered from 1.
+	static const long long kInvalid = LLONG_MIN;
+	static const long long kNotFound = LLONG_MIN + 2;
+	static const int kListing = 1;
+	static const int kFirst = 2;
+
+	// The history as bash's fc reads it, by index from 0: the newest
+	// command before the `fc` line, and the newest entry of all.
 	struct HistoryView {
 		const std::vector<std::string>& entries;
-		std::size_t count;   // entries older than the current command
+		long long last;
+		long long real_last;
+		long long base;
 	};
 
 	static HistoryView viewOf(Executor& exec) {
 		const std::vector<std::string>& history = exec.history();
-		const bool holds_current = exec.currentCommandInHistory() && !history.empty();
-		return { history, holds_current ? history.size() - 1 : history.size() };
+		const long long total = static_cast<long long>(history.size());
+		const long long added = exec.currentCommandInHistory() && total > 0 ? 1 : 0;
+		const long long real_last = total > 0 ? total - 1 : 0;
+		return { history, total - 1 - added, real_last, static_cast<long long>(exec.historyBase()) };
 	}
 
 	static bool startsWith(const std::string& text, const std::string& prefix) {
 		return text.compare(0, prefix.size(), prefix) == 0;
 	}
 
-	// A number, an offset back from the current command, or the newest
-	// command starting with the text. 0 when nothing matches; a number
-	// past the newest entry is out of range.
-	static bool resolveSpec(const HistoryView& view, const std::string& spec, std::size_t& number) {
-		long long value = 0;
-		if (parseLL(spec, value)) {
-			const long long current = static_cast<long long>(view.count) + 1;
-			const long long resolved = value <= 0 ? current + value : value;
-			if (resolved > static_cast<long long>(view.count) || view.count == 0) return false;
-
-			number = resolved < 1 ? 1 : static_cast<std::size_t>(resolved);
-			return true;
+	// The number at the start of a spec, after an optional minus, as atoi
+	// reads it.
+	static bool leadingNumber(const std::string& spec, long long& sign, long long& value) {
+		sign = !spec.empty() && spec[0] == '-' ? -1 : 1;
+		std::size_t i = sign < 0 ? 1 : 0;
+		const std::size_t start = i;
+		value = 0;
+		for (; i < spec.size() && std::isdigit(static_cast<unsigned char>(spec[i])); ++i) {
+			if (value < LLONG_MAX / 100) value = value * 10 + (spec[i] - '0');
 		}
 
-		for (std::size_t i = view.count; i > 0; --i) {
-			if (!startsWith(view.entries[i - 1], spec)) continue;
-
-			number = i;
-			return true;
-		}
-
-		number = 0;
-		return true;
+		return i > start;
 	}
 
-	static bool resolveOrReport(const HistoryView& view, const std::string& spec,
-	                            std::size_t& number) {
-		if (!resolveSpec(view, spec, number)) {
-			printErr("history specification out of range");
-			return false;
+	// Zero or less counts back from the newest command; a history number
+	// outside the list takes the oldest entry when it starts a range and
+	// the newest otherwise. `-0` is the `fc` line itself, only to list.
+	static long long numberedIndex(const HistoryView& view, long long sign, long long value,
+			int mode) {
+		if (value == 0 && sign < 0) return (mode & kListing) != 0 ? view.real_last : kInvalid;
+
+		const long long number = value * sign;
+		if (number < 0) return (std::max)(number + view.last + 1, 0LL);
+		if (number == 0) return view.last;
+
+		const long long index = number - view.base;
+		if (index < 0 || index >= view.last) return (mode & kFirst) != 0 ? 0 : view.last;
+
+		return index;
+	}
+
+	static long long searchedIndex(const HistoryView& view, const std::string& spec) {
+		for (long long i = view.last; i >= 0; --i) {
+			if (startsWith(view.entries[static_cast<std::size_t>(i)], spec)) return i;
 		}
 
-		if (number == 0) {
-			printErr("no command found");
-			return false;
-		}
+		return kNotFound;
+	}
 
-		return true;
+	// bash's fc_gethnum: the index a spec names, or the newest command
+	// when there is none.
+	static long long historyIndex(const HistoryView& view, const std::string* spec, int mode) {
+		if (view.last < 0) return -1;
+		if (spec == nullptr) return view.last;
+
+		long long sign = 1;
+		long long value = 0;
+		if (leadingNumber(*spec, sign, value)) return numberedIndex(view, sign, value, mode);
+
+		return searchedIndex(view, *spec);
 	}
 
 	struct Range {
-		std::size_t first = 0;
-		std::size_t last = 0;
+		long long first = 0;
+		long long last = 0;
 	};
 
-	// Listing starts 16 commands back and ends at the newest; editing
-	// takes the newest, and a single command when only `first` is named.
-	static bool resolveRange(const HistoryView& view, const Options& options, Range& range) {
+	// Listing ends at the newest command, 16 back without operands; editing
+	// takes the newest, or the one `first` names.
+	static Range requestedRange(const HistoryView& view, const Options& options) {
 		const std::vector<std::string>& ops = options.operands;
-		const std::size_t back = options.list ? kDefaultListLength : 1;
-		const std::string first_spec = ops.empty() ? "-" + std::to_string(back) : ops[0];
-		const std::string last_spec = ops.size() > 1 ? ops[1]
-			: (options.list || ops.empty() ? "-1" : first_spec);
+		const long long newest = (std::max)(view.last, 0LL);
+		if (ops.empty()) {
+			const long long back = options.list ? kDefaultListLength - 1 : 0;
+			return { (std::max)(newest - back, 0LL), newest };
+		}
 
-		return resolveOrReport(view, first_spec, range.first)
-		    && resolveOrReport(view, last_spec, range.last);
+		const int listing = options.list ? kListing : 0;
+		Range range;
+		range.first = historyIndex(view, &ops[0], listing | kFirst);
+		if (ops.size() > 1) {
+			range.last = historyIndex(view, &ops[1], listing);
+		} else if (range.first == view.real_last) {
+			range.last = options.list ? view.real_last : range.first;
+		} else {
+			range.last = options.list ? newest : range.first;
+		}
+
+		return range;
 	}
 
-	static void listRange(const HistoryView& view, const Options& options, Range range) {
-		bool descending = range.first > range.last;
-		if (options.reverse) descending = !descending;
-		const std::size_t low = (std::min)(range.first, range.last);
-		const std::size_t high = (std::max)(range.first, range.last);
+	static bool reportsBadRange(const Range& range) {
+		const auto either = [&range](long long code) {
+			return range.first == code || range.last == code;
+		};
+		if (either(kInvalid)) {
+			printErr("history specification out of range");
+			return true;
+		}
 
-		for (std::size_t k = 0; k <= high - low; ++k) {
-			const std::size_t number = descending ? high - k : low + k;
+		if (either(kNotFound)) {
+			printErr("no command found");
+			return true;
+		}
+
+		return false;
+	}
+
+	static void clampToList(Range& range) {
+		range.first = (std::max)(range.first, 0LL);
+		range.last = (std::max)(range.last, 0LL);
+	}
+
+	// A range named backwards runs backwards, as does any range with -r.
+	static std::vector<std::size_t> orderedIndexes(Range range, bool reverse, std::size_t total) {
+		if (range.last < range.first) {
+			std::swap(range.first, range.last);
+			reverse = true;
+		}
+
+		std::vector<std::size_t> indexes;
+		for (long long i = range.first; i <= range.last; ++i) {
+			if (static_cast<std::size_t>(i) < total) indexes.push_back(static_cast<std::size_t>(i));
+		}
+
+		if (reverse) std::reverse(indexes.begin(), indexes.end());
+		return indexes;
+	}
+
+	static void listEntries(Executor& exec, const std::vector<std::size_t>& indexes,
+			const Options& options) {
+		const HistoryView view = viewOf(exec);
+		const char* separator = exec.env().options().posix ? "\t" : "\t ";
+		for (const std::size_t i : indexes) {
+			const long long number = static_cast<long long>(i) + view.base;
 			const std::string label = options.numbers ? std::to_string(number) : std::string();
-			std::printf("%s\t %s\n", label.c_str(), view.entries[number - 1].c_str());
+			std::printf("%s%s%s\n", label.c_str(), separator, view.entries[i].c_str());
 		}
 	}
 
@@ -223,10 +292,19 @@ namespace wbsh::fc_detail {
 		}
 
 		const HistoryView view = viewOf(exec);
-		std::size_t number = 0;
-		if (!resolveOrReport(view, rest.empty() ? "-1" : rest[0], number)) return 1;
+		const long long index = historyIndex(view, rest.empty() ? nullptr : &rest[0], 0);
+		if (index < 0) {
+			printErr("no command found");
+			return 1;
+		}
 
-		return runCommands(exec, substituted(view.entries[number - 1], pairs));
+		if (exec.env().options().posix && rest.size() > 1) {
+			printErr("too many arguments");
+			return 1;
+		}
+
+		const std::string& command = view.entries[static_cast<std::size_t>(index)];
+		return runCommands(exec, substituted(command, pairs));
 	}
 
 	static std::string temporaryFile() {
@@ -274,21 +352,31 @@ namespace wbsh::fc_detail {
 		return content;
 	}
 
-	static void writeRange(const std::string& path, const HistoryView& view, Range range) {
+	static void writeEntries(Executor& exec, const std::string& path,
+			const std::vector<std::size_t>& indexes) {
 		std::ofstream file(utf8ToPath(path), std::ios::binary);
-		const bool descending = range.first > range.last;
-		const std::size_t low = (std::min)(range.first, range.last);
-		const std::size_t high = (std::max)(range.first, range.last);
-		for (std::size_t k = 0; k <= high - low; ++k) {
-			file << view.entries[(descending ? high - k : low + k) - 1] << '\n';
-		}
+		for (const std::size_t i : indexes) file << exec.history()[i] << '\n';
+	}
+
+	// "When not listing, the fc command that caused the editing shall not
+	// be entered into the history list": the range stops at the new end.
+	static bool dropFcLine(Executor& exec, Range& range) {
+		if (!exec.dropCurrentHistoryEntry()) return false;
+
+		const long long last = static_cast<long long>(exec.history().size()) - 1;
+		if (range.last >= last) range.last = last;
+		else if (range.first >= last) range.first = last;
+
+		return true;
 	}
 
 	// The commands go to a file for the editor; whatever it leaves there
-	// runs, unless the editor failed.
-	static int editAndRun(Executor& exec, const Options& options, const Range& range) {
+	// runs and takes the `fc` line's place, unless the editor failed.
+	static int editAndRun(Executor& exec, const Options& options, Range range) {
+		const bool dropped = dropFcLine(exec, range);
+		clampToList(range);
 		const std::string path = temporaryFile();
-		writeRange(path, viewOf(exec), range);
+		writeEntries(exec, path, orderedIndexes(range, options.reverse, exec.history().size()));
 
 		const std::string posix_path = exec.pathConv().toPosix(path);
 		const int edited = exec.executeText(editorFor(exec, options) + " "
@@ -296,9 +384,10 @@ namespace wbsh::fc_detail {
 		const std::string commands = fileText(path);
 		std::error_code ec;
 		std::filesystem::remove(utf8ToPath(path), ec);
-		if (edited != 0) return edited;
+		if (edited != 0) return 1;
 		if (commands.empty()) return 0;
 
+		if (dropped) exec.addHistoryEntry(commands);
 		return runCommands(exec, commands);
 	}
 
@@ -311,16 +400,13 @@ namespace wbsh::fc_detail {
 
 		if (options.rerun) return rerun(exec, options);
 
-		const HistoryView view = viewOf(exec);
-		Range range;
-		if (!resolveRange(view, options, range)) return 1;
+		Range range = requestedRange(viewOf(exec), options);
+		if (reportsBadRange(range)) return 1;
+		if (!options.list) return editAndRun(exec, options, range);
 
-		if (options.list) {
-			listRange(view, options, range);
-			return 0;
-		}
-
-		return editAndRun(exec, options, range);
+		clampToList(range);
+		listEntries(exec, orderedIndexes(range, options.reverse, exec.history().size()), options);
+		return 0;
 	}
 
 }  // namespace wbsh::fc_detail

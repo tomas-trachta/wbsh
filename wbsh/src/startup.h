@@ -21,6 +21,7 @@ namespace wbsh {
 		bool        read_profile = true;
 		bool        read_rc      = true;
 		std::string rcfile;                   ///< Replaces `~/.wbshrc` when set.
+		bool        forced_interactive = false;   ///< `-i` given, which keeps `-n`.
 	};
 
 	void applyStartupOptions(Executor& exec, const ShellStartup& startup);
@@ -30,5 +31,9 @@ namespace wbsh {
 	void sourceLoginProfile(Executor& exec, const ShellStartup& startup);
 
 	void sourceRcFile(Executor& exec, const ShellStartup& startup);
+
+	/// A non-interactive shell outside POSIX mode reads the file `$BASH_ENV`
+	/// names, after expanding parameters and command substitutions in it.
+	void sourceBashEnv(Executor& exec);
 
 }  // namespace wbsh

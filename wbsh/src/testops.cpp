@@ -20,6 +20,7 @@
 #include <string>
 #include <sys/stat.h>
 
+#include "diagnostics.h"
 #include "executor.h"
 #include "fifo.h"
 #include "filemode.h"
@@ -150,19 +151,52 @@ namespace wbsh::testops_detail {
 		return handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode) != 0;
 	}
 
-	static bool isSetVariable(Environment& env, const std::string& operand) {
+	// As for any builtin, bash expands the subscript again unless
+	// array_expand_once is on; an error in it makes the test false.
+	static bool evalTestSubscript(Executor& exec, const std::string& subscript, long long& out) {
+		Expander& expander = exec.expander();
+		const bool once = exec.env().shopts().array_expand_once;
+		out = once ? expander.evalArithLiteral(subscript) : expander.evalArith(subscript);
+		if (!expander.failed()) return true;
+
+		shellErrorf("%s\n", expander.takeError().c_str());
+		return false;
+	}
+
+	// An array's name alone stands for its element 0, as in bash.
+	static bool isSetName(const Environment& env, const std::string& name) {
+		if (const auto* indexed = env.getIndexedArray(name)) return indexed->count(0) != 0;
+		if (const auto* assoc = env.getAssocArray(name)) return assoc->count("0") != 0;
+		return env.has(name);
+	}
+
+	static bool hasAnyElement(const Environment& env, const std::string& name) {
+		if (const auto* indexed = env.getIndexedArray(name)) return !indexed->empty();
+		if (const auto* assoc = env.getAssocArray(name)) return !assoc->empty();
+		return env.has(name);
+	}
+
+	// The test builtin expands an associative key once more, unless
+	// assoc_expand_once; `[[ -v ]]` takes it as its word left it.
+	static bool isSetVariable(Executor& exec, const std::string& operand, bool expands_key) {
+		Environment& env = exec.env();
 		const std::size_t bracket = operand.find('[');
-		if (bracket == std::string::npos || operand.back() != ']') return env.has(operand);
+		if (bracket == std::string::npos || operand.back() != ']') return isSetName(env, operand);
 
 		const std::string name = operand.substr(0, bracket);
 		const std::string subscript = operand.substr(bracket + 1, operand.size() - bracket - 2);
-		if (const auto* assoc = env.getAssocArray(name)) return assoc->count(subscript) != 0;
-		if (const auto* indexed = env.getIndexedArray(name)) {
-			long long index = 0;
-			return parseLL(subscript, index) && indexed->count(index) != 0;
+		// For an associative array `@` and `*` are keys like any other.
+		if (const auto* assoc = env.getAssocArray(name)) {
+			const bool expands = expands_key && !env.shopts().array_expand_once;
+			return assoc->count(expands ? exec.expander().assocKeyText(subscript) : subscript) != 0;
 		}
+		if (subscript == "@" || subscript == "*") return hasAnyElement(env, name);
 
-		return subscript == "0" && env.has(name);
+		long long index = 0;
+		if (!evalTestSubscript(exec, subscript, index)) return false;
+		if (const auto* indexed = env.getIndexedArray(name)) return indexed->count(index) != 0;
+
+		return index == 0 && env.has(name);
 	}
 
 	static bool isOptionOn(Environment& env, const std::string& operand) {
@@ -238,7 +272,41 @@ namespace wbsh::testops_detail {
 		return found ? exe : operand;
 	}
 
+	static int standardStreamFd(const std::string& name) {
+		if (name == "/dev/stdin") return 0;
+		if (name == "/dev/stdout") return 1;
+		if (name == "/dev/stderr") return 2;
+
+		int fd = -1;
+		if (name.rfind(kFdPrefix, 0) != 0 || !parseInt(name.substr(kFdPrefix.size()), fd)) return -1;
+		return fd;
+	}
+
+	static bool isAccessOperator(char op) {
+		return op == 'a' || op == 'e' || op == 'r' || op == 'w';
+	}
+
+	// bash asks the descriptor behind /dev/fd/N and /dev/std*; the other
+	// character devices always exist and can be read and written, and are
+	// nothing but character devices: `-f /dev/tty` is false.
+	static bool evalDeviceOperator(char op, const std::string& name, bool& handled) {
+		handled = isAccessOperator(op);
+		const int fd = standardStreamFd(name);
+		if (fd >= 0) return handled && _get_osfhandle(fd) != -1;
+
+		if (isCharDevice(name) && !isAccessOperator(op) && op != 'c' && std::isupper(op) == 0) {
+			handled = true;
+			return false;
+		}
+
+		handled = handled && isCharDevice(name) && name != "/dev/tty";
+		return handled;
+	}
+
 	static bool evalFileOperator(Executor& exec, char op, const std::string& name) {
+		bool device = false;
+		const bool device_passes = evalDeviceOperator(op, name, device);
+		if (device) return device_passes;
 		if (isProcPath(name)) return evalProcOperator(exec, op, name);
 
 		const bool type_of_entry = op == 'h' || op == 'L' || op == 'p' || op == 'c' || op == 'S';
@@ -288,11 +356,12 @@ namespace wbsh {
 			&& std::strchr(testops_detail::kUnaryLetters, op[1]) != nullptr;
 	}
 
-	bool evalUnaryTestOperator(Executor& exec, char op, const std::string& operand) {
+	bool evalUnaryTestOperator(Executor& exec, char op, const std::string& operand,
+			bool test_builtin) {
 		switch (op) {
 			case 'z':
 			case 'n': return testops_detail::evalStringOperator(op, operand);
-			case 'v': return testops_detail::isSetVariable(exec.env(), operand);
+			case 'v': return testops_detail::isSetVariable(exec, operand, test_builtin);
 			case 'R': return exec.env().isNameref(operand);
 			case 'o': return testops_detail::isOptionOn(exec.env(), operand);
 			case 't': return testops_detail::isTerminalFd(operand);

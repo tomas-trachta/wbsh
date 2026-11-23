@@ -177,26 +177,91 @@ static std::string readAll(std::istream& in) {
 	return text;
 }
 
+// NUL is a character device too, which _isatty takes for a terminal; only a
+// console answers GetConsoleMode.
 static bool stdinIsTerminal() {
 #ifdef _WIN32
-	return _isatty(_fileno(stdin)) != 0;
+	if (_isatty(_fileno(stdin)) == 0) return false;
+
+	DWORD mode = 0;
+	const HANDLE input = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stdin)));
+	return ::GetConsoleMode(input, &mode) != 0;
 #else
 	return false;
 #endif /* _WIN32 */
 }
 
+static const int kStatusCannotExecute = 126;
+static const std::size_t kBinarySample = 80;
+
+// As bash's check_binary_file: a NUL before the first newline.
+static bool looksBinary(const std::string& text) {
+	const std::size_t sample = (std::min)(text.size(), kBinarySample);
+	for (std::size_t i = 0; i < sample; ++i) {
+		if (text[i] == '\n') return false;
+		if (text[i] == '\0') return true;
+	}
+
+	return false;
+}
+
+static bool isRegularFile(const std::filesystem::path& native) {
+	std::error_code ec;
+	return std::filesystem::is_regular_file(native, ec);
+}
+
+// bash looks a script name without a slash up in PATH when the current
+// directory does not have it.
+static std::filesystem::path locateScript(const std::string& path) {
+	const std::filesystem::path given = utf8ToPath(PathConv().toWin32(path));
+	const char* search = std::getenv("PATH");
+	if (isRegularFile(given) || path.find('/') != std::string::npos || search == nullptr) {
+		return given;
+	}
+
+	std::stringstream dirs(search);
+	std::string dir;
+	while (std::getline(dirs, dir, ';')) {
+		if (dir.empty()) continue;
+
+		const std::filesystem::path candidate = utf8ToPath(dir) / utf8ToPath(path);
+		if (isRegularFile(candidate)) return candidate;
+
+		std::filesystem::path program = candidate;
+		program += ".exe";
+		if (isRegularFile(program)) return program;
+	}
+
+	return given;
+}
+
+static int reportScriptError(const std::string& prefix, const std::string& path,
+		const char* problem, int status) {
+	std::cerr << prefix << ": " << path << ": " << problem << "\n";
+	return status;
+}
+
 // The path may be POSIX (`/d/work/x.sh`), as tools on PATH pass it; `$0`
-// keeps the spelling given.
-static bool readScriptFile(const Invocation& invocation, std::string& out_text) {
+// keeps the spelling given. Once the file is open bash has made it `$0`,
+// so later errors carry its name instead of the shell's.
+static int readScriptFile(const Invocation& invocation, std::string& out_text) {
 	const std::string& path = invocation.file_path;
-	std::ifstream file(utf8ToPath(PathConv().toWin32(path)), std::ios::binary);
+	const std::filesystem::path native = locateScript(path);
+	std::error_code ec;
+	if (std::filesystem::is_directory(native, ec)) {
+		return reportScriptError(path, path, "Is a directory", kStatusCannotExecute);
+	}
+
+	std::ifstream file(native, std::ios::binary);
 	if (file.fail()) {
-		std::cerr << invocation.shell_name << ": " << path << ": No such file or directory\n";
-		return false;
+		return reportScriptError(invocation.shell_name, path, "No such file or directory",
+			kStatusScriptNotFound);
 	}
 
 	out_text = readAll(file);
-	return true;
+	if (!looksBinary(out_text)) return 0;
+
+	return reportScriptError(path, path, "cannot execute binary file", kStatusCannotExecute);
 }
 
 // A self-spawned pipeline stage is a slice of its parent's script and
@@ -209,13 +274,25 @@ static std::size_t inheritedFirstLine() {
 	return static_cast<std::size_t>(line);
 }
 
+// BASH_ARGV0 in the environment names the shell, as assigning it does,
+// unless a name follows the command string.
+static void adoptInheritedArgv0(ScriptRun& run) {
+	const char* argv0 = std::getenv("BASH_ARGV0");
+	if (argv0 != nullptr && *argv0 != '\0' && std::getenv("WBSH_SUBSHELL") == nullptr) {
+		run.script_name = argv0;
+	}
+}
+
 // `wbsh -c cmd name a b` runs cmd with $0 = name and $1.. = a b, as bash does.
 static void loadCommandString(const Invocation& invocation, ScriptRun& run) {
 	run.source = invocation.command;
 	run.command_string = true;
 	run.first_line = inheritedFirstLine();
 	run.positional.clear();
-	if (invocation.operands.empty()) return;
+	if (invocation.operands.empty()) {
+		adoptInheritedArgv0(run);
+		return;
+	}
 
 	run.script_name = invocation.operands.front();
 	run.positional.assign(invocation.operands.begin() + 1, invocation.operands.end());
@@ -225,6 +302,7 @@ static void loadRunSettings(const Invocation& invocation, ScriptRun& run) {
 	run.show_tokens     = invocation.show_tokens;
 	run.show_ast        = invocationShowsAst(invocation);
 	run.show_expansions = invocation.show_expansions;
+	run.pretty_print    = invocation.pretty_print;
 	run.execute         = invocationExecutes(invocation);
 	run.read_rc         = invocation.interactive;
 	run.startup         = invocation.startup;
@@ -241,14 +319,14 @@ static void loadStdinScript(ScriptRun& run) {
 	if (!run.stream_stdin) run.source = readAll(std::cin);
 }
 
-static bool loadScriptRun(const Invocation& invocation, ScriptRun& run) {
+static int loadScriptRun(const Invocation& invocation, ScriptRun& run) {
 	loadRunSettings(invocation, run);
 
 	switch (invocation.source) {
 	case InvocationSource::CommandString:
 		loadCommandString(invocation, run);
 		run.invocation_letter = 'c';
-		return true;
+		return 0;
 	case InvocationSource::File:
 		run.script_name = invocation.file_path;
 		run.from_file = true;
@@ -257,15 +335,51 @@ static bool loadScriptRun(const Invocation& invocation, ScriptRun& run) {
 	case InvocationSource::Unset:
 	default:
 		loadStdinScript(run);
-		return true;
+		return 0;
 	}
 }
 
 static int loadAndRunScript(const Invocation& invocation) {
 	ScriptRun run;
-	if (!loadScriptRun(invocation, run)) return kStatusScriptNotFound;
+	const int status = loadScriptRun(invocation, run);
+	if (status != 0) return status;
 
 	return runScript(run);
+}
+
+static const char* const kBashLongOptions =
+		"GNU long options:\n"
+		"\t--debug\n"
+		"\t--debugger\n"
+		"\t--dump-po-strings\n"
+		"\t--dump-strings\n"
+		"\t--help\n"
+		"\t--init-file\n"
+		"\t--login\n"
+		"\t--noediting\n"
+		"\t--noprofile\n"
+		"\t--norc\n"
+		"\t--posix\n"
+		"\t--pretty-print\n"
+		"\t--rcfile\n"
+		"\t--restricted\n"
+		"\t--verbose\n"
+		"\t--version\n"
+		"Shell options:\n"
+		"\t-ilrsD or -c command or -O shopt_option\t\t(invocation only)\n"
+		"\t-abefhkmnptuvxBCEHPT or -o option\n";
+
+static bool isInvalidOptionError(const std::string& error) {
+	static const std::string kSuffix = ": invalid option";
+	return error.size() >= kSuffix.size()
+		&& error.compare(error.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0;
+}
+
+// After an invalid option bash shows the options it takes.
+static void printBashUsage(const std::string& shell_name) {
+	std::cerr << shell_name << " [GNU long option] [option] ...\n"
+		<< shell_name << " [GNU long option] [option] script-file ...\n"
+		<< kBashLongOptions;
 }
 
 static int runScriptAction(const Invocation& invocation) {
@@ -355,6 +469,7 @@ static int runShell(int argc, char** argv) {
 	std::string error;
 	if (!parseInvocation(argc, argv, invocation, error)) {
 		std::cerr << invocation.shell_name << ": " << error << "\n";
+		if (isInvalidOptionError(error)) printBashUsage(invocation.shell_name);
 		return 2;
 	}
 
@@ -362,6 +477,7 @@ static int runShell(int argc, char** argv) {
 		invocation.action = InvocationAction::RunInteractive;
 	}
 
+	invocation.startup.forced_interactive = invocation.interactive;
 	switch (invocation.action) {
 	case InvocationAction::PrintHelp:
 		printHelp();

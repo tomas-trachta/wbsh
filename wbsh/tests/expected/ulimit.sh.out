@@ -43,7 +43,7 @@ ulimit.sh: line 27: ulimit: pipe size: cannot modify limit: Invalid argument
 rc=1
 === errors
 ulimit.sh: line 30: ulimit: -z: invalid option
-ulimit: usage: ulimit [-SHacdefilmnpqrstuvx] [limit]
+ulimit: usage: ulimit [-SHabcdefiklmnpqrstuvxPRT] [limit]
 rc=2
 ulimit.sh: line 31: ulimit: abc: invalid number
 rc=1

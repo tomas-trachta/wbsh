@@ -19,6 +19,8 @@ namespace wbsh {
 			const std::string& s;
 			std::size_t send;
 			bool extglob;
+			LeadingDot dots = LeadingDot::Any;
+			bool bytes = false;    ///< match byte by byte, as bash does invalid text
 		};
 
 		enum class BracketResult { Literal, Match, NoMatch };
@@ -176,8 +178,12 @@ namespace wbsh {
 					continue;
 				}
 
+				// bash's PATSCAN: a `[` that never closes leaves the group open.
 				if (c == '[') {
-					k = skipBracket(p, k, pend);
+					const std::size_t next = skipBracket(p, k, pend);
+					if (next == k + 1) return false;
+
+					k = next;
 					continue;
 				}
 
@@ -198,7 +204,7 @@ namespace wbsh {
 
 		static bool anyAlternativeMatches(const Matcher& m, const Group& g, std::size_t from,
 				std::size_t to) {
-			const Matcher sub{ m.p, m.s, to, m.extglob };
+			const Matcher sub{ m.p, m.s, to, m.extglob, m.dots, m.bytes };
 			for (const Span& alt : g.alts) {
 				if (matchHere(sub, alt.begin, alt.end, from)) return true;
 			}
@@ -207,8 +213,17 @@ namespace wbsh {
 		}
 
 		static std::size_t nextBoundary(const Matcher& m, std::size_t k) {
+			if (m.bytes) return k < m.send ? k + 1 : k;
+
 			return k + utf8CharLength(m.s, k, m.send);
 		}
+
+		// A byte past ASCII matched on its own stays a stray byte, never a
+		// character such as U+0080.
+		static Utf8Char subjectChar(const Matcher& m, std::size_t si) {
+			return decodeUtf8(m.s, si, m.bytes ? si + 1 : m.send);
+		}
+
 
 		static bool matchOnce(const Matcher& m, const Group& g, std::size_t pend, std::size_t si) {
 			for (std::size_t k = si;; k = nextBoundary(m, k)) {
@@ -272,10 +287,24 @@ namespace wbsh {
 			return false;
 		}
 
+		static bool isDotOrDotDot(const std::string& name) {
+			return name == "." || name == "..";
+		}
+
+		// bash's FNM_PERIOD and FNM_DOTDOT: a wildcard at the start of the
+		// name does not match its leading `.`, or not all of `.` and `..`.
+		static bool shieldedDot(const Matcher& m, std::size_t si) {
+			if (si != 0 || si >= m.send || m.s[0] != '.') return false;
+			if (m.dots == LeadingDot::Explicit) return true;
+			return m.dots == LeadingDot::NotDotDot && isDotOrDotDot(m.s);
+		}
+
 		static bool matchNegated(const Matcher& m, const Group& g, std::size_t pend,
 				std::size_t si) {
+			const bool shielded = shieldedDot(m, si);
 			for (std::size_t k = si;; k = nextBoundary(m, k)) {
 				const bool matched = anyAlternativeMatches(m, g, si, k);
+				if (!matched && shielded) return false;
 				if (!matched && matchHere(m, g.after, pend, k)) return true;
 				if (k >= m.send) return false;
 			}
@@ -327,7 +356,7 @@ namespace wbsh {
 		// or turned out to be a literal `[`.
 		static BracketResult stepBracket(const Matcher& m, std::size_t& pi, std::size_t pend,
 				std::size_t& si) {
-			const Utf8Char c = decodeUtf8(m.s, si, m.send);
+			const Utf8Char c = subjectChar(m, si);
 			std::size_t next = pi;
 			const BracketResult result = matchBracket(m.p, pi, pend, c.code, next);
 			if (result != BracketResult::Match) return result;
@@ -341,10 +370,13 @@ namespace wbsh {
 			while (pi < pend) {
 				const char pc = m.p[pi];
 				Group group;
-				if (isExtglobAt(m, pi, pend) && parseGroup(m.p, pi, pend, group)) {
-					return matchGroup(m, group, pend, si);
+				if (isExtglobAt(m, pi, pend)) {
+					if (parseGroup(m.p, pi, pend, group)) return matchGroup(m, group, pend, si);
+					return m.p.compare(pi, pend - pi, m.s, si, m.send - si) == 0;
 				}
 
+				const bool wildcard = pc == '*' || pc == '?' || pc == '[';
+				if (wildcard && shieldedDot(m, si)) return false;
 				if (pc == '*') return matchStar(m, pi, pend, si);
 				if (si >= m.send) return false;
 
@@ -412,7 +444,75 @@ namespace wbsh {
 			return true;
 		}
 
+		static bool startsWithDot(const std::string& p) {
+			if (!p.empty() && p[0] == '.') return true;
+			return p.size() > 1 && p[0] == '\\' && p[1] == '.';
+		}
+
+		static bool plainSkipsName(const std::string& p, const std::string& name,
+				const GlobSkipRules& rules) {
+			const bool dot_or_dotdot = isDotOrDotDot(name);
+			if (rules.skipdots && dot_or_dotdot) return true;
+			if (startsWithDot(p)) return false;
+			if (rules.dotglob) return dot_or_dotdot;
+			return !name.empty() && name[0] == '.';
+		}
+
+		static bool skipsName(const std::string& p, const std::string& name,
+				const GlobSkipRules& rules);
+
+		static std::string spanText(const std::string& p, const Span& span) {
+			return p.substr(span.begin, span.end - span.begin);
+		}
+
+		// bash's extglob_skipname: the name is skipped when every
+		// alternative of the leading group would skip it, and for `*(...)`
+		// and `?(...)` the rest of the pattern would too.
+		static bool extglobSkipsName(const std::string& p, const std::string& name,
+				const GlobSkipRules& rules) {
+			Group group;
+			if (!parseGroup(p, 0, p.size(), group)) return false;
+
+			const bool at_end = group.after == p.size();
+			if (at_end && p.find('|', 2) == std::string::npos) {
+				return skipsName(p.substr(2, group.after - 3), name, rules);
+			}
+
+			for (const Span& alt : group.alts) {
+				if (!skipsName(spanText(p, alt), name, rules)) return false;
+			}
+
+			const bool wild = group.op == '*' || group.op == '?';
+			if (at_end || !wild) return true;
+			return skipsName(p.substr(group.after), name, rules);
+		}
+
+		static bool skipsName(const std::string& p, const std::string& name,
+				const GlobSkipRules& rules) {
+			const bool extglob = rules.extglob && p.size() > 1 && isExtglobOperator(p[0]) && p[1] == '(';
+			return extglob ? extglobSkipsName(p, name, rules) : plainSkipsName(p, name, rules);
+		}
+
 	}  // namespace fnmatch_detail
+
+	std::size_t bracketEnd(const std::string& p, std::size_t k) {
+		return fnmatch_detail::skipBracket(p, k, p.size());
+	}
+
+	std::size_t extglobGroupEnd(const std::string& p, std::size_t k) {
+		fnmatch_detail::Group group;
+		if (!fnmatch_detail::parseGroup(p, k, p.size(), group)) return std::string::npos;
+		return group.after;
+	}
+
+	bool globSkipsName(const std::string& p, const std::string& name, const GlobSkipRules& rules) {
+		return fnmatch_detail::skipsName(p, name, rules);
+	}
+
+	bool fnmatchName(const std::string& p, const std::string& name, bool extglob, LeadingDot dots) {
+		const fnmatch_detail::Matcher m{ p, name, name.size(), extglob, dots };
+		return fnmatch_detail::matchHere(m, 0, p.size(), 0);
+	}
 
 	PatternShape analyzePattern(const std::string& p, bool extglob) {
 		const std::string none;
@@ -424,14 +524,23 @@ namespace wbsh {
 		return shape;
 	}
 
+	// As bash's xstrmatch: a pattern or subject that is not valid UTF-8
+	// is matched byte by byte.
+	static bool matchesAsBytes(const std::string& p, const std::string& s, std::size_t start,
+			std::size_t end) {
+		return !isValidUtf8(p) || !isValidUtf8(s, start, end);
+	}
+
 	bool fnmatchFull(const std::string& p, const std::string& s, bool extglob) {
-		const fnmatch_detail::Matcher m{ p, s, s.size(), extglob };
+		fnmatch_detail::Matcher m{ p, s, s.size(), extglob };
+		m.bytes = matchesAsBytes(p, s, 0, s.size());
 		return fnmatch_detail::matchHere(m, 0, p.size(), 0);
 	}
 
 	bool fnmatchRange(const std::string& p, const std::string& s,
 	                  std::size_t start, std::size_t len, bool extglob) {
-		const fnmatch_detail::Matcher m{ p, s, start + len, extglob };
+		fnmatch_detail::Matcher m{ p, s, start + len, extglob };
+		m.bytes = matchesAsBytes(p, s, start, start + len);
 		return fnmatch_detail::matchHere(m, 0, p.size(), start);
 	}
 

@@ -78,6 +78,14 @@ namespace wbsh {
 		virtual PromptCounts promptCounts() const { return {}; }
 	};
 
+	namespace arith_detail {
+		class ArithEval;
+	}
+
+	/// The text of a `$'...'` body with its escapes decoded; `\u` writes
+	/// UTF-8 when @p utf8.
+	std::string decodeAnsiC(const std::string& body, bool utf8);
+
 	/**
 	 * @brief Word-expansion engine.
 	 *
@@ -95,6 +103,7 @@ namespace wbsh {
 	class Expander {
 	public:
 		Expander(Environment& env, CommandSubstitutor* sub = nullptr);
+		const Environment& environment() const { return env_; }
 
 		std::vector<std::string> expandWord(const Word& w);
 
@@ -105,6 +114,8 @@ namespace wbsh {
 		 * generated alternative.
 		 */
 		std::vector<std::string> expandWordPostBrace(const Word& w);
+		void expandBraceAlternative(const std::string& alt, const Word& w,
+		                            std::vector<std::string>& out);
 
 		/**
 		 * @brief Expansion for non-splitting contexts.
@@ -147,16 +158,25 @@ namespace wbsh {
 		 *               processed inline.
 		 */
 		std::string expandHeredoc(const std::string& body, bool quoted);
+		/// A here-document's own body: an unterminated `$(` in it is reported
+		/// on bash's here-document line.
+		std::string expandHeredocBody(const std::string& body, bool quoted);
 
 		/** A prompt string's promptvars expansion: as inside double quotes. */
 		std::string expandPromptText(const std::string& text);
 
 		long long evalArith(const std::string& body);
+		long long evalArithExpanded(const std::string& text);
+		/// Text that is already a finished expression, as a variable's value
+		/// or an expanded subscript is: nothing in it is expanded again.
+		long long evalArithLiteral(const std::string& text);
 		/// With xtrace on: the expression the last evalArith evaluated,
 		/// after its expansions, as `set -x` shows it.
 		const std::string& lastArithText() const { return last_arith_text_; }
 		/// The value of a `$'...'` body.
 		std::string ansiCText(const std::string& body) { return interpretAnsiC(body); }
+		/// An associative key as written, expanded once into the key it is.
+		std::string assocKeyText(const std::string& subscript) { return resolveSubscript(subscript); }
 
 		/**
 		 * @brief Is a fatal expansion error pending?
@@ -172,8 +192,13 @@ namespace wbsh {
 			std::string message = std::move(pending_error_);
 			pending_error_.clear();
 			unlabeled_error_ = false;
+			located_error_ = false;
 			return message;
 		}
+
+		/// The pending error already says where it happened, as a syntax
+		/// error in a `$(...)` that only expansion parses does.
+		bool errorIsLocated() const { return located_error_; }
 
 		/// The command name bash puts before an arithmetic error message:
 		/// none for a fatal error or an assignment to a readonly variable.
@@ -200,6 +225,9 @@ namespace wbsh {
 		/// After a reported expansion error bash drops the rest of the
 		/// input line; the executor takes this once the command has ended.
 		void dropRestOfLine() { drop_line_ = true; }
+		bool dropLinePending() const { return drop_line_; }
+		/// The last arithmetic failed inside an array subscript.
+		bool arithSubscriptFailed() const { return arith_subscript_error_; }
 
 		bool takeDropLine() {
 			const bool drop = drop_line_;
@@ -247,6 +275,10 @@ namespace wbsh {
 		// Text written in the word itself: globbed, but never split, since
 		// only the results of expansions are (`IFS=:; echo a:b`).
 		static constexpr std::uint8_t F_NOSPLIT = 1u << 3;
+		// A zero-width stand-in for an empty quoted string ("", '', "$e"):
+		// word splitting counts it as field text, so `"$e"$f` with f=' val'
+		// is two fields, and quote removal drops it.
+		static constexpr std::uint8_t F_QUOTED_NULL = 1u << 4;
 
 		struct Tagged {
 			std::string text;
@@ -254,6 +286,9 @@ namespace wbsh {
 			// The field after the last F_FIELD_END marker has a quoted
 			// part (`''`, `"$x"`, ...), so it survives even when empty.
 			bool had_quote = false;
+			// An unquoted `$*` met a null IFS: as in bash, the whole word is
+			// then split on spaces alone, whatever IFS holds later.
+			bool split_on_spaces = false;
 			std::size_t size() const { return text.size(); }
 			void push(char c, std::uint8_t f) {
 				text.push_back(c);
@@ -283,6 +318,8 @@ namespace wbsh {
 		// quoted part at all (`${u:-""}` is one empty field).
 		struct WordQuoting {
 			std::vector<std::uint8_t> quoted;
+			// Where an empty quoted string ("", '', "$e") stood in the value.
+			std::vector<std::size_t> nulls;
 			bool had_quote = false;
 			bool set = false;
 		};
@@ -318,6 +355,15 @@ namespace wbsh {
 			unlabeled_error_ = true;
 			pending_error_ = std::move(msg);
 		}
+
+		void failLocated(std::string msg) {
+			if (!pending_error_.empty()) return;
+
+			located_error_ = true;
+			pending_error_ = std::move(msg);
+		}
+
+		void failUnterminatedSubstitution(const std::string& text);
 		// True when expansion should stop early: an error is pending or
 		// a command substitution raised shell control flow.
 		bool aborting() const {
@@ -330,7 +376,11 @@ namespace wbsh {
 		std::string pending_error_;
 		std::string last_arith_text_;
 		bool fatal_error_ = false;
+		// An assignment's value or a `${name=word}` word is being expanded.
+		bool assignment_value_ = false;
+		bool heredoc_body_ = false;
 		bool unlabeled_error_ = false;
+		bool located_error_ = false;
 		bool drop_line_ = false;
 		// Whether the ${...} being expanded is inside double quotes, which
 		// decides what a backslash in its word argument escapes.
@@ -354,10 +404,15 @@ namespace wbsh {
 		                       bool inside_dq, Tagged& out);
 		void   renderProcSubstSegment(const WordSegment& s, Tagged& out);
 
-		std::string lookupParam(const std::string& name, bool suppress_nounset = false);
+		std::string lookupParam(const std::string& name, bool suppress_nounset = false,
+			const std::string& label = {});
+		bool isUnboundNameref(const std::string& name) const;
+		bool refersToWholeArray(const std::string& name) const;
+		bool renderWholeArrayRef(const std::string& name, Tagged& out, bool inside_dq);
 		std::string lookupPositional(std::size_t index) const;
 		bool isVariableSet(const std::string& name) const;
 		bool isUnsetPositional(const std::string& name) const;
+		bool lacksElementZero(const std::string& name) const;
 		bool isParamSet(const std::string& name) const;
 		void checkElementBound(const std::string& subject, const std::string& subscript,
 		                       const ElementSlot& slot);
@@ -369,8 +424,10 @@ namespace wbsh {
 		bool resolveIndirectBody(const std::string& body, std::string& out_body,
 		                         std::string& out_label);
 		bool resolveUnsetIndirect(const std::string& spec, const std::string& rest,
-		                          const std::string& label, std::string& out_body);
+		                          const std::string& label, bool named, std::string& out_body);
 		std::string joinPositionals(char form) const;
+		std::string lastBackgroundPid() const;
+		bool        isUnboundSpecial(const std::string& name) const;
 		bool        lookupSpecialChar(char c, std::string& out);
 		bool        lookupDynamicSpecial(const std::string& name, std::string& out) const;
 		// Look up name[subscript] as a scalar string. Supports numeric
@@ -394,6 +451,8 @@ namespace wbsh {
 		std::string expandParam(const std::string& body, bool quoted_ctx,
 		                        WordQuoting* quoting = nullptr, const std::string& label = {});
 		std::string expandParamLengthForm(const std::string& body);
+		std::string expandHashForm(const std::string& body);
+		std::string indexedElementLength(const std::string& name, const std::string& subscript);
 		std::string expandBangParam(const std::string& body);
 		// @p label names the parameter in diagnostics; empty means the
 		// spelling in @p body.
@@ -413,8 +472,14 @@ namespace wbsh {
 		using KeyedList = std::vector<std::pair<long long, std::string>>;
 		bool parseListParam(const std::string& body, ListParam& out) const;
 		std::vector<std::string> listParamValues(const ListParam& p) const;
+		std::vector<std::string> nullTestedValues(const ListParam& p) const;
 		KeyedList sliceCandidates(const ListParam& p) const;
 		std::vector<std::string> expandListParam(const ListParam& p, const std::string& body);
+		std::vector<std::string> assignWholeArrayDefault(const ListParam& p, bool colon,
+		                                                 const std::string& subject,
+		                                                 const std::string& arg);
+		bool renderScalarListAlternative(const std::string& body, bool inside_dq, Tagged& out,
+		                                 bool& rendered);
 		bool renderListAlternative(const ListParam& list, const std::string& body, bool inside_dq,
 		                           Tagged& out, bool& rendered);
 		std::vector<std::string> sliceListParam(const ListParam& p, const std::string& args);
@@ -432,7 +497,7 @@ namespace wbsh {
 			bool anchor_start = false;
 			bool anchor_end = false;
 		};
-		ReplaceArgs parseReplaceArgs(const std::string& args);
+		ReplaceArgs parseReplaceArgs(const std::string& args, bool all);
 		std::string evalParamReplace(const std::string& cur,
 		                             const std::string& args, bool all);
 		struct ParamOpCtx {
@@ -452,10 +517,26 @@ namespace wbsh {
 		std::string runCmdSubst(const std::string& body);
 		std::string runNoForkSubst(const std::string& body);
 		std::string interpretAnsiC(const std::string& body);
+		std::string withDecodedName(const std::string& body);
+		std::string withAnsiCStringsQuoted(const std::string& body);
 
 		// `$` and backquote expansion of a heredoc body or a prompt;
 		// `escapes` says which characters a backslash quotes.
 		std::string expandInterpolated(const std::string& body, bool (*escapes)(char));
+		std::string expandArithmeticText(const std::string& body, bool in_subscript = false);
+		std::string expandArithmeticSubscripts(const std::string& text);
+		static std::string valueSubscriptsExpanded(void* self, const std::string& text);
+		long long finishArith(arith_detail::ArithEval& evaluator);
+		long long evalArithExpansion(const std::string& body);
+		bool copiesAssocSubscript(const std::string& body, std::size_t& i, std::string& out) const;
+		static std::string assocKeyExpanded(void* self, const std::string& text);
+		static std::string indexExpanded(void* self, const std::string& text);
+		bool isDeclaredOnly(const std::string& name) const;
+		bool showsAttributesOf(const std::string& body, std::size_t i, const std::string& name) const;
+		std::string declaredOnlyText(const std::string& name) const;
+		std::string declarationOnly(const std::string& name) const;
+		bool arith_soft_error_ = false;
+		bool arith_subscript_error_ = false;
 
 		// Helpers for expandHeredoc — one per `$X` / backquote shape.
 		// Each takes the body, the cursor `i` (advanced through the
@@ -485,7 +566,10 @@ namespace wbsh {
 		std::vector<std::string> globExpand(const Tagged& t);
 		std::string quoteRemove(const Tagged& t);
 
-		std::string substringExpand(const std::string& val, const std::string& args);
+		std::string substringExpand(const std::string& val, const std::string& args,
+		                            const std::string& label);
+		long long evalSliceArith(const std::string& text, const std::string& label);
+		std::string sliceLabel(const ListParam& p) const;
 		std::string stripPrefix(const std::string& val, const std::string& pat, bool greedy);
 		std::string stripSuffix(const std::string& val, const std::string& pat, bool greedy);
 		std::string applyCaseConv(const std::string& val, char op, bool all,
@@ -506,11 +590,14 @@ namespace wbsh {
 		using EscapeTest = bool (*)(char);
 		EscapeTest wordArgEscapes(bool records_quoting, bool in_dq) const;
 		std::string takeAnsiCQuoted(const std::string& body, std::size_t& i);
+		bool startsSingleQuotedRun(const std::string& body, std::size_t i, bool in_dq) const;
 		bool expandParamWordStep(const std::string& body, std::size_t& i, bool& in_dq,
 		                         WordQuoting* quoting, std::string& out);
 		void expandNestedParamQuoted(const std::string& body, std::size_t& i, std::string& out,
 		                             WordQuoting& quoting);
 		std::string expandReplacementArg(const std::string& raw);
+		std::string expandReplacementWord(const std::string& rep);
+		void expandParamProcSubst(const std::string& body, std::size_t& i, std::string& out);
 		std::string expandPatternArg(const std::string& body);
 		void appendPatternExpansion(const std::string& body, std::size_t& i, bool in_dq,
 		                            std::string& out);

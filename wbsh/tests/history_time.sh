@@ -24,7 +24,7 @@ D=$(mktemp -d) || exit 1
 session() {
     env -u WBSH_INIT_COMMAND -u HISTSIZE -u HISTFILESIZE -u HISTCONTROL -u HISTIGNORE \
         -u HISTTIMEFORMAT HOME="$D" HISTFILE="$D/hist" PS1='$ ' PS2='> ' \
-        "$@" "$WBSH" -i 2>&1 | grep -v '^\$ $' | sed 's/^\$ //'
+        "$@" "$WBSH" -i 2>&1 | grep -v '^[$>] '
 }
 
 echo "=== times read from the file are shown; entries without one show ??"

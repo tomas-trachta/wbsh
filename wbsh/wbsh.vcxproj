@@ -376,6 +376,7 @@
     <ClCompile Include="src\diagnostics.cpp" />
     <ClCompile Include="src\funcprint.cpp" />
     <ClCompile Include="src\executor_callstack.cpp" />
+    <ClCompile Include="src\executor_funcexport.cpp" />
     <ClCompile Include="src\executor_procsubst.cpp" />
     <ClCompile Include="src\executor_xtrace.cpp" />
     <ClCompile Include="src\executor_restricted.cpp" />
@@ -527,6 +528,7 @@
     <ClCompile Include="src\coreutils_fileops.cpp" />
     <ClCompile Include="src\coreutils_remove.cpp" />
     <ClCompile Include="src\coreutils_copy.cpp" />
+    <ClCompile Include="src\coreutils_expr.cpp" />
     <ClCompile Include="src\coreutils_headtail.cpp" />
     <ClCompile Include="src\devices.cpp" />
     <ClCompile Include="src\coreutils_system.cpp" />

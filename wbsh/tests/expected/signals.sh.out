@@ -50,9 +50,9 @@ status 1
 signals.sh: line 101: kill: NOPE: invalid signal specification
 status 1
 signals.sh: line 102: kill: -s: option requires an argument
-status 2
+status 1
 -n 0 probes
 -- ends the options
-wbsh: kill: usage: kill [-s SIGSPEC | -n SIGNUM | -SIGSPEC] PID | %JOB ...
+kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]
 status 2
 31) SIGSYS

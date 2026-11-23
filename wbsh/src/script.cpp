@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <iostream>
 #include <ostream>
 #include <string>
@@ -24,6 +25,8 @@
 #include "environment.h"
 #include "executor.h"
 #include "expander.h"
+#include "funcprint.h"
+#include "history.h"
 #include "lexer.h"
 #include "parser.h"
 #include "printer.h"
@@ -393,8 +396,19 @@ namespace wbsh {
 		if (!firstSyntaxError(lex.errors(), parser.errors(), error)) return;
 
 		const std::string input = run.command_string ? "-c" : std::string();
+		for (const LexError& warning : lex.warnings()) {
+			if (warning.loc.line > error.loc.line) continue;
+			std::cerr << syntaxWarningReport(input, warning.loc.line, warning.message);
+		}
+
 		std::cerr << syntaxErrorReport(input, run.source, run.first_line, error.loc.line,
 			error.message);
+
+		ParseError follow_up;
+		if (!followUpSyntaxError(parser.errors(), error, follow_up)) return;
+
+		std::cerr << syntaxErrorReport(input, run.source, run.first_line, follow_up.loc.line,
+			follow_up.message);
 	}
 
 	static bool hasSyntaxErrors(const Lexer& lex, const Parser& parser) {
@@ -402,16 +416,22 @@ namespace wbsh {
 	}
 
 	// False when a startup file already ended the shell with `exit`.
-	static bool runStartup(Executor& exec, const ScriptRun& run, int& out_status) {
+	static bool runStartup(Executor& exec, const ScriptRun& run, bool child_shell,
+			int& out_status) {
 		applyStartupOptions(exec, run.startup);
 		sourceLoginProfile(exec, run.startup);
 		if (run.read_rc) sourceRcFile(exec, run.startup);
+		else if (!child_shell) sourceBashEnv(exec);
 
 		return !exec.consumeFlow(FlowSignal::Kind::Exit, &out_status);
 	}
 
 	// bash reads on after an error that only discards the command it sits
 	// in; that command fails.
+	static std::string scriptOrigin(const ScriptRun& run) {
+		return run.command_string ? "-c" : std::string();
+	}
+
 	static int resumeScript(Executor& exec, const ScriptRun& run, std::size_t resume) {
 		exec.setLastStatus(1);
 		if (resume >= run.source.size()) return 1;
@@ -419,8 +439,7 @@ namespace wbsh {
 		const auto skipped_lines = std::count(run.source.begin(),
 			run.source.begin() + static_cast<std::ptrdiff_t>(resume), '\n');
 		const std::size_t line = run.first_line + static_cast<std::size_t>(skipped_lines);
-		const std::string input = run.command_string ? "-c" : std::string();
-		return exec.executeInputText(run.source.substr(resume), input, line);
+		return exec.executeInputText(run.source.substr(resume), scriptOrigin(run), line);
 	}
 
 	// Like bash, the commands on the lines before a syntax error run
@@ -430,6 +449,11 @@ namespace wbsh {
 	                           const Lexer& lex, const Parser& parser) {
 		truncateAtSyntaxError(*root, parser, firstSyntaxErrorOffset(lex.errors(), parser.errors()));
 		const int status = exec.executeInput(*root, run.source);
+		if (exec.relexPending()) {
+			return exec.relexRestOfInput(run.source,
+				{ scriptOrigin(run), run.first_line, lex.source(), lex.aliasSplices() }, status);
+		}
+
 		if (exec.flowPending() || !hasSyntaxErrors(lex, parser)) return status;
 
 		printRunSyntaxErrors(lex, parser, run);
@@ -535,6 +559,154 @@ namespace wbsh {
 		return error.discards_command ? Completeness::Complete : Completeness::Fatal;
 	}
 
+	static bool takeTextLine(const std::string& text, std::size_t& pos, std::string& line) {
+		if (pos >= text.size()) return false;
+
+		const std::size_t newline = text.find('\n', pos);
+		const std::size_t end = newline == std::string::npos ? text.size() : newline + 1;
+		line = text.substr(pos, end - pos);
+		pos = end;
+		return true;
+	}
+
+	static std::string withoutNewline(const std::string& line) {
+		return !line.empty() && line.back() == '\n' ? line.substr(0, line.size() - 1) : line;
+	}
+
+	// As bash, the line is history-expanded as it is read while the history
+	// option is on: the result goes to stderr, and a failed expansion drops
+	// the line.
+	static void recordScriptHistory(Executor& exec, const std::string& entry);
+
+	static bool expandScriptLine(Executor& exec, std::string& line, HistorySubstitution& last) {
+		const SetOptions& options = exec.env().options();
+		if (!options.history || !options.histexpand) return true;
+
+		const bool newline = !line.empty() && line.back() == '\n';
+		const HistoryExpansion expansion =
+			expandHistoryLine(withoutNewline(line), exec.history(), '\0', last, options.posix);
+		switch (expansion.kind) {
+			case HistoryExpansion::Kind::kExpanded:
+				std::fprintf(stderr, "%s\n", expansion.text.c_str());
+				line = expansion.text + (newline ? "\n" : "");
+				return true;
+			case HistoryExpansion::Kind::kPrintOnly:
+				std::fprintf(stderr, "%s\n", expansion.text.c_str());
+				recordScriptHistory(exec, expansion.text);
+				return false;
+			case HistoryExpansion::Kind::kFailed:
+				shellErrorf("%s\n", expansion.text.c_str());
+				return false;
+			default:
+				return true;
+		}
+	}
+
+	static bool historyTakes(Executor& exec, const std::string& entry) {
+		const Environment& env = exec.env();
+		if (!env.options().history || entry.empty()) return false;
+
+		const HistoryFilter filter = { env.get("HISTCONTROL"), env.get("HISTIGNORE") };
+		const auto& history = exec.history();
+		return historyAccepts(filter, entry, history.empty() ? std::string() : history.back());
+	}
+
+	// fc and history leave out the command that runs them when it is the
+	// newest entry.
+	static void recordScriptHistory(Executor& exec, const std::string& entry) {
+		const bool recorded = historyTakes(exec, entry);
+		exec.setCurrentCommandInHistory(recorded);
+		if (!recorded) return;
+
+		const HistoryFilter filter = { exec.env().get("HISTCONTROL"), std::string() };
+		if (historyErasesDuplicates(filter)) exec.eraseHistoryEntries(entry);
+
+		exec.addHistoryEntry(entry);
+	}
+
+	// bash's entry for a command with a here-document ends in a newline.
+	static bool opensHeredoc(const std::string& text) {
+		Lexer lexer(text);
+		for (const Token& token : lexer.tokenize()) {
+			if (token.kind == TokKind::DLess || token.kind == TokKind::DLessDash) return true;
+		}
+
+		return false;
+	}
+
+	struct ScriptCommand {
+		std::string text;
+		std::string entry;
+		std::size_t lines = 0;
+		bool dropped = false;
+	};
+
+	static Completeness judgeCommandText(const std::string& text);
+
+	// The text ends inside a here-document's body.
+	static bool heredocPending(const std::string& text) {
+		if (text.empty()) return false;
+
+		Lexer lexer(text);
+		lexer.tokenize();
+		const auto mentions = [](const LexError& error) {
+			return error.message.find("delimited by end-of-file") != std::string::npos
+				|| error.message.find("unterminated heredoc") != std::string::npos;
+		};
+		return std::any_of(lexer.warnings().begin(), lexer.warnings().end(), mentions)
+			|| std::any_of(lexer.errors().begin(), lexer.errors().end(), mentions);
+	}
+
+	// The lines of one command, each expanded and joined into its history
+	// entry as bash reads them; a here-document's body is not expanded.
+	static Completeness readScriptCommand(Executor& exec, const std::string& text, std::size_t& pos,
+			std::size_t first_line, HistorySubstitution& last, ScriptCommand& command) {
+		std::string pending;
+		std::string line;
+		Completeness completeness = Completeness::Incomplete;
+		while (completeness == Completeness::Incomplete && takeTextLine(text, pos, line)) {
+			exec.env().setCurrentLineno(static_cast<int>(first_line + command.lines));
+			++command.lines;
+			const bool body = heredocPending(command.text);
+			if (!body && !expandScriptLine(exec, line, last)) {
+				command.dropped = true;
+				return Completeness::Complete;
+			}
+
+			appendHistoryLine(command.entry, pending, withoutNewline(line));
+			pending += (pending.empty() ? "" : "\n") + withoutNewline(line);
+			command.text += line;
+			completeness = heredocPending(command.text) ? Completeness::Incomplete
+				: judgeCommandText(command.text);
+		}
+
+		return completeness;
+	}
+
+	// Once a script turns the history option on it is read a command at a
+	// time, so each line can be recorded and expanded before it runs.
+	static int runScriptLines(Executor& exec, const std::string& text, const std::string& origin,
+			std::size_t first_line) {
+		std::size_t pos = 0;
+		std::size_t line = first_line;
+		int status = exec.lastStatus();
+		HistorySubstitution last;
+		while (pos < text.size()) {
+			ScriptCommand command;
+			const Completeness completeness = readScriptCommand(exec, text, pos, line, last, command);
+			if (!command.dropped) {
+				if (opensHeredoc(command.text)) command.entry += '\n';
+				recordScriptHistory(exec, command.entry);
+				status = exec.executeInputText(command.text, origin, line);
+			}
+
+			line += command.lines;
+			if (exec.flowPending() || completeness == Completeness::Fatal) return status;
+		}
+
+		return status;
+	}
+
 	static const std::size_t kLineByLineLimit = 64;
 
 	// Past kLineByLineLimit lines a command is judged at doubling lengths
@@ -610,11 +782,14 @@ namespace wbsh {
 		Executor exec(env);
 		exec.setSourceText(run.source);
 		const bool child_shell = isChildShell(env);
+		if (!child_shell) exec.setLineRunner(runScriptLines);
+		const bool inherited_stage = !env.get("WBSH_SUBSHELL_LEVEL").empty();
 		absorbInheritedState(env, exec);
+		if (inherited_stage) exec.enterInheritedStage(*root);
 		if (!child_shell) env.setInvocationLetter(run.invocation_letter);
 
 		int status = 0;
-		if (!runStartup(exec, run, status)) return exec.fireExitTrap(status);
+		if (!runStartup(exec, run, child_shell, status)) return exec.fireExitTrap(status);
 
 		if (run.from_file) exec.beginScriptFrame(run.script_name);
 
@@ -640,11 +815,27 @@ namespace wbsh {
 		}
 
 		if (run.show_expansions && root != nullptr) dumpExpansions(root, out_color, run);
+		if (run.pretty_print && root != nullptr) std::cout << prettyPrintedProgram(*root, run.source);
+	}
+
+	// The last `-o posix` / `+o posix` of the invocation wins over the
+	// environment, as it is applied after POSIXLY_CORRECT is imported.
+	static bool startsInPosixMode(const ShellStartup& startup) {
+		bool posix = std::getenv("POSIXLY_CORRECT") != nullptr;
+		const std::vector<std::string>& words = startup.set_words;
+		for (std::size_t k = 0; k + 1 < words.size(); ++k) {
+			if (words[k + 1] != "posix") continue;
+			if (words[k] == "-o") posix = true;
+			if (words[k] == "+o") posix = false;
+		}
+
+		return posix;
 	}
 
 	int runScript(const ScriptRun& run) {
 		Lexer lex(run.source);
 		lex.startAtLine(run.first_line);
+		lex.lexInPosixMode(startsInPosixMode(run.startup));
 		lex.acceptHeredocAtEof();
 		auto tokens = lex.tokenize();
 		const std::vector<Token> dumped_tokens = run.show_tokens ? tokens : std::vector<Token>{};

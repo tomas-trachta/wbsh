@@ -86,30 +86,60 @@ namespace wbsh {
 		return source.substr(start, end == std::string::npos ? std::string::npos : end - start);
 	}
 
+	static std::string prefixedLines(const std::string& prefix, const std::string& message) {
+		std::string report;
+		std::size_t start = 0;
+		while (true) {
+			const std::size_t end = message.find('\n', start);
+			report += prefix + message.substr(start, end - start) + "\n";
+			if (end == std::string::npos) return report;
+
+			start = end + 1;
+		}
+	}
+
+	// bash quotes the line back after "syntax error near ...", the last
+	// line of a report.
+	static bool echoesSourceLine(const std::string& message) {
+		const std::size_t last_newline = message.rfind('\n');
+		const std::size_t last_line = last_newline == std::string::npos ? 0 : last_newline + 1;
+		return message.compare(last_line, 18, "syntax error near ") == 0;
+	}
+
 	std::string syntaxErrorReport(const std::string& input, const std::string& source,
 	                              std::size_t first_line, std::size_t line,
 	                              const std::string& message) {
 		const std::string prefix = syntaxErrorPrefix(input, line);
-		std::string report = prefix + message + "\n";
-		if (message.rfind("syntax error near unexpected token", 0) != 0) return report;
-		if (line < first_line) return report;
+		std::string report = prefixedLines(prefix, message);
+		if (!echoesSourceLine(message) || line < first_line) return report;
 
 		report += prefix + "`" + sourceLine(source, line - first_line) + "'\n";
 		return report;
 	}
 
-	void shellWarningAt(std::size_t line, const std::string& message) {
-		const int shown = reportsLines() ? static_cast<int>(line) : 0;
-		const std::string text = prefixAt(shown) + "warning: " + message + "\n";
+	std::string syntaxWarningReport(const std::string& input, std::size_t line,
+	                                const std::string& message) {
+		return syntaxErrorPrefix(input, line) + "warning: " + message + "\n";
+	}
+
+	// What a builtin printed before goes out first, as in bash, where both
+	// often share one file.
+	static void writeStderr(const std::string& text) {
+		std::fflush(stdout);
 		std::fwrite(text.data(), 1, text.size(), stderr);
 	}
 
-	static void writeStderr(const std::string& text) {
-		std::fwrite(text.data(), 1, text.size(), stderr);
+	void shellWarningAt(std::size_t line, const std::string& message) {
+		const int shown = reportsLines() ? static_cast<int>(line) : 0;
+		writeStderr(prefixAt(shown) + "warning: " + message + "\n");
 	}
 
 	void shellError(const std::string& message) {
 		writeStderr(errorPrefix() + message + "\n");
+	}
+
+	void shellErrorWithoutLine(const std::string& message) {
+		writeStderr(errorName() + ": " + message + "\n");
 	}
 
 	static std::string formatMessage(const char* format, std::va_list args) {

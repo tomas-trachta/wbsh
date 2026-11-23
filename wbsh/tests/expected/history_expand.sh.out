@@ -1,91 +1,143 @@
 === quoting and the contexts where ! is not an event
-$ first
-$ $ $ val
-$ a!!b
-$ echo "aecho 'a!!b'b"
+$ echo first
+first
+$ ref=x
+$ x=val
+$ echo ${!ref}
+val
+$ echo 'a!!b'
+a!!b
+$ echo "a!!b"
+echo "aecho 'a!!b'b"
 aecho 'a!!b'b
-$ x!
-$ !!
-$ a=! b!
-$ bracket
-$ dollar-bang
-$ 
+$ echo "x!"
+x!
+$ echo \!!
+!!
+$ echo a=! b!
+a=! b!
+$ case x in [!y]) echo bracket;; esac
+bracket
+$ : $! && echo dollar-bang
+dollar-bang
+$ exit
 === events
-$ one
-$ two
-$ echo echo two
-echo two
-$ echo echo one
-echo one
-$ echo echo one
-echo one
-$ echo echo echo two
+$ echo one
+one
+$ echo two
+two
+$ echo !!
 echo echo two
-$ echo echo echo echo two
+echo two
+$ echo !-3
+echo echo one
+echo one
+$ echo !1
+echo echo one
+echo one
+$ echo !?tw?
 echo echo echo two
-$ echo echo 
+echo echo two
+$ echo !ec
+echo echo echo echo two
+echo echo echo two
+$ echo !#
+echo echo 
 echo
-$ 
+$ exit
 === word designators
-$ alpha beta gamma
-$ echo gamma alpha alpha beta gamma
+$ echo alpha beta gamma
+alpha beta gamma
+$ echo !$ !^ !*
+echo gamma alpha alpha beta gamma
 gamma alpha alpha beta gamma
-$ echo alpha
+$ echo !!:2
+echo alpha
 alpha
-$ echo gamma alpha echo
+$ echo !-2:1-2 !-2:0
+echo gamma alpha echo
 gamma alpha echo
-$ echo alpha alpha beta gamma x
+$ echo !-3:2* x
+echo alpha alpha beta gamma x
 alpha alpha beta gamma x
-$ echo gamma alpha alpha beta
+$ echo !-4:1-
+echo gamma alpha alpha beta
 gamma alpha alpha beta
-$ ls -d / > /dev/null; echo beta
+$ ls -d / > /dev/null; echo !$
+ls -d / > /dev/null; echo beta
 beta
-$ 
+$ exit
 === modifiers and quick substitution
-$ /tmp/dir/file.tar.gz
-$ echo /tmp/dir file.tar.gz /tmp/dir/file.tar .gz
+$ echo /tmp/dir/file.tar.gz
+/tmp/dir/file.tar.gz
+$ echo !$:h !$:t !$:r !$:e
+echo /tmp/dir file.tar.gz /tmp/dir/file.tar .gz
 /tmp/dir file.tar.gz /tmp/dir/file.tar .gz
-$ one two one
-$ echo echo 1 two one
+$ echo one two one
+one two one
+$ echo !!:s/one/1/
+echo echo 1 two one
 echo 1 two one
-$ echo echo 1 two 1
+$ echo !-2:gs/one/1/
+echo echo 1 two 1
 echo 1 two 1
-$ echo echo 1 2 1
+$ ^two^2^
+echo echo 1 2 1
 echo 1 2 1
-$ echo 'echo one two one'
+$ echo !-4:q
+echo 'echo one two one'
 echo one two one
-$ echo stays; echo echo 'echo one two one'
-$     7  echo 'echo one two one'
+$ echo stays; echo !!:p
+echo stays; echo echo 'echo one two one'
+$ history 3
+    7  echo 'echo one two one'
     8  echo stays; echo echo 'echo one two one'
     9  history 3
-$ 
+$ exit
 === errors drop the line
-$ hi
-$ wbsh: !nosuchcommand: event not found
-$ wbsh: !99: event not found
-$ wbsh: !!:9: bad word specifier
-$ hi
-$ wbsh: :s/zzz/y/: substitution failed
-$     1  echo hi
+$ echo hi
+hi
+$ echo !nosuchcommand
+wbsh: !nosuchcommand: event not found
+$ echo !99
+wbsh: !99: event not found
+$ echo !!:9
+wbsh: !!:9: bad word specifier
+$ echo hi
+hi
+$ echo !!:s/zzz/y/
+wbsh: :s/zzz/y/: substitution failed
+$ history
+    1  echo hi
     2  echo hi
     3  history
-$ 
+$ exit
 === a continuation line inside single quotes is left alone
-$ base
-$ > a
+$ echo base
+base
+$ echo 'a
+> !!'
+a
 !!
-$ > echo 'a
+$ echo "b
+> !!"
+echo 'a
 !!'"
 b
 echo 'a
 !!'
-$ 
+$ exit
 === set +H turns expansion off
-$ on
-$ $ !!
-$ $ echo set -H
+$ echo on
+on
+$ set +H
+$ echo !!
+!!
+$ set -H
+$ echo !!
+echo set -H
 set -H
-$ 
+$ exit
 === a script is not history-expanded
 hi
 !!

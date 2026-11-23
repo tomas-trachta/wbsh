@@ -1,8 +1,7 @@
 === associative array keys @ and *
-difftest_findings.sh: line 16: m[*]: bad array subscript
-after m[*]=: 1
-difftest_findings.sh: line 18: m[@]: bad array subscript
-after m[@]=: 1 2
+same line
+after m[*]=: 0
+after m[@]=: 0 4
 [*]=kstar
 [@]=kat
 [a]=1
@@ -52,7 +51,7 @@ difftest_findings.sh: eval: line 71: syntax error near unexpected token `)'
 difftest_findings.sh: eval: line 71: `)'
 status 2
 === kill messages
-difftest_findings.sh: line 74: kill: nosuch: arguments must be process or job IDs
+difftest_findings.sh: line 74: kill: `nosuch': not a pid or valid job spec
 status 1
 difftest_findings.sh: line 75: kill: NOSIG: invalid signal specification
 status 1

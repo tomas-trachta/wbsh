@@ -1,6 +1,6 @@
 subscript_errors.sh: line 8: p 2: arithmetic syntax error in expression (error token is "2")
 subscript_errors.sh: line 9: p 2: arithmetic syntax error in expression (error token is "2")
-subscript_errors.sh: line 10: p 2: arithmetic syntax error in expression (error token is "2")
+subscript_errors.sh: line 10: a[@]: p 2: arithmetic syntax error in expression (error token is "2")
 subscript_errors.sh: line 11: p 2: arithmetic syntax error in expression (error token is "2")
 subscript_errors.sh: line 12: p 2: arithmetic syntax error in expression (error token is "2")
 subscript_errors.sh: line 13: p 2: arithmetic syntax error in expression (error token is "2")

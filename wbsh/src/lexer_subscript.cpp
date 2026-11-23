@@ -74,8 +74,10 @@ namespace wbsh {
 		return !tokens_.empty() && isAssignmentShaped(tokens_.back());
 	}
 
+	// bash reads `name[...]` as one unit wherever an assignment may come,
+	// and in `[[ ]]`, so `<(` in the subscript is no process substitution.
 	bool Lexer::assignmentNameBeforeSubscript(const std::string& name) const {
-		return isIdentifier(name) && (atCommandWordStart() || followsAssignmentWord());
+		return isIdentifier(name) && (atCommandWordStart() || followsAssignmentWord() || in_dbracket_);
 	}
 
 	bool Lexer::atAssignmentSubscript(const std::vector<WordSegment>& out) const {

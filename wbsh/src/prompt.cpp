@@ -13,6 +13,7 @@
 #endif /* _WIN32 */
 
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <string>
@@ -106,18 +107,50 @@ namespace wbsh {
 			    && (posix.size() == home.size() || posix[home.size()] == '/');
 		}
 
+		// bash reads $PWD, and the working directory only without it.
+		static std::string promptCwd(const Environment& env, const PathConv& conv) {
+			const std::string pwd = env.get("PWD");
+			return pwd.empty() ? conv.toPosix(currentCwdAsUtf8()) : pwd;
+		}
+
 		static std::string promptCwdHome(const Environment& env, const PathConv& conv) {
-			const std::string posix = conv.toPosix(currentCwdAsUtf8());
+			const std::string posix = promptCwd(env, conv);
 			const std::string home = env.get("HOME");
 			if (underHome(posix, home)) return "~" + posix.substr(home.size());
 
 			return posix;
 		}
 
-		static std::string promptCwdBasename(const PathConv& conv) {
-			const std::string posix = conv.toPosix(currentCwdAsUtf8());
+		static std::string promptCwdBasename(const Environment& env, const PathConv& conv) {
+			const std::string posix = promptCwd(env, conv);
+			if (posix == env.get("HOME")) return "~";
+			if (!posix.empty() && posix.back() == '/') return posix;
+
 			const std::size_t slash = posix.rfind('/');
 			return slash == std::string::npos ? posix : posix.substr(slash + 1);
+		}
+
+		// bash's shell_name: the program as it was run, without the
+		// directory or Windows' `.exe`.
+		static std::string promptShellName(const Environment& env) {
+			std::string name = env.get("BASH");
+			const std::size_t slash = name.find_last_of("/\\");
+			if (slash != std::string::npos) name.erase(0, slash + 1);
+
+			const std::size_t dot = name.rfind('.');
+			const bool exe = dot != std::string::npos && _stricmp(name.c_str() + dot, ".exe") == 0;
+			if (exe) name.resize(dot);
+			return name.empty() ? "wbsh" : name;
+		}
+
+		// `\v` and `\V` are the version bash says it is, BASH_VERSINFO.
+		static std::string promptVersion(const Environment& env, bool with_patch) {
+			const Environment::IndexedArray* info = env.getIndexedArray("BASH_VERSINFO");
+			if (info == nullptr || info->size() < 3) return with_patch ? kLongVersion : kShortVersion;
+
+			std::string version = info->at(0) + "." + info->at(1);
+			if (with_patch) version += "." + info->at(2);
+			return version;
 		}
 
 		static std::string plainGitSegment(const GitInfo& info) {
@@ -176,20 +209,20 @@ namespace wbsh {
 		static bool insertedText(char code, const Environment& env, const PathConv& conv,
 		                         const PromptRequest& request, std::string& text) {
 			switch (code) {
-			case 's': text = "wbsh";                                        break;
+			case 's': text = promptShellName(env);                          break;
 			case 'u': text = promptUser(env);                               break;
 			case 'h':
 			case 'H': text = promptHost(env, code);                         break;
 			case 'w': text = promptCwdHome(env, conv);                      break;
-			case 'W': text = promptCwdBasename(conv);                       break;
+			case 'W': text = promptCwdBasename(env, conv);                  break;
 			case 'g': text = promptGitBranch(env, conv, request.can_redraw); break;
 			case 'd': text = timeText("%a %b %d");                          break;
 			case 't': text = timeText("%H:%M:%S");                          break;
 			case 'T': text = timeText("%I:%M:%S");                          break;
 			case '@': text = timeText("%I:%M %p");                          break;
 			case 'A': text = timeText("%H:%M");                             break;
-			case 'v': text = kShortVersion;                                 break;
-			case 'V': text = kLongVersion;                                  break;
+			case 'v': text = promptVersion(env, false);                     break;
+			case 'V': text = promptVersion(env, true);                      break;
 			case 'l': text = terminalName();                                break;
 			case 'j': text = counted(request.counts.jobs);                  break;
 			case '!': text = counted(request.counts.history_number);        break;
@@ -265,6 +298,12 @@ namespace wbsh {
 			return request.for_expansion ? "\\$" : "$";
 		}
 
+		// readline's marks only mean something to a line editor; without one
+		// bash drops `\[` and `\]`.
+		static bool editsLines(const Environment& env) {
+			return env.interactive() || env.options().emacs || env.options().vi;
+		}
+
 		static std::string inserted(const std::string& text, const PromptRequest& request) {
 			return request.for_expansion ? quotedForExpansion(text) : text;
 		}
@@ -277,6 +316,7 @@ namespace wbsh {
 			std::string text;
 			if (code == '$') return dollarSign(request);
 			if (code == '\\') return inserted("\\", request);
+			if ((code == '[' || code == ']') && !editsLines(env)) return std::string();
 			if (controlText(code, text)) return text;
 			if (insertedText(code, env, conv, request, text)) return inserted(text, request);
 			if (isOctal(code)) {
@@ -287,6 +327,18 @@ namespace wbsh {
 			if (code == 'D' && formattedTime(ps, i, text)) return inserted(text, request);
 
 			return std::string{ '\\', code };
+		}
+
+		// POSIX: `!` in a prompt is the history number, `!!` a `!`.
+		static std::string posixHistoryMark(const std::string& ps, std::size_t& i,
+		                                    const PromptRequest& request) {
+			++i;
+			if (i < ps.size() && ps[i] == '!') {
+				++i;
+				return "!";
+			}
+
+			return counted(request.counts.history_number);
 		}
 
 		static std::string expandedKeepingStatus(Executor& exec, const std::string& text) {
@@ -326,6 +378,11 @@ namespace wbsh {
 		std::string out;
 		std::size_t i = 0;
 		while (i < ps.size()) {
+			if (ps[i] == '!' && env.options().posix) {
+				out += prompt_detail::posixHistoryMark(ps, i, request);
+				continue;
+			}
+
 			if (ps[i] != '\\' || i + 1 >= ps.size()) {
 				out.push_back(ps[i++]);
 				continue;

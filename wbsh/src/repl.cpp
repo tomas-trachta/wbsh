@@ -230,6 +230,7 @@ namespace wbsh {
 		}
 
 		if (env.get("PS2").empty()) env.set("PS2", "> ");
+		env.shopts().globstar = true;
 	}
 
 	// Semantic marks (OSC 133, which Windows Terminal, VS Code, WezTerm and
@@ -559,7 +560,8 @@ namespace wbsh {
 
 		const char quote = state.waiting_for_more ? openQuoteOf(state.buffer) : '\0';
 		const HistoryExpansion expansion =
-			expandHistoryLine(line, exec.history(), quote, state.last_substitution);
+			expandHistoryLine(line, exec.history(), quote, state.last_substitution,
+				exec.env().options().posix);
 		switch (expansion.kind) {
 		case HistoryExpansion::Kind::kExpanded:
 			showExpandedLine(expansion.text);
@@ -647,8 +649,11 @@ namespace wbsh {
 	static void parseAndMaybeExecute(Executor& exec, ReplState& state) {
 		const std::string text = state.buffer + "\n";
 		Lexer lex(text);
+		lex.lexInPosixMode(exec.env().options().posix);
+		exec.lexWithAliases(lex);
 		auto tokens = lex.tokenize();
-		Parser parser(std::move(tokens), text);
+		const std::string& lexed = lex.source();
+		Parser parser(std::move(tokens), lexed);
 		auto root = parser.parseProgram();
 
 		if (looksIncomplete(state.buffer, lex.errors(), parser.errors())) {
@@ -667,9 +672,10 @@ namespace wbsh {
 		} else if (root) {
 			Arena arena = parser.takeArena();
 			const std::size_t defined = exec.functionDefinitionCount();
-			exec.setSourceText(text);
-			exec.executeInput(*root, text);
+			exec.setSourceText(lexed);
+			const int status = exec.executeInput(*root, lexed);
 			if (exec.functionDefinitionCount() != defined) exec.adoptArena(std::move(arena));
+			exec.relexRestOfInput(text, { std::string(), 1, lexed, lex.aliasSplices() }, status);
 		}
 
 		state.buffer.clear();
@@ -700,8 +706,11 @@ namespace wbsh {
 		exec.setLastStatus(kSigintStatus);
 	}
 
+	// As bash, a shell reading a pipe says `exit`; at the console the line
+	// just ends.
 	static int exitOnEof(Executor& exec) {
-		std::fputc('\n', stdout);
+		if (stdinIsTty()) std::fputc('\n', stdout);
+		else std::fputs("exit\n", stderr);
 		const int status = exec.fireExitTrap(exec.lastStatus());
 		finishHistory(exec);
 		return status;
@@ -723,6 +732,13 @@ namespace wbsh {
 		const std::string command = state.buffer;
 		parseAndMaybeExecute(exec, state);
 		if (!state.waiting_for_more) reportCommandEnd(exec, state, command);
+	}
+
+	// The banner greets a person at the console; `-i` given keeps `-n`,
+	// as in bash.
+	static void adaptToInput(Executor& exec, const ReplState& state, const ShellStartup& startup) {
+		if (stdinIsTty()) printBanner(state);
+		if (startup.forced_interactive) exec.keepNoexec();
 	}
 
 	// Unlike bash, a login shell reads .wbshrc after the profile, so
@@ -747,7 +763,7 @@ namespace wbsh {
 		initConsoleAndSignals(state);
 		initShellDefaults(env, state);
 		noteCommandLineWanted(env, state);
-		printBanner(state);
+		adaptToInput(exec, state, startup);
 		initHistoryVariables(env);
 
 		readStartupFiles(exec, startup);

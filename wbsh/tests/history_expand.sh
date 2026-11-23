@@ -6,7 +6,7 @@
 # stderr before it runs.
 #
 # Each session is an interactive wbsh reading its lines from a pipe, with
-# HOME and HISTFILE in a scratch directory; the banner is cut off.
+# HOME and HISTFILE in a scratch directory.
 
 WBSH=../../x64/Release/wbsh.exe
 [ -x "$WBSH" ] || WBSH=../../x64/Debug/wbsh.exe
@@ -16,7 +16,7 @@ D=$(mktemp -d) || exit 1
 session() {
     rm -f "$D/hist"
     env -u WBSH_INIT_COMMAND -u HISTCONTROL -u HISTIGNORE HOME="$D" HISTFILE="$D/hist" \
-        PS1='$ ' PS2='> ' "$WBSH" -i 2>&1 | tail -n +3
+        PS1='$ ' PS2='> ' "$WBSH" -i 2>&1
 }
 
 echo "=== quoting and the contexts where ! is not an event"

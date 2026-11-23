@@ -47,6 +47,7 @@ namespace wbsh {
 		std::string command;
 		std::string word;
 		std::string previous;
+		bool keep_order = false;   ///< compgen prints the matches in the order they were made
 	};
 
 	/** The matches of a spec, and the -o options in force -- compopt may change them. */

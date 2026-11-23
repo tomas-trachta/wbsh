@@ -5,7 +5,7 @@ heLlo heLLo Hello HELLO ello el h
 [] def def []
 nope=assigned
 [d] []
-unset ref: [] [d] [d] []
+indirect.sh: line 13: x: invalid indirect expansion
 === 2. positional and special targets
 c u
 b
@@ -43,25 +43,25 @@ v=myvarx
 RANDOM SECONDS LINENO
 in $(): myvar1 myvar2 myvarx
 === 5. errors
-indirect.sh: line 56: a b: bad substitution
+indirect.sh: line 56: a b: invalid variable name
 rc=1
-indirect.sh: line 57: 1a: bad substitution
+indirect.sh: line 57: 1a: invalid variable name
 rc=1
-indirect.sh: line 58: : bad substitution
+indirect.sh: line 58: : invalid variable name
 rc=1
-indirect.sh: line 59: a[1: bad substitution
+indirect.sh: line 59: a[1: invalid variable name
 rc=1
-indirect.sh: line 60: $y: bad substitution
+indirect.sh: line 60: $y: invalid variable name
 rc=1
-indirect.sh: line 61: y:-q: bad substitution
+indirect.sh: line 61: y:-q: invalid variable name
 rc=1
-indirect.sh: line 62: !x: invalid indirect expansion
+indirect.sh: line 62: x: invalid indirect expansion
 rc=1
 indirect.sh: line 63: !x: parameter null or not set
 rc=1
 indirect.sh: line 64: !x: unbound variable
 rc=1
-indirect.sh: line 65: !x: unbound variable
+indirect.sh: line 65: x: invalid indirect expansion
 rc=1
 ok
 === 6. default operators on array elements

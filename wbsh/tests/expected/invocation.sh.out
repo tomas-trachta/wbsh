@@ -14,12 +14,56 @@ globstar            	off
 wbsh: -c: option requires an argument
 status 2
 wbsh: -Z: invalid option
+wbsh [GNU long option] [option] ...
+wbsh [GNU long option] [option] script-file ...
+GNU long options:
+	--debug
+	--debugger
+	--dump-po-strings
+	--dump-strings
+	--help
+	--init-file
+	--login
+	--noediting
+	--noprofile
+	--norc
+	--posix
+	--pretty-print
+	--rcfile
+	--restricted
+	--verbose
+	--version
+Shell options:
+	-ilrsD or -c command or -O shopt_option		(invocation only)
+	-abefhkmnptuvxBCEHPT or -o option
 status 2
 wbsh: no-such-option: invalid option name
 status 2
-wbsh: no_such_shopt: invalid shell option name
+wbsh: line 0: no_such_shopt: invalid shell option name
 status 2
 wbsh: --no-such-long-option: invalid option
+wbsh [GNU long option] [option] ...
+wbsh [GNU long option] [option] script-file ...
+GNU long options:
+	--debug
+	--debugger
+	--dump-po-strings
+	--dump-strings
+	--help
+	--init-file
+	--login
+	--noediting
+	--noprofile
+	--norc
+	--posix
+	--pretty-print
+	--rcfile
+	--restricted
+	--verbose
+	--version
+Shell options:
+	-ilrsD or -c command or -O shopt_option		(invocation only)
+	-abefhkmnptuvxBCEHPT or -o option
 status 2
 === script files and stdin
 script 2 a b

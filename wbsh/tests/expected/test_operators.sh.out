@@ -16,7 +16,7 @@ three equal signs
 === 2. errors
 test_operators.sh: line 27: [: a: unary operator expected
 rc=2
-test_operators.sh: line 28: [: x: integer expression expected
+test_operators.sh: line 28: [: x: integer expected
 rc=2
 test_operators.sh: line 29: [: too many arguments
 rc=2

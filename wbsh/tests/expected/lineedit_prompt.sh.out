@@ -24,6 +24,7 @@ abcdefghijkl$ \e[1A\r\e[Jabcdefghijkl$ x\r\e[5C
 top\r\n
 abcdefghij\r\e[Jabcdefghijx\r\e[1C
 === the REPL turns \[ \] into the marks and prints the prompt without them
-0000000 033 [ 1 m B 033 [ 0 m \n $ r a n \n
-0000020 033 [ 1 m B 033 [ 0 m \n $ \n
-0000035
+0000000 033 [ 1 m B 033 [ 0 m \n $ e c h o
+0000020 r a n \n r a n \n 033 [ 1 m B 033 [
+0000040 0 m \n $ e x i t \n
+0000052

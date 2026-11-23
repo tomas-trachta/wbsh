@@ -17,6 +17,7 @@
 #  include <winioctl.h>
 #endif /* _WIN32 */
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -966,7 +967,25 @@ namespace wbsh {
 		return exe;
 	}
 
+	// `cp /dev/null file` makes an empty file, as copying the device does.
+	static bool copyNullDevice(Executor& exec, const Transfer& transfer) {
+		std::error_code ec;
+		const bool into_directory = std::filesystem::is_directory(toNative(exec, transfer.dest), ec);
+		const std::string dest = into_directory ? transfer.dest + "/null" : transfer.dest;
+		std::FILE* file = fopenNative(exec, dest, "wb");
+		if (file == nullptr) {
+			reportCopy("cp", "cannot create regular file " + inQuotes(dest) + ": "
+				+ std::strerror(errno));
+			return false;
+		}
+
+		std::fclose(file);
+		return true;
+	}
+
 	static bool copyOne(Executor& exec, const Transfer& transfer, const CpOptions& opts) {
+		if (transfer.source == "/dev/null") return copyNullDevice(exec, transfer);
+
 		Endpoint src;
 		const bool follow = followsLinks(opts, true);
 		loadCopySource(toNative(exec, transfer.source), transfer.source, follow, src);

@@ -47,6 +47,7 @@ namespace wbsh {
 		bool show_ast        = false;
 		bool hide_ast        = false;
 		bool show_expansions = false;
+		bool pretty_print    = false;    ///< `--pretty-print`: print the script, do not run it.
 		bool json            = false;    ///< `--json`: report the run as one JSON object.
 	};
 

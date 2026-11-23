@@ -6,17 +6,17 @@ by substring 143
 job_control.sh: line 18: kill: %9: no such job
 no job 1
 === jobs
-[1]-  Running                 sleep 1 &
-[2]+  Running                 sleep 2 &
+[1]-  Running                    sleep 1 &
+[2]+  Running                    sleep 2 &
 2
-[1]- PID Running                 sleep 1 &
-[2]+ PID Running                 sleep 2 &
+[1]- PID Running                    sleep 1 &
+[2]+ PID Running                    sleep 2 &
 0
 === wait -n
 first done 3
 nothing left 127
 === a finished job is reported once
-[1]+  Exit 5                  (exit 5)
+[1]+  Exit 5                     ( exit 5 )
 0
 late wait 5
 === bg without job control

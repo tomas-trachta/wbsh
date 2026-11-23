@@ -193,6 +193,7 @@ namespace wbsh {
 	ProcessProbe probeProcess(unsigned long pid);
 
 	void registerHeadTailBuiltins(Executor& exec);
+	void registerExprBuiltin(Executor& exec);
 
 	void registerTextBuiltins(Executor& exec);
 

@@ -1,0 +1,369 @@
+=== loop headers
+bash: line 1: `invalid-name': not a valid identifier
+status 1
+bash: line 1: `in-valid': not a valid identifier
+posix status 2
+empty select 0
+arith 0
+arith 1
+word a
+word b
+bash: -c: line 1: syntax error: arithmetic expression required
+bash: -c: line 1: syntax error: `(( i=0; "i < 3" ))'
+bash: -c: line 1: syntax error: `;' unexpected
+bash: -c: line 1: syntax error: `(( i=0; i < 3; i++; 7 ))'
+subst
+funsub
+f () 
+{ 
+    for ((1; i < 3; i++ ))
+    do
+        :;
+    done;
+    for ((1; 1; 1))
+    do
+        break;
+    done
+}
+=== pipeline prefixes
+a
+status 1
+b
+status 0
+c
+status 0
+=== continuation lines
+<foo bar baz> 
+<foo 'bar' baz> 
+foobar
+foo\ bar
+=== alias line numbers
+foo
+alias.sh: line 3: quux_not_found: command not found
+line 4
+=== here-documents cut off by the closing parenthesis
+heredoc.sh: line 3: warning: here-document at line 1 delimited by end-of-file (wanted `EOF')
+hi
+quoted
+heredoc.sh: line 12: warning: here-document at line 10 delimited by end-of-file (wanted `)')
+paren
+=== unterminated substitutions
+1
+eof.sh: line 5: unexpected EOF while looking for matching `)'
+1
+eofdq.sh: line 5: unexpected EOF while looking for matching `)'
+late.sh: command substitution: line 4: unexpected EOF while looking for matching `)'
+late.sh: command substitution: line 4: unexpected EOF while looking for matching `''
+next 1
+=== brace expansion
+foo 1 2 bar
+a ` _ ^ ]  [ Z Y X W V U T S R Q P O N M L K J I H G F E D C B A
+-50 -45 -40 -35 -30 -25 -20 -15 -10 -5 0 00 02 04 06 08 10
+a-{bd}-c a-{be}-c a-{bdef-g-c a-{bdef-i-c {klklkl}1 {klklkl}2 {klklkl}3
+{1..7} {1..8} {1..9} {2..7} {2..8} {2..9} {3..7} {3..8} {3..9} {6..7} {6..8} {6..9}
+x{1..a}0 x{1..a}1 x{1..a}2 y{1..a}0 y{1..a}1 y{1..a}2 {1..20..2f} 1 3 5 7 9 11 13 15 17 19
+a.. /a.cfg 1..4 8 {abcde.f} X{..a}Z 0{1..}2
+{} { } {abc} x,y {abc} trie
+=== arithmetic errors
+arith.sh: line 1: ((: j= : arithmetic syntax error: operand expected (error token is "= ")
+arith.sh: line 2: ((: 7++ : arithmetic syntax error: operand expected (error token is "+ ")
+arith.sh: line 3: ((: 7++x : arithmetic syntax error in expression (error token is "++x ")
+arith.sh: line 4: ((: x=7++ : arithmetic syntax error: operand expected (error token is "+ ")
+arith.sh: line 5: 4 -- : arithmetic syntax error: operand expected (error token is "- ")
+=== special parameters
+[]
+[unset]
+set -u rejects $!
+<a b> <c> <d> 
+<a b> <c> <d> 
+<a b> 
+<a> <b> 
+<a b> <c> <a b> <c> 
+<> <x> 
+=== single quotes in a double-quoted ${name+word} follow the posix option
+1 '}'z
+2 ''z}
+3 '}'z 'bar} baz'
+4 ''z} foo 'bar baz line 7
+5 ''z}
+6 ''z}
+=== syntax errors name the token the grammar could not take
+-- true &&
+bash: -c: line 2: syntax error: unexpected end of file
+status 2
+-- true && ;
+bash: -c: line 1: syntax error near unexpected token `;'
+bash: -c: line 1: `true && ;'
+status 2
+-- true || fi
+bash: -c: line 1: syntax error near unexpected token `fi'
+bash: -c: line 1: `true || fi'
+status 2
+-- echo |
+bash: -c: line 2: syntax error: unexpected end of file
+status 2
+-- echo | ;
+bash: -c: line 1: syntax error near unexpected token `;'
+bash: -c: line 1: `echo | ;'
+status 2
+-- echo | fi
+bash: -c: line 1: syntax error near unexpected token `fi'
+bash: -c: line 1: `echo | fi'
+status 2
+-- ! ;
+status 1
+-- time ;
+
+real	0m0.000s
+user	0m0.000s
+sys	0m0.000s
+status 0
+-- coproc ;
+bash: -c: line 1: syntax error near unexpected token `;'
+bash: -c: line 1: `coproc ;'
+status 2
+-- coproc
+bash: -c: line 1: syntax error near unexpected token `newline'
+bash: -c: line 1: `coproc'
+status 2
+-- (echo hi
+bash: -c: line 2: syntax error: unexpected end of file from `(' command on line 1
+status 2
+-- for x in a; echo; done
+bash: -c: line 1: syntax error near unexpected token `echo'
+bash: -c: line 1: `for x in a; echo; done'
+status 2
+-- for x in a b fi
+bash: -c: line 2: syntax error: unexpected end of file from `for' command on line 1
+status 2
+-- f()
+bash: -c: line 2: syntax error: unexpected end of file
+status 2
+-- f() echo hi
+bash: -c: line 1: syntax error near unexpected token `echo'
+bash: -c: line 1: `f() echo hi'
+status 2
+-- f() ;
+bash: -c: line 1: syntax error near unexpected token `;'
+bash: -c: line 1: `f() ;'
+status 2
+-- echo >
+bash: -c: line 1: syntax error near unexpected token `newline'
+bash: -c: line 1: `echo >'
+status 2
+-- echo > ;
+bash: -c: line 1: syntax error near unexpected token `;'
+bash: -c: line 1: `echo > ;'
+status 2
+-- cat < |
+bash: -c: line 1: syntax error near unexpected token `|'
+bash: -c: line 1: `cat < |'
+status 2
+-- echo 2>
+bash: -c: line 1: syntax error near unexpected token `newline'
+bash: -c: line 1: `echo 2>'
+status 2
+-- echo <<
+bash: -c: line 1: syntax error near unexpected token `newline'
+bash: -c: line 1: `echo <<'
+status 2
+-- if true; then echo; fi fi
+bash: -c: line 1: syntax error near unexpected token `fi'
+bash: -c: line 1: `if true; then echo; fi fi'
+status 2
+-- { echo; 
+bash: -c: line 2: syntax error: unexpected end of file from `{' command on line 1
+status 2
+-- ( )
+bash: -c: line 1: syntax error near unexpected token `)'
+bash: -c: line 1: `( )'
+status 2
+-- [[ ( a ]]
+bash: -c: line 1: unexpected token `]]', expected `)'
+bash: -c: line 1: syntax error near `]]'
+bash: -c: line 1: `[[ ( a ]]'
+status 2
+-- [[ a && ]]
+bash: -c: line 1: syntax error near `]]'
+bash: -c: line 1: `[[ a && ]]'
+status 2
+-- [[ ]]
+bash: -c: line 1: syntax error near `]]'
+bash: -c: line 1: `[[ ]]'
+status 2
+-- [[ a b ]]
+bash: -c: line 1: unexpected token `b', conditional binary operator expected
+bash: -c: line 1: syntax error near `b'
+bash: -c: line 1: `[[ a b ]]'
+status 2
+-- [[ -z ]]
+bash: -c: line 1: unexpected argument `]]' to conditional unary operator
+bash: -c: line 1: syntax error near `]]'
+bash: -c: line 1: `[[ -z ]]'
+status 2
+-- [[ a == ]]
+bash: -c: line 1: unexpected argument `]]' to conditional binary operator
+bash: -c: line 1: syntax error near `]]'
+bash: -c: line 1: `[[ a == ]]'
+status 2
+-- [[ ! ]]
+bash: -c: line 1: syntax error near `]]'
+bash: -c: line 1: `[[ ! ]]'
+status 2
+-- [[ ( -t X ) ]
+bash: -c: line 1: syntax error in conditional expression: unexpected token `]'
+bash: -c: line 1: syntax error near `]'
+bash: -c: line 1: `[[ ( -t X ) ]'
+status 2
+-- [[ -n &
+bash: -c: line 1: unexpected argument `&' to conditional unary operator
+bash: -c: line 1: syntax error near `&'
+bash: -c: line 1: `[[ -n &'
+status 2
+-- [[ -n XX &
+bash: -c: line 1: syntax error in conditional expression: unexpected token `&'
+bash: -c: line 1: syntax error near `&'
+bash: -c: line 1: `[[ -n XX &'
+status 2
+-- [[ -n XX & ]
+bash: -c: line 1: syntax error in conditional expression: unexpected token `&'
+bash: -c: line 1: syntax error near `&'
+bash: -c: line 1: `[[ -n XX & ]'
+status 2
+-- [[ 4 & ]]
+bash: -c: line 1: unexpected token `&', conditional binary operator expected
+bash: -c: line 1: syntax error near `&'
+bash: -c: line 1: `[[ 4 & ]]'
+status 2
+-- [[ 4 > & ]]
+bash: -c: line 1: unexpected argument `&' to conditional binary operator
+bash: -c: line 1: syntax error near `&'
+bash: -c: line 1: `[[ 4 > & ]]'
+status 2
+-- [[ & ]]
+bash: -c: line 1: unexpected token `&' in conditional command
+bash: -c: line 1: syntax error near `&'
+bash: -c: line 1: `[[ & ]]'
+status 2
+-- [[ -Q 7 ]]
+bash: -c: line 1: unexpected token `7', conditional binary operator expected
+bash: -c: line 1: syntax error near `7'
+bash: -c: line 1: `[[ -Q 7 ]]'
+status 2
+-- [[ -n < ]]
+bash: -c: line 1: unexpected argument `<' to conditional unary operator
+bash: -c: line 1: syntax error near `<'
+bash: -c: line 1: `[[ -n < ]]'
+status 2
+-- [[ -t X ]]
+bash: line 1: [[: X: integer expected
+status 2
+=== ${ list; } ends at a } where a command could start
+inside
+a
+b xcy
+d e
+g
+blank ----
+funsub.sh: eval: line 10: unexpected EOF while looking for matching `}'
+status 2
+after false
+status 0
+=== blanks around $@ in an operator word follow IFS
+< X >< X >< X >< X >
+< a b >
+< a><b >
+< a><b >
+< ab >
+<a><b>
+<>
+=== an empty quoted string is a field of its own
+2 <><val>
+1 <val>
+1 < val>
+1 <>
+2 <><>
+0 <>
+1 <x>
+1 <x>
+2 <><ab>
+2 <><a>
+2 <><>
+2 <><a>
+1 <>
+2 <><>
+1 <>
+1 <>
+2 <><>
+2 <><>
+3 <><b><>
+1 <>
+1 <>
+0 <>
+1 <>
+0 <>
+1 <>
+1 <>
+1 <>
+1 <>
+2 <><>
+2 <><>
+2 <><>
+2 <><>
+2 <><>
+4 <><><><>
+5 < A >< B >< A  B >< A >< B >
+7
+FOO
+=== here-document delimiters as bash matches them
+hi
+after-split
+nextEOF
+hello
+after-tab
+one
+EOF
+after-backquote
+q
+empty
+done
+=== more than 16 here-documents on a line
+heredocs.sh: line 1: maximum here-document count exceeded
+status 0
+=== a syntax error inside $(...) stops the command around it
+-- : $( for z in 1 2 3; do ); echo no
+case.sh: line 1: syntax error near unexpected token `)'
+case.sh: line 1: `: $( for z in 1 2 3; do ); echo no'
+status 2
+-- : $( for z in 1 2 3; done ); echo no
+case.sh: line 1: syntax error near unexpected token `done' while looking for matching `)'
+case.sh: line 1: `: $( for z in 1 2 3; done ); echo no'
+status 2
+-- echo $( if x; then echo foo ); echo no
+case.sh: line 1: syntax error near unexpected token `)'
+case.sh: line 1: `echo $( if x; then echo foo ); echo no'
+status 2
+-- case x in x) done;; esac
+case.sh: line 1: syntax error near unexpected token `done'
+case.sh: line 1: `case x in x) done;; esac'
+status 2
+-- : $(case x in x) ;; x) done esac)
+case.sh: line 1: syntax error near unexpected token `done' while looking for matching `)'
+case.sh: line 1: `: $(case x in x) ;; x) done esac)'
+status 2
+-- : $(case x in esac|in) foo;; esac)
+case.sh: line 1: syntax error near unexpected token `in' while looking for matching `)'
+case.sh: line 1: `: $(case x in esac|in) foo;; esac)'
+status 2
+-- : $(case x in in|esac) foo;; esac); echo ok
+ok
+status 0
+-- : $(case esac in (esac) echo esac;; esac); echo ok
+ok
+status 0
+-- echo `case x in x) done;; esac`; echo backquotes run late
+case.sh: command substitution: line 1: syntax error near unexpected token `done'
+case.sh: command substitution: line 1: `case x in x) done;; esac'
+
+backquotes run late
+status 0

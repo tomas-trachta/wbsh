@@ -102,4 +102,5 @@ wbsh: grep: Trailing backslash
 wbsh: grep: Invalid back reference
 wbsh: grep: Regular expression too big
 sed: -e expression #1, char 9: Unmatched ( or \(
+regex_engine.sh: line 121: [[: invalid regular expression `(': Unmatched ( or \(
 =~ rc=2

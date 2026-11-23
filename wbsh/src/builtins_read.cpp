@@ -83,7 +83,7 @@ namespace wbsh::read_detail {
 	static const char kOptionLetters[] = "eErsa:d:i:n:N:p:t:u:";
 
 	static int reportUsage() {
-		std::fprintf(stderr, "read: usage: read [-ers] [-a array] [-d delim] [-i text] "
+		std::fprintf(stderr, "read: usage: read [-Eers] [-a array] [-d delim] [-i text] "
 			"[-n nchars] [-N nchars] [-p prompt] [-t timeout] [-u fd] [name ...]\n");
 		return 2;
 	}
@@ -212,17 +212,22 @@ namespace wbsh::read_detail {
 	}
 
 	// An array element, `name[subscript]`, is a valid target too.
-	static bool isValidName(const std::string& name) {
+	// Unless array_expand_once takes the subscript as it is, quotes in it
+	// hide brackets, so `a[80's]` is no name.
+	static bool isValidName(const Executor& exec, const std::string& name, bool expand_once) {
 		const std::size_t bracket = name.find('[');
 		if (bracket == std::string::npos) return isValidPlainName(name);
+		if (exec.typedAsArrayRef(name) && isAssocKeyReference(exec.env(), name)) return true;
 
-		return bracket + 2 < name.size() && name.back() == ']'
+		const bool closes_at_end = subscriptEnd(name, bracket, !expand_once) == name.size() - 1;
+		return bracket + 2 < name.size() && closes_at_end
 			&& isValidPlainName(name.substr(0, bracket));
 	}
 
-	static bool validateNames(const std::vector<std::string>& names) {
+	static bool validateNames(const Executor& exec, const std::vector<std::string>& names,
+			bool expand_once) {
 		for (const std::string& name : names) {
-			if (isValidName(name)) continue;
+			if (isValidName(exec, name, expand_once)) continue;
 
 			shellErrorf("read: `%s': not a valid identifier\n", name.c_str());
 			return false;
@@ -409,8 +414,33 @@ namespace wbsh::read_detail {
 		return byte;
 	}
 
+	static bool isContinuationByte(char c) {
+		return (static_cast<unsigned char>(c) & 0xC0u) == 0x80u;
+	}
+
+	static std::size_t utf8SequenceLength(char lead) {
+		const unsigned char byte = static_cast<unsigned char>(lead);
+		if (byte < 0xC0u) return 1;
+		if (byte < 0xE0u) return 2;
+		return byte < 0xF0u ? 3 : 4;
+	}
+
+	// `-n` and `-N` count characters; the last one is read whole.
 	static bool countReached(const Options& opts, const Input& input) {
-		return opts.nchars >= 0 && static_cast<long long>(input.text.size()) >= opts.nchars;
+		if (opts.nchars < 0) return false;
+
+		const std::string& text = input.text;
+		long long chars = 0;
+		std::size_t last = 0;
+		for (std::size_t i = 0; i < text.size(); ++i) {
+			if (isContinuationByte(text[i])) continue;
+
+			++chars;
+			last = i;
+		}
+
+		if (chars < opts.nchars) return false;
+		return text.empty() || text.size() - last >= utf8SequenceLength(text[last]);
 	}
 
 	static bool readEscaped(Source& source, Input& input, End& end) {
@@ -453,9 +483,12 @@ namespace wbsh::read_detail {
 		return !input.escaped[i] && ifs.find(input.text[i]) != std::string::npos;
 	}
 
+	static bool isIfsWhitespace(char c, const std::string& ifs) {
+		return std::isspace(static_cast<unsigned char>(c)) != 0 && ifs.find(c) != std::string::npos;
+	}
+
 	static bool isSeparatorSpace(const Input& input, std::size_t i, const std::string& ifs) {
-		const char c = input.text[i];
-		return (c == ' ' || c == '\t' || c == '\n') && isSeparator(input, i, ifs);
+		return !input.escaped[i] && isIfsWhitespace(input.text[i], ifs);
 	}
 
 	static void skipSpaces(const Input& input, std::size_t& pos, const std::string& ifs) {
@@ -480,14 +513,15 @@ namespace wbsh::read_detail {
 	}
 
 	// The last name takes the rest of the line, less trailing IFS
-	// whitespace; a lone remaining field also loses its delimiter.
+	// whitespace, escaped or not, as bash strips it; a lone remaining
+	// field keeps an escaped one and loses only its delimiter.
 	static std::string takeRest(const Input& input, std::size_t pos, const std::string& ifs) {
 		std::size_t probe = pos;
 		const std::string field = takeField(input, probe, ifs);
 		if (probe >= input.text.size()) return field;
 
 		std::size_t end = input.text.size();
-		while (end > pos && isSeparatorSpace(input, end - 1, ifs)) --end;
+		while (end > pos && isIfsWhitespace(input.text[end - 1], ifs)) --end;
 		return input.text.substr(pos, end - pos);
 	}
 
@@ -523,6 +557,7 @@ namespace wbsh::read_detail {
 	}
 
 	static int assignArray(Environment& env, const Options& opts, const Input& input) {
+		if (env.rejectsArrayThroughElement(opts.array_name)) return 1;
 		if (env.isReadonly(opts.array_name)) {
 			shellErrorf("%s: readonly variable\n", opts.array_name.c_str());
 			return 1;
@@ -531,6 +566,13 @@ namespace wbsh::read_detail {
 		const std::string ifs = opts.exact ? std::string() : env.ifs();
 		env.setIndexedArrayFromList(opts.array_name, splitAll(input, ifs));
 		return 0;
+	}
+
+	// As in bash, a readonly name stops the assignments; before the last
+	// name that is status 2.
+	static int reportReadonlyName(const std::string& name, bool last) {
+		shellErrorf("%s: readonly variable\n", name.c_str());
+		return last ? 1 : 2;
 	}
 
 	static int assignNames(Environment& env, const Options& opts,
@@ -543,13 +585,12 @@ namespace wbsh::read_detail {
 			? std::vector<std::string>{ input.text }
 			: splitForNames(input, env.ifs(), targets.size());
 
-		int status = 0;
 		for (std::size_t k = 0; k < targets.size(); ++k) {
-			if (env.isReadonly(targets[k])) status = 1;
+			if (env.isReadonly(targets[k])) return reportReadonlyName(targets[k], k + 1 == targets.size());
 			env.set(targets[k], k < values.size() ? values[k] : std::string());
 		}
 
-		return status;
+		return 0;
 	}
 
 	static void showPrompt(const Options& opts, Source& source) {
@@ -606,8 +647,15 @@ namespace wbsh::read_detail {
 		if (status != 0) return status;
 
 		const std::vector<std::string> names(args.begin() + first, args.end());
-		if (!validateNames(names)) return 1;
-		if (!opts.array_name.empty() && !validateNames({ opts.array_name })) return 1;
+		const bool expand_once = exec.env().shopts().array_expand_once;
+		if (!validateNames(exec, names, expand_once)) return 1;
+		if (!opts.array_name.empty() && !validateNames(exec, { opts.array_name }, expand_once)) {
+			return 1;
+		}
+		if (!opts.array_name.empty() && exec.env().isAssocArray(opts.array_name)) {
+			shellErrorf("read: %s: not an indexed array\n", opts.array_name.c_str());
+			return 1;
+		}
 
 		return runRead(exec, opts, names);
 	}

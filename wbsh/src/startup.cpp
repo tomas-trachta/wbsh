@@ -65,6 +65,14 @@ namespace wbsh {
 		startLoginShell(exec);
 	}
 
+	void sourceBashEnv(Executor& exec) {
+		const std::string named = exec.env().get("BASH_ENV");
+		if (named.empty() || exec.env().options().posix || exec.flowPending()) return;
+
+		const std::string path = exec.expander().expandHeredoc(named, false);
+		if (!path.empty()) sourceGivenFile(exec, path);
+	}
+
 	void sourceRcFile(Executor& exec, const ShellStartup& startup) {
 		if (!startup.read_rc || exec.flowPending()) return;
 

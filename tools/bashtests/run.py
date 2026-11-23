@@ -116,11 +116,12 @@ printf '%s\n' "$*"
 
 XCASE_SCRIPT = r"""#!/bin/sh
 op=
+unbuffered=
 while getopts lnu flag; do
     case $flag in
         u) op=upper ;;
         l) op=lower ;;
-        n) ;;
+        n) unbuffered=1 ;;
         *) echo "casemod: usage: casemod [-lnu] [file]" >&2; exit 2 ;;
     esac
 done
@@ -132,6 +133,15 @@ case $op in
 esac
 if [ -n "$3" ] && [ "$3" != - ]; then
     exec < "$3"
+fi
+convert() {
+    if [ -n "$1" ]; then tr "$1" "$2"; else cat; fi
+}
+if [ -n "$unbuffered" ]; then
+    while IFS= read -r line; do
+        printf '%s\n' "$line" | convert "$1" "$2"
+    done
+    exit 0
 fi
 if [ -n "$1" ]; then
     exec tr "$1" "$2"

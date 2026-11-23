@@ -21,6 +21,8 @@
 #include "diagnostics.h"
 #include "lexer.h"
 #include "numparse.h"
+#include "prompt.h"
+#include "utf8.h"
 
 namespace wbsh {
 
@@ -137,12 +139,32 @@ namespace wbsh {
 
 	}  // namespace xtrace_detail
 
+	std::string Executor::expandedPs4() {
+		const std::string ps4 = env_.get("PS4");
+		if (ps4.empty()) return ps4;
+
+		env_.setXtrace(false);
+		const std::string expanded = expandPromptString(*this, ps4, false);
+		env_.setXtrace(true);
+		return expanded;
+	}
+
+	// bash repeats PS4's first character once per level of eval, source,
+	// trap action and command substitution the command runs in.
+	std::string Executor::traceIndent() {
+		const std::string ps4 = expandedPs4();
+		if (ps4.empty()) return ps4;
+
+		const std::size_t first = env_.utf8Locale() ? utf8CharLength(ps4, 0) : 1;
+		std::string indent;
+		for (int level = 0; level < xtrace_level_; ++level) indent += ps4.substr(0, first);
+		return indent + ps4.substr(first);
+	}
+
 	void Executor::traceText(const std::string& text) {
 		if (!env_.xtrace()) return;
 
-		std::string ps4 = env_.get("PS4");
-		if (ps4.empty()) ps4 = "+ ";
-		xtrace_detail::writeTraceLine(env_, ps4 + text + "\n");
+		xtrace_detail::writeTraceLine(env_, traceIndent() + text + "\n");
 	}
 
 	void Executor::traceAssignment(const Assignment& assignment,
@@ -162,6 +184,14 @@ namespace wbsh {
 		const std::string subscript = assignment.has_subscript
 			? "[" + assignment.subscript.raw + "]" : std::string();
 		traceText(assignment.name + subscript + op + xtrace_detail::traceValue(value));
+	}
+
+	void Executor::traceConditional(const std::vector<std::string>& parts) {
+		if (!env_.xtrace()) return;
+
+		std::string text = "[[";
+		for (const std::string& part : parts) text += " " + (part.empty() ? "''" : part);
+		traceText(text + " ]]");
 	}
 
 	void Executor::traceLoopHeader(const char* keyword, const ForClause& clause) {

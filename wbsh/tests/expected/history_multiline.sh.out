@@ -22,12 +22,24 @@ then echo c; fi
     4  echo a b
     5  history > "$HOME/listing"
 === the commands themselves ran
-$ > > > hello
-$ > > a
+$ cat <<END
+> hello
+> 
+> END
+hello
+$ echo "a
+> 
+> b"
+a
 b
-$ > > c
-$ > a b
-$ $ 
+$ if true # comment
+> then echo c
+> fi
+c
+$ echo a \
+> b
+a b
+$ history > "$HOME/listing"
 === the history file escapes newlines and backslashes
 #!wbsh-history-v3
 0<TAB>cat <<END\nhello\n\nEND

@@ -31,11 +31,11 @@ mkdir -p "$D/one" "$D/two"
 cd "$D" || exit 1
 pushd one > /dev/null
 pushd ../two > /dev/null
-dirs | sed "s|$D|D|g"
-dirs | cat | sed "s|$D|D|g"
-(dirs) | sed "s|$D|D|g"
-{ dirs -v; } | sed "s|$D|D|g"
-y=$(dirs); echo "${y//$D/D}"
+dirs -l | sed "s|$D|D|g"
+dirs -l | cat | sed "s|$D|D|g"
+(dirs -l) | sed "s|$D|D|g"
+{ dirs -l -v; } | sed "s|$D|D|g"
+y=$(dirs -l); echo "${y//$D/D}"
 popd > /dev/null
-dirs | cat | sed "s|$D|D|g"
+dirs -l | cat | sed "s|$D|D|g"
 cd / && rm -rf "$D"

@@ -147,6 +147,11 @@ namespace wbsh {
 		return stream;
 	}
 
+	// Windows calls a name with `*` or `?` invalid; no such file can exist.
+	static bool hasForbiddenNameChar(const std::string& path) {
+		return path.find_first_of("*?<>|\"") != std::string::npos;
+	}
+
 	std::FILE* fopenNative(Executor& exec, const std::string& p, const char* mode) {
 		if (mode[0] == 'r' && namesStandardInput(p)) return reopenStandardInput(mode);
 
@@ -162,7 +167,10 @@ namespace wbsh {
 		fs::path native = toNative(exec, p);
 		if (reading) native = withImplicitExe(native);
 		if (isFifoFile(native)) return fopenFifo(native, mode);
-		return openUtf8(pathToUtf8(native), mode);
+
+		std::FILE* stream = openUtf8(pathToUtf8(native), mode);
+		if (stream == nullptr && reading && errno == EINVAL && hasForbiddenNameChar(p)) errno = ENOENT;
+		return stream;
 	}
 
 	fs::path shellTempDirectory(Executor& exec) {
@@ -1507,23 +1515,47 @@ namespace wbsh {
 		return true;
 	}
 
-	static int builtin_mkdir(Executor& exec, const std::vector<std::string>& args) {
+	struct MkdirRequest {
 		bool parents = false;
+		std::string mode;
 		std::vector<std::string> paths;
-		for (const auto& arg : args) {
-			if (arg == "--parents") parents = true;
-			else if (isShortFlagCluster(arg)) parents = parents || hasShortFlag(arg, 'p');
-			else paths.push_back(arg);
+	};
+
+	// `-m MODE`, `-mMODE` and `--mode=MODE` take the mode chmod applies.
+	static bool takeMkdirMode(const std::vector<std::string>& args, std::size_t& i,
+			MkdirRequest& request) {
+		const std::string& arg = args[i];
+		if (arg.rfind("--mode=", 0) == 0) request.mode = arg.substr(7);
+		else if (arg.rfind("-m", 0) != 0) return false;
+		else if (arg.size() > 2) request.mode = arg.substr(2);
+		else if (i + 1 < args.size()) request.mode = args[++i];
+		return true;
+	}
+
+	static MkdirRequest parseMkdirArgs(const std::vector<std::string>& args) {
+		MkdirRequest request;
+		for (std::size_t i = 0; i < args.size(); ++i) {
+			const std::string& arg = args[i];
+			if (arg == "--parents") request.parents = true;
+			else if (takeMkdirMode(args, i, request)) continue;
+			else if (isShortFlagCluster(arg)) request.parents = request.parents || hasShortFlag(arg, 'p');
+			else request.paths.push_back(arg);
 		}
 
-		if (paths.empty()) {
+		return request;
+	}
+
+	static int builtin_mkdir(Executor& exec, const std::vector<std::string>& args) {
+		const MkdirRequest request = parseMkdirArgs(args);
+		if (request.paths.empty()) {
 			perr("mkdir", "missing operand");
 			return 1;
 		}
 
 		int status = 0;
-		for (const auto& path : paths) {
-			if (!makeDirectory(exec, path, parents)) status = 1;
+		for (const auto& path : request.paths) {
+			if (!makeDirectory(exec, path, request.parents)) status = 1;
+			else if (!request.mode.empty()) exec.callBuiltin("chmod", { request.mode, path });
 		}
 
 		return status;
@@ -1961,6 +1993,8 @@ namespace wbsh {
 				if (isRemovedName(options, entry.first)) continue;
 				all.push_back(entry);
 			}
+
+			exec.appendExportedFunctions(all);
 		}
 
 		for (const auto& assignment : options.overrides) applyEnvOverride(all, assignment);
@@ -2615,99 +2649,6 @@ namespace wbsh {
 		}
 
 		return status;
-	}
-
-	static int exprPrintNumber(long long value) {
-		std::printf("%lld\n", value);
-		return 0;
-	}
-
-	static int exprPrintTruth(bool truth) {
-		std::printf("%d\n", truth ? 1 : 0);
-		return truth ? 0 : 1;
-	}
-
-	static int exprBinaryIntOp(long long left, long long right, const std::string& op) {
-		if (op == "+") return exprPrintNumber(left + right);
-		if (op == "-") return exprPrintNumber(left - right);
-		if (op == "*") return exprPrintNumber(left * right);
-		if (op == "/") {
-			if (right == 0) return 2;
-			return exprPrintNumber(left / right);
-		}
-
-		if (op == "%") {
-			if (right == 0) return 2;
-			return exprPrintNumber(left % right);
-		}
-
-		if (op == "<")  return exprPrintTruth(left <  right);
-		if (op == "<=") return exprPrintTruth(left <= right);
-		if (op == ">")  return exprPrintTruth(left >  right);
-		if (op == ">=") return exprPrintTruth(left >= right);
-		if (op == "=" || op == "==") return exprPrintTruth(left == right);
-		if (op == "!=") return exprPrintTruth(left != right);
-		return -1;
-	}
-
-	static int exprBinaryStringOp(const std::string& left, const std::string& right,
-	                              const std::string& op) {
-		if (op == "=" || op == "==") return exprPrintTruth(left == right);
-		if (op == "!=") return exprPrintTruth(left != right);
-		return -1;
-	}
-
-	static int exprSubstr(const std::vector<std::string>& args) {
-		int position = 0;
-		int length = 0;
-		if (!parseInt(args[2], position) || !parseInt(args[3], length)) return 2;
-		if (position < 1) position = 1;
-
-		const std::size_t start = static_cast<std::size_t>(position - 1);
-		if (start >= args[1].size()) {
-			std::printf("\n");
-			return 1;
-		}
-
-		std::printf("%s\n", args[1].substr(start, length).c_str());
-		return 0;
-	}
-
-	// Returns -1 when the operator is not one expr knows, so the caller
-	// falls back to echoing the operands.
-	static int exprBinary(const std::vector<std::string>& args) {
-		const std::string& left  = args[0];
-		const std::string& op    = args[1];
-		const std::string& right = args[2];
-
-		long long left_int = 0;
-		long long right_int = 0;
-		if (parseLL(left, left_int) && parseLL(right, right_int)) {
-			return exprBinaryIntOp(left_int, right_int, op);
-		}
-
-		return exprBinaryStringOp(left, right, op);
-	}
-
-	static int builtin_expr(Executor&, const std::vector<std::string>& args) {
-		if (args.empty()) {
-			perr("expr", "missing operand");
-			return 2;
-		}
-
-		if (args.size() == 2 && args[0] == "length") {
-			std::printf("%zu\n", args[1].size());
-			return 0;
-		}
-
-		if (args.size() == 4 && args[0] == "substr") return exprSubstr(args);
-		if (args.size() == 3) {
-			const int status = exprBinary(args);
-			if (status >= 0) return status;
-		}
-
-		std::printf("%s\n", joinWords(args).c_str());
-		return 0;
 	}
 
 	struct CmpOptions {
@@ -3463,6 +3404,22 @@ namespace wbsh {
 		return exec.pathConv().toPosix(pathToUtf8(cwd));
 	}
 
+	// bash keeps $PWD on top of the stack, and DIRSTACK as the script last
+	// left it: an assigned element changes the stack.
+	static std::vector<std::string>& syncedDirStack(Executor& exec) {
+		std::vector<std::string>& stack = exec.dirStack();
+		const Environment::IndexedArray* published = exec.env().getIndexedArray("DIRSTACK");
+		if (published != nullptr && !published->empty()) {
+			stack.clear();
+			for (const auto& entry : *published) stack.push_back(entry.second);
+		}
+
+		const std::string pwd = exec.env().has("PWD") ? exec.env().get("PWD") : currentCwdPosix(exec);
+		if (stack.empty()) stack.push_back(pwd);
+		else stack[0] = pwd;
+		return stack;
+	}
+
 	// DIRSTACK holds the stack, the current directory first.
 	static void publishDirStack(Executor& exec) {
 		std::vector<std::string> entries = exec.dirStack();
@@ -3470,105 +3427,290 @@ namespace wbsh {
 		exec.env().setIndexedArrayFromList("DIRSTACK", std::move(entries));
 	}
 
-	static void printDirStack(Executor& exec, bool numbered) {
-		publishDirStack(exec);
-		const auto& stack = exec.dirStack();
-		if (stack.empty()) {
-			std::printf("%s\n", currentCwdPosix(exec).c_str());
-			return;
+	// Without -l, bash shows a directory under $HOME with a leading `~`.
+	static std::string politeDirectory(const Executor& exec, const std::string& dir, bool long_form) {
+		const std::string home = exec.env().get("HOME");
+		if (long_form || home.empty() || home == "/" || dir.compare(0, home.size(), home) != 0) {
+			return dir;
 		}
 
-		if (numbered) {
-			for (std::size_t i = 0; i < stack.size(); ++i) {
-				std::printf("%2zu  %s\n", i, stack[i].c_str());
-			}
-
-			return;
-		}
-
-		std::printf("%s\n", joinWords(stack).c_str());
+		const bool whole = dir.size() == home.size() || dir[home.size()] == '/';
+		return whole ? "~" + dir.substr(home.size()) : dir;
 	}
 
-	static bool pushdEnter(Executor& exec, const std::string& target,
-	                       std::vector<std::string>& stack) {
-		std::error_code ec;
-		fs::current_path(withoutExtendedPrefix(toNative(exec, target)), ec);
-		if (ec) {
-			perr("pushd", target, ec);
-			return false;
+	struct DirsListing {
+		bool long_form = false;
+		bool per_line = false;
+		bool numbered = false;
+	};
+
+	static void printDirEntry(const Executor& exec, const DirsListing& listing, std::size_t index) {
+		const std::string dir = politeDirectory(exec, exec.dirStack()[index], listing.long_form);
+		if (listing.numbered) std::printf("%2zu  %s\n", index, dir.c_str());
+		else std::printf("%s\n", dir.c_str());
+	}
+
+	static void printDirStack(Executor& exec, const DirsListing& listing) {
+		publishDirStack(exec);
+		const std::vector<std::string>& stack = exec.dirStack();
+		if (listing.numbered || listing.per_line) {
+			for (std::size_t i = 0; i < stack.size(); ++i) printDirEntry(exec, listing, i);
+			return;
 		}
 
-		stack.insert(stack.begin(), exec.pathConv().toPosix(pathToUtf8(fs::current_path(ec))));
+		std::string line;
+		for (const std::string& dir : stack) {
+			if (!line.empty()) line.push_back(' ');
+			line += politeDirectory(exec, dir, listing.long_form);
+		}
+
+		std::printf("%s\n", line.c_str());
+	}
+
+	static bool isStackIndexWord(const std::string& word) {
+		return word.size() > 1 && (word[0] == '+' || word[0] == '-');
+	}
+
+	static bool stackIndexNumber(const std::string& word, long long& n) {
+		const std::string digits = word.substr(1);
+		std::size_t used = 0;
+		return !digits.empty() && parseLL(digits, n, 10, &used) && used == digits.size() && n >= 0;
+	}
+
+	// `+N` counts from the top of the stack, `-N` from the bottom.
+	static bool resolveStackIndex(const std::vector<std::string>& stack, const std::string& word,
+			std::size_t& index) {
+		long long n = 0;
+		if (!stackIndexNumber(word, n)) return false;
+
+		const long long count = static_cast<long long>(stack.size());
+		const long long found = word[0] == '+' ? n : count - 1 - n;
+		if (found < 0 || found >= count) return false;
+
+		index = static_cast<std::size_t>(found);
 		return true;
 	}
 
-	static int builtin_pushd(Executor& exec, const std::vector<std::string>& args) {
-		auto& stack = exec.dirStack();
-		const std::string previous = currentCwdPosix(exec);
-		if (stack.empty()) stack.push_back(previous);
+	static const char* const kDirsUsage = "dirs [-clpv] [+N] [-N]";
+	static const char* const kPushdUsage = "pushd [-n] [+N | -N | dir]";
+	static const char* const kPopdUsage = "popd [-n] [+N | -N]";
 
-		if (args.empty()) {
-			if (stack.size() < 2) {
-				perr("pushd", "no other directory");
-				return 1;
-			}
-
-			std::swap(stack[0], stack[1]);
-		} else if (!pushdEnter(exec, args[0], stack)) {
-			return 1;
-		}
-
-		std::error_code ec;
-		fs::current_path(withoutExtendedPrefix(toNative(exec, stack[0])), ec);
-		if (!ec) {
-			exec.env().set("OLDPWD", previous);
-			exec.env().set("PWD", stack[0]);
-		}
-
-		printDirStack(exec, false);
-		return 0;
+	static int reportStackUsage(const char* builtin, const std::string& word, const char* problem,
+			const char* usage) {
+		shellErrorf("%s: %s: %s\n", builtin, word.c_str(), problem);
+		std::fprintf(stderr, "%s: usage: %s\n", builtin, usage);
+		return 2;
 	}
 
-	static int builtin_popd(Executor& exec, const std::vector<std::string>&) {
-		auto& stack = exec.dirStack();
-		if (stack.size() < 2) {
-			perr("popd", "directory stack empty");
-			return 1;
-		}
+	static int reportOutOfRange(const char* builtin, const std::string& word) {
+		shellErrorf("%s: %s: directory stack index out of range\n", builtin, word.c_str());
+		return 1;
+	}
 
-		const std::string previous = stack.front();
-		stack.erase(stack.begin());
+	static std::string directoryErrorText(const fs::path& native, const std::error_code& ec) {
+		std::error_code probe;
+		if (!fs::exists(native, probe)) return "No such file or directory";
+		if (!fs::is_directory(native, probe)) return "Not a directory";
+		return ec.message();
+	}
 
+	// As `cd`: the logical path goes into PWD, the one left into OLDPWD.
+	static bool enterStackDirectory(Executor& exec, const char* builtin, const std::string& dir) {
+		const fs::path native = withoutExtendedPrefix(toNative(exec, dir));
 		std::error_code ec;
-		fs::current_path(exec.pathConv().toWin32(stack[0]), ec);
+		fs::current_path(native, ec);
 		if (ec) {
-			perr("popd", stack[0], ec);
-			return 1;
+			shellErrorf("%s: %s: %s\n", builtin, dir.c_str(), directoryErrorText(native, ec).c_str());
+			return false;
 		}
 
-		exec.env().set("OLDPWD", previous);
-		exec.env().set("PWD", stack[0]);
-		printDirStack(exec, false);
+		const bool absolute = !dir.empty() && dir[0] == '/';
+		exec.env().set("OLDPWD", exec.env().get("PWD"));
+		exec.env().set("PWD", absolute ? dir : currentCwdPosix(exec));
+		return true;
+	}
+
+	struct DirsRequest {
+		DirsListing listing;
+		bool clear = false;
+		std::string index_word;
+	};
+
+	static int parseDirsRequest(const std::vector<std::string>& args, DirsRequest& request) {
+		for (const std::string& arg : args) {
+			long long n = 0;
+			if (arg == "--") continue;
+			if (arg == "-l") request.listing.long_form = true;
+			else if (arg == "-p") request.listing.per_line = true;
+			else if (arg == "-v") request.listing.numbered = true;
+			else if (arg == "-c") request.clear = true;
+			else if (stackIndexNumber(arg, n) && isStackIndexWord(arg)) request.index_word = arg;
+			else return reportStackUsage("dirs", arg,
+				isStackIndexWord(arg) ? "invalid number" : "invalid option", kDirsUsage);
+		}
+
 		return 0;
 	}
 
 	static int builtin_dirs(Executor& exec, const std::vector<std::string>& args) {
-		bool numbered = false;
-		bool clear = false;
-		for (const auto& arg : args) {
-			if (arg == "-l") continue;   // long form: accepted, not implemented
-			if (arg == "-v") numbered = true;
-			else if (arg == "-c") clear = true;
-			else if (arg == "-p") numbered = false;
-		}
+		std::vector<std::string>& stack = syncedDirStack(exec);
+		DirsRequest request;
+		const int usage = parseDirsRequest(args, request);
+		if (usage != 0) return usage;
 
-		if (clear) {
-			exec.dirStack().clear();
+		if (request.clear) {
+			stack.resize(1);
+			publishDirStack(exec);
 			return 0;
 		}
 
-		if (exec.dirStack().empty()) exec.dirStack().push_back(currentCwdPosix(exec));
-		printDirStack(exec, numbered);
+		if (request.index_word.empty()) {
+			printDirStack(exec, request.listing);
+			return 0;
+		}
+
+		std::size_t index = 0;
+		if (!resolveStackIndex(stack, request.index_word, index)) {
+			return reportOutOfRange("dirs", request.index_word.substr(1));
+		}
+
+		publishDirStack(exec);
+		printDirEntry(exec, request.listing, index);
+		return 0;
+	}
+
+	struct StackRequest {
+		bool no_cd = false;
+		std::string operand;
+	};
+
+	// pushd and popd take -n, `--`, then one operand; a `+N` or `-N` one
+	// must be a number. A lone `-` is a directory.
+	static int parseStackRequest(const char* builtin, const char* usage,
+			const std::vector<std::string>& args, StackRequest& request) {
+		std::size_t i = 0;
+		for (; i < args.size() && args[i] == "-n"; ++i) request.no_cd = true;
+		if (i < args.size() && args[i] == "--") ++i;
+		if (i >= args.size()) return 0;
+
+		request.operand = args[i];
+		long long n = 0;
+		if (isStackIndexWord(request.operand) && !stackIndexNumber(request.operand, n)) {
+			return reportStackUsage(builtin, request.operand, "invalid number", usage);
+		}
+
+		return 0;
+	}
+
+	// The entry at @p index comes to the top, the ones above it go below.
+	static void rotateDirStack(std::vector<std::string>& stack, std::size_t index) {
+		std::rotate(stack.begin(), stack.begin() + static_cast<std::ptrdiff_t>(index), stack.end());
+	}
+
+	static int pushdByIndex(Executor& exec, const StackRequest& request) {
+		std::vector<std::string>& stack = exec.dirStack();
+		std::size_t index = 0;
+		if (!resolveStackIndex(stack, request.operand, index)) {
+			return reportOutOfRange("pushd", request.operand);
+		}
+
+		if (request.no_cd) return 0;
+
+		std::vector<std::string> rotated = stack;
+		rotateDirStack(rotated, index);
+		if (!enterStackDirectory(exec, "pushd", rotated[0])) return 1;
+
+		stack = std::move(rotated);
+		return 0;
+	}
+
+	static int pushdDirectory(Executor& exec, const StackRequest& request) {
+		std::vector<std::string>& stack = exec.dirStack();
+		if (request.no_cd) {
+			stack.insert(stack.begin() + 1, request.operand);
+			return 0;
+		}
+
+		if (!enterStackDirectory(exec, "pushd", request.operand)) return 1;
+
+		stack.insert(stack.begin(), exec.env().get("PWD"));
+		return 0;
+	}
+
+	static int pushdSwap(Executor& exec, const StackRequest& request) {
+		std::vector<std::string>& stack = exec.dirStack();
+		if (stack.size() < 2) {
+			shellErrorf("pushd: no other directory\n");
+			return 1;
+		}
+
+		if (!request.no_cd && !enterStackDirectory(exec, "pushd", stack[1])) return 1;
+
+		std::swap(stack[0], stack[1]);
+		return 0;
+	}
+
+	static int builtin_pushd(Executor& exec, const std::vector<std::string>& args) {
+		syncedDirStack(exec);
+		StackRequest request;
+		const int usage = parseStackRequest("pushd", kPushdUsage, args, request);
+		if (usage != 0) return usage;
+
+		const bool by_index = isStackIndexWord(request.operand);
+		int status = 0;
+		if (request.operand.empty()) status = pushdSwap(exec, request);
+		else if (by_index) status = pushdByIndex(exec, request);
+		else status = pushdDirectory(exec, request);
+		if (status != 0 || (by_index && request.no_cd)) return status;
+
+		printDirStack(exec, DirsListing());
+		return 0;
+	}
+
+	// Removing the top changes to the entry below it, unless -n, which
+	// takes that entry out instead, as bash's list leaves $PWD out.
+	static int popdTop(Executor& exec, const StackRequest& request) {
+		std::vector<std::string>& stack = exec.dirStack();
+		if (request.no_cd) {
+			stack.erase(stack.begin() + 1);
+			return 0;
+		}
+
+		if (!enterStackDirectory(exec, "popd", stack[1])) return 1;
+
+		stack.erase(stack.begin());
+		stack[0] = exec.env().get("PWD");
+		return 0;
+	}
+
+	static int builtin_popd(Executor& exec, const std::vector<std::string>& args) {
+		std::vector<std::string>& stack = syncedDirStack(exec);
+		StackRequest request;
+		const int usage = parseStackRequest("popd", kPopdUsage, args, request);
+		if (usage != 0) return usage;
+		if (!request.operand.empty() && !isStackIndexWord(request.operand)) {
+			return reportStackUsage("popd", request.operand, "invalid argument", kPopdUsage);
+		}
+
+		std::size_t index = 0;
+		const bool indexed = !request.operand.empty();
+		if (indexed && !resolveStackIndex(stack, request.operand, index)) {
+			return reportOutOfRange("popd", request.operand);
+		}
+
+		if (stack.size() < 2) {
+			shellErrorf("popd: directory stack empty\n");
+			return 1;
+		}
+
+		if (index == 0) {
+			const int status = popdTop(exec, request);
+			if (status != 0) return status;
+		} else {
+			stack.erase(stack.begin() + static_cast<std::ptrdiff_t>(index));
+		}
+
+		printDirStack(exec, DirsListing());
 		return 0;
 	}
 
@@ -3942,7 +4084,7 @@ namespace wbsh {
 		int pid = 0;
 		if (arg.empty() || arg[0] != '%') {
 			if (!parseInt(arg, pid)) {
-				killError(arg + ": arguments must be process or job IDs");
+				killError("`" + arg + "': not a pid or valid job spec");
 				return false;
 			}
 
@@ -3959,6 +4101,9 @@ namespace wbsh {
 		return signalJob(exec, *job, signum);
 	}
 
+	static const char* const kKillUsage = "kill: usage: kill [-s sigspec | -n signum | -sigspec] "
+		"pid | jobspec ... or kill -l [sigspec]\n";
+
 	struct KillRequest {
 		int signum = kSignalTerm;
 		bool list = false;
@@ -3970,7 +4115,6 @@ namespace wbsh {
 	                               std::size_t& i, KillRequest& request) {
 		if (i + 1 >= args.size()) {
 			killError(option + ": option requires an argument");
-			request.failure = 2;
 			return false;
 		}
 
@@ -4018,7 +4162,7 @@ namespace wbsh {
 		if (!parseKillArgs(args, request)) return request.failure;
 		if (request.list) return killListSignals(request.operands);
 		if (request.operands.empty()) {
-			perr("kill", "usage: kill [-s SIGSPEC | -n SIGNUM | -SIGSPEC] PID | %JOB ...");
+			std::fputs(kKillUsage, stderr);
 			return 2;
 		}
 
@@ -4062,7 +4206,6 @@ namespace wbsh {
 		exec.registerBuiltin("seq",      builtin_seq);
 		exec.registerBuiltin("uname",    builtin_uname);
 		exec.registerBuiltin("id",       builtin_id);
-		exec.registerBuiltin("expr",     builtin_expr);
 		exec.registerBuiltin("yes",      builtin_yes);
 		exec.registerBuiltin("nproc",    builtin_nproc);
 		exec.registerBuiltin("tput",     builtin_tput);
@@ -4073,6 +4216,7 @@ namespace wbsh {
 	void registerCoreutils(Executor& exec) {
 		registerFileBuiltins(exec);
 		registerHeadTailBuiltins(exec);
+		registerExprBuiltin(exec);
 		registerTextBuiltins(exec);
 		registerFindBuiltin(exec);
 		registerTrBuiltin(exec);
