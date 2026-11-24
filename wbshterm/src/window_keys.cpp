@@ -59,7 +59,7 @@ namespace wbshterm {
 	// The search box, the picker and a pane command after the prefix read
 	// characters themselves, so keys go to them the usual way meanwhile.
 	bool TerminalWindow::win32InputTakesKeys() const {
-		if (panes_.focused() == nullptr || !focused().screen().win32InputMode()) return false;
+		if (panes().focused() == nullptr || !focused().screen().win32InputMode()) return false;
 		return !search_.active() && !focused().picker().active() && !prefix_pending_;
 	}
 
@@ -162,7 +162,7 @@ namespace wbshterm {
 		if (!keys_down_sent_.test(keySlot(virtual_key))) return false;
 
 		keys_down_sent_.reset(keySlot(virtual_key));
-		if (panes_.focused() == nullptr || !focused().screen().win32InputMode()) return false;
+		if (panes().focused() == nullptr || !focused().screen().win32InputMode()) return false;
 
 		writeWin32Key(keyEventFor(virtual_key, lparam, false), false);
 		return true;
@@ -172,7 +172,7 @@ namespace wbshterm {
 	// the program is told they did, or it would think them held forever.
 	void TerminalWindow::releaseHeldKeys() {
 		flushPendingKey();
-		if (panes_.focused() == nullptr || !focused().screen().win32InputMode()) {
+		if (panes().focused() == nullptr || !focused().screen().win32InputMode()) {
 			keys_down_sent_.reset();
 			return;
 		}
@@ -198,7 +198,7 @@ namespace wbshterm {
 	Pane* TerminalWindow::livePane(const Pane* pane) const {
 		if (pane == nullptr) return nullptr;
 
-		for (PaneNode* leaf : panes_.leaves()) {
+		for (PaneNode* leaf : everyLeaf()) {
 			if (leaf->pane() == pane) return leaf->pane();
 		}
 
@@ -215,7 +215,7 @@ namespace wbshterm {
 	// Focus is the window's keyboard focus and, inside it, the focused
 	// pane: switching panes tells the one left behind and the one entered.
 	void TerminalWindow::syncFocusReports() {
-		const PaneNode* leaf = panes_.focused();
+		const PaneNode* leaf = panes().focused();
 		Pane* now = has_focus_ && leaf != nullptr ? leaf->pane() : nullptr;
 		if (now == focus_reported_) return;
 
@@ -232,7 +232,7 @@ namespace wbshterm {
 	}
 
 	POINT TerminalWindow::cursorPixels() const {
-		const PaneNode& leaf = *panes_.focused();
+		const PaneNode& leaf = *panes().focused();
 		const Screen& screen = leaf.pane()->screen();
 		const CellMetrics& cell = renderer_.metrics();
 
@@ -258,7 +258,7 @@ namespace wbshterm {
 	// own; told where the cursor is, they open on it rather than in the
 	// window's corner, and the candidates keep clear of the line typed on.
 	void TerminalWindow::positionImeWindow() {
-		if (panes_.focused() == nullptr) return;
+		if (panes().focused() == nullptr) return;
 
 		const HIMC context = ::ImmGetContext(window_);
 		if (context == nullptr) return;

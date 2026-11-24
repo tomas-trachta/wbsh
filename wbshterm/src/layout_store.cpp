@@ -15,6 +15,9 @@ namespace wbshterm {
 	namespace layout_detail {
 
 		static const char* const kHeader = "wbshterm-layout 1";
+		static const char* const kSessionHeader = "wbshterm-layout 2";
+		static const char* const kTabWord = "tab";
+		static const char* const kActiveTabWord = "tab active";
 		static const char* const kSplitWord = "split ";
 		static const char* const kPaneWord = "pane";
 		static const std::size_t kMaxDepth = 64;
@@ -95,13 +98,21 @@ namespace wbshterm {
 			return false;
 		}
 
-	}  // namespace layout_detail
+		static bool readTabs(Reader& reader, SavedSession& out_session) {
+			while (reader.next < reader.lines.size()) {
+				const std::string& line = reader.lines[reader.next++];
+				if (line.empty()) continue;
+				if (line != kTabWord && line != kActiveTabWord) return false;
 
-	std::string layoutText(const PaneNode& any_leaf) {
-		std::string text = std::string(layout_detail::kHeader) + "\n";
-		layout_detail::writeNode(layout_detail::rootOf(any_leaf), text);
-		return text;
-	}
+				if (line == kActiveTabWord) out_session.active = out_session.tabs.size();
+				out_session.tabs.emplace_back();
+				if (!readNode(reader, out_session.tabs.back(), 0)) return false;
+			}
+
+			return !out_session.tabs.empty();
+		}
+
+	}  // namespace layout_detail
 
 	bool parseLayout(const std::string& text, SavedPane& out_root) {
 		const std::vector<std::string> lines = layout_detail::linesOf(text);
@@ -109,6 +120,35 @@ namespace wbshterm {
 
 		layout_detail::Reader reader{ lines };
 		return layout_detail::readNode(reader, out_root, 0);
+	}
+
+	std::string sessionText(const std::vector<const PaneNode*>& tab_leaves, std::size_t active) {
+		std::string text = std::string(layout_detail::kSessionHeader) + "\n";
+
+		for (std::size_t index = 0; index < tab_leaves.size(); ++index) {
+			text += index == active ? layout_detail::kActiveTabWord : layout_detail::kTabWord;
+			text += "\n";
+			layout_detail::writeNode(layout_detail::rootOf(*tab_leaves[index]), text);
+		}
+
+		return text;
+	}
+
+	bool parseSession(const std::string& text, SavedSession& out_session) {
+		out_session = SavedSession();
+
+		const std::vector<std::string> lines = layout_detail::linesOf(text);
+		if (lines.empty()) return false;
+
+		if (lines.front() == layout_detail::kHeader) {
+			out_session.tabs.emplace_back();
+			return parseLayout(text, out_session.tabs.back());
+		}
+
+		if (lines.front() != layout_detail::kSessionHeader) return false;
+
+		layout_detail::Reader reader{ lines };
+		return layout_detail::readTabs(reader, out_session);
 	}
 
 	const SavedPane& firstSavedPane(const SavedPane& node) {

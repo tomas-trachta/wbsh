@@ -8,7 +8,7 @@
 namespace wbshterm {
 
 	Pane* TerminalWindow::uiaFocusedPane() const {
-		const PaneNode* leaf = panes_.focused();
+		const PaneNode* leaf = panes().focused();
 		return leaf != nullptr ? leaf->pane() : nullptr;
 	}
 
@@ -22,7 +22,7 @@ namespace wbshterm {
 		geometry.cell_height = renderer_.metrics().height;
 		geometry.dpi         = dpi_;
 
-		for (const PaneNode* leaf : panes_.leaves()) {
+		for (const PaneNode* leaf : panes().leaves()) {
 			if (leaf->pane() != &pane) continue;
 
 			geometry.left = leaf->bounds().left + renderer_.padding();
@@ -33,7 +33,7 @@ namespace wbshterm {
 	}
 
 	Pane* TerminalWindow::uiaPaneAt(float x, float y) const {
-		const PaneNode* leaf = panes_.leafAt(x, y);
+		const PaneNode* leaf = panes().leafAt(x, y);
 		return leaf != nullptr ? leaf->pane() : nullptr;
 	}
 

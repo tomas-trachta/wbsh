@@ -40,6 +40,8 @@ namespace wbshterm {
 		std::vector<std::string> panes;
 		std::size_t              focused_pane = 0;
 		bool                     zoomed = false;
+		std::vector<std::string> tabs;
+		std::size_t              active_tab = 0;
 	};
 
 	enum class PaneMove {
@@ -73,6 +75,12 @@ namespace wbshterm {
 		virtual void reloadSettings() = 0;
 		virtual void copyCommandOutput() {}
 		virtual void rerunCommand() {}
+		virtual void newTab() {}
+		virtual void duplicateTab() {}
+		virtual void closeTab() {}
+		virtual void cycleTab(int delta) { (void)delta; }
+		virtual void selectTab(int index) { (void)index; }
+		virtual void moveTab(int delta) { (void)delta; }
 	};
 
 	/**

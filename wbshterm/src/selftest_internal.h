@@ -43,4 +43,7 @@ namespace wbshterm {
 	/** The text screen readers get: units, boundaries, line breaks. */
 	void runAccessibilityChecks(test::Report& report);
 
+	/** Tabs: order and selection, the strip, the session file, [tabs]. */
+	void runTabChecks(test::Report& report, const std::wstring& directory);
+
 } /* namespace wbshterm */

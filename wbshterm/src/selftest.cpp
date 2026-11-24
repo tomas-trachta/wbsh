@@ -3376,6 +3376,7 @@ namespace wbshterm {
 		runViewChecks(report);
 		runLayoutChecks(report);
 		runTitleBarChecks(report);
+		runTabChecks(report, directory);
 		runSettingsChecks(report, directory);
 		runScriptChecks(report, directory);
 		runKeyChecks(report);

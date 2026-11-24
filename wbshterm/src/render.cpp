@@ -296,7 +296,7 @@ namespace wbshterm {
 		return (mixed & 0xFF) << shift;
 	}
 
-	static std::uint32_t blend(std::uint32_t from, std::uint32_t to, float amount) {
+	std::uint32_t blend(std::uint32_t from, std::uint32_t to, float amount) {
 		return blendChannel(from, to, 16, amount)
 			| blendChannel(from, to, 8, amount)
 			| blendChannel(from, to, 0, amount);

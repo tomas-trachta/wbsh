@@ -482,15 +482,17 @@ namespace wbshterm {
 		"\n"
 		"-- Key bindings run before the shell sees the key.\n"
 		"-- wbshterm.bind(\"ctrl+shift+n\", function() wbshterm.actions.new_window() end)\n"
-		"-- wbshterm.bind(\"ctrl+shift+d\", function() wbshterm.actions.split(\"columns\") end)\n"
-		"-- wbshterm.bind(\"ctrl+shift+t\", function() wbshterm.actions.theme(\"dracula\") end)\n"
+		"-- wbshterm.bind(\"alt+shift+d\", function() wbshterm.actions.split(\"columns\") end)\n"
+		"-- wbshterm.bind(\"f12\", function() wbshterm.actions.theme(\"dracula\") end)\n"
 		"-- wbshterm.bind(\"ctrl+shift+l\", function() wbshterm.actions.send(\"ls -la\\r\") end)\n"
 		"\n"
 		"-- Other actions: copy(), paste(), copy_last_output(), scroll(lines),\n"
 		"-- copy_command_output() and rerun_command() (the command at the top\n"
 		"-- of the view, or the last one),\n"
 		"-- font_size(delta), search(), previous_command(), next_command(),\n"
-		"-- close_pane(), zoom(), focus(\"left\"|\"right\"|\"up\"|\"down\"|\"next\"), reload().\n"
+		"-- close_pane(), zoom(), focus(\"left\"|\"right\"|\"up\"|\"down\"|\"next\"), reload(),\n"
+		"-- new_tab(), duplicate_tab(), close_tab(), next_tab(), previous_tab(),\n"
+		"-- tab(n) (counting from 1) and move_tab(delta).\n"
 		"-- wbshterm.log(...) appends a line to init.log.\n";
 
 	bool writeExampleScript(const std::wstring& path) {

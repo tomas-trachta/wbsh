@@ -229,6 +229,21 @@
     <ClCompile Include="src\window_uia.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\window_tabs.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\render_tabs.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tabs.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tab_strip.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\selftest_tabs.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\uia.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

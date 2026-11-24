@@ -11,6 +11,7 @@
 #include "search.h"
 #include "screen.h"
 #include "scrollbar.h"
+#include "tab_strip.h"
 #include "titlebar.h"
 #include "view.h"
 
@@ -24,6 +25,9 @@
 #include <vector>
 
 namespace wbshterm {
+
+	/** A colour @p amount of the way from @p from to @p to, channel by channel. */
+	std::uint32_t blend(std::uint32_t from, std::uint32_t to, float amount);
 
 	/** One pane's rectangle in a target, and what it shows there. */
 	struct PaneCanvas {
@@ -70,6 +74,22 @@ namespace wbshterm {
 	};
 
 	/**
+	 * @brief The tabs along the top: where the strip puts them, what each says,
+	 *        and whether the window is the one in use.
+	 *
+	 * backdrop is filled first when the strip has a band of its own under a
+	 * system frame; in the custom caption it stays empty, since the caption
+	 * is already painted there.
+	 */
+	struct TabStripCanvas {
+		ID2D1RenderTarget*        target = nullptr;
+		const TabStrip*           strip  = nullptr;
+		std::vector<std::wstring> titles;
+		D2D1_RECT_F               backdrop{};
+		bool                      window_active = true;
+	};
+
+	/**
 	 * @brief Draws grids. The target is supplied per paint, so the same
 	 *        renderer serves a window and an off-screen snapshot.
 	 */
@@ -105,7 +125,11 @@ namespace wbshterm {
 		void drawDivider(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
 		void drawStatusBar(const StatusBarCanvas& canvas);
 		void drawTitleBar(const TitleBarCanvas& canvas);
+		void drawTabStrip(const TabStripCanvas& canvas);
 		void drawFocusBorder(ID2D1RenderTarget* target, const D2D1_RECT_F& bounds);
+
+		/** Lets go of a closed pane's retained grid before its address is reused. */
+		void forgetGrid(const Screen* screen) { grid_caches_.erase(screen); }
 
 	private:
 		/** A pane's grid as last drawn, and what it was drawn from. */
@@ -183,6 +207,14 @@ namespace wbshterm {
 			float reach);
 		void drawPickerMatches(const PaneCanvas& canvas, const Picker& picker, float top,
 			float width, int visible_rows);
+		void drawTabBackdrop(const TabStripCanvas& canvas);
+		void drawTabSeparators(const TabStripCanvas& canvas);
+		void drawTab(const TabStripCanvas& canvas, int index);
+		void drawTabTitle(const TabStripCanvas& canvas, int index);
+		void drawTabClose(const TabStripCanvas& canvas, int index);
+		void drawNewTabButton(const TabStripCanvas& canvas);
+		void drawTabGlyphBackdrop(const TabStripCanvas& canvas, const D2D1_RECT_F& box,
+			const TabHit& which);
 
 		std::uint32_t backgroundFor(const PaneCanvas& canvas, int absolute_row,
 			int column) const;

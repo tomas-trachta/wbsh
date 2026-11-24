@@ -152,11 +152,11 @@ namespace wbshterm {
 
 
 	Pane& TerminalWindow::focused() {
-		return *panes_.focused()->pane();
+		return *panes().focused()->pane();
 	}
 
 	const Pane& TerminalWindow::focused() const {
-		return *panes_.focused()->pane();
+		return *panes().focused()->pane();
 	}
 
 	// OSC 7 reports a Windows path with its slashes the POSIX way round;
@@ -209,12 +209,12 @@ namespace wbshterm {
 
 		auto added = std::make_unique<Pane>();
 		Pane* fresh = added.get();
-		panes_.splitFocused(axis, std::move(added));
+		panes().splitFocused(axis, std::move(added));
 		layoutPanes();
 
 		std::string error;
 		if (!startPane(*fresh, error)) {
-			panes_.close(panes_.focused());
+			panes().close(panes().focused());
 			layoutPanes();
 		}
 
@@ -224,11 +224,13 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::closeFocused() {
-		if (!panes_.close(panes_.focused())) {
-			::DestroyWindow(window_);
+		const Screen* closing = &focused().screen();
+		if (!panes().close(panes().focused())) {
+			closeTabAt(tabs_.activeIndex());
 			return;
 		}
 
+		renderer_.forgetGrid(closing);
 		layoutPanes();
 		commitGridSizes();
 		syncTitle();
@@ -236,11 +238,11 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::stopEveryPane() {
-		for (PaneNode* leaf : panes_.leaves()) leaf->pane()->session().stop();
+		for (PaneNode* leaf : everyLeaf()) leaf->pane()->session().stop();
 	}
 
 	void TerminalWindow::applyScrollbackLimit() {
-		for (PaneNode* leaf : panes_.leaves()) {
+		for (PaneNode* leaf : everyLeaf()) {
 			leaf->pane()->screen().setScrollbackLimit(config_.scrollback_lines);
 			leaf->pane()->screen().setHistoryDiskLimit(historyDiskLimit(config_));
 		}
@@ -310,14 +312,16 @@ namespace wbshterm {
 		context.clock     = shown_clock_;
 		context.directory = focused().screen().workingDirectory();
 		context.tmux      = tmuxBarShown();
-		context.zoomed    = panes_.zoomed();
+		context.zoomed    = panes().zoomed();
 
-		const std::vector<PaneNode*> leaves = panes_.leaves();
+		const std::vector<PaneNode*> leaves = panes().leaves();
 		for (std::size_t i = 0; i < leaves.size(); ++i) {
 			context.panes.push_back(paneName(*leaves[i]->pane()));
-			if (leaves[i] == panes_.focused()) context.focused_pane = i;
+			if (leaves[i] == panes().focused()) context.focused_pane = i;
 		}
 
+		context.tabs       = tabNames();
+		context.active_tab = tabs_.activeIndex();
 		return context;
 	}
 
@@ -585,8 +589,8 @@ namespace wbshterm {
 		return HTNOWHERE;
 	}
 
-	// A light answers HTCLIENT so the ordinary mouse messages reach it; the
-	// rest of the bar answers HTCAPTION, which is what hands dragging,
+	// A light or a tab answers HTCLIENT so the ordinary mouse messages reach
+	// it; the rest of the bar answers HTCAPTION, which is what hands dragging,
 	// double-click-to-zoom and Aero Snap back to Windows for free.
 	LRESULT TerminalWindow::onHitTest(LPARAM lparam) {
 		POINT where = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
@@ -600,6 +604,7 @@ namespace wbshterm {
 
 		const D2D1_POINT_2F point = dipsOf(where);
 		if (title_bar_.buttonAt(point.x, point.y) != TitleButton::None) return HTCLIENT;
+		if (tab_strip_.hitAt(point.x, point.y).part != TabPart::None) return HTCLIENT;
 		if (title_bar_.holdsPoint(point.x, point.y)) return HTCAPTION;
 
 		return HTCLIENT;
@@ -676,7 +681,7 @@ namespace wbshterm {
 		const float x = point.x;
 		const float y = point.y;
 
-		PaneNode* leaf = panes_.leafAt(x, y);
+		PaneNode* leaf = panes().leafAt(x, y);
 		if (leaf != nullptr && !scrollbarHolds(scrollbarOf(*leaf), x, y)) leaf = nullptr;
 		if (leaf == scrollbar_hover_) return;
 
@@ -690,6 +695,12 @@ namespace wbshterm {
 
 		scrollbar_hover_ = nullptr;
 		::InvalidateRect(window_, nullptr, FALSE);
+	}
+
+	void TerminalWindow::clearHovers() {
+		clearTitleHover();
+		clearScrollbarHover();
+		clearTabHover();
 	}
 
 	void TerminalWindow::setWindowActive(bool active) {
@@ -719,18 +730,22 @@ namespace wbshterm {
 		caption.on_right = config_.titlebar.on_right;
 		title_bar_.applyMetrics(caption);
 		title_bar_.setBounds(D2D1::RectF(0.0f, 0.0f, size.width, titleHeight()));
+		layoutTabStrip(size);
 
 		status_bounds_ = D2D1::RectF(0.0f, size.height - statusHeight(),
 			size.width, size.height);
 
 		PaneMetrics metrics;
-		metrics.client      = D2D1::RectF(0.0f, titleHeight(), size.width,
+		metrics.client      = D2D1::RectF(0.0f, titleHeight() + tabBandHeight(), size.width,
 			status_bounds_.top);
 		metrics.cell_width  = cell.width;
 		metrics.cell_height = cell.height;
 		metrics.padding     = renderer_.padding();
 		metrics.divider     = static_cast<float>(config_.panes.divider);
-		panes_.layout(metrics);
+
+		for (std::size_t index = 0; index < tabs_.count(); ++index) {
+			tabs_.at(index).panes.layout(metrics);
+		}
 	}
 
 	// Resizing a pseudoconsole makes its child repaint everything it shows,
@@ -743,7 +758,7 @@ namespace wbshterm {
 		::KillTimer(window_, kTimerResize);
 		if (::IsIconic(window_) != 0) return;
 
-		for (PaneNode* leaf : panes_.leaves()) leaf->pane()->commitGridSize();
+		for (PaneNode* leaf : everyLeaf()) leaf->pane()->commitGridSize();
 	}
 
 
@@ -774,29 +789,29 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::focusNeighbour(PaneDirection direction) {
-		PaneNode* leaf = panes_.neighbour(direction);
+		PaneNode* leaf = panes().neighbour(direction);
 		if (leaf == nullptr) return;
 
-		panes_.focusOn(leaf);
+		panes().focusOn(leaf);
 		syncTitle();
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	void TerminalWindow::focusNextPane() {
-		const std::vector<PaneNode*> leaves = panes_.leaves();
+		const std::vector<PaneNode*> leaves = panes().leaves();
 		if (leaves.size() < 2) return;
 
-		auto at = std::find(leaves.begin(), leaves.end(), panes_.focused());
+		auto at = std::find(leaves.begin(), leaves.end(), panes().focused());
 		if (at == leaves.end()) return;
 
 		++at;
-		panes_.focusOn(at == leaves.end() ? leaves.front() : *at);
+		panes().focusOn(at == leaves.end() ? leaves.front() : *at);
 		syncTitle();
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	void TerminalWindow::toggleZoom() {
-		panes_.toggleZoom();
+		panes().toggleZoom();
 		layoutPanes();
 		commitGridSizes();
 		::InvalidateRect(window_, nullptr, FALSE);
@@ -819,7 +834,9 @@ namespace wbshterm {
 		case L'j': focusNeighbour(PaneDirection::Down); return;
 		case L'k': focusNeighbour(PaneDirection::Up); return;
 		case L'l': focusNeighbour(PaneDirection::Right); return;
-		default:   return;
+		default:
+			runTabCommand(character);
+			return;
 		}
 	}
 
@@ -868,12 +885,12 @@ namespace wbshterm {
 		canvas.bounds  = leaf.bounds();
 		canvas.screen  = &leaf.pane()->screen();
 		canvas.view    = &leaf.pane()->view();
-		canvas.focused = &leaf == panes_.focused();
+		canvas.focused = &leaf == panes().focused();
 		return canvas;
 	}
 
 	void TerminalWindow::paintPanes() {
-		const std::vector<PaneNode*> leaves = panes_.leaves();
+		const std::vector<PaneNode*> leaves = panes().leaves();
 
 		for (PaneNode* leaf : leaves) {
 			if (leaf->bounds().right <= leaf->bounds().left) continue;
@@ -887,30 +904,40 @@ namespace wbshterm {
 			leaf->pane()->screen().clearDirty();
 		}
 
-		for (const PaneDivider& divider : panes_.dividers()) {
+		for (const PaneDivider& divider : panes().dividers()) {
 			renderer_.drawDivider(target_.Get(), divider.bounds);
 		}
 
 		if (config_.panes.focus_border && leaves.size() > 1) {
-			renderer_.drawFocusBorder(target_.Get(), panes_.focused()->bounds());
+			renderer_.drawFocusBorder(target_.Get(), panes().focused()->bounds());
 		}
 
-		if (statusHeight() > 0.0f) {
-			StatusBarCanvas bar;
-			bar.target = target_.Get();
-			bar.bounds = status_bounds_;
-			bar.left   = statusLeft();
-			bar.right  = statusRight();
-			bar.tmux   = tmuxBarShown();
-			renderer_.drawStatusBar(bar);
-		}
+		paintStatusBar();
+		paintCaption();
+		paintTabStrip();
+	}
 
+	void TerminalWindow::paintStatusBar() {
+		if (statusHeight() <= 0.0f) return;
+
+		StatusBarCanvas bar;
+		bar.target = target_.Get();
+		bar.bounds = status_bounds_;
+		bar.left   = statusLeft();
+		bar.right  = statusRight();
+		bar.tmux   = tmuxBarShown();
+		renderer_.drawStatusBar(bar);
+	}
+
+	// With tabs in the caption each one names its own session, so the
+	// centred title would only repeat the shown tab's.
+	void TerminalWindow::paintCaption() {
 		if (!customFrame()) return;
 
 		TitleBarCanvas caption;
 		caption.target = target_.Get();
 		caption.bar    = &title_bar_;
-		caption.title  = captionText();
+		caption.title  = tabStripShown() ? std::wstring() : captionText();
 		caption.zoomed = ::IsZoomed(window_) != 0;
 		renderer_.drawTitleBar(caption);
 	}
@@ -928,7 +955,7 @@ namespace wbshterm {
 
 	PaneNode* TerminalWindow::leafFromMouse(LPARAM lparam) const {
 		const D2D1_POINT_2F point = mouseDips(lparam);
-		return panes_.leafAt(point.x, point.y);
+		return panes().leafAt(point.x, point.y);
 	}
 
 	GridPoint TerminalWindow::cellAtDips(const PaneNode& leaf, D2D1_POINT_2F mouse) const {
@@ -952,7 +979,7 @@ namespace wbshterm {
 
 	bool TerminalWindow::beginDividerDrag(LPARAM lparam) {
 		const D2D1_POINT_2F point = mouseDips(lparam);
-		PaneNode* branch = panes_.dividerAt(point.x, point.y, kDividerSlop);
+		PaneNode* branch = panes().dividerAt(point.x, point.y, kDividerSlop);
 		if (branch == nullptr) return false;
 
 		dragging_ = branch;
@@ -962,7 +989,7 @@ namespace wbshterm {
 
 	void TerminalWindow::continueDividerDrag(LPARAM lparam) {
 		const D2D1_POINT_2F point = mouseDips(lparam);
-		panes_.dragDivider(dragging_, point.x, point.y);
+		panes().dragDivider(dragging_, point.x, point.y);
 		layoutPanes();
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
@@ -988,7 +1015,7 @@ namespace wbshterm {
 		const float x = point.x;
 		const float y = point.y;
 
-		PaneNode* leaf = panes_.leafAt(x, y);
+		PaneNode* leaf = panes().leafAt(x, y);
 		if (leaf == nullptr) return false;
 
 		const ScrollbarShape shape = scrollbarOf(*leaf);
@@ -1020,15 +1047,15 @@ namespace wbshterm {
 	bool TerminalWindow::pointerOverScrollbar(float x, float y) const {
 		if (scrolling_ != nullptr) return true;
 
-		const PaneNode* leaf = panes_.leafAt(x, y);
+		const PaneNode* leaf = panes().leafAt(x, y);
 		return leaf != nullptr && scrollbarHolds(scrollbarOf(*leaf), x, y);
 	}
 
 	PaneNode* TerminalWindow::reportingLeafAt(D2D1_POINT_2F point) const {
 		if (pointerOverScrollbar(point.x, point.y)) return nullptr;
-		if (panes_.dividerAt(point.x, point.y, kDividerSlop) != nullptr) return nullptr;
+		if (panes().dividerAt(point.x, point.y, kDividerSlop) != nullptr) return nullptr;
 
-		PaneNode* leaf = panes_.leafAt(point.x, point.y);
+		PaneNode* leaf = panes().leafAt(point.x, point.y);
 		if (leaf == nullptr || !mouseReportsTo(*leaf->pane())) return nullptr;
 		return leaf;
 	}
@@ -1040,7 +1067,8 @@ namespace wbshterm {
 		if (::GetCursorPos(&where) == 0 || ::ScreenToClient(window_, &where) == 0) return false;
 
 		const D2D1_POINT_2F point = dipsOf(where);
-		if (title_bar_.holdsPoint(point.x, point.y) || point.y >= status_bounds_.top
+		if (title_bar_.holdsPoint(point.x, point.y) || tab_strip_.holdsPoint(point.x, point.y)
+			|| point.y >= status_bounds_.top
 			|| pointerOverScrollbar(point.x, point.y) || reportingLeafAt(point) != nullptr) {
 			::SetCursor(::LoadCursorW(nullptr, IDC_ARROW));
 			return true;
@@ -1048,7 +1076,7 @@ namespace wbshterm {
 
 		const PaneNode* branch = dragging_ != nullptr
 			? dragging_
-			: panes_.dividerAt(point.x, point.y, kDividerSlop);
+			: panes().dividerAt(point.x, point.y, kDividerSlop);
 		if (branch == nullptr) return false;
 
 		::SetCursor(::LoadCursorW(nullptr,
@@ -1078,17 +1106,14 @@ namespace wbshterm {
 		loadUtils();
 		if (config_.startup_fetch) announceStartupFetch();
 
-		SavedPane saved;
+		SavedSession saved;
 		const bool restoring = loadLayout(saved);
-		if (restoring) directory_hint_ = nativeDirectory(firstSavedPane(saved).directory);
+		const std::wstring directory = restoring
+			? nativeDirectory(firstSavedPane(saved.tabs.front()).directory)
+			: std::wstring();
 
-		auto first = std::make_unique<Pane>();
-		Pane* only = first.get();
-		panes_.adopt(std::move(first));
-		layoutPanes();
-
-		if (!startPane(*only, out_error)) return false;
-		if (restoring) restoreSplits(saved);
+		if (!openTab(directory, 0, out_error)) return false;
+		if (restoring) restoreSession(saved);
 
 		applyWindowSettings();
 
@@ -1218,7 +1243,7 @@ namespace wbshterm {
 	bool TerminalWindow::anyPaneHoldingPaint() {
 		const unsigned long long now = ::GetTickCount64();
 		bool holding = false;
-		for (PaneNode* leaf : panes_.leaves()) {
+		for (PaneNode* leaf : panes().leaves()) {
 			if (leaf->pane()->holdsPaint(now)) holding = true;
 		}
 
@@ -1282,7 +1307,7 @@ namespace wbshterm {
 
 		// A custom frame puts the caption inside the client area, so the
 		// window has to be that much taller to leave the grid its rows.
-		client_dips.bottom += static_cast<LONG>(statusHeight());
+		client_dips.bottom += static_cast<LONG>(statusHeight() + tabBandHeight());
 		if (customFrame()) client_dips.bottom += static_cast<LONG>(titleHeight());
 
 		window_ = ::CreateWindowExW(0, kClassName, L"wbsh", WS_OVERLAPPEDWINDOW,
@@ -1412,6 +1437,7 @@ namespace wbshterm {
 			return true;
 		case WM_MBUTTONDOWN:
 		case WM_MBUTTONDBLCLK:
+			if (tabStripTakesMiddle(lparam)) return true;
 			if (!reportMousePress(MouseButton::kMiddle, lparam)) onMiddleClick(lparam);
 			return true;
 		case WM_MBUTTONUP:
@@ -1487,8 +1513,7 @@ namespace wbshterm {
 			break;
 		case WM_NCMOUSEMOVE:
 		case WM_MOUSELEAVE:
-			clearTitleHover();
-			clearScrollbarHover();
+			clearHovers();
 			break;
 		case WM_ACTIVATE:
 			setWindowActive(LOWORD(wparam) != WA_INACTIVE);
@@ -1543,13 +1568,14 @@ namespace wbshterm {
 
 	void TerminalWindow::onMouseDown(LPARAM lparam) {
 		if (titleBarTakesPress(lparam)) return;
+		if (tabStripTakesPress(lparam)) return;
 		if (beginDividerDrag(lparam)) return;
 		if (beginScrollbarDrag(lparam)) return;
 
 		PaneNode* leaf = leafFromMouse(lparam);
 		if (leaf == nullptr) return;
 
-		panes_.focusOn(leaf);
+		panes().focusOn(leaf);
 
 		const GridPoint point = pointInLeaf(*leaf, lparam);
 		if (openLinkAt(leaf->pane()->screen(), point)) return;
@@ -1570,7 +1596,9 @@ namespace wbshterm {
 	void TerminalWindow::onMouseMove(WPARAM wparam, LPARAM lparam) {
 		trackTitleHover(lparam);
 		trackScrollbarHover(lparam);
+		trackTabHover(lparam);
 
+		if (tabStripTakesMotion(wparam, lparam)) return;
 		if (reportMouseMotion(wparam, lparam)) return;
 		if ((wparam & MK_LBUTTON) == 0) return;
 		if (title_bar_.pressed() != TitleButton::None) return;
@@ -1587,12 +1615,13 @@ namespace wbshterm {
 
 		if (!focused().view().selecting()) return;
 
-		focused().view().extendSelection(pointInLeaf(*panes_.focused(), lparam));
+		focused().view().extendSelection(pointInLeaf(*panes().focused(), lparam));
 		::InvalidateRect(window_, nullptr, FALSE);
 	}
 
 	void TerminalWindow::onMouseUp(LPARAM lparam) {
 		if (titleBarTakesRelease(lparam)) return;
+		if (tabStripTakesRelease(lparam)) return;
 
 		const bool was_dragging = dragging_ != nullptr || scrolling_ != nullptr;
 		if (::GetCapture() == window_) ::ReleaseCapture();
@@ -1609,6 +1638,7 @@ namespace wbshterm {
 	void TerminalWindow::onCaptureLost() {
 		forgetMouseReporting();
 		endScrollbarDrag();
+		endTabDrag();
 		if (dragging_ == nullptr) return;
 
 		dragging_ = nullptr;
@@ -1632,7 +1662,7 @@ namespace wbshterm {
 		::ScreenToClient(window_, &where);
 
 		const D2D1_POINT_2F point = dipsOf(where);
-		PaneNode* leaf = panes_.leafAt(point.x, point.y);
+		PaneNode* leaf = panes().leafAt(point.x, point.y);
 		Pane& pane = leaf != nullptr ? *leaf->pane() : focused();
 		if (&pane != wheel_pane_) wheel_.reset();
 		wheel_pane_ = &pane;
@@ -1776,6 +1806,8 @@ namespace wbshterm {
 
 	void TerminalWindow::onContextMenu(LPARAM lparam) {
 		POINT where = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+		if (tabMenuTaken(where.x, where.y)) return;
+
 		if (pointIsOnCaption(where.x, where.y)) {
 			showSystemMenu(where.x, where.y);
 			return;
@@ -1796,7 +1828,7 @@ namespace wbshterm {
 		POINT client = where;
 		::ScreenToClient(window_, &client);
 		PaneNode* leaf = leafFromMouse(MAKELPARAM(client.x, client.y));
-		if (leaf != nullptr) panes_.focusOn(leaf);
+		if (leaf != nullptr) panes().focusOn(leaf);
 		menu_row_ = leaf == nullptr ? -1 : pointInLeaf(*leaf, MAKELPARAM(client.x, client.y)).row;
 
 		const CommandBlock* block = menuBlock();
@@ -1969,46 +2001,83 @@ namespace wbshterm {
 			SWP_NOZORDER | SWP_NOACTIVATE);
 	}
 
+	// A tab in the background only repaints the window when its name
+	// changed; its grid waits until it is shown.
 	void TerminalWindow::onPtyData() {
-		bool changed = false;
-		for (PaneNode* leaf : panes_.leaves()) {
-			if (!leaf->pane()->session().drainOutput()) continue;
-
-			leaf->pane()->view().followOutput(leaf->pane()->screen());
-			changed = true;
-		}
-
-		if (changed) {
+		if (drainEveryPane()) {
 			syncTitle();
 			repaintAfterOutput();
 			accessibility_.textChanged();
+		} else if (tabNamesChanged()) {
+			::InvalidateRect(window_, nullptr, FALSE);
 		}
 
 		closeExitedPanes();
 	}
 
+	// Every pane is read, shown or not, so a busy tab in the background
+	// never stalls its shell. Returns whether the shown tab changed.
+	bool TerminalWindow::drainEveryPane() {
+		bool shown_changed = false;
+
+		for (std::size_t index = 0; index < tabs_.count(); ++index) {
+			for (PaneNode* leaf : tabs_.at(index).panes.leaves()) {
+				if (!leaf->pane()->session().drainOutput()) continue;
+
+				leaf->pane()->view().followOutput(leaf->pane()->screen());
+				if (index == tabs_.activeIndex()) shown_changed = true;
+			}
+		}
+
+		return shown_changed;
+	}
+
+	// A tab whose last pane ended goes with it, and the window goes with
+	// its last tab, still holding it so the session file can name it.
+	void TerminalWindow::closeExitedPanes() {
+		bool closed = false;
+
+		for (std::size_t index = tabs_.count(); index-- > 0;) {
+			bool emptied = false;
+			if (!closeExitedPanesIn(tabs_.at(index), emptied)) continue;
+
+			closed = true;
+			if (!emptied) continue;
+
+			if (tabs_.count() == 1) {
+				::DestroyWindow(window_);
+				return;
+			}
+
+			discardTab(index);
+		}
+
+		if (closed) showActiveTab();
+	}
+
 	// Collected first and closed after, because closing a pane destroys
 	// the node the loop would otherwise still be standing on.
-	void TerminalWindow::closeExitedPanes() {
+	bool TerminalWindow::closeExitedPanesIn(Tab& tab, bool& out_emptied) {
+		out_emptied = false;
+
 		std::vector<PaneNode*> finished;
-		for (PaneNode* leaf : panes_.leaves()) {
+		for (PaneNode* leaf : tab.panes.leaves()) {
 			if (!leaf->pane()->session().childRunning()) finished.push_back(leaf);
 		}
 
-		if (finished.empty()) return;
-
 		for (PaneNode* leaf : finished) {
 			leaf->pane()->session().drainOutput();
-			if (panes_.close(leaf)) continue;
 
-			::DestroyWindow(window_);
-			return;
+			const Screen* screen = &leaf->pane()->screen();
+			if (tab.panes.close(leaf)) {
+				renderer_.forgetGrid(screen);
+				continue;
+			}
+
+			out_emptied = true;
 		}
 
-		layoutPanes();
-		commitGridSizes();
-		syncTitle();
-		::InvalidateRect(window_, nullptr, FALSE);
+		return !finished.empty();
 	}
 
 	void TerminalWindow::syncTitle() {
@@ -2016,7 +2085,7 @@ namespace wbshterm {
 		std::string title = directory.empty()
 			? focused().screen().title()
 			: directory;
-		if (title.empty()) return;
+		if (title.empty()) title = "wbsh";
 
 		title_scripted_ = script_.title(title, directory, title);
 
@@ -2027,7 +2096,7 @@ namespace wbshterm {
 		std::wstring wide(static_cast<std::size_t>(needed), L'\0');
 		::MultiByteToWideChar(CP_UTF8, 0, title.c_str(), static_cast<int>(title.size()),
 			wide.data(), needed);
-		const std::size_t count = panes_.leaves().size();
+		const std::size_t count = panes().leaves().size();
 		if (count > 1) wide += L"  [" + std::to_wstring(count) + L" panes]";
 		if (wide == shown_title_) return;
 
@@ -2218,6 +2287,12 @@ namespace wbshterm {
 
 		if (scriptKeyTaken(press)) return true;
 		if (paneKeyTaken(press)) return true;
+
+		if (tabKeyTaken(press)) {
+			swallow_next_char_ = alsoProducesCharacter(press);
+			return true;
+		}
+
 		if (rightAltTakesKey(press)) return true;
 
 		if (handleViewShortcut(press)) {
@@ -2283,7 +2358,7 @@ namespace wbshterm {
 		::DragFinish(drop);
 
 		PaneNode* leaf = leafFromMouse(MAKELPARAM(where.x, where.y));
-		if (leaf != nullptr) panes_.focusOn(leaf);
+		if (leaf != nullptr) panes().focusOn(leaf);
 
 		const std::string bytes = encodePaste(joinDroppedPaths(paths), currentModes());
 		sendBytes(bytes.data(), bytes.size());
@@ -2496,6 +2571,30 @@ namespace wbshterm {
 	// reload would close, so the reload waits for the next message.
 	void TerminalWindow::reloadSettings() {
 		::PostMessageW(window_, kMessageReload, 0, 0);
+	}
+
+	void TerminalWindow::newTab() {
+		openNewTab();
+	}
+
+	void TerminalWindow::duplicateTab() {
+		openDuplicateTab(tabs_.activeIndex());
+	}
+
+	void TerminalWindow::closeTab() {
+		closeTabAt(tabs_.activeIndex());
+	}
+
+	void TerminalWindow::cycleTab(int delta) {
+		stepTab(delta);
+	}
+
+	void TerminalWindow::selectTab(int index) {
+		if (index >= 0) activateTab(static_cast<std::size_t>(index));
+	}
+
+	void TerminalWindow::moveTab(int delta) {
+		shiftTab(delta);
 	}
 
 } /* namespace wbshterm */

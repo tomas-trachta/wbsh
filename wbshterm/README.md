@@ -123,10 +123,14 @@ apart from a parsing bug by replaying the same bytes.
 | `session.h/.cpp` | Pty + parser + grid + reader thread; the grid is touched by one thread only. |
 | `pane.h/.cpp` | One shell in a rectangle: its session, view and overlay. |
 | `pane_tree.h/.cpp` | The split layout: splitting, closing, and slicing the client area. |
+| `tabs.h/.cpp` | The tabs: each one a split tree, their order, and which one is shown. |
+| `tab_strip.h/.cpp` | Where each tab, its close mark and the new-tab button sit, and what the pointer is over. |
 | `font.h/.cpp` | DirectWrite faces and the measured cell box. |
 | `render.h/.cpp` | Direct2D painting of a grid onto any render target. |
+| `render_marks.cpp`, `render_tabs.cpp` | The command marks beside each prompt, and the tab strip. |
 | `window.h/.cpp` | The Win32 window and its frame, message handlers, key encoding, pane commands, and the status bar. |
 | `window_mouse.cpp`, `window_keys.cpp`, `window_uia.cpp` | The window's mouse reports, win32-input-mode keys, focus reports and IME placement, and its answers to the accessibility provider. |
+| `window_tabs.cpp` | The window's tabs: opening, closing and switching them, and the keys, clicks and menu that do it. |
 | `mouse.h/.cpp` | Mouse arithmetic: pixels to DIPs, wheel deltas to lines, and the reports a program gets. |
 | `uia.h/.cpp`, `uia_range.cpp`, `uia_text.h/.cpp`, `uia_host.h` | The UI Automation element with its text pattern and ranges, over a pure model of the text's units. |
 | `script.h/.cpp`, `script_config.cpp`, `script_actions.cpp`, `script_internal.h` | `init.lua`: the embedded Lua host, the config tables and `wbshterm.actions`. |
@@ -383,7 +387,7 @@ and returns what to show instead; returning `nil` keeps the default.
 
 | Event | Given | Returns |
 | --- | --- | --- |
-| `status_right` | `info`: `cpu`, `memory_used_mb`, `memory_total_mb`, `disk_letter`, `disk_free_gb`, `disk_total_gb`, `battery`, `on_mains`, `user`, `host`, `clock`, `directory`, `tmux`, `panes`, `focused_pane`, `zoomed`, and `segments`, the default list | a list of segments |
+| `status_right` | `info`: `cpu`, `memory_used_mb`, `memory_total_mb`, `disk_letter`, `disk_free_gb`, `disk_total_gb`, `battery`, `on_mains`, `user`, `host`, `clock`, `directory`, `tmux`, `panes`, `focused_pane`, `zoomed`, `tabs`, `active_tab`, and `segments`, the default list | a list of segments |
 | `status_left` | the same `info` | a list of segments |
 | `title` | `info.title` (what the taskbar shows), `info.directory` | a string |
 | `fetch` | `rows`, the startup panel's `{ label, value }` list | a list of rows |
@@ -430,7 +434,7 @@ is handed nothing and acts through `wbshterm.actions`:
 
 ```lua
 wbshterm.bind("ctrl+shift+n", function() wbshterm.actions.new_window() end)
-wbshterm.bind("ctrl+shift+d", function() wbshterm.actions.split("columns") end)
+wbshterm.bind("alt+shift+d", function() wbshterm.actions.split("columns") end)
 wbshterm.bind("f12", function() wbshterm.actions.theme("dracula") end)
 ```
 
@@ -444,6 +448,8 @@ wbshterm.bind("f12", function() wbshterm.actions.theme("dracula") end)
 | `theme(name)` | Switches theme, and says whether the name was known |
 | `search()`, `previous_command()`, `next_command()` | The Ctrl+Shift+F / Ctrl+PageUp / Ctrl+PageDown shortcuts |
 | `split("columns"` or `"rows")`, `close_pane()`, `zoom()`, `focus("left"` … `"next")` | The pane commands, without the prefix |
+| `new_tab()`, `duplicate_tab()`, `close_tab()`, `next_tab()`, `previous_tab()` | The tab keys |
+| `tab(n)`, `move_tab(delta)` | Shows the nth tab, counting from 1; moves the shown tab along the strip |
 | `reload()` | Re-reads the config and this script |
 
 The standard Lua libraries are all there, and `require` looks in the
@@ -518,9 +524,10 @@ editor =
 restore_session = false
 ```
 
-With `restore_session` on, a closing window writes its panes and each
-one's directory to `session.txt` beside the config file, and the next start
-lays them out again, in pane mode.
+With `restore_session` on, a closing window writes its tabs, their panes
+and each one's directory to `session.txt` beside the config file, and the
+next start lays them out again — splits in pane mode — with the tab that
+was shown shown again.
 
 ### The picker
 
@@ -613,7 +620,8 @@ in the theme's own colours, the title centred in a proportional face, and
 three round lights on the right — zoom, minimise, close, with close
 outermost where Windows users reach for it. Hovering the cluster brings up
 the marks inside them; pressing one darkens it, and sliding off before
-letting go takes the press back.
+letting go takes the press back. With tabs on, which is the default, the
+tabs take the title's place (see [Tabs](#tabs)).
 
 ```ini
 [titlebar]
@@ -647,6 +655,66 @@ drawn by DWM in its own accent colour — a bright hairline across the top of
 a window with no caption to justify it. There the frame is left alone and
 the cut-out corners stand on their own.
 
+## Tabs
+
+A window holds tabs, the way Windows Terminal does. Each is a session of
+its own — a shell, or a tree of panes once `tmux` has been typed — and a
+strip along the top shows them all: in the window's own caption, between
+its edge and the lights, or in a band of its own above the grid under the
+ordinary Windows frame. The tab that is shown takes the grid's colour, so
+it reads as the top of the terminal beneath it.
+
+| Action | Binding |
+| --- | --- |
+| New tab | Ctrl+Shift+T or Ctrl+T, or the `+` after the last tab |
+| New tab in the shown tab's directory | Ctrl+Shift+D |
+| Next / previous tab | Ctrl+Tab, Ctrl+Shift+Tab |
+| Go to tab 1 to 9 | Ctrl+Alt+1 … Ctrl+Alt+9 |
+| Go to tab 1 to 8, or the last | Ctrl+1 … Ctrl+8, Ctrl+9 |
+| Move the tab left / right | Ctrl+Shift+PageUp, Ctrl+Shift+PageDown, or drag it |
+| Close the pane, and its tab with the last one | Ctrl+Shift+W or Ctrl+W |
+| Close a tab | Its `×`, or a middle click on it |
+| More | Right-click a tab: new, duplicate, close the tabs to its right, close the others |
+
+A tab is named for the folder its shell is in, the way the caption was,
+and the window's title — what the taskbar shows — follows the tab that is
+shown. A new tab starts where a new window would; duplicating one is how
+to start where you are. The startup panel is not repeated in either.
+
+Every tab is laid out at the window's size and every shell keeps running
+while its tab is in the background: its output is read as it arrives, so a
+long build in another tab never stalls, but only the tab that is shown is
+painted. Switching tabs resizes nothing. Keys held down when the tab
+changes are let go in the tab that is left, so a program there is not left
+thinking Ctrl is still held.
+
+Pane mode belongs to the window rather than to one tab: once `tmux` has
+been typed in any of them, the prefix splits whichever tab is shown, and
+the tabs become tmux's windows (see [Panes](#panes)).
+
+On a layout that uses the right Alt as AltGr, the right Alt never switches
+tabs: Ctrl+Alt and a digit is the layout's own character there (`~ ˇ ^`
+and the rest on a Czech keyboard), so it is typed. The left Ctrl and Alt
+switch, and the dead key the layout would have left waiting is spent, so
+the next letter typed comes out plain.
+
+Closing the last tab closes the window. Turned off, the caption goes back
+to its centred title and the keys go to the shell; a window that already
+has more than one tab keeps showing them until only one is left.
+
+```ini
+[tabs]
+enabled = true
+classic_keys = true
+```
+
+Ctrl+T, Ctrl+W and Ctrl with a digit are the browser's keys, there for
+hands that reach for them. They are the shell's keys too — Ctrl+T swaps
+two characters and Ctrl+W deletes the word before the cursor, in readline
+and in most line editors — so with them on, the terminal has them first.
+`classic_keys = false` hands them back and leaves the Windows Terminal set,
+which a shell has no use for. A Lua binding on any of them wins over both.
+
 ## Panes
 
 Type `tmux`. The status bar turns green and starts listing panes, the
@@ -669,6 +737,10 @@ there — this does not replace it and does not pretend to.
 | `o` | Focus the next pane |
 | `z` | Zoom the focused pane to the window, or put it back |
 | `x` | Close the focused pane |
+| `c` | Open a tab — tmux's windows are the tabs |
+| `n` or `p` | Show the next or the previous tab |
+| `0` … `9` | Show a tab, counting from zero as tmux does |
+| `&` | Close the shown tab |
 | `Ctrl-B` | Send the prefix on to the shell |
 
 Press the prefix, let go, then press the command key — the tmux habit.

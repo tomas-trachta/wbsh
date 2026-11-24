@@ -128,6 +128,44 @@ namespace wbshterm {
 			return 0;
 		}
 
+		static int actionNewTab(lua_State* state) {
+			actionsOf(state).newTab();
+			return 0;
+		}
+
+		static int actionDuplicateTab(lua_State* state) {
+			actionsOf(state).duplicateTab();
+			return 0;
+		}
+
+		static int actionCloseTab(lua_State* state) {
+			actionsOf(state).closeTab();
+			return 0;
+		}
+
+		static int actionNextTab(lua_State* state) {
+			actionsOf(state).cycleTab(1);
+			return 0;
+		}
+
+		static int actionPreviousTab(lua_State* state) {
+			actionsOf(state).cycleTab(-1);
+			return 0;
+		}
+
+		// 1-based like every other list a script sees.
+		static int actionTab(lua_State* state) {
+			const lua_Integer number = luaL_checkinteger(state, 1);
+			actionsOf(state).selectTab(static_cast<int>(number - 1));
+			return 0;
+		}
+
+		static int actionMoveTab(lua_State* state) {
+			const int delta = static_cast<int>(luaL_checkinteger(state, 1));
+			actionsOf(state).moveTab(delta);
+			return 0;
+		}
+
 		static int actionReload(lua_State* state) {
 			actionsOf(state).reloadSettings();
 			return 0;
@@ -151,6 +189,13 @@ namespace wbshterm {
 			{ "close_pane",       actionClosePane },
 			{ "zoom",             actionZoom },
 			{ "focus",            actionFocus },
+			{ "new_tab",          actionNewTab },
+			{ "duplicate_tab",    actionDuplicateTab },
+			{ "close_tab",        actionCloseTab },
+			{ "next_tab",         actionNextTab },
+			{ "previous_tab",     actionPreviousTab },
+			{ "tab",              actionTab },
+			{ "move_tab",         actionMoveTab },
 			{ "reload",           actionReload },
 			{ nullptr,            nullptr },
 		};

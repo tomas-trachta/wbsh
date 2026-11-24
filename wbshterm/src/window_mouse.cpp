@@ -50,7 +50,7 @@ namespace wbshterm {
 	bool TerminalWindow::mouseLeafAlive() const {
 		if (mouse_leaf_ == nullptr) return false;
 
-		const std::vector<PaneNode*> leaves = panes_.leaves();
+		const std::vector<PaneNode*> leaves = panes().leaves();
 		return std::find(leaves.begin(), leaves.end(), mouse_leaf_) != leaves.end();
 	}
 
@@ -90,7 +90,7 @@ namespace wbshterm {
 			: reportingLeafAt(point);
 		if (leaf == nullptr) return false;
 
-		panes_.focusOn(leaf);
+		panes().focusOn(leaf);
 		mouse_leaf_     = leaf;
 		mouse_buttons_ |= buttonBit(button);
 		motion_leaf_    = leaf;
@@ -159,7 +159,7 @@ namespace wbshterm {
 		::ScreenToClient(window_, &where);
 
 		const D2D1_POINT_2F point = dipsOf(where);
-		const PaneNode* leaf = panes_.leafAt(point.x, point.y);
+		const PaneNode* leaf = panes().leafAt(point.x, point.y);
 		if (leaf != nullptr) reportWheel(*leaf, point, GET_WHEEL_DELTA_WPARAM(wparam), true);
 	}
 
@@ -184,7 +184,7 @@ namespace wbshterm {
 		PaneNode* leaf = leafFromMouse(lparam);
 		if (leaf == nullptr) return;
 
-		panes_.focusOn(leaf);
+		panes().focusOn(leaf);
 		pasteFromClipboard();
 	}
 

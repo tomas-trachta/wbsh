@@ -71,6 +71,19 @@ namespace wbshterm {
 		"# empty to turn it off.\n"
 		"new_window = ctrl+alt+t\n"
 		"\n"
+		"[tabs]\n"
+		"# Tabs along the top, the way Windows Terminal has them. Ctrl+Shift+T\n"
+		"# opens one, Ctrl+Shift+D opens one where you are, Ctrl+Tab and\n"
+		"# Ctrl+Shift+Tab move between them, Ctrl+Alt+1 to 9 jump to one and\n"
+		"# Ctrl+Shift+W closes the pane, and its tab with the last one. false\n"
+		"# keeps the plain caption and leaves those keys to the shell.\n"
+		"enabled = true\n"
+		"# The browser's keys as well: Ctrl+T opens a tab, Ctrl+W closes the\n"
+		"# pane, Ctrl+1 to 8 jump to a tab and Ctrl+9 to the last one. They\n"
+		"# take Ctrl+T (transpose) and Ctrl+W (delete a word) from the shell;\n"
+		"# false hands them back.\n"
+		"classic_keys = true\n"
+		"\n"
 		"[panes]\n"
 		"# Panes start when you type `tmux`, and are driven from a prefix\n"
 		"# key: prefix then % or | to split into columns, \" or - into\n"
@@ -316,6 +329,11 @@ namespace wbshterm {
 		if (setting.key == "status") config.panes.status = parseBool(setting.value);
 	}
 
+	static void applyTabSetting(const Setting& setting, Config& config) {
+		if (setting.key == "enabled") config.tabs.enabled = parseBool(setting.value);
+		if (setting.key == "classic_keys") config.tabs.classic_keys = parseBool(setting.value);
+	}
+
 	static void applyShellSetting(const Setting& setting, Config& config) {
 		ShellSettings& shell = config.shell;
 		if (setting.key == "marks")           shell.marks = parseBool(setting.value);
@@ -468,6 +486,7 @@ namespace wbshterm {
 		if (setting.section == "window") applyWindowSetting(setting, config);
 		if (setting.section == "cursor") applyCursorSetting(setting, config);
 		if (setting.section == "panes")  applyPaneSetting(setting, config);
+		if (setting.section == "tabs")   applyTabSetting(setting, config);
 		if (setting.section == "keyboard") applyKeyboardSetting(setting, config);
 		if (setting.section == "titlebar") applyTitleBarSetting(setting, config);
 		if (setting.section == "statusbar") applyStatusBarSetting(setting, config);

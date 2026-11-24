@@ -13,9 +13,11 @@
 
 #include <shellapi.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace wbshterm {
 
@@ -182,16 +184,21 @@ namespace wbshterm {
 	}
 
 	void TerminalWindow::saveLayout() const {
-		if (!config_.shell.restore_session || panes_.focused() == nullptr) return;
+		if (!config_.shell.restore_session || tabs_.empty()) return;
 
 		const std::wstring path = layoutFilePath(config_path_);
 		if (path.empty()) return;
 
+		std::vector<const PaneNode*> tab_leaves;
+		for (std::size_t index = 0; index < tabs_.count(); ++index) {
+			tab_leaves.push_back(tabs_.at(index).panes.focused());
+		}
+
 		std::ofstream file(path, std::ios::binary | std::ios::trunc);
-		file << layoutText(*panes_.focused());
+		file << sessionText(tab_leaves, tabs_.activeIndex());
 	}
 
-	bool TerminalWindow::loadLayout(SavedPane& out_root) const {
+	bool TerminalWindow::loadLayout(SavedSession& out_session) const {
 		if (!config_.shell.restore_session) return false;
 
 		const std::wstring path = layoutFilePath(config_path_);
@@ -200,7 +207,7 @@ namespace wbshterm {
 
 		std::ostringstream text;
 		text << file.rdbuf();
-		return parseLayout(text.str(), out_root);
+		return parseSession(text.str(), out_session);
 	}
 
 	bool TerminalWindow::splitIntoDirectory(SplitAxis axis, const std::string& directory) {
@@ -208,13 +215,13 @@ namespace wbshterm {
 
 		auto added = std::make_unique<Pane>();
 		Pane* fresh = added.get();
-		panes_.splitFocused(axis, std::move(added));
+		panes().splitFocused(axis, std::move(added));
 		layoutPanes();
 
 		std::string error;
 		if (startPane(*fresh, error)) return true;
 
-		panes_.close(panes_.focused());
+		panes().close(panes().focused());
 		layoutPanes();
 		return false;
 	}
@@ -224,11 +231,11 @@ namespace wbshterm {
 	void TerminalWindow::rebuildSplits(const SavedPane& node, PaneNode* leaf) {
 		if (node.leaf || leaf == nullptr || !node.first || !node.second) return;
 
-		panes_.focusOn(leaf);
+		panes().focusOn(leaf);
 		const std::string& directory = firstSavedPane(*node.second).directory;
 		if (!splitIntoDirectory(node.axis, directory)) return;
 
-		PaneNode* second = panes_.focused();
+		PaneNode* second = panes().focused();
 		PaneNode* branch = second->parent();
 		branch->setRatio(node.ratio);
 		rebuildSplits(*node.second, second);
@@ -240,15 +247,32 @@ namespace wbshterm {
 	void TerminalWindow::restoreSplits(const SavedPane& root) {
 		if (root.leaf) return;
 
-		const Pane* original = panes_.focused()->pane();
-		rebuildSplits(root, panes_.focused());
-		for (PaneNode* leaf : panes_.leaves()) {
-			if (leaf->pane() == original) panes_.focusOn(leaf);
+		const Pane* original = panes().focused()->pane();
+		rebuildSplits(root, panes().focused());
+		for (PaneNode* leaf : panes().leaves()) {
+			if (leaf->pane() == original) panes().focusOn(leaf);
 		}
 
 		tmuxAttach();
 		commitGridSizes();
 		syncTitle();
+	}
+
+	// The first tab is already open in its first pane's directory; every
+	// other one opens after it, and the tab that was shown is shown again.
+	void TerminalWindow::restoreSession(const SavedSession& saved) {
+		restoreSplits(saved.tabs.front());
+
+		for (std::size_t index = 1; index < saved.tabs.size(); ++index) {
+			const SavedPane& root = saved.tabs[index];
+			const std::wstring directory = nativeDirectory(firstSavedPane(root).directory);
+
+			std::string error;
+			if (openTab(directory, tabs_.count(), error)) restoreSplits(root);
+		}
+
+		activateTab(std::min(saved.active, tabs_.count() - 1));
+		showActiveTab();
 	}
 
 } /* namespace wbshterm */

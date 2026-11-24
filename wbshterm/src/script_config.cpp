@@ -186,6 +186,13 @@ namespace wbshterm {
 			lua_setfield(state, -2, "panes");
 		}
 
+		static void pushTabs(lua_State* state, const TabSettings& tabs) {
+			lua_newtable(state);
+			setField(state, "enabled", tabs.enabled);
+			setField(state, "classic_keys", tabs.classic_keys);
+			lua_setfield(state, -2, "tabs");
+		}
+
 		static void pushStatusBar(lua_State* state, const StatusBarSettings& bar) {
 			lua_newtable(state);
 			setField(state, "enabled", bar.enabled);
@@ -239,6 +246,7 @@ namespace wbshterm {
 			pushTitleBar(state, config.titlebar);
 			pushKeyboard(state, config.keyboard);
 			pushPanes(state, config.panes);
+			pushTabs(state, config.tabs);
 			pushStatusBar(state, config.statusbar);
 			pushTheme(state, config);
 			pushScrollbackAndStartup(state, config);
@@ -320,6 +328,15 @@ namespace wbshterm {
 				panes.divider      = fieldInt(state, -1, "divider", panes.divider);
 				panes.focus_border = fieldBool(state, -1, "focus_border", panes.focus_border);
 				panes.status       = fieldBool(state, -1, "status", panes.status);
+			}
+
+			lua_pop(state, 1);
+		}
+
+		static void pullTabs(lua_State* state, TabSettings& tabs) {
+			if (lua_getfield(state, -1, "tabs") == LUA_TTABLE) {
+				tabs.enabled      = fieldBool(state, -1, "enabled", tabs.enabled);
+				tabs.classic_keys = fieldBool(state, -1, "classic_keys", tabs.classic_keys);
 			}
 
 			lua_pop(state, 1);
@@ -434,6 +451,7 @@ namespace wbshterm {
 			pullTitleBar(state, config.titlebar);
 			pullKeyboard(state, config.keyboard);
 			pullPanes(state, config.panes);
+			pullTabs(state, config.tabs);
 			pullStatusBar(state, config.statusbar);
 			pullTheme(state, themes_directory, config);
 			pullScrollbackAndStartup(state, config);
@@ -495,6 +513,17 @@ namespace wbshterm {
 			setField(state, "zoomed", context.zoomed);
 		}
 
+		static void pushTabNames(lua_State* state, const StatusContext& context) {
+			lua_newtable(state);
+			for (std::size_t i = 0; i < context.tabs.size(); ++i) {
+				lua_pushlstring(state, context.tabs[i].data(), context.tabs[i].size());
+				lua_rawseti(state, -2, static_cast<lua_Integer>(i + 1));
+			}
+			lua_setfield(state, -2, "tabs");
+
+			setField(state, "active_tab", static_cast<int>(context.active_tab + 1));
+		}
+
 		void pushStatusContext(lua_State* state, const StatusContext& context,
 				const std::vector<StatusSegment>& segments) {
 			lua_newtable(state);
@@ -505,6 +534,7 @@ namespace wbshterm {
 			setField(state, "directory", context.directory);
 			setField(state, "tmux", context.tmux);
 			pushPaneNames(state, context);
+			pushTabNames(state, context);
 
 			pushSegments(state, segments);
 			lua_setfield(state, -2, "segments");

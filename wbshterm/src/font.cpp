@@ -103,6 +103,7 @@ namespace wbshterm {
 		applyFallback(settings.fallback);
 		findPrimaryFont(settings.family);
 		createCaptionFormat();
+		createTabFormat();
 		if (!measureCell(out_error)) return false;
 
 		metrics_.height *= (settings.line_height > 0.1f ? settings.line_height : 1.0f);
@@ -131,6 +132,34 @@ namespace wbshterm {
 		}
 
 		caption_.Reset();
+	}
+
+	void FontSet::createTabFormat() {
+		static const wchar_t* const kFamilies[] = {
+			L"Segoe UI Variable Text", L"Segoe UI", L"Tahoma",
+		};
+
+		for (const wchar_t* family : kFamilies) {
+			const HRESULT hr = factory_->CreateTextFormat(family, nullptr,
+				DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+				DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"", tab_.ReleaseAndGetAddressOf());
+			if (FAILED(hr)) continue;
+
+			tab_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+			tab_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+			tab_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+			Microsoft::WRL::ComPtr<IDWriteInlineObject> ellipsis;
+			if (SUCCEEDED(factory_->CreateEllipsisTrimmingSign(tab_.Get(),
+					ellipsis.GetAddressOf()))) {
+				const DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+				tab_->SetTrimming(&trimming, ellipsis.Get());
+			}
+
+			return;
+		}
+
+		tab_.Reset();
 	}
 
 	// A monospace face has no emoji or CJK, and DirectWrite's own fallback

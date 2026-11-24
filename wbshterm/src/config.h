@@ -59,6 +59,18 @@ namespace wbshterm {
 		std::string  new_window = "ctrl+alt+t";
 	};
 
+	/**
+	 * @brief Tabs along the top; enabled false keeps the one-session window
+	 *        and its keys for the shell.
+	 *
+	 * classic_keys adds the browser's Ctrl+T, Ctrl+W and Ctrl+1 to 9, which
+	 * the shell otherwise has for transposing characters and deleting a word.
+	 */
+	struct TabSettings {
+		bool enabled      = true;
+		bool classic_keys = true;
+	};
+
 	struct PaneSettings {
 		std::string prefix       = "ctrl+b";
 		int         divider      = 6;
@@ -98,6 +110,7 @@ namespace wbshterm {
 		WindowSettings window;
 		CursorSettings cursor;
 		PaneSettings   panes;
+		TabSettings    tabs;
 		KeyboardSettings keyboard;
 		TitleBarSettings titlebar;
 		StatusBarSettings statusbar;

@@ -16,6 +16,7 @@
 #include "search.h"
 #include "scrollbar.h"
 #include "sysinfo.h"
+#include "tabs.h"
 #include "uia_host.h"
 #include "utf8.h"
 #include "view.h"
@@ -65,6 +66,12 @@ namespace wbshterm {
 		void zoomPane() override;
 		void movePane(PaneMove move) override;
 		void reloadSettings() override;
+		void newTab() override;
+		void duplicateTab() override;
+		void closeTab() override;
+		void cycleTab(int delta) override;
+		void selectTab(int index) override;
+		void moveTab(int delta) override;
 
 		HWND  uiaWindow() const override { return window_; }
 		Pane* uiaFocusedPane() const override;
@@ -99,6 +106,7 @@ namespace wbshterm {
 		void clearTitleHover();
 		void trackScrollbarHover(LPARAM lparam);
 		void clearScrollbarHover();
+		void clearHovers();
 		void setWindowActive(bool active);
 		std::wstring captionText() const;
 		void applyWindowSettings();
@@ -147,9 +155,13 @@ namespace wbshterm {
 
 		void onPaint();
 		void paintPanes();
+		void paintStatusBar();
+		void paintCaption();
 		void onResize();
 		void onPtyData();
+		bool drainEveryPane();
 		void closeExitedPanes();
+		bool closeExitedPanesIn(Tab& tab, bool& out_emptied);
 		void onText(wchar_t unit);
 		void onCharacter(char32_t character);
 		bool onKeyMessage(UINT message, WPARAM wparam, LPARAM lparam);
@@ -235,10 +247,11 @@ namespace wbshterm {
 		bool runBlockChoice(const MenuChoice& choice);
 		bool openPathAt(const PaneNode& leaf, const GridPoint& point);
 		void saveLayout() const;
-		bool loadLayout(SavedPane& out_root) const;
+		bool loadLayout(SavedSession& out_session) const;
 		bool splitIntoDirectory(SplitAxis axis, const std::string& directory);
 		void rebuildSplits(const SavedPane& node, PaneNode* leaf);
 		void restoreSplits(const SavedPane& root);
+		void restoreSession(const SavedSession& saved);
 		D2D1_POINT_2F dipsOf(POINT pixels) const;
 		D2D1_POINT_2F mouseDips(LPARAM lparam) const;
 		void applyWindowDpi(UINT dpi);
@@ -252,9 +265,52 @@ namespace wbshterm {
 		void sendBytes(const char* data, std::size_t length);
 		void syncTitle();
 
+		// window_tabs.cpp: the tabs, the strip that shows them, and their keys.
+		PaneTree& panes();
+		const PaneTree& panes() const;
+		std::vector<PaneNode*> everyLeaf() const;
+		bool tabStripShown() const;
+		float tabBandHeight() const;
+		void layoutTabStrip(const D2D1_SIZE_F& size);
+		void syncTabStrip();
+		std::vector<std::string> tabNames() const;
+		bool tabNamesChanged() const;
+		void paintTabStrip();
+		bool openTab(const std::wstring& directory, std::size_t index, std::string& out_error);
+		void openNewTab();
+		void openDuplicateTab(std::size_t index);
+		void closeTabAt(std::size_t index);
+		void closeTabsExcept(std::size_t kept);
+		void closeTabsAfter(std::size_t index);
+		void discardTab(std::size_t index);
+		void activateTab(std::size_t index);
+		void stepTab(int delta);
+		void shiftTab(int delta);
+		void leaveShownTab();
+		void showActiveTab();
+		bool tabKeyTaken(const KeyPress& press);
+		bool classicTabKeyTaken(const KeyPress& press);
+		bool tabNumberKey(const KeyPress& press, std::size_t& out_index) const;
+		bool runTabCommand(char32_t character);
+		bool tabStripTakesPress(LPARAM lparam);
+		bool tabStripTakesRelease(LPARAM lparam);
+		bool tabStripTakesMotion(WPARAM wparam, LPARAM lparam);
+		bool tabStripTakesMiddle(LPARAM lparam);
+		void runTabButton(const TabHit& hit);
+		void trackTabHover(LPARAM lparam);
+		void clearTabHover();
+		void continueTabDrag(LPARAM lparam);
+		void endTabDrag();
+		bool tabMenuTaken(int screen_x, int screen_y);
+		void runTabMenuCommand(int command, std::size_t index);
+
 		HWND         window_ = nullptr;
 		Renderer     renderer_;
-		PaneTree     panes_;
+		TabList      tabs_;
+		PaneTree     no_panes_;
+		TabStrip     tab_strip_;
+		int          tab_dragging_ = -1;
+		std::vector<std::string> shown_tab_names_;
 		std::wstring command_line_;
 		std::wstring record_path_;
 		std::wstring shown_title_;

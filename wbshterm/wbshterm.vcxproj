@@ -288,6 +288,8 @@
     <ClInclude Include="src\pane.h" />
     <ClInclude Include="src\pane_tree.h" />
     <ClInclude Include="src\titlebar.h" />
+    <ClInclude Include="src\tabs.h" />
+    <ClInclude Include="src\tab_strip.h" />
     <ClInclude Include="src\utils.h" />
     <ClInclude Include="src\fetch.h" />
     <ClInclude Include="src\menu.h" />
@@ -326,6 +328,8 @@
     <ClCompile Include="src\pane.cpp" />
     <ClCompile Include="src\pane_tree.cpp" />
     <ClCompile Include="src\titlebar.cpp" />
+    <ClCompile Include="src\tabs.cpp" />
+    <ClCompile Include="src\tab_strip.cpp" />
     <ClCompile Include="src\utils.cpp" />
     <ClCompile Include="src\fetch.cpp" />
     <ClCompile Include="src\menu.cpp" />
@@ -362,6 +366,9 @@
     <ClCompile Include="src\layout_store.cpp" />
     <ClCompile Include="src\selftest_marks.cpp" />
     <ClCompile Include="src\window_uia.cpp" />
+    <ClCompile Include="src\window_tabs.cpp" />
+    <ClCompile Include="src\render_tabs.cpp" />
+    <ClCompile Include="src\selftest_tabs.cpp" />
     <ClCompile Include="src\uia.cpp" />
     <ClCompile Include="src\uia_range.cpp" />
     <ClCompile Include="src\uia_text.cpp" />
