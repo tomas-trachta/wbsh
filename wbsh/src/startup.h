@@ -20,6 +20,7 @@ namespace wbsh {
 		bool        login        = false;
 		bool        read_profile = true;
 		bool        read_rc      = true;
+		bool        line_editing = true;   ///< false under `--noediting`: plain lines.
 		std::string rcfile;                   ///< Replaces `~/.wbshrc` when set.
 		bool        forced_interactive = false;   ///< `-i` given, which keeps `-n`.
 	};

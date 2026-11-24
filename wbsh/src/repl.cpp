@@ -219,7 +219,7 @@ namespace wbsh {
 	}
 
 	static void initShellDefaults(Environment& env, const ReplState& state) {
-		if (env.get("PS1").empty()) {
+		if (!env.has("PS1")) {
 			if (state.color_ok) {
 				env.set("PS1",
 					"\\[\\e[32;1m\\]\\u@\\h\\[\\e[0m\\] "
@@ -229,7 +229,7 @@ namespace wbsh {
 			}
 		}
 
-		if (env.get("PS2").empty()) env.set("PS2", "> ");
+		if (!env.has("PS2")) env.set("PS2", "> ");
 		env.shopts().globstar = true;
 	}
 
@@ -460,7 +460,6 @@ namespace wbsh {
 	static std::string buildPrompt(const Environment& env, Executor& exec,
 	                               const ReplState& state) {
 		std::string ps_raw = state.waiting_for_more ? env.get("PS2") : env.get("PS1");
-		if (ps_raw.empty()) ps_raw = state.waiting_for_more ? "> " : "$ ";
 		const std::string prompt = expandPromptString(exec, ps_raw, stdinIsTty() && stdoutIsTty());
 		return withPromptEndMark(state, prompt);
 	}
@@ -723,6 +722,13 @@ namespace wbsh {
 		return status;
 	}
 
+	static LineStatus readCommandLine(LineEditor& editor, const ShellStartup& startup,
+	                                  const std::string& prompt, std::string& line) {
+		if (!startup.line_editing) return editor.readPlainLine(prompt, line);
+
+		return editor.readLine(prompt, line);
+	}
+
 	static void runLine(Executor& exec, ReplState& state, std::string& line) {
 		if (!expandHistoryInLine(exec, state, line)) return;
 
@@ -791,7 +797,7 @@ namespace wbsh {
 			const std::string prompt = buildPrompt(env, exec, state);
 			std::string line;
 			editor.setHighlightContext(state.waiting_for_more ? state.buffer + "\n" : std::string());
-			const LineStatus status = editor.readLine(prompt, line);
+			const LineStatus status = readCommandLine(editor, startup, prompt, line);
 			if (status == LineStatus::kInterrupted) {
 				abandonInterruptedInput(exec, state);
 				continue;

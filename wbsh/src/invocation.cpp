@@ -47,6 +47,7 @@ namespace wbsh {
 			Login,
 			NoProfile,
 			NoRc,
+			NoEditing,
 			RcFile,
 			Posix,
 			Verbose,
@@ -77,7 +78,7 @@ namespace wbsh {
 		{ "--ast",            LongKind::Ast         },
 		{ "--pretty-print",   LongKind::PrettyPrint },
 		{ "--no-ast",         LongKind::NoAst       },
-		{ "--noediting",      LongKind::Ignored     },
+		{ "--noediting",      LongKind::NoEditing   },
 		{ "--debugger",       LongKind::Ignored     },
 		{ "--login",          LongKind::Login       },
 		{ "--noprofile",      LongKind::NoProfile   },
@@ -214,6 +215,7 @@ namespace wbsh {
 		case LongKind::Login:     startup.login        = true;          return true;
 		case LongKind::NoProfile: startup.read_profile = false;         return true;
 		case LongKind::NoRc:      startup.read_rc      = false;         return true;
+		case LongKind::NoEditing: startup.line_editing = false;         return true;
 		case LongKind::Verbose:   startup.set_words.emplace_back("-v"); return true;
 		case LongKind::Posix:
 			addPosixMode(startup);

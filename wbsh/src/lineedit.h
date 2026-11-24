@@ -118,6 +118,10 @@ namespace wbsh {
 		// The typed line goes to `out` without its newline.
 		LineStatus readLine(const std::string& prompt, std::string& out);
 
+		// As bash's `--noediting`: the prompt goes to stderr and the line is
+		// read as typed, with no keys, history or echo.
+		LineStatus readPlainLine(const std::string& prompt, std::string& out);
+
 		// How to build the prompt again when requestPromptRefresh() asks.
 		void setPromptRefresher(std::function<std::string()> refresher);
 

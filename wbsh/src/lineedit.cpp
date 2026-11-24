@@ -301,6 +301,13 @@ namespace wbsh {
 #endif /* _WIN32 */
 	}
 
+	LineStatus LineEditor::readPlainLine(const std::string& prompt, std::string& out) {
+		std::fputs(prompt_detail::withoutMarks(prompt).c_str(), stderr);
+		std::fflush(stderr);
+
+		return readLineCooked(out);
+	}
+
 	void LineEditor::resetLine(const std::string& prompt) {
 		buffer_.clear();
 		cursor_ = 0;

@@ -1,0 +1,4 @@
+empty PS1, --noediting: ok
+custom PS1, --noediting: ok
+custom PS1, editing: ok
+unset PS1: default prompt
