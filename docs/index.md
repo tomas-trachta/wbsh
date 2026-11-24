@@ -8,14 +8,18 @@ site is built from its `docs/` directory.
 
 - [Compatibility ledger](compat-ledger.md): GNU bash 5.3's own test suites
   under wbsh, suite by suite.
-- [Real-world corpus](corpus/2026-11-13-local.md): oh-my-bash, bash-it, bash-completion, nvm,
+- [Real-world corpus](corpus/2026-11-24-local.md): oh-my-bash, bash-it, bash-completion, nvm,
   sdkman, asdf and git's completion scripts sourced under wbsh and Git Bash.
-- [Benchmarks](bench/2026-11-12-local.md): same-machine timings against Git Bash.
+- [Benchmarks](bench/2026-11-14-local.md): same-machine timings against Git Bash.
+- [Testing](https://github.com/tomas-trachta/wbsh/blob/main/CONTRIBUTING.md#tests): the golden suite, differential tests, upstream suites, corpus and perf gate.
 - [Comparison](comparison.md): wbsh, Git Bash, MSYS2 and WSL, every
   cell sourced and dated.
 
 ## Using wbsh
 
+- [Command line](command-line.md): options, `bash.exe` / `sh.exe` copies, `--ec`, `--json`
+- [Line editing](line-editing.md): history, predictions, completion, highlighting, keys
+- [Configuration](configuration.md): startup files, variables, prompt escapes
 - [Differences from POSIX environments](posix-differences.md): no fork,
   signals, permissions, file system, terminals
 - [Command reference](commands.md)

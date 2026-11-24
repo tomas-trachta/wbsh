@@ -32,6 +32,20 @@ where it doesn't cover something, match the file you're editing.
 
 ## Architecture in 5 minutes
 
+The repository holds three products and their tooling:
+
+```
+wbsh/        The shell: wbsh.vcxproj, src/, tests/ (golden suite, run-all.sh), stress/
+wbshterm/    The terminal: Win32 window, renderer, VT parser, panes; vendored ConPTY;
+             tests/, stress/
+sdk/         The util SDK: wbshsdk.dll, include/wbshsdk.h, template/, samples/, tests/
+installer/   Inno Setup scripts, build.ps1, Windows Terminal profile fragment
+tools/       check_style.py (runs before every build), gen_charwidth.py, make_icon.py,
+             stress/ (code shared by the two stress suites)
+docs/        Command notes, stress-test notes; Doxygen config, regenerate with
+             `doxygen docs/Doxyfile`
+```
+
 wbsh is a real shell pipeline: source text → tokens → AST → expansion →
 execution. Each stage lives in its own translation unit and is exercised
 end-to-end by the test suite. Read the files in this order if you want to

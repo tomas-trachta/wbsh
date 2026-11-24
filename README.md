@@ -1,113 +1,95 @@
 # wbsh
 
-A Bash-compatible shell for Windows: a drop-in replacement for Git Bash,
-written from scratch in C++17 with a real POSIX shell grammar, a readline-style
-line editor, and bundled coreutils so a fresh install is useful immediately.
+**A fast, native Bash for Windows.** One 4 MB executable: no MSYS, no Cygwin,
+no WSL. Your scripts, git hooks and coding agents get a real Bash, and you get
+a modern line editor and about 180 built-in commands from the first launch.
 
-![wbsh running the test suite in Windows Terminal](./preview.png)
+[![CI](https://github.com/tomas-trachta/wbsh/actions/workflows/ci.yml/badge.svg)](https://github.com/tomas-trachta/wbsh/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/tomas-trachta/wbsh)](https://github.com/tomas-trachta/wbsh/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/tomas-trachta/wbsh)](./LICENSE)
 
-> Status: **early but released.** Tagged 1.x releases exist; CI builds every
-> push and runs the golden suite, a differential comparison with GNU bash 5.3,
-> bash's own test suites and a perf gate. Bash compatibility is measured, not
-> assumed, and is still well short of complete (see the scoreboard and
-> [Limitations](#limitations)). Behavior may change between minor versions.
+![wbsh in wbshterm, its companion terminal](./preview_terminal.png)
 
----
+- **Fast where Git Bash is slow.** There is no `fork()` emulation to pay for:
+  `$(...)` in a loop runs **30× faster** than in Git Bash, `while read` loops
+  5.5×, startup 2× ([benchmark](docs/bench/2026-11-14-local.md), same machine).
+- **Real Bash, measured.** Its own lexer, parser and expander in C++17, not a
+  wrapper. It passes **68 of GNU bash 5.3's 86 upstream test suites** byte for
+  byte; the other 18 differ only where Windows lacks a Unix path or where
+  wbsh differs on purpose ([ledger](docs/compat-ledger.md)).
+- **Batteries included.** `ls`, `grep`, `sed`, `awk`, `find`, `tar`, `curl`,
+  `make`, `vi`, `tmux`, `fzf` and the rest are built in. Your installed
+  `git`, `vim` and `ssh` are found automatically.
+- **Works where Git Bash is expected.** A copy named `bash.exe` can stand in
+  for Git Bash under git hooks, Makefiles, editor terminals and coding agents
+  such as Claude Code and Codex CLI ([how, and what is verified](docs/agents.md)).
+- **Your framework loads.** oh-my-bash, bash-it, bash-completion, nvm,
+  sdkman, asdf and git's completion source cleanly in **968 of 1,034**
+  runs, against Git Bash's 969 ([corpus](docs/corpus/2026-11-24-local.md)).
+- **A pleasant prompt.** Syntax highlighting as you type, history
+  predictions as ghost text, git status in the prompt, completion for git,
+  docker, npm, cargo and kubectl.
 
-## Why wbsh
-
-Git Bash is a thin re-skin of MSYS2, and its quirks leak through: PATH
-translation surprises, slow `fork` emulation, an aging MinTTY. wbsh is built
-for modern Windows instead:
-
-- **Native console.** VT-mode output and immersive dark mode; renders correctly
-  in Windows Terminal, conhost, VS Code, and JetBrains terminals.
-- **One self-contained binary.** No MSYS or Cygwin layer. ~4 MB exe, ~3 MB
-  installer including the VC++ runtime.
-- **Real Bash semantics.** Lexer, parser, AST and expander, not a wrapper
-  around `cmd.exe`.
-- **Bundled coreutils.** `ls`, `grep`, `sed`, `awk`, `find`, `tar`, `curl`,
-  hashes and more are built in. System `git`, `vim`, `less` are auto-discovered.
-- **Path translation.** `/c/Users/...` ↔ `C:\Users\...` when invoking native
-  Windows executables, by Git Bash's rules (`cmd //c`, `--opt=/c/x`,
-  `MSYS2_ARG_CONV_EXCL`).
-
----
-
-## Scoreboard
-
-Measured, not claimed. Each number links to the committed raw data; the CI
-job that reproduces it is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-
-| metric | wbsh | data | CI job |
-| --- | --- | --- | --- |
-| Differential corpus vs GNU bash | 420 / 426 cases identical (vs bash 4.4, 2026-11-12); CI floor 400 vs bash 5.3 | [FINDINGS.md](tools/difftest/FINDINGS.md), [baseline.txt](tools/difftest/baseline.txt) | `difftest` |
-| GNU bash 5.3 upstream suites | **68 / 86** byte-identical, 18 env-only, no real failures (2026-11-23) | [compat-ledger.md](docs/compat-ledger.md) | `bashtests` |
-| Real-world assets sourced cleanly | 275 / 1,034 runs (26.6 %; Git Bash 969 / 1,034 on the same files) over oh-my-bash, bash-it, bash-completion, nvm, sdkman, asdf and git's completion scripts (2026-11-13) | [corpus snapshot](docs/corpus/2026-11-13-local.md) | local only |
-| Speed vs Git Bash (same machine) | faster on every row: `-c true` 43 vs 66 ms, 20k function calls 196 vs 225 ms | [docs/bench/](docs/bench/2026-11-12-local.md) | `bench` (perf gate) |
-
-[docs/comparison.md](docs/comparison.md) puts these next to Git Bash,
-MSYS2 and WSL, with every cell sourced and dated.
+wbsh is young: 1.x releases, CI on every push, and compatibility that is
+measured rather than claimed. [Limitations](#limitations) lists what does
+not work yet.
 
 ---
 
 ## Install
 
-Get these from [Releases](https://github.com/tomas-trachta/wbsh/releases):
+Run the installer from the [latest release](https://github.com/tomas-trachta/wbsh/releases/latest).
+It installs for your user only (no admin prompt), adds wbsh to `PATH`, and
+adds "Open wbsh here" to Explorer and a wbsh profile to Windows Terminal.
 
-| Download | What you get |
-| --- | --- |
-| `wbsh-setup-x64.exe`, `wbsh-setup-arm64.exe` | Per-user installer, no UAC. Installs to `%LOCALAPPDATA%\Programs\wbsh`; the tasks are listed below. |
-| `wbshterm-setup-x64.exe`, `wbshterm-setup-arm64.exe` | The terminal below. It bundles `wbsh.exe`, so it works on its own; installing both is fine. |
-| `wbsh-<version>-portable-x64.zip`, `wbshterm-<version>-portable-x64.zip` and the `-arm64.zip` twins | Extract and run. No registry, no PATH changes. |
+| | x64 | ARM64 |
+| --- | --- | --- |
+| **wbsh**, the shell | [wbsh-setup-x64.exe](https://github.com/tomas-trachta/wbsh/releases/latest/download/wbsh-setup-x64.exe) | [wbsh-setup-arm64.exe](https://github.com/tomas-trachta/wbsh/releases/latest/download/wbsh-setup-arm64.exe) |
+| **wbshterm**, the terminal (includes wbsh) | [wbshterm-setup-x64.exe](https://github.com/tomas-trachta/wbsh/releases/latest/download/wbshterm-setup-x64.exe) | [wbshterm-setup-arm64.exe](https://github.com/tomas-trachta/wbsh/releases/latest/download/wbshterm-setup-arm64.exe) |
 
-The ARM64 builds are cross-compiled in CI and have not yet been run on ARM64
-hardware by the maintainer; reports welcome.
-
-The wbsh installer's tasks:
-
-| task | default |
-| --- | --- |
-| Add wbsh to the user `PATH` | on |
-| "Open wbsh here" in the Explorer context menu | on |
-| A wbsh profile for Windows Terminal (a fragment in `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wbsh\`; `settings.json` is not touched) | on |
-| `bash.exe` and `sh.exe` shims in `{app}in`, added to the user `PATH`, for tools that look for Git Bash | off |
-| Set `SHELL` to wbsh for your user | off |
-| Install MinGit with winget, offered only when no `git.exe` is found | off |
-
-Scoop installs straight from the manifests in this repository:
+Or with [Scoop](https://scoop.sh):
 
 ```powershell
 scoop install https://raw.githubusercontent.com/tomas-trachta/wbsh/main/packaging/scoop/wbsh.json
 ```
 
-winget manifests are generated with every release (see
-[packaging/README.md](packaging/README.md)); they become
-`winget install TomasTrachta.wbsh` once accepted into `microsoft/winget-pkgs`.
-Every release from 1.1.2 on carries `SHA256SUMS.txt`.
+<details>
+<summary>Portable ZIPs, installer options, winget, signing, ARM64</summary>
 
-Without the installer (portable ZIP, Scoop), copy
-`installer/windows-terminal/wbsh.json` to
-`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wbsh\` for the Windows
-Terminal profile. [docs/editors.md](docs/editors.md) shows how to make wbsh
-the shell of VS Code, Cursor, JetBrains IDEs and Windows Terminal, and what
-the shims and `SHELL` do. Releases are not code-signed yet; the signing step
-is prepared and switches on once the SignPath Foundation account exists
-([docs/signing.md](docs/signing.md)).
+- **Portable:** `wbsh-<version>-portable-x64.zip` and
+  `wbshterm-<version>-portable-x64.zip` (and `-arm64.zip` twins) on the
+  release page. Extract and run; no registry, no `PATH` changes. For the
+  Windows Terminal profile, copy `installer/windows-terminal/wbsh.json` to
+  `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wbsh\`.
+- **Installer tasks:**
 
-### wbshterm
+  | task | default |
+  | --- | --- |
+  | Add wbsh to the user `PATH` | on |
+  | "Open wbsh here" in the Explorer context menu | on |
+  | A wbsh profile for Windows Terminal (a fragment in `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\wbsh\`; `settings.json` is not touched) | on |
+  | `bash.exe` and `sh.exe` shims in `{app}\bin`, added to the user `PATH`, for tools that look for Git Bash | off |
+  | Set `SHELL` to wbsh for your user | off |
+  | Install MinGit with winget, offered only when no `git.exe` is found | off |
 
-A terminal that hosts wbsh on a pseudoconsole, with themes, a config file,
-scrollback and selection, tmux-style panes, and shell integration. See
-[wbshterm/README.md](wbshterm/README.md).
+- **winget:** manifests are generated with every release (see
+  [packaging/README.md](packaging/README.md)); they become
+  `winget install TomasTrachta.wbsh` once accepted into `microsoft/winget-pkgs`.
+- **Checksums and signing:** every release from 1.1.2 on carries
+  `SHA256SUMS.txt`. Releases are not code-signed yet, so SmartScreen may warn
+  on first run; the signing step is prepared and switches on once the
+  SignPath Foundation account exists ([docs/signing.md](docs/signing.md)).
+- **ARM64:** the ARM64 builds are cross-compiled in CI and have not yet been
+  run on ARM64 hardware by the maintainer; reports welcome.
 
-![wbshterm at startup: the screenfetch panel, Catppuccin Mocha theme](./preview_terminal.png)
+</details>
+
+[docs/editors.md](docs/editors.md) shows how to make wbsh the shell of
+VS Code, Cursor, JetBrains IDEs and Windows Terminal.
 
 ---
 
 ## Quick start
-
-Start an interactive shell with `wbsh`:
 
 ```sh
 $ wbsh
@@ -131,198 +113,13 @@ Pipelines, redirection, control flow, functions, command substitution
 parameter, tilde and glob expansion, here-docs, here-strings, traps and job
 control (`Ctrl-Z`, `jobs`, `fg`, `bg`) all work.
 
-### Drop-in for bash.exe and sh.exe
+Paths translate the way Git Bash translates them: `/c/Users/...` becomes
+`C:\Users\...` when a native Windows program is started, by Git Bash's rules
+(`cmd //c`, `--opt=/c/x`, `MSYS2_ARG_CONV_EXCL`).
 
-The command line is bash's: option letters cluster (`-ec`), `-c` takes the
-first operand after the options (`wbsh -c -l 'cmd'`), and `-o NAME`,
-`-O NAME`, `-l`, `-i`, `-s`, `--norc`, `--noprofile`, `--rcfile` and
-`--posix` mean what they mean to bash. A copy of `wbsh.exe` named `bash.exe`
-behaves the same; one named `sh.exe` starts in POSIX mode. Tools that run
-`$SHELL -c`, git hooks and Makefiles therefore work unchanged, and a coding
-agent that wants Git Bash can be pointed at it (for Claude Code:
-`CLAUDE_CODE_GIT_BASH_PATH=C:\path\to\bash.exe`).
-
-A login shell (`-l`) reads `~/.wbsh_profile`, never the `~/.profile` written
-for Git Bash or Linux; an interactive one then reads `~/.wbshrc` too.
-
-### Quote-proof commands
-
-Every program between a caller and the shell can re-quote, expand or eat
-part of a command line. `--ec` (or `--encodedcommand`) takes the command as
-base64 instead, so there is nothing left to escape:
-
-```sh
-$ wbsh --ec ZWNobyAiaGkgJDEiIHwgdHIgYS16IEEtWg== name arg
-HI ARG
-```
-
-UTF-8 and UTF-16LE (PowerShell's `-EncodedCommand` encoding) are both
-accepted; padding is optional, line breaks are ignored and an optional `v1:`
-prefix is dropped. Options still go in front: `wbsh -eu --ec <b64>`.
-
-### Structured results
-
-`--json` runs the command the normal way (traps, `exit N`, `set -e`) with
-stdout and stderr captured apart, then prints one line of JSON, so a caller
-needs no output parsing:
-
-```sh
-$ wbsh --json -c 'echo hi; echo oops >&2; exit 3'
-{"status":3,"stdout":"hi\n","stderr":"oops\n","duration_ms":4}
-```
-
-The line is pure ASCII (non-ASCII characters as `\uXXXX`, so it parses
-whatever code page the reader decodes it with); bytes that are not valid
-UTF-8 become U+FFFD, one per byte. The exit status is the command's. It
-combines with `--ec` and script files: `wbsh --json --ec <b64>`.
-
-Coding agents: [docs/agents.md](docs/agents.md) shows how to point Claude
-Code, Codex CLI, OpenCode and others at wbsh, and what
-`tools/agents/check_agent_shapes.py` verifies about each of them.
-
-```
-wbsh [options]                         interactive shell (TTY auto-detect)
-wbsh [options] -c <command> [name [arg ...]]
-                                       run the command ($0 = name)
-wbsh [options] <file> [arg ...]        run the file ($1.. = args)
-wbsh [options] -s [arg ...]            run stdin (also a lone -)
-wbsh [options] --ec <base64> [name [arg ...]]
-wbsh --json [options] -c <command>     one JSON line: status, stdout, stderr
-
-  -c, -s, -i, -l                       as in bash
-  -abefhkmnptuvxBCEHPT                 the `set` letters (+x turns one off)
-  -o NAME / +o NAME, -O NAME / +O NAME set / unset by name, shopt names
-  --login, --posix, --norc, --noprofile, --rcfile FILE
-  --tokens, --ast, --expand            debugging dumps instead of running
-                                       (add -r / --run to dump and run)
-  -h, --help                           show help
-  --version                            version and the commit it was built from
-  --agent-info                         a longer brief for scripts and tools
-```
-
----
-
-## Line editing
-
-- **History:** persistent, with reverse-incremental search.
-- **Predictions:** the rest of the best matching history entry appears as dim
-  ghost text. Entries whose last run failed are never suggested.
-- **Completion:** programmable, plus per-tool completion for git, docker, npm,
-  cargo and kubectl.
-- **Kill ring:** kills are kept, and yanking cycles through them.
-- **Syntax highlighting:** the line is coloured as you type (see below).
-
-### Syntax highlighting
-
-Command words are green when they name a builtin, function, alias or program
-on `PATH`, and red when they name nothing. Keywords, strings, expansions,
-comments and options get colours of their own, and paths that exist are
-underlined. Lines that continue an unfinished command are coloured in context.
-Command lookups come from memory (`PATH` is listed once, off the typing thread)
-and paths on network drives are never probed, so a key costs about 20 µs more.
-
-Highlighting is on by default and off under `NO_COLOR` or `TERM=dumb`. In
-`~/.inputrc`:
-
-```
-set syntax-highlight off
-set syntax-highlight-colors command=1;32:unknown=31:keyword=35
-```
-
-`WBSH_HIGHLIGHT` takes the same `role=SGR` list and wins over `.inputrc`. The
-roles are `command` (32), `unknown` (31), `keyword` (35), `string` (33),
-`variable` (36), `comment` (90), `operator` (none), `option` (94) and `path` (4).
-`0` turns a role's colour off. The colours are the 16 ANSI ones, so wbshterm
-draws them in its theme's palette.
-
-### Keys
-
-Bindings follow readline's emacs mode. `Esc` followed by a key works as Alt
-with it, and AltGr characters type as usual. For vi keys, use `set -o vi` (or
-`set editing-mode vi` in `~/.inputrc`). `set -o emacs` sets the emacs keys
-again.
-
-**Moving**
-
-| Keys | Action |
-|------|--------|
-| `← / →`, `Ctrl-B / Ctrl-F`           | move by one character |
-| `Alt-B / Alt-F`, `Ctrl-← / Ctrl-→`   | move by one word |
-| `Home / End`, `Ctrl-A / Ctrl-E`      | start / end of line |
-
-**Completion and history**
-
-| Keys | Action |
-|------|--------|
-| `Tab`                                | complete; second `Tab` lists candidates |
-| `→` at end of line                   | accept the inline prediction |
-| `↑ / ↓`, `Ctrl-P / Ctrl-N`           | walk history |
-| `Ctrl-R` / `Ctrl-S`                  | search history backward / forward |
-| `Esc` / `Ctrl-G`                     | cancel the search |
-| `Alt-.` / `Alt-_`                    | insert the last word of the previous command (repeat: older ones) |
-
-**Editing**
-
-| Keys | Action |
-|------|--------|
-| `Ctrl-U / Ctrl-K`                    | kill to start / end of line |
-| `Ctrl-W`                             | kill the previous whitespace-separated word |
-| `Alt-Backspace / Alt-D`, `Ctrl-Del`  | kill the previous / next word |
-| `Ctrl-Y`, `Alt-Y`                    | yank the last kill, then cycle older kills |
-| `Ctrl-T` / `Alt-T`                   | swap characters / words |
-| `Alt-U / Alt-L / Alt-C`              | upcase / downcase / capitalize the word |
-| `Ctrl-_`, `Ctrl-X Ctrl-U` / `Alt-R`  | undo / undo every change to the line |
-| `Ctrl-V`                             | paste from the clipboard |
-
-**Everything else**
-
-| Keys | Action |
-|------|--------|
-| `Ctrl-X Ctrl-E`                      | edit the line in `$VISUAL` / `$EDITOR` (default notepad), then run it |
-| `Ctrl-O`                             | run the line, then show the next history entry |
-| `Alt-#`                              | comment out the line and keep it in history |
-| `Ctrl-L`                             | clear the screen |
-| `Ctrl-C`                             | abandon the line |
-| `Ctrl-D` (empty line)                | exit |
-
-### Completing file names
-
-- Names are quoted the way the word was typed (`"My Doc` → `"My Documents/`) or
-  get backslashes (`My\ Documents/`).
-- The value after `=` completes on its own (`--file=./sr`).
-- Names match regardless of case. Put `set completion-ignore-case off` in
-  `~/.inputrc` to change that.
-
-### Changing bindings
-
-The `bind` builtin changes them for the session:
-
-- `bind -p` lists the bindings.
-- `bind -l` lists the commands.
-- `bind -x` runs a shell command with `READLINE_LINE` / `READLINE_POINT`.
-
-`~/.inputrc` (or `$INPUTRC`) is read before `.wbshrc` and takes readline's
-syntax, including `$if mode=emacs` ... `$endif` and `$include`:
-
-```
-"\C-t": transpose-chars
-Meta-q: upcase-word
-"\ez": "macro text"
-set bell-style none
-```
-
----
-
-## Configuration
-
-`~/.wbshrc` is sourced at the start of every interactive session.
-A login shell (`wbsh -l`, `wbsh -lc <command>`) first sources
-`~/.wbsh_profile` and sets `shopt login_shell`. wbsh does not read
-`~/.bash_profile` or `~/.profile`, because those files are written for
-Git Bash or Linux. Unlike bash, an interactive login shell also reads
-`~/.wbshrc` after the profile.
-
-An example `~/.wbshrc`:
+Settings go in `~/.wbshrc` (and `~/.wbsh_profile` for login shells). wbsh
+never reads `~/.bashrc` or `~/.profile`, so an existing Git Bash setup is left
+alone:
 
 ```sh
 export EDITOR=code
@@ -331,50 +128,62 @@ alias gs='git status'
 PS1='\[\e[35;1m\]\w\[\e[0m\]\g \$ '
 ```
 
-### Variables
+### Using it as bash.exe
 
-| Variable | Effect |
-| --- | --- |
-| `PS1`, `PS2` | Primary and continuation prompts. |
-| `PATH` | Stored in POSIX form, auto-translated for spawns. |
-| `HOME` | Defaults to `%USERPROFILE%` in POSIX form. |
-| `HISTFILE` | History file, default `$HOME/.wbsh_history`. Each command is appended as it finishes. Empty: not saved. |
-| `HISTSIZE`, `HISTFILESIZE` | Entries kept in memory / in the file. Default 5000; negative: no limit. |
-| `HISTCONTROL` | `ignorespace`, `ignoredups`, `ignoreboth`, `erasedups`. |
-| `HISTIGNORE` | Colon-separated patterns left out of history (`&` = previous entry). |
-| `COLUMNS`, `LINES` | Updated on resize; fires the `WINCH` trap. |
-| `WBSH_GIT_NO_DIRTY` | Skip the working-tree check in the `\g` prompt, for huge repos. |
-| `WBSH_GIT_STATUS_WAIT` | Milliseconds the prompt waits for `\g`'s background `git status`, default 50. After that it shows the last known state and redraws when the new one arrives. |
-| `WBSH_NO_PATHCONV`, `MSYS_NO_PATHCONV` | Suppress POSIX→Win32 argument translation for spawned commands. |
-| `MSYS2_ARG_CONV_EXCL` | `*`, or `;`-separated prefixes of arguments to pass on untranslated, as in Git Bash. See [argument translation](docs/commands.md#arguments-for-native-programs). |
-| `MSYSTEM` | Exported as `MINGW64` when not set; picks the `uname -s` prefix. |
-| `WBSH_UNAME_S` | Replaces what `uname -s` prints (default `MINGW64_NT-10.0-<build>`). |
-| `WBSH_PAGER` | `builtin` makes `less` use the bundled pager even when a `less` is on PATH. |
+The command line is bash's (`-c`, `-l`, `-o`, `--norc`, `--posix`, clustered
+letters such as `-ec`). A copy of `wbsh.exe` named `bash.exe` behaves the
+same, and one named `sh.exe` starts in POSIX mode, so anything that runs
+`bash -c` works unchanged. For Claude Code, set
+`CLAUDE_CODE_GIT_BASH_PATH=C:\path\to\bash.exe`.
 
-### Prompt escapes
+Two options are there for programs that call wbsh: `--ec` takes the command
+as base64 so nothing needs escaping, and `--json` prints the status, stdout
+and stderr as one JSON line:
 
-| Escape | Meaning |
-| --- | --- |
-| `\u` | user |
-| `\h`, `\H` | short / long hostname |
-| `\w`, `\W` | working directory / its basename |
-| `\g` | ` (branch)` inside a git repo; ` (branch \| state)` during a merge, rebase, cherry-pick, revert or bisect, or when the tree has unstaged, staged or untracked changes |
-| `\d` | date (`Tue May 26`) |
-| `\t`, `\T`, `\@`, `\A` | time: 24-hour, 12-hour, 12-hour am/pm, 24-hour `HH:MM` |
-| `\D{format}` | `strftime` format |
-| `\s` | `wbsh` |
-| `\v`, `\V` | version: short / long |
-| `\j` | number of jobs |
-| `\!`, `\#` | history number / command number |
-| `\l` | terminal name |
-| `\n` `\r` `\a` `\e` `\\` `\$` `\nnn` | the usual characters; `\nnn` is octal |
-| `\[`, `\]` | non-printing markers |
-
-Default `PS1`:
-
+```sh
+$ wbsh --json -c 'echo hi; echo oops >&2; exit 3'
+{"status":3,"stdout":"hi\n","stderr":"oops\n","duration_ms":4}
 ```
-\[\e[32;1m\]\u@\h\[\e[0m\] \[\e[36;1m\]\w\[\e[0m\]\g\$
-```
+
+### Further reading
+
+| | |
+| --- | --- |
+| [Command line](docs/command-line.md) | every option, `bash.exe` / `sh.exe` copies, `--ec`, `--json` |
+| [Line editing](docs/line-editing.md) | history, predictions, completion, syntax highlighting, every key binding, `~/.inputrc` |
+| [Configuration](docs/configuration.md) | startup files, variables, prompt escapes |
+| [Commands](docs/commands.md) | flags and Windows notes for every built-in command |
+| [Coding agents](docs/agents.md) | Claude Code, Codex CLI, OpenCode and others on wbsh |
+| [Differences from POSIX](docs/posix-differences.md) | processes, signals, permissions, file system |
+
+The same pages are published at
+[tomas-trachta.github.io/wbsh](https://tomas-trachta.github.io/wbsh/).
+
+---
+
+## Scoreboard
+
+Measured, not claimed. Each number links to the committed raw data; the CI
+job that reproduces it is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+| metric | wbsh | data | CI job |
+| --- | --- | --- | --- |
+| Speed vs Git Bash (same machine) | faster on every case: `$(...)` loop 39 vs 1,175 ms (30×), `while read` 88 vs 483 ms (5.5×), built-in pipeline 344 vs 1,265 ms (3.7×), `-c true` 24 vs 51 ms (2.1×) | [docs/bench/](docs/bench/2026-11-14-local.md) | `bench` (perf gate) |
+| GNU bash 5.3 upstream suites | **68 / 86** byte-identical, 18 env-only, no real failures (2026-11-23) | [compat-ledger.md](docs/compat-ledger.md) | `bashtests` |
+| Differential corpus vs GNU bash | 420 / 426 cases identical (vs bash 4.4, 2026-11-12); CI floor 400 vs bash 5.3 | [FINDINGS.md](tools/difftest/FINDINGS.md), [baseline.txt](tools/difftest/baseline.txt) | `difftest` |
+| Real-world assets sourced cleanly | **968 / 1,034** runs (93.6 %; Git Bash 969) over oh-my-bash, bash-it, bash-completion, nvm, sdkman, asdf and git's completion scripts (2026-11-24) | [corpus snapshot](docs/corpus/2026-11-24-local.md) | local only |
+
+[docs/comparison.md](docs/comparison.md) puts these next to Git Bash,
+MSYS2 and WSL, with every cell sourced and dated.
+
+---
+
+## wbshterm
+
+A terminal that hosts wbsh on a pseudoconsole, with tabs, tmux-style panes,
+themes, a config file, scrollback and selection, a status bar and shell
+integration. It bundles `wbsh.exe`, so it works on its own. See
+[wbshterm/README.md](wbshterm/README.md).
 
 ---
 
@@ -485,76 +294,10 @@ Requires Windows 10 1903+, Visual Studio 2022 or Build Tools 2022 with the
 ```
 
 The binary lands at `x64\Release\wbsh.exe`; installer output goes to
-`installer\output\`.
-
-### Layout
-
-```
-wbsh/        The shell: wbsh.vcxproj, src/, tests/ (golden suite, run-all.sh), stress/
-wbshterm/    The terminal: Win32 window, renderer, VT parser, panes; vendored ConPTY;
-             tests/, stress/
-sdk/         The util SDK: wbshsdk.dll, include/wbshsdk.h, template/, samples/, tests/
-installer/   Inno Setup scripts, build.ps1, Windows Terminal profile fragment
-tools/       check_style.py (runs before every build), gen_charwidth.py, make_icon.py,
-             stress/ (code shared by the two stress suites)
-docs/        Command notes, stress-test notes; Doxygen config, regenerate with
-             `doxygen docs/Doxyfile`
-```
-
-[CONTRIBUTING.md](./CONTRIBUTING.md) has the file-by-file architecture tour.
-
----
-
-## Testing
-
-```sh
-# From wbsh/tests/, after building:
-../../x64/Release/wbsh.exe -r run-all.sh                  # every script exits 0
-WBSH_GOLDEN=1 ../../x64/Release/wbsh.exe -r run-all.sh    # also diff against expected/
-```
-
-From PowerShell, `.\wbsh\tests\run-all.ps1` runs the same suite; add `-Golden`
-to diff against `expected/`.
-
-Each `wbsh/tests/*.sh` script exercises one slice of behavior and runs inside
-wbsh itself, so the suite is an end-to-end check of the whole pipeline. The SDK
-has its own checks in `sdk\tests\sdk.ps1`, which need the samples built into
-`x64/Release/plugins`. CI runs both on every push.
-
-### Differential tests against GNU bash
-
-`tools/difftest/` holds 440 small scripts run under GNU bash 5.3 (built from
-source on Linux in CI) and under wbsh, with the outputs compared after a few
-documented normalizations. CI reports the pass count on every push; the known
-divergences are listed in `tools/difftest/FINDINGS.md`.
-
-```sh
-python -I tools/difftest/run.py --shell bash --record ref/
-python -I tools/difftest/run.py --shell x64/Release/wbsh.exe --compare ref/ --diff
-```
-
-### GNU bash's own test suites and the real-world corpus
-
-`tools/bashtests/run.py` downloads bash-5.3, checks its SHA-256 and runs
-its 86 `tests/run-*` suites under wbsh
-([docs/compat-ledger.md](docs/compat-ledger.md)). `tools/corpus/run.py`
-sources oh-my-bash, bash-it, bash-completion, nvm, sdkman, asdf and git's
-completion scripts at pinned commits under wbsh and Git Bash
-([docs/corpus/](docs/corpus/2026-11-13-local.md)).
-
-```sh
-python -I tools/bashtests/run.py --shell x64/Release/wbsh.exe --fetch C:/cache/bash-src --jobs 2
-python -I tools/corpus/run.py --shell wbsh=x64/Release/wbsh.exe     --shell "git-bash=C:/Program Files/Git/bin/bash.exe" --clone-root C:/scratch/corpus-src
-```
-
-### Benchmarks
-
-`tools/bench/bench.py` times startup, function calls, arithmetic, string and
-array loops, built-in pipelines, 150 native spawns, `$( )` and read loops under
-any number of shells. Committed results are in [docs/bench/](./docs/bench/).
-The `bench` CI job is a perf gate: it fails a push that makes any case more
-than 20 % slower relative to Git Bash on the same runner (see
-[tools/bench/README.md](tools/bench/README.md#perf-gate)).
+`installer\output\`. [CONTRIBUTING.md](./CONTRIBUTING.md) has the repository
+layout, the architecture tour and the test suites: the golden suite, the
+differential tests against GNU bash, bash's own suites, the real-world corpus
+and the benchmark perf gate.
 
 ---
 
@@ -600,12 +343,11 @@ detailed in [docs/posix-differences.md](docs/posix-differences.md).
   startup files instead of `~/.bash_logout`, its own history file format
   and its own `help` text. Every difference is listed in
   [docs/compat-ledger.md](docs/compat-ledger.md).
-- **Frameworks.** bash-completion, oh-my-bash and git-completion.bash do
-  not load yet, and bash-it's main file fails in its default theme: two
-  parser bugs (a `[[ ... ]]` continued over lines after `&&`, and
-  `eval -- ...`) stop them early. nvm, sdkman, asdf, git-prompt and 263 of
-  bash-it's 303 plugins, themes and completions load cleanly. See the
-  [corpus snapshot](docs/corpus/2026-11-13-local.md).
+- **Frameworks.** oh-my-bash, bash-it, bash-completion, nvm, sdkman, asdf
+  and git's completion and prompt scripts load, within one run of Git Bash
+  over 1,034 files. The plugins that fail are almost all for tools that
+  are not installed, and fail under Git Bash too. See the
+  [corpus snapshot](docs/corpus/2026-11-24-local.md).
 - **No `fork()`.** Subshells and command substitutions run in-process,
   pipeline stages of shell code in a child wbsh, and external programs
   start with `CreateProcess`. Scripts that depend on fork semantics
