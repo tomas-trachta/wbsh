@@ -7,7 +7,7 @@
 ; (x64) or stage-<arch>\ and passes /DArch=<arch> for any other architecture.
 
 #ifndef AppVersion
-#define AppVersion "1.2.0"
+#define AppVersion "1.2.1"
 #endif
 
 #ifndef Arch
