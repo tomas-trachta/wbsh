@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: TomasTrachta.wbshterm
+PackageVersion: 1.2.1
+PackageLocale: en-US
+Publisher: Tomas Trachta
+PublisherUrl: https://github.com/tomas-trachta
+PublisherSupportUrl: https://github.com/tomas-trachta/wbsh/issues
+PackageName: wbshterm
+PackageUrl: https://github.com/tomas-trachta/wbsh
+License: MIT
+LicenseUrl: https://github.com/tomas-trachta/wbsh/blob/main/LICENSE
+ShortDescription: 'A terminal for wbsh with themes, panes, scrollback and Lua scripting.'
+Description: 'wbshterm hosts wbsh on a pseudoconsole: themes, a config file, scrollback and selection, tmux-style panes, shell integration and Lua scripting. It bundles wbsh.'
+Tags:
+  - terminal
+  - bash
+  - shell
+  - conpty
+  - tabs
+  - panes
+ReleaseNotesUrl: https://github.com/tomas-trachta/wbsh/releases/tag/v1.2.1
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: TomasTrachta.wbsh
+PackageVersion: 1.2.1
+InstallerType: inno
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ProductCode: '{F4B7E8C2-3A5D-4E1F-8B92-7D6C5A4E9F12}_is1'
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/tomas-trachta/wbsh/releases/download/v1.2.1/wbsh-setup-x64.exe
+    InstallerSha256: 024169178AB3CB6ECC7510FE4875FBC370B166BF383F3DDDAE7A015513A7EFF0
+  - Architecture: arm64
+    InstallerUrl: https://github.com/tomas-trachta/wbsh/releases/download/v1.2.1/wbsh-setup-arm64.exe
+    InstallerSha256: 0F90D46585D8BBE8D6162419C33C3C09EEDF6C1AA5D69E020A310AE42AFC4162
+ManifestType: installer
+ManifestVersion: 1.6.0

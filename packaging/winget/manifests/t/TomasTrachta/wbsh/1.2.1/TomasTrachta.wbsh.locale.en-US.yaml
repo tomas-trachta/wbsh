@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: TomasTrachta.wbsh
+PackageVersion: 1.2.1
+PackageLocale: en-US
+Publisher: Tomas Trachta
+PublisherUrl: https://github.com/tomas-trachta
+PublisherSupportUrl: https://github.com/tomas-trachta/wbsh/issues
+PackageName: wbsh
+PackageUrl: https://github.com/tomas-trachta/wbsh
+License: MIT
+LicenseUrl: https://github.com/tomas-trachta/wbsh/blob/main/LICENSE
+ShortDescription: 'A Bash-compatible shell for Windows: a drop-in replacement for Git Bash.'
+Description: 'wbsh is a Bash-compatible shell written from scratch in C++ for Windows, with a real POSIX shell grammar, a readline-style line editor and bundled coreutils, in one self-contained executable.'
+Tags:
+  - bash
+  - shell
+  - git-bash
+  - posix
+  - coreutils
+  - terminal
+ReleaseNotesUrl: https://github.com/tomas-trachta/wbsh/releases/tag/v1.2.1
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
